@@ -88,17 +88,85 @@ produced with a different interpreter or an unpinned PyInstaller.
 
 ### 3.2 AI Existing Workspace
 
-An AI agent entering an existing working tree must first verify the environment:
+New-clone initialization in section 3.1 is a human setup workflow. A new Git
+worktree normally has no `.venv`; this alone is not an environment failure and
+does not authorize initialization. An AI agent must prefer the current worktree's
+environment, then look for an existing, previously verified Echo environment
+using `git worktree list --porcelain` and known local Echo checkouts. Revalidate
+each candidate against the target worktree's `pyproject.toml`; prior successful
+tests or builds do not guarantee compatibility with the current requirements.
+
+Run commands from the target worktree. Select the explicit interpreter locally
+(when reusing an environment, set `$EchoPython` to its verified path instead):
 
 ``` powershell
 Test-Path .\.venv\Scripts\python.exe
-.\.venv\Scripts\python.exe -c "import sys; print(sys.executable); print(sys.version)"
-.\.venv\Scripts\python.exe -m pip --version
+$EchoPython = (Resolve-Path .\.venv\Scripts\python.exe).Path
+$EchoSource = (Resolve-Path .\src).Path
+$env:PYTHONPATH = $EchoSource
+& $EchoPython -c "import sys; print(sys.executable); print(sys.version); assert sys.prefix != sys.base_prefix"
+& $EchoPython -m pip --version
+& $EchoPython -m pip check
+& $EchoPython -m pytest --version
+& $EchoPython -c "from pathlib import Path; import os, qq_chat_analyzer; actual = Path(qq_chat_analyzer.__file__).resolve(); expected = Path(os.environ['PYTHONPATH']).resolve() / 'qq_chat_analyzer' / '__init__.py'; print(actual); assert actual == expected, (actual, expected)"
 ```
 
-If `.venv` is missing or dependencies cannot be imported, report an environment
-problem. Do not create another environment or install dependencies unless the
-task explicitly authorizes environment initialization.
+Compare installed dependency versions with the target `pyproject.toml` (runtime,
+`dev`, and task-required extras such as `gui` or `build`), and verify their imports.
+`pip check` verifies installed dependency consistency; it does not by itself
+verify the target checkout's requirements. Tests default to the verified
+interpreter and explicit target source path, for example:
+
+``` powershell
+& $EchoPython -m pytest tests/test_facade.py -q
+& $EchoPython -m pytest -m "not slow_integration and not known_failure" -q
+```
+
+Keep this source path in the command session and inherited subprocess environment;
+recheck it in new sessions. Shared `echo-chat.exe` / `echo-gui.exe` entrypoints or
+editable-install metadata may still refer to the environment's original checkout.
+Use the verified Python and target source path for source execution, and verify
+subprocesses that override import paths also use the target worktree.
+The `.venv` commands in sections 4 and 5 are local-environment examples; when
+reusing an environment, use `& $EchoPython` with the same explicit source path.
+
+Stop only when no usable Echo environment exists, dependencies do not match, or
+target-source isolation cannot be guaranteed. Do not automatically install or
+upgrade dependencies, create a virtual environment, fall back to system Python,
+or alter another worktree's virtual environment (including editable reinstallation).
+Report missing or incompatible requirements for human resolution.
+
+For a Windows release build, `scripts/build_windows_exe.ps1` requires the target
+project's `.venv\Scripts\pyinstaller.exe`. After verifying reuse is safe, a local
+`.venv` junction may point to the existing environment. Before creating it,
+resolve and verify the environment directory and interpreter, and inspect the
+destination `.venv` with `Get-Item -LiteralPath .\.venv -Force` and a parent-directory
+listing (including reparse points or dangling links). Create a junction only when
+the destination is absent; never overwrite or remove a real directory or existing
+link. Use `New-Item -ItemType Junction` with the checked destination and target,
+without `-Force`, then inspect the link target and revalidate the interpreter and
+source import. The junction is local only; neither `.venv` nor machine-specific
+absolute paths may be committed to Git.
+
+Before building with a reused environment, verify Python meets the build's 3.11+
+requirement and PyInstaller and pyinstaller-hooks-contrib match the exact `build`
+extra pins in the target `pyproject.toml`. Use the same interpreter to inspect
+`pip show qq-chat-analyzer` and `importlib.metadata.distribution('qq-chat-analyzer')`
+(version, requirements, metadata location and `direct_url.json` when present).
+Record how that installation relates to the target worktree: an editable install
+may point to an older checkout. Matching versions alone do not prove source identity;
+the metadata copied into the build must also match the target project's dependency
+and entrypoint declarations. Do not repair mismatches by modifying the shared
+environment.
+
+Run the build from the target project and verify `LocalChatAnalyzer.spec` belongs
+to it: the spec resolves `project_root` from `SPEC`, sets `pathex` to that project's
+`src`, rejects mismatched installed release versions, and copies installed metadata.
+Inspect PyInstaller's analysis output to confirm packaged `qq_chat_analyzer`
+modules originate from the target `src`, rather than the environment's old checkout.
+A successful source import check does not replace this packaging check. Reuse does
+not relax any Windows Frozen / Portable build, runtime, privacy, smoke or acceptance
+checks; Fast tests do not replace the required focused integration validation.
 
 ------------------------------------------------------------------------
 

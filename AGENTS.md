@@ -137,8 +137,8 @@ GUI 通过 ChatAnalyzerFacade 接入（见 GUI原则）。
 
 1. 运行 `git status --short --branch`，识别当前分支和 working tree 状态；
 2. 识别并保护已有未提交修改，不覆盖、不 restore、不 checkout；
-3. 确认 `Test-Path .\.venv\Scripts\python.exe`；
-4. 用 `.\.venv\Scripts\python.exe -c "import sys; print(sys.executable); print(sys.version)"` 验证实际解释器；
+3. 优先检查 `Test-Path .\.venv\Scripts\python.exe`；当前 worktree 缺少 `.venv` 是正常现象，按 `DEVELOPMENT.md` 的 AI Existing Workspace 流程，从 `git worktree list --porcelain` 和已知 Echo 项目环境中寻找已有且验证通过的虚拟环境；
+4. 用选定环境的显式 Python 路径验证解释器、当前 `pyproject.toml` 要求的依赖和测试工具；显式将源码导入路径设为目标 worktree 的 `src`，核验 `qq_chat_analyzer.__file__` 实际位于该目录，不能导入环境所属的旧工作树。仅在没有可用环境、依赖不符或无法保证源码隔离时停止；
 5. 明确当前任务允许修改的文件范围；
 6. 阅读与任务直接相关的事实来源；
 7. 先运行与当前任务直接相关的 focused tests，不要无条件先跑 full suite。
@@ -198,10 +198,11 @@ minimal GREEN → focused verification → Fast / 必要时 Full → real accept
 - **Fast**：日常开发回归，运行 `slow_integration` 和 `known_failure` 之外的测试；
 - **Full**：阶段完成或提交前的完整回归。
 
-Fast Suite 命令必须与 `pyproject.toml` 中的 marker 定义一致：
+Fast Suite 命令必须与 `pyproject.toml` 中的 marker 定义一致；先按下文 Python / pytest
+执行环境规则设置并验证 `$EchoPython` 和目标 worktree 的源码导入路径：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -m "not slow_integration and not known_failure" -q
+& $EchoPython -m pytest -m "not slow_integration and not known_failure" -q
 ```
 
 如果当前修改触及 `slow_integration` 覆盖的能力，必须显式运行相关的 focused
@@ -223,44 +224,45 @@ git status --short
 
 ### Python / pytest 执行环境
 
-本仓库使用根目录下的项目虚拟环境：
-
-`.venv`
-
-在 Windows / PowerShell 下，AI Agent 执行 Python 或 pytest 命令时，必须显式使用该虚拟环境中的 Python，不得假设当前 shell 已经激活虚拟环境。
+优先使用当前 worktree 的 `.venv`；缺失时可复用已有且验证通过的 Echo 项目虚拟环境。
+环境选择、依赖验证与构建复用检查见 `DEVELOPMENT.md` 的 AI Existing Workspace。
+在 Windows / PowerShell 下，必须用 `$EchoPython` 保存选定解释器的显式路径，并将
+`$env:PYTHONPATH` 显式设为当前目标 worktree 的 `src`，核验实际导入路径后再运行命令；
+不依赖 shell 激活或共享环境里指向旧 worktree 的 editable 安装。
+以下命令均以完成这一步验证、且工作目录为目标 worktree 为前提。
 
 测试命令统一使用：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest
+& $EchoPython -m pytest
 ```
 
 例如：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_facade.py
-.\.venv\Scripts\python.exe -m pytest tests/test_facade.py -q
+& $EchoPython -m pytest tests/test_facade.py
+& $EchoPython -m pytest tests/test_facade.py -q
 ```
 
 日常开发 / RED-GREEN 使用 Fast Suite（排除 `slow_integration` 和 `known_failure`），普通测试默认属于 Fast：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -m "not slow_integration and not known_failure" -q
+& $EchoPython -m pytest -m "not slow_integration and not known_failure" -q
 ```
 
 阶段完成 / 提交前运行完整回归（命令不变）：
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q
+& $EchoPython -m pytest -q
 ```
 
 执行 Python 脚本时使用：
 
 ```powershell
-.\.venv\Scripts\python.exe <script>
+& $EchoPython <script>
 ```
 
-除非已经明确验证命令解析到本仓库的 `.venv`，否则不要直接使用：
+除非已经明确验证命令解析到选定的 Echo 项目虚拟环境、且导入当前目标 worktree 的源码，否则不要直接使用：
 
 ```powershell
 pytest
@@ -268,14 +270,17 @@ python -m pytest
 py -m pytest
 ```
 
-如果 `.\.venv\Scripts\python.exe` 不存在，或者无法导入项目所需依赖，应停止并报告环境问题。
+当前 `.venv` 缺失时先查找可复用环境；只有不存在可用环境、依赖不符或源码隔离无法保证时，才停止并报告环境问题。
 
 未经明确要求，不要：
 
-- 自动安装依赖；
+- 自动安装或升级依赖；
 - 新建另一套虚拟环境；
 - 回退到系统 Python；
 - 因环境错误修改测试或生产代码。
+
+复用时不得修改其他 worktree 的虚拟环境（包括重新 editable 安装）；不得将 `.venv`、
+本地 junction 或本机绝对路径提交到 Git。环境复用不放宽 Windows Frozen / Portable 构建验证。
 
 遇到以下错误时：
 
@@ -283,7 +288,7 @@ py -m pytest
 - `ModuleNotFoundError`
 - 依赖包缺失
 
-首先确认实际使用的 Python 是否为本仓库 `.venv`，而不是将其直接判断为测试 RED 或代码失败。
+首先确认实际使用的 Python 是否为选定且验证通过的 Echo 项目虚拟环境，并核验源码导入路径，而不是将其直接判断为测试 RED 或代码失败。
 
 **使用错误 Python 解释器得到的测试结果，不属于有效的 RED / GREEN 证据。**
 
