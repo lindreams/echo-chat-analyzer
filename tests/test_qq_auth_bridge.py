@@ -172,6 +172,50 @@ def _bridge(
     )
 
 
+@pytest.mark.parametrize("fault", ["workspace", "binding", "none"])
+def test_pre_auth_diagnostics_distinguish_early_returns_without_private_data(tmp_path, monkeypatch, caplog, fault):
+    from types import SimpleNamespace
+    from qq_chat_analyzer.application.connection_models import ConnectionSnapshot, ConnectionState
+    from qq_chat_analyzer.application.qq.qq_runtime_workspace import QQWorkspaceError
+    from qq_chat_analyzer.providers import napcat_qq_provider
+
+    private = "fictional-secret-token account=12345678 C:/private/qq raw-response"
+    config = SimpleNamespace(runtime_mode="managed", napcat_bridge_url="http://127.0.0.1:40655")
+    paths = SimpleNamespace(runtime_id="a" * 64)
+    def prepare(*, prepare):
+        assert prepare is True
+        if fault == "workspace":
+            error = QQWorkspaceError(private)
+            error.code = private
+            raise error
+        return paths
+    setup = SimpleNamespace(get_runtime_paths=prepare, get_environment_config=lambda: config)
+    manager = SimpleNamespace(get_snapshot=lambda: ConnectionSnapshot(ConnectionState.CONNECTED, "qq", ""),
+                              end_auth_waiting=lambda: None)
+    monkeypatch.setattr(napcat_qq_provider, "NapCatQQProvider", lambda *a, **k: SimpleNamespace(
+        status=lambda: SimpleNamespace(runtime_id=("b" if fault == "binding" else "a") * 64)))
+    caplog.set_level("INFO")
+    result = _bridge(setup_service=setup, manager=manager).start_auth_flow()
+    assert "stage=workspace_prepare outcome=started" in caplog.text
+    if fault == "workspace":
+        assert result.state is ConnectionState.ERROR
+        assert "stage=workspace_prepare outcome=failed" in caplog.text
+        assert "failure_code=workspace_error snapshot_code=unspecified" in caplog.text
+    elif fault == "binding":
+        assert result.code == "qq_runtime_identity_mismatch"
+        assert "stage=workspace_prepare outcome=success" in caplog.text
+        assert "stage=runtime_binding outcome=failed" in caplog.text
+        assert "snapshot_code=qq_runtime_identity_mismatch" in caplog.text
+    else:
+        assert result.state is ConnectionState.CONNECTED
+        assert "stage=workspace_prepare outcome=success" in caplog.text
+        assert "stage=runtime_binding outcome=success" in caplog.text
+    if fault != "none":
+        assert "start_auth_flow entered" not in caplog.text
+    for value in (private, "12345678", "C:/private", "a" * 64, "b" * 64):
+        assert value not in caplog.text
+
+
 class _RecordingLauncher:
     def __init__(self, error=None):
         self.calls = 0
@@ -1022,7 +1066,8 @@ def _runtime_config(tmp_path: Path, *, with_qq_path: bool = True):
         qq_path.write_text("fake", encoding="utf-8")
         package = tmp_path / "resources/app/package.json"
         package.parent.mkdir(parents=True, exist_ok=True)
-        package.write_text('{"name":"QQ","main":"index.js"}', encoding="utf-8")
+        package.write_text('{"name":"QQ","version":"9.9.36-53644","buildVersion":"53644","main":"index.js"}', encoding="utf-8")
+        (package.parent / "wrapper.node").write_bytes(b"fictional native resource")
         (config_dir / "qq_path.txt").write_text(
             str(qq_path),
             encoding="utf-8",
@@ -1269,11 +1314,13 @@ def test_default_launcher_prefers_the_configured_qq_path(
     (tmp_path / "NapCatWinBootHook.dll").write_text("fake", encoding="utf-8")
     (tmp_path / "napcat.mjs").write_text("export {}", encoding="utf-8")
     (tmp_path / "launcher-user.bat").write_text("@echo off\n", encoding="utf-8")
-    configured = tmp_path / "configured-qq.exe"
+    configured = tmp_path / "configured/QQ.exe"
+    configured.parent.mkdir()
     configured.write_text("fake", encoding="utf-8")
-    package = tmp_path / "resources/app/package.json"
+    package = configured.parent / "resources/app/package.json"
     package.parent.mkdir(parents=True)
-    package.write_text('{"name":"QQ","main":"index.js"}', encoding="utf-8")
+    package.write_text('{"name":"QQ","version":"9.9.36-53644","buildVersion":"53644","main":"index.js"}', encoding="utf-8")
+    (package.parent / "wrapper.node").write_bytes(b"fictional native resource")
     saved = tmp_path / "saved-qq.exe"
     saved.write_text("fake", encoding="utf-8")
     config_dir = tmp_path / "config"
@@ -1398,7 +1445,7 @@ def test_default_launcher_rejects_a_missing_qq_install(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge = _bridge_module()
-    monkeypatch.setattr(bridge, "_detect_qq_install_path", lambda: None)
+    monkeypatch.setattr(bridge, "_qq_install_candidates", lambda: [])
     config = _runtime_config(tmp_path, with_qq_path=False)
 
     with pytest.raises(bridge.QQAuthWindowUnavailable) as excinfo:
@@ -1409,8 +1456,10 @@ def test_default_launcher_rejects_a_missing_qq_install(
 
 def test_resolve_qq_install_path_reads_the_saved_launcher_path(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge = _bridge_module()
+    monkeypatch.setattr(bridge, "_qq_install_candidates", lambda: [])
     qq_path = tmp_path / "QQ.exe"
     qq_path.write_text("fake", encoding="utf-8")
     config_dir = tmp_path / "config"
@@ -1452,7 +1501,7 @@ def test_resolve_qq_install_path_uses_python_detector_when_script_missing(
     found = tmp_path / "Detected" / "QQ.exe"
     found.parent.mkdir()
     found.write_text("fictional", encoding="utf-8")
-    monkeypatch.setattr(bridge, "_detect_qq_install_path", lambda: found)
+    monkeypatch.setattr(bridge, "_qq_install_candidates", lambda: [found])
 
     resolved = bridge.resolve_qq_install_path(None, tmp_path)
 
@@ -1464,7 +1513,7 @@ def test_resolve_qq_install_path_returns_none_when_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     bridge = _bridge_module()
-    monkeypatch.setattr(bridge, "_detect_qq_install_path", lambda: None)
+    monkeypatch.setattr(bridge, "_qq_install_candidates", lambda: [])
 
     resolved = bridge.resolve_qq_install_path(None, tmp_path)
 

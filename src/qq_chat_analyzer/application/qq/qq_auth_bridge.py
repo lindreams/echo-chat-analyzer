@@ -40,7 +40,7 @@ from .qq_process_registry import (
     default_qq_process_registry,
 )
 from .qq_process_detection import QQProcessDetectionError, find_conflicting_qq_pids
-from .qq_version import read_qq_version
+from .qq_version import read_qq_version, read_qq_resources, QQResources, QQVersionConflict
 from .qq_runtime_session import default_qq_runtime_session
 
 
@@ -270,12 +270,29 @@ class QQAuthBridge:
             self._auth_launch_started = False
         getter = getattr(self._setup_service, "get_runtime_paths", None)
         if callable(getter):
+            _LOGGER.info("[qq auth] stage=workspace_prepare outcome=started")
             try:
                 self._runtime_paths = getter(prepare=not self._auth_launch_started)
             except Exception as error:
+                from .qq_runtime_workspace import QQWorkspaceBusy, QQWorkspaceError
+                from .qq_runtime_paths import AmbiguousQQRuntime
+                category = (
+                    "workspace_busy" if isinstance(error, QQWorkspaceBusy) else
+                    "workspace_error" if isinstance(error, QQWorkspaceError) else
+                    "ownership_unknown" if isinstance(error, AmbiguousQQRuntime) else
+                    "unexpected_error"
+                )
+                # Only this known code is logged; collaborators' arbitrary code
+                # and exception text may contain private runtime information.
+                safe_code = "qq_runtime_ownership_unknown" if isinstance(error, AmbiguousQQRuntime) else "unspecified"
+                _LOGGER.info(
+                    "[qq auth] stage=workspace_prepare outcome=failed failure_code=%s snapshot_code=%s",
+                    category, safe_code,
+                )
                 manager.end_auth_waiting()
                 return self._error_snapshot(_public_message(error, MESSAGE_ERROR), HINT_RETRY,
                                             code=getattr(error, "code", None))
+            _LOGGER.info("[qq auth] stage=workspace_prepare outcome=success")
         snapshot = self._check_runtime_binding(manager.get_snapshot())
         if snapshot.code == "qq_runtime_identity_mismatch":
             return snapshot
@@ -375,6 +392,7 @@ class QQAuthBridge:
         config = self._environment_config()
         if (snapshot.state is not ConnectionState.CONNECTED or self._runtime_paths is None
                 or getattr(config, "runtime_mode", None) != "managed"):
+            _LOGGER.info("[qq auth] stage=runtime_binding outcome=skipped")
             return snapshot
         from ...providers.napcat_qq_provider import NapCatQQProvider
         try:
@@ -382,9 +400,15 @@ class QQAuthBridge:
                 config.napcat_bridge_url, timeout=1, credential=self._credential_source
             ).status()
             if status.runtime_id == self._runtime_paths.runtime_id:
+                _LOGGER.info("[qq auth] stage=runtime_binding outcome=success")
                 return snapshot
+            category = "runtime_identity_mismatch"
         except Exception:
-            pass
+            category = "binding_probe_failed"
+        _LOGGER.info(
+            "[qq auth] stage=runtime_binding outcome=failed failure_code=%s snapshot_code=qq_runtime_identity_mismatch",
+            category,
+        )
         return self._error_snapshot(MESSAGE_ERROR, HINT_RETRY, code="qq_runtime_identity_mismatch")
 
     def is_qrcode_ready(self) -> bool:
@@ -677,28 +701,21 @@ def default_auth_window_launcher(config: Any, *, paths=None, credential: Any = N
     # Capture the same executable for the version read and the eventual command;
     # do not resolve a different install again inside the launch callable.
     qq_path = qq_path.resolve()
-    _check_qq_version(qq_path)
+    resources = _checked_qq_resources(qq_path)
+    _check_qq_version(qq_path, resources=resources)
     if not (runtime_directory / "NapCatWinBootMain.exe").is_file() or not (runtime_directory / "NapCatWinBootHook.dll").is_file():
         raise QQAuthWindowUnavailable(MESSAGE_WINDOW_MISSING)
     managed = getattr(config, "runtime_mode", None) == "managed"
     return lambda: _launch_auth_window(runtime_directory, runtime_directory / "NapCatWinBootMain.exe", qq_path,
-                                       paths=paths, managed=managed, credential=credential)
+                                       paths=paths, managed=managed, credential=credential, resources=resources)
 
 
-def _check_qq_version(qq_path: Path) -> None:
+def _check_qq_version(qq_path: Path, *, resources: QQResources | None = None) -> None:
     """Reject only a reliably identified build below the documented minimum."""
     started = time.monotonic()
-    try:
-        version = read_qq_version(qq_path)
-    except Exception:
-        version = None
-    known = (
-        isinstance(version, tuple) and len(version) == 4
-        and all(type(part) is int and 0 <= part <= 65535 for part in version)
-        and version[:2] == (9, 9) and version[3] > 0
-    )
+    version = _known_qq_version(qq_path, resources=resources)
     result = "unknown"
-    if known:
+    if version is not None:
         result = "below_minimum" if version[3] < _MIN_WINDOWS_QQ_BUILD else "minimum_met"
     _LOGGER.info("[qq auth] version_check result=%s elapsed_ms=%s", result,
                  max(0, int((time.monotonic() - started) * 1000)))
@@ -711,32 +728,86 @@ def _check_qq_version(qq_path: Path) -> None:
         )
 
 
+def _checked_qq_resources(path: Path) -> QQResources | None:
+    try:
+        return read_qq_resources(path)
+    except QQVersionConflict:
+        raise QQAuthWindowUnavailable(
+            "QQ 程序资源的版本信息不一致，请完成 QQ 更新后重试。",
+            code="qq_version_metadata_conflict",
+        ) from None
+    except (OSError, ValueError, RuntimeError):
+        raise QQAuthWindowUnavailable(
+            "无法确认 QQ 当前启用的程序资源，请完成 QQ 更新后重试。",
+            code="qq_resources_unverified",
+        ) from None
+
+
+def _known_qq_version(path: Path, *, resources: QQResources | None = None) -> tuple[int, int, int, int] | None:
+    try:
+        resources = resources if resources is not None else read_qq_resources(path)
+        version = resources.version if resources is not None else None
+        if version is not None and version[3] >= _MIN_WINDOWS_QQ_BUILD and resources.wrapper_path is None:
+            return None
+    except Exception:
+        return None
+    known = (
+        isinstance(version, tuple) and len(version) == 4
+        and all(type(part) is int and 0 <= part <= 65535 for part in version)
+        and version[:2] == (9, 9) and version[3] > 0
+    )
+    return version if known else None
+
+
 def resolve_qq_install_path(
     config: Any,
     runtime_directory: Path | None = None,
 ) -> Path | None:
     """Resolve the QQ install executable for the bundled runtime.
 
-    The environment config wins, then the path the launcher already saved in
-    ``config/qq_path.txt``, then the bundled ``find-qq.ps1`` detector, then a
-    Python registry/common-directory fallback. All results are verified to
-    exist before being returned.
+    Explicit API/user settings win. Automatic discovery compares historical
+    config, launcher cache, script and registry/common-directory candidates.
+    Prefer the first confirmed minimum build; otherwise retain source order
+    so unknown metadata never supplies a compatibility verdict.
     """
     configured = _path_value(getattr(config, "qq_install_path", None))
-    if configured is not None and configured.is_file():
-        return configured
+    if configured is not None and getattr(config, "qq_install_path_explicit", False) is True:
+        return _existing_qq_executable(configured)
 
     directory = runtime_directory or _runtime_directory(config)
     saved = _read_saved_qq_path(directory / "config" / "qq_path.txt")
-    if saved is not None:
-        return saved
-
+    candidates = [configured, saved]
     detector = directory / "find-qq.ps1"
     if detector.is_file():
         detected = _detect_qq_path_with_script(detector)
-        if detected is not None:
-            return detected
-    return _detect_qq_install_path()
+        candidates.append(detected)
+    candidates.extend(_qq_install_candidates())
+    return _select_qq_install_path(candidates)
+
+
+def _existing_qq_executable(path: Path | None) -> Path | None:
+    try:
+        if path is not None and path.name.lower() == "qq.exe" and path.is_file():
+            return path.resolve()
+    except (OSError, ValueError, RuntimeError):
+        pass
+    return None
+
+
+def _select_qq_install_path(candidates: list[Path | None]) -> Path | None:
+    first = None
+    seen: set[Path] = set()
+    for candidate in candidates:
+        path = _existing_qq_executable(candidate)
+        if path is None or path in seen:
+            continue
+        seen.add(path)
+        if first is None:
+            first = path
+        version = _known_qq_version(path)
+        if version is not None and version[3] >= _MIN_WINDOWS_QQ_BUILD:
+            return path
+    return first
 
 
 def _runtime_directory(config: Any) -> Path:
@@ -762,18 +833,15 @@ def _read_saved_qq_path(path: Path) -> Path | None:
         candidate = line.strip().strip('"')
         if not candidate:
             continue
-        resolved = Path(candidate)
-        if resolved.is_file():
+        resolved = _existing_qq_executable(Path(candidate))
+        if resolved is not None:
             return resolved
     return None
 
 
 def _detect_qq_install_path() -> Path | None:
-    """Return the first existing QQ.exe from registry/common locations."""
-    for candidate in _qq_install_candidates():
-        if candidate.is_file():
-            return candidate
-    return None
+    """Select a QQ.exe from the bounded registry/common locations."""
+    return _select_qq_install_path(_qq_install_candidates())
 
 
 def _qq_install_candidates() -> list[Path]:
@@ -946,8 +1014,8 @@ def _detect_qq_path_with_script(script: Path) -> Path | None:
         candidate = line.strip()
         if not candidate:
             continue
-        resolved = Path(candidate)
-        if resolved.is_file():
+        resolved = _existing_qq_executable(Path(candidate))
+        if resolved is not None:
             return resolved
     return None
 
@@ -965,9 +1033,24 @@ def _launch_auth_window(
     runtime_directory: Path,
     launcher: Path,
     qq_path: Path,
-    *, paths=None, managed=False, credential=None,
+    *, paths=None, managed=False, credential=None, resources: QQResources | None = None,
 ) -> Any:
     """Open the runtime login window once, without waiting for login."""
+    current = _checked_qq_resources(qq_path)
+    if resources is not None and current != resources:
+        raise QQAuthWindowUnavailable(
+            "QQ 程序资源已变化，请重试连接。", code="qq_resources_changed",
+        )
+    if resources is None and current is not None:
+        _check_qq_version(qq_path, resources=current)
+    resources = resources if resources is not None else current
+    if resources is None:
+        raise QQAuthWindowUnavailable(MESSAGE_QQ_MISSING)
+    if resources.version is None or resources.wrapper_path is None:
+        raise QQAuthWindowUnavailable(
+            "无法确认 QQ 当前启用的程序资源，请完成 QQ 更新后重试。",
+            code="qq_resources_unverified",
+        )
     environment = os.environ.copy()
     environment.pop("ECHO_MODE", None)
     # Quick-login credentials may belong to other NapCat setups on the host;
@@ -975,20 +1058,27 @@ def _launch_auth_window(
     environment.pop("NAPCAT_QUICK_ACCOUNT", None)
     environment.pop("NAPCAT_QUICK_PASSWORD", None)
     environment.pop("NAPCAT_QUICK_PASSWORD_MD5", None)
+    for key in ("NAPCAT_QQ_VERSION_CONFIG_PATH", "NAPCAT_QQ_PACKAGE_INFO_PATH", "NAPCAT_WRAPPER_PATH"):
+        environment.pop(key, None)
     environment["NAPCAT_QQ_PATH"] = str(qq_path.resolve())
     import json
     work_root = paths.work_root if paths is not None else runtime_directory
     _ensure_load_script(runtime_directory, work_root)
-    packages = [qq_path.parent / "resources/app/package.json"]
-    packages.extend(qq_path.parent.glob("versions/*/resources/app/package.json"))
-    packages = [path for path in packages if path.is_file()]
-    if not packages:
-        raise QQAuthWindowUnavailable(MESSAGE_QQ_MISSING)
-    package_path = max(packages, key=lambda path: path.stat().st_mtime_ns)
-    package = json.loads(package_path.read_text(encoding="utf-8-sig"))
+    package = json.loads(resources.package_text)
     package["main"] = "./loadNapCat.js"
+    if resources.version is not None:
+        major, minor, patch, build = resources.version
+        package["version"] = package["curVersion"] = f"{major}.{minor}.{patch}-{build}"
+        package["buildVersion"] = str(build)
     patch_package = work_root / "qqnt.echo.json"
     patch_package.write_text(json.dumps(package), encoding="utf-8")
+    environment["NAPCAT_QQ_PACKAGE_INFO_PATH"] = str(patch_package)
+    if resources.version is not None:
+        # Reuse the owned bootstrap file to bind NapCat's version and package
+        # lookup to the same validated resource version, including base installs.
+        environment["NAPCAT_QQ_VERSION_CONFIG_PATH"] = str(patch_package)
+    if resources.wrapper_path is not None:
+        environment["NAPCAT_WRAPPER_PATH"] = str(resources.wrapper_path)
     environment.update({
         "NAPCAT_PATCH_PACKAGE": str(patch_package),
         "NAPCAT_LOAD_PATH": str(work_root / "loadNapCat.js"),

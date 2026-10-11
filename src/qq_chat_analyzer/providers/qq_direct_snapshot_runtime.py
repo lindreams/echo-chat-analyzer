@@ -242,22 +242,49 @@ class QQDirectSnapshotRuntimeClient:
 
     def recover(self, *, deadline: float | None = None) -> None:
         """Ask the runtime to remove orphan staging and legacy artifacts."""
-        if deadline is not None:
-            result = self._rpc(_RECOVER, [], deadline=deadline)
-            if isinstance(result, Mapping) and result.get("ok") is True:
-                return
-            raise QQSnapshotRuntimeFailure()
-        for attempt in range(RECOVER_READINESS_ATTEMPTS):
-            try:
-                result = self._rpc(_RECOVER, [])
-            except QQSnapshotRuntimeNotReady:
-                if attempt == RECOVER_READINESS_ATTEMPTS - 1:
-                    raise
-                time.sleep(RECOVER_READINESS_POLL_SECONDS)
-                continue
-            if isinstance(result, Mapping) and result.get("ok") is True:
-                return
-            raise QQSnapshotRuntimeFailure()
+        started = time.perf_counter()
+        _LOGGER.info("QQ snapshot stage=recover_rpc outcome=started")
+        category = "operation_failed"
+        try:
+            if deadline is not None:
+                result = self._rpc(_RECOVER, [], deadline=deadline)
+                if not isinstance(result, Mapping) or result.get("ok") is not True:
+                    if isinstance(result, Mapping) and result.get("code") == "recover_failed":
+                        category = "recover_failed"
+                    raise QQSnapshotRuntimeFailure()
+            else:
+                for attempt in range(RECOVER_READINESS_ATTEMPTS):
+                    try:
+                        result = self._rpc(_RECOVER, [])
+                    except QQSnapshotRuntimeNotReady:
+                        if attempt == RECOVER_READINESS_ATTEMPTS - 1:
+                            raise
+                        time.sleep(RECOVER_READINESS_POLL_SECONDS)
+                        continue
+                    if isinstance(result, Mapping) and result.get("ok") is True:
+                        break
+                    if isinstance(result, Mapping) and result.get("code") == "recover_failed":
+                        category = "recover_failed"
+                    raise QQSnapshotRuntimeFailure()
+        except Exception as error:
+            # Never trust an overridden exception code or raw server payload.
+            for error_type, fixed_code in (
+                (QQSnapshotWorkerGenerationChanged, "worker_generation_changed"),
+                (QQSnapshotRuntimeUnauthorized, "auth_rejected"),
+                (QQSnapshotRuntimeNotReady, "rpc_method_not_ready"),
+                (QQSnapshotRuntimeUnavailable, "runtime_unavailable"),
+                (QQSnapshotRuntimeInvalidResponse, "invalid_response"),
+            ):
+                if isinstance(error, error_type):
+                    category = fixed_code
+                    break
+            if not isinstance(error, QQSnapshotRuntimeError):
+                category = "unexpected_error"
+            _LOGGER.info("QQ snapshot stage=recover_rpc outcome=failed failure_code=%s elapsed_ms=%d",
+                         category, int((time.perf_counter() - started) * 1000))
+            raise
+        _LOGGER.info("QQ snapshot stage=recover_rpc outcome=success elapsed_ms=%d",
+                     int((time.perf_counter() - started) * 1000))
 
     # ------------------------------------------------------------------ paths
 
@@ -350,6 +377,7 @@ class QQDirectSnapshotRuntimeClient:
 def _unwrap_rpc(status: int, text: str) -> Any:
     """Validate the bridge `{id, ok, result|error}` envelope."""
     if status == 401:
+        _LOGGER.info("QQ snapshot stage=rpc_response outcome=failed http_status=401 failure_code=auth_rejected")
         # The credential was missing, stale or foreign: no method ran.
         raise QQSnapshotRuntimeUnauthorized()
     payload: Any = None
@@ -359,17 +387,28 @@ def _unwrap_rpc(status: int, text: str) -> Any:
         except json.JSONDecodeError:
             payload = None
     if not isinstance(payload, Mapping):
+        _LOGGER.info("QQ snapshot stage=rpc_response outcome=failed http_status=%s failure_code=invalid_response", status)
         raise QQSnapshotRuntimeInvalidResponse()
     if status == 409 and payload.get("error") == "worker_generation_mismatch":
+        _LOGGER.info("QQ snapshot stage=rpc_response outcome=failed http_status=409 failure_code=worker_generation_changed")
         raise QQSnapshotWorkerGenerationChanged()
     if status < 200 or status >= 300:
+        category = (
+            "runtime_identity_mismatch" if status == 409 and payload.get("error") == "runtime_identity_mismatch" else
+            "rpc_method_missing" if payload.get("error") == "invalid_method" else
+            "invalid_response"
+        )
+        _LOGGER.info("QQ snapshot stage=rpc_response outcome=failed http_status=%s failure_code=%s", status, category)
         raise QQSnapshotRuntimeInvalidResponse()
     if payload.get("ok") is not True:
         if _is_recover_api_not_ready(payload.get("error")):
+            _LOGGER.info("QQ snapshot stage=rpc_response outcome=failed http_status=%s failure_code=rpc_method_not_ready", status)
             raise QQSnapshotRuntimeNotReady()
         # The bridge error string may embed runtime details; it is never
         # surfaced, only mapped to a stable, privacy-safe failure.
+        _LOGGER.info("QQ snapshot stage=rpc_response outcome=failed http_status=%s failure_code=rpc_operation_failed", status)
         raise QQSnapshotRuntimeFailure()
+    _LOGGER.info("QQ snapshot stage=rpc_response outcome=success http_status=%s", status)
     return payload.get("result")
 
 

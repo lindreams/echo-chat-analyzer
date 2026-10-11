@@ -29,6 +29,9 @@ from ...providers.qq_direct_snapshot_runtime import (
     QQSnapshotRuntimeError,
     QQSnapshotRuntimeNotReady,
     QQSnapshotRuntimeUnavailable,
+    QQSnapshotRuntimeUnauthorized,
+    QQSnapshotRuntimeInvalidResponse,
+    QQSnapshotRuntimeFailure,
     QQSnapshotWorkerGenerationChanged,
 )
 from ...providers.napcat_qq_provider import NapCatQQWorkerGenerationChanged, NapCatQQError, NapCatQQAuthRejected
@@ -40,6 +43,25 @@ from .qq_provider_factory import QQReconnectRequired
 
 
 _LOGGER = logging.getLogger("qq_chat_analyzer.desktop.qq_direct_database")
+
+
+def _startup_failure_code(error: Exception) -> str:
+    """Fixed diagnostic categories, independent of exception text/code overrides."""
+    for types, category in (
+        ((NapCatQQWorkerGenerationChanged, QQSnapshotWorkerGenerationChanged), "worker_generation_changed"),
+        ((NapCatQQAuthRejected, QQSnapshotRuntimeUnauthorized), "auth_rejected"),
+        ((QQSnapshotRuntimeNotReady,), "rpc_method_not_ready"),
+        ((QQSnapshotRuntimeUnavailable,), "runtime_unavailable"),
+        # Provider's generic error already conflates transport and validation;
+        # diagnostics must not turn that lost information into a specific cause.
+        ((NapCatQQError,), "provider_error"),
+        ((QQSnapshotRuntimeInvalidResponse,), "invalid_response"),
+        ((QQSnapshotRuntimeFailure,), "operation_failed"),
+        ((QQSnapshotRuntimeError,), "snapshot_runtime_error"),
+    ):
+        if isinstance(error, types):
+            return category
+    return "unexpected_error"
 
 
 _GENERATION_MANIFEST_NAME = "manifest.json"
@@ -560,15 +582,20 @@ class QQDirectDatabaseImportService:
         self.start(connection_epoch=connection_epoch)
     def _recover_on_startup(self, *, deadline: float, client: Any) -> None:
         """Recover orphan plaintext during startup."""
+        _LOGGER.info("QQ Direct DB stage=startup_recover outcome=started")
         try:
             client.recover(deadline=deadline)
         except QQSnapshotWorkerGenerationChanged as error:
+            _LOGGER.info("QQ Direct DB stage=startup_recover outcome=failed failure_code=%s", _startup_failure_code(error))
             self._require_reconnect()
             raise QQReconnectRequired() from error
         except (QQSnapshotRuntimeNotReady, QQSnapshotRuntimeUnavailable) as error:
+            _LOGGER.info("QQ Direct DB stage=startup_recover outcome=failed failure_code=%s", _startup_failure_code(error))
             raise QQDirectDatabaseNotReady() from error
         except QQSnapshotRuntimeError as error:
+            _LOGGER.info("QQ Direct DB stage=startup_recover outcome=failed failure_code=%s", _startup_failure_code(error))
             raise QQDirectDatabaseRecoveryFailed() from error
+        _LOGGER.info("QQ Direct DB stage=startup_recover outcome=success")
 
     def _begin_acquisition(self) -> Any:
         """Atomically admit a task with the client of its original connection."""
@@ -630,27 +657,40 @@ class QQDirectDatabaseImportService:
         try:
             paths = self._config_loader.runtime_paths()
         except Exception:
+            _LOGGER.info("QQ Direct DB stage=snapshot_client outcome=failed failure_code=runtime_paths_unavailable")
             raise QQDirectDatabaseUnavailable() from None
         base_url = config.napcat_bridge_url or "http://127.0.0.1:40655"
         if self._provider_factory is not None:
             provider = self._provider_factory.create()
             builder = getattr(provider, "snapshot_client", None)
             if callable(builder):
+                _LOGGER.info("QQ Direct DB stage=provider_status outcome=started")
                 try:
                     if deadline is not None and time.monotonic() >= deadline:
                         raise QQDirectDatabaseNotReady()
                     status = provider.status(timeout=None if deadline is None else deadline - time.monotonic())
                 except NapCatQQWorkerGenerationChanged as error:
+                    _LOGGER.info("QQ Direct DB stage=provider_status outcome=failed failure_code=%s", _startup_failure_code(error))
                     self._require_reconnect()
                     raise QQReconnectRequired() from error
                 except NapCatQQAuthRejected as error:
+                    _LOGGER.info("QQ Direct DB stage=provider_status outcome=failed failure_code=%s", _startup_failure_code(error))
                     raise QQDirectDatabaseRecoveryFailed() from error
                 except NapCatQQError as error:
+                    _LOGGER.info("QQ Direct DB stage=provider_status outcome=failed failure_code=%s", _startup_failure_code(error))
                     raise QQDirectDatabaseNotReady() from error
                 expected = paths.runtime_id if config.runtime_mode == "managed" else None
                 if status.runtime_id != expected:
+                    _LOGGER.info("QQ Direct DB stage=provider_status outcome=failed failure_code=runtime_identity_mismatch")
                     raise QQDirectDatabaseUnavailable()
-                self._runtime_client = builder(paths.snapshot_root)
+                _LOGGER.info("QQ Direct DB stage=provider_status outcome=success")
+                _LOGGER.info("QQ Direct DB stage=snapshot_client outcome=started")
+                try:
+                    self._runtime_client = builder(paths.snapshot_root)
+                except Exception as error:
+                    _LOGGER.info("QQ Direct DB stage=snapshot_client outcome=failed failure_code=%s", _startup_failure_code(error))
+                    raise
+                _LOGGER.info("QQ Direct DB stage=snapshot_client outcome=success")
                 return self._runtime_client
         self._runtime_client = QQDirectSnapshotRuntimeClient(
             base_url=base_url,

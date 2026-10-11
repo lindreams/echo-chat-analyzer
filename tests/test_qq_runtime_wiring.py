@@ -71,7 +71,8 @@ def release(tmp_path, monkeypatch):
     qq.write_bytes(b'fictional QQ')
     package = qq.parent / 'resources/app/package.json'
     package.parent.mkdir(parents=True)
-    package.write_text('{"name":"fictional-QQ","main":"original.js"}', encoding='utf-8')
+    package.write_text('{"name":"fictional-QQ","version":"9.9.36-53644","buildVersion":"53644","main":"original.js"}', encoding='utf-8')
+    (package.parent / 'wrapper.node').write_bytes(b'fictional native resource')
     loader = env.QQEnvironmentConfigLoader(tmp_path / 'settings/qq.json')
     writer = env.QQEnvironmentConfigWriter(loader.config_path())
     writer.save(env.QQEnvironmentConfig(qq_install_path=qq, runtime_directory=program, runtime_mode='managed'))

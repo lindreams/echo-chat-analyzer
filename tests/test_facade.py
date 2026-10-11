@@ -975,6 +975,7 @@ def test_set_qq_install_path_persists_the_selected_qq_exe(tmp_path: Path) -> Non
     config = module.QQEnvironmentConfig(
         runtime_directory=Path("D:/fake_runtime"),
         napcat_bridge_url="http://127.0.0.1:40655",
+        qq_install_path_explicit=False,
     )
     setup = _StubQQSetupService(config=config)
     facade = _facade(qq_setup_service=setup)
@@ -983,6 +984,7 @@ def test_set_qq_install_path_persists_the_selected_qq_exe(tmp_path: Path) -> Non
 
     assert setup.save_calls == 1
     assert setup.saved_configs[0].qq_install_path == qq_path
+    assert getattr(setup.saved_configs[0], "qq_install_path_explicit", False) is True
     assert setup.saved_configs[0].runtime_directory == Path("D:/fake_runtime")
     assert setup.saved_configs[0].napcat_bridge_url == "http://127.0.0.1:40655"
 

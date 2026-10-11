@@ -51,7 +51,8 @@ def test_auth_launcher_uses_job_and_closes_failed_launch(tmp_path, monkeypatch):
     (tmp_path / "napcat.mjs").write_text("// fictional")
     resources = tmp_path / "resources/app"
     resources.mkdir(parents=True)
-    (resources / "package.json").write_text('{"main":"fake"}')
+    (resources / "package.json").write_text('{"version":"9.9.36-53644","buildVersion":"53644","main":"fake"}')
+    (resources / "wrapper.node").write_bytes(b"fictional native resource")
     process = JobProcess()
     process.poll = lambda: 9
     monkeypatch.setattr(bridge, "launch_owned_process", lambda *a, **k: process, raising=False)
@@ -162,7 +163,8 @@ def test_failed_launcher_closes_job_before_blocking_log_drain(tmp_path, monkeypa
     (tmp_path / "napcat.mjs").write_text("// fictional")
     resources = tmp_path / "resources/app"
     resources.mkdir(parents=True)
-    (resources / "package.json").write_text('{"main":"fake"}')
+    (resources / "package.json").write_text('{"version":"9.9.36-53644","buildVersion":"53644","main":"fake"}')
+    (resources / "wrapper.node").write_bytes(b"fictional native resource")
     events = []
     process = JobProcess()
     process.poll = lambda: 7
@@ -207,7 +209,8 @@ def test_both_qq_entries_close_real_fictional_descendants(tmp_path, monkeypatch,
             (tmp_path / "napcat.mjs").write_text("// fictional")
             resources = tmp_path / "resources/app"
             resources.mkdir(parents=True)
-            (resources / "package.json").write_text('{"main":"fake"}')
+            (resources / "package.json").write_text('{"version":"9.9.36-53644","buildVersion":"53644","main":"fake"}')
+            (resources / "wrapper.node").write_bytes(b"fictional native resource")
             monkeypatch.setattr(bridge, "launch_owned_process", launch)
             process = bridge._launch_auth_window(tmp_path, tmp_path / "fictional.exe",
                                                   tmp_path / "QQ.exe")

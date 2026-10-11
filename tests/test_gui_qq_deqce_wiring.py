@@ -156,7 +156,8 @@ def test_native_launcher_uses_detected_qq_and_never_qce(candidate,tmp_path,monke
     else:
         monkeypatch.setenv(variable, parent_value)
     qq=tmp_path/'QQ.exe';qq.write_bytes(b'fictional')
-    package=tmp_path/'resources/app/package.json';package.parent.mkdir(parents=True);package.write_text('{"name":"QQ","main":"index.js"}')
+    package=tmp_path/'resources/app/package.json';package.parent.mkdir(parents=True);package.write_text('{"name":"QQ","version":"9.9.36-53644","buildVersion":"53644","main":"index.js"}')
+    (package.parent/'wrapper.node').write_bytes(b'fictional native resource')
     seen=[]
     process=SimpleNamespace(pid=12345,poll=lambda:None)
     target, attribute = (auth, 'launch_owned_process') if auth.os.name == 'nt' else (auth.subprocess, 'Popen')

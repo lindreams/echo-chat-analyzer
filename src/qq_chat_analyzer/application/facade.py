@@ -514,7 +514,7 @@ class ChatAnalyzerFacade:
             if config is None:
                 config = QQEnvironmentConfig()
             return service.save_environment(
-                replace(config, qq_install_path=candidate)
+                replace(config, qq_install_path=candidate, qq_install_path_explicit=True)
             )
 
     def get_qq_runtime_status(self) -> Any:

@@ -12,6 +12,8 @@ never accepts an absolute database path from the runtime.
 from __future__ import annotations
 
 import json
+import time
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -90,6 +92,44 @@ def _client(transport, *, base_url: str = "http://127.0.0.1:40654", root: Path |
 
 
 # ------------------------------------------------------------------ acquire
+
+@pytest.mark.parametrize("status,body,category,error_type", [
+    (401, _rpc_error("fictional-secret"), "auth_rejected", snapshot_runtime.QQSnapshotRuntimeUnauthorized),
+    (409, _rpc_error("worker_generation_mismatch"), "worker_generation_changed", snapshot_runtime.QQSnapshotWorkerGenerationChanged),
+    (409, _rpc_error("runtime_identity_mismatch"), "runtime_identity_mismatch", QQSnapshotRuntimeInvalidResponse),
+    (400, _rpc_error("invalid_method"), "rpc_method_missing", QQSnapshotRuntimeInvalidResponse),
+    (200, "fictional-secret raw account=12345678 C:/private/qq", "invalid_response", QQSnapshotRuntimeInvalidResponse),
+    (200, _rpc_error("fictional-secret raw account=12345678 C:/private/qq"), "rpc_operation_failed", QQSnapshotRuntimeFailure),
+    (200, _envelope({"ok": False, "code": "recover_failed", "private": "fictional-secret"}), "recover_failed", QQSnapshotRuntimeFailure),
+    (200, _envelope({"ok": False, "code": "fictional-secret raw account=12345678 C:/private/qq"}), "operation_failed", QQSnapshotRuntimeFailure),
+])
+def test_recover_diagnostics_classify_rpc_failures_without_payloads(tmp_path, caplog, status, body, category, error_type):
+    caplog.set_level("INFO")
+    transport = _FakeTransport(status, body)
+    client = QQDirectSnapshotRuntimeClient("http://127.0.0.1:40655", snapshot_root=tmp_path,
+        boot_id="b" * 64, credential=SimpleNamespace(credential=lambda: "c" * 64), transport=transport)
+    with pytest.raises(error_type):
+        client.recover(deadline=time.monotonic() + 5)
+    assert len(transport.calls) == 1
+    assert "stage=recover_rpc outcome=started" in caplog.text
+    assert "stage=recover_rpc outcome=failed" in caplog.text
+    assert "elapsed_ms=" in caplog.text
+    assert f"failure_code={category}" in caplog.text
+    assert f"http_status={status}" in caplog.text
+    for value in ("fictional-secret", "12345678", "C:/private", str(tmp_path), "b" * 64, "c" * 64, body):
+        assert value not in caplog.text
+
+
+def test_recover_diagnostics_success_and_unreachable(tmp_path, caplog):
+    caplog.set_level("INFO")
+    _client(_FakeTransport(body=_envelope({"ok": True})), root=tmp_path).recover()
+    assert "stage=recover_rpc outcome=success" in caplog.text
+    caplog.clear()
+    with pytest.raises(QQSnapshotRuntimeUnavailable):
+        _client(_FakeTransport(error=OSError("fictional-secret C:/private/qq")), root=tmp_path).recover()
+    assert "stage=recover_rpc outcome=failed failure_code=runtime_unavailable" in caplog.text
+    assert "fictional-secret" not in caplog.text
+    assert "C:/private" not in caplog.text
 
 
 def test_acquire_success_returns_and_logs_validated_generation_id(
