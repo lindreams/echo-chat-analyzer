@@ -3,9 +3,10 @@
 Trust is supplied by the build manifest/pins, not by existing work directories.
 Only pinned Echo templates and the plugin config seed are copied. Native and
 other NapCat assets remain subject to the existing release/build contract.
-Published workspaces retain NapCat's config, cache and logs as opaque mutable
-state. Plugin assets stay pinned; staging remains pristine and is never allowed
-to contain runtime state. Startup integration is deliberately separate.
+Published workspaces retain NapCat's config, cache, logs and the exact guild
+database filenames as opaque mutable state. Plugin assets stay pinned; staging
+remains pristine and is never allowed to contain runtime state. Startup
+integration is deliberately separate.
 """
 
 from contextlib import contextmanager
@@ -29,6 +30,8 @@ _PLUGIN = "plugins/napcat-plugin-echo/"
 # trees. Its plugin loader writes config/plugins.json after normal operation.
 # Only the published work copy admits them, never a recoverable staging tree.
 _MUTABLE_DIRECTORIES = frozenset({"config", "cache", "logs"})
+# Opaque state admitted only at the published work copy's root, never staging.
+_MUTABLE_ROOT_FILES = frozenset({"guild1.db", "guild1.db-wal", "guild1.db-shm"})
 # Regenerated from trusted program/QQ resources before each launch; never
 # executed from an existing work copy without refreshing them first.
 _BOOTSTRAP_FILES = frozenset({"loadNapCat.js", "qqnt.echo.json"})
@@ -205,8 +208,9 @@ def _inspect(directory, files, *, complete, runtime_state=False):
     change or disappear; preparation neither restores it nor validates NapCat
     configuration semantics. Every descendant must still be an ordinary file
     or directory without links/reparse points. Anything outside these three
-    state trees must match the pinned program inventory or the two generated
-    bootstrap filenames, which the launcher refreshes before executing them.
+    state trees must match the pinned program inventory, the exact mutable root
+    filenames, or the two generated bootstrap filenames, which the launcher
+    refreshes before executing them.
     """
     if runtime_state:
         files = {name: expected for name, expected in files.items()
@@ -230,6 +234,10 @@ def _inspect(directory, files, *, complete, runtime_state=False):
                 continue
             elif (runtime_state and name in _BOOTSTRAP_FILES
                   and stat.S_ISREG(info.st_mode) and info.st_nlink == 1):
+                continue
+            elif (runtime_state and name in _MUTABLE_ROOT_FILES
+                  and stat.S_ISREG(info.st_mode) and info.st_nlink == 1):
+                # Preserve opaque state without opening or hashing its contents.
                 continue
             elif stat.S_ISREG(info.st_mode) and name in files and info.st_nlink == 1:
                 found.add(name)

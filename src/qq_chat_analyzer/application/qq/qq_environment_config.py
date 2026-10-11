@@ -71,6 +71,8 @@ class QQEnvironmentConfig:
     version: str | None = "4.18.18"
     # None means legacy/unknown provenance; never infer ownership from a path.
     runtime_mode: str | None = None
+    # Direct API configuration is explicit; unmarked historical disk paths are not.
+    qq_install_path_explicit: bool = True
 
 
 class QQEnvironmentConfigWriter:
@@ -106,6 +108,8 @@ class QQEnvironmentConfigWriter:
             if config.runtime_mode not in ("managed", "custom"):
                 raise QQConfigWriteFailed()
             payload["runtime_mode"] = config.runtime_mode
+        if config.qq_install_path_explicit:
+            payload["qq_install_path_explicit"] = True
         body = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
         try:
             self._config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,6 +166,7 @@ class QQEnvironmentConfigLoader:
             ),
             version="4.18.18" if legacy else _string_value(payload.get("version")) or "4.18.18",
             runtime_mode=None if legacy else runtime_mode,
+            qq_install_path_explicit=not legacy and payload.get("qq_install_path_explicit") is True,
         )
 
     def load_or_default(self) -> QQEnvironmentConfig:
@@ -174,6 +179,7 @@ class QQEnvironmentConfigLoader:
             default = default_qq_environment_config()
             return QQEnvironmentConfig(
                 qq_install_path=config.qq_install_path,
+                qq_install_path_explicit=config.qq_install_path_explicit,
                 runtime_directory=default.runtime_directory,
                 napcat_bridge_url=default.napcat_bridge_url,
                 version=default.version, runtime_mode="managed",
@@ -185,6 +191,7 @@ class QQEnvironmentConfigLoader:
         default = default_qq_environment_config()
         return QQEnvironmentConfig(
             qq_install_path=config.qq_install_path if config else None,
+            qq_install_path_explicit=config.qq_install_path_explicit if config else False,
             runtime_directory=default.runtime_directory,
             napcat_bridge_url=default.napcat_bridge_url,
             version=default.version,

@@ -584,9 +584,13 @@ def test_unwritable_user_root_fails_without_publishing_or_fallback(bundle, monke
     assert not user.exists()
 
 
-def test_workspace_replaced_during_inspection_is_refused_without_touching_state(bundle, monkeypatch):
+@pytest.mark.parametrize("state_kind", ["napcat", "guild"])
+def test_workspace_replaced_during_inspection_is_refused_without_touching_state(bundle, monkeypatch, state_kind):
     result = prepare(bundle)
-    add_running_state(result.work_root)
+    if state_kind == "guild":
+        add_guild_state(result.work_root)
+    else:
+        add_running_state(result.work_root)
     before = inventory(result.work_root)
     preserved = result.work_root.with_name(result.work_root.name + ".preserved")
     real_inspect = workspace._inspect
@@ -617,3 +621,232 @@ def test_conflicting_staging_beside_running_workspace_is_retained(bundle):
         prepare(bundle)
     assert inventory(result.work_root) == before
     assert (stage / "unknown.txt").read_bytes() == b'fictional conflicting state'
+
+
+GUILD_STATE_NAMES = ("guild1.db", "guild1.db-wal", "guild1.db-shm")
+
+
+def add_guild_state(root, names=GUILD_STATE_NAMES):
+    for name in names:
+        (root / name).write_bytes(b'fictional opaque state, not a chat database')
+
+
+@pytest.mark.parametrize("names", [GUILD_STATE_NAMES, *[(name,) for name in GUILD_STATE_NAMES]])
+def test_guild_state_reuses_owned_workspace_without_opening_or_hashing(bundle, monkeypatch, names):
+    result = prepare(bundle)
+    add_guild_state(result.work_root, names)
+    before = inventory(result.work_root)
+    protected = {result.work_root / name for name in names}
+    real_open = Path.open
+    real_hash = workspace._sha256
+
+    def protect_open(path, *args, **kwargs):
+        assert path not in protected, "Preparation must not open guild runtime state"
+        return real_open(path, *args, **kwargs)
+
+    def protect_hash(path):
+        assert path not in protected, "Preparation must not hash guild runtime state"
+        return real_hash(path)
+
+    with monkeypatch.context() as guard:
+        guard.setattr(Path, "open", protect_open)
+        guard.setattr(workspace, "_sha256", protect_hash)
+        assert prepare(bundle) == result
+    assert inventory(result.work_root) == before
+
+
+@pytest.mark.parametrize("name", GUILD_STATE_NAMES)
+def test_guild_state_directory_is_refused_and_preserved(bundle, name):
+    result = prepare(bundle)
+    (result.work_root / name).mkdir()
+    (result.work_root / name / "keep").write_bytes(b'fictional directory content')
+    before = inventory(result.work_root)
+    with pytest.raises(workspace.QQWorkspaceError):
+        prepare(bundle)
+    assert inventory(result.work_root) == before
+
+
+@pytest.mark.parametrize("name", GUILD_STATE_NAMES)
+def test_guild_state_hardlink_is_refused_and_preserved(bundle, tmp_path, name):
+    import os
+    result = prepare(bundle)
+    outside = tmp_path / "fictional-outside-state"
+    outside.write_bytes(b'fictional shared state')
+    os.link(outside, result.work_root / name)
+    before = inventory(result.work_root)
+    with pytest.raises(workspace.QQWorkspaceError):
+        prepare(bundle)
+    assert inventory(result.work_root) == before
+    assert outside.read_bytes() == b'fictional shared state'
+
+
+@pytest.mark.parametrize("name", GUILD_STATE_NAMES)
+@pytest.mark.parametrize("kind", ["symlink", "file_reparse_point"])
+def test_guild_state_link_attributes_are_refused(bundle, monkeypatch, name, kind):
+    import os
+    import stat
+    from types import SimpleNamespace
+    result = prepare(bundle)
+    state = result.work_root / name
+    add_guild_state(result.work_root, (name,))
+    before = inventory(result.work_root)
+    real_lstat = Path.lstat
+
+    def link_attributes(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if path == state:
+            if kind == "file_reparse_point":
+                attributes = {field: getattr(info, field) for field in dir(info)
+                              if field.startswith("st_")}
+                attributes["st_file_attributes"] = stat.FILE_ATTRIBUTE_REPARSE_POINT
+                return SimpleNamespace(**attributes)
+            values = list(info)
+            values[0] = stat.S_IFLNK | stat.S_IMODE(info.st_mode)
+            return os.stat_result(values)
+        return info
+
+    with monkeypatch.context() as guard:
+        guard.setattr(Path, "lstat", link_attributes)
+        with pytest.raises(workspace.QQWorkspaceError):
+            prepare(bundle)
+    assert inventory(result.work_root) == before
+
+
+@pytest.mark.slow_integration
+@pytest.mark.parametrize("name", GUILD_STATE_NAMES)
+@pytest.mark.parametrize("kind", ["junction", "symlink"])
+def test_guild_state_link_is_refused_without_opening_target(bundle, tmp_path, monkeypatch, name, kind):
+    import os
+    if kind == "junction" and os.name != "nt":
+        pytest.skip("Windows junction test")
+    result = prepare(bundle)
+    outside = tmp_path / "fictional-outside-state"
+    link = result.work_root / name
+    if kind == "junction":
+        outside.mkdir()
+        sentinel = outside / "keep"
+        sentinel.write_bytes(b'fictional outside content')
+        created = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], capture_output=True)
+        assert created.returncode == 0
+    else:
+        outside.write_bytes(b'fictional outside content')
+        sentinel = outside
+        try:
+            link.symlink_to(outside)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                pytest.skip("Windows file symlink privilege unavailable")
+            raise
+    real_open = Path.open
+
+    def protect_target(path, *args, **kwargs):
+        assert path != link and not path.is_relative_to(outside), "Must not open link or its target"
+        return real_open(path, *args, **kwargs)
+
+    try:
+        with monkeypatch.context() as guard:
+            guard.setattr(Path, "open", protect_target)
+            with pytest.raises(workspace.QQWorkspaceError):
+                prepare(bundle)
+        assert link.lstat()
+        assert sentinel.read_bytes() == b'fictional outside content'
+    finally:
+        if kind == "junction":
+            link.rmdir()  # Only the test-created junction itself.
+        else:
+            link.unlink()  # Only the test-created symlink itself.
+
+
+@pytest.mark.parametrize("name,is_directory", [
+    ("other.db", False), ("guild2.db", False), ("guild1.db-journal", False),
+    ("guild1.db.extra", False), ("unknown", True),
+    ("plugins/napcat-plugin-echo/guild1.db", False),
+])
+def test_guild_state_does_not_allow_other_unknown_members(bundle, name, is_directory):
+    result = prepare(bundle)
+    add_guild_state(result.work_root)
+    unknown = result.work_root / name
+    if is_directory:
+        unknown.mkdir()
+    else:
+        unknown.write_bytes(b'fictional unknown member')
+    before = inventory(result.work_root)
+    with pytest.raises(workspace.QQWorkspaceError, match="Unknown workspace member"):
+        prepare(bundle)
+    assert inventory(result.work_root) == before
+
+
+@pytest.mark.parametrize("name", GUILD_STATE_NAMES)
+@pytest.mark.parametrize("phase", ["staging_recovery", "first_publish", "publish_recovery"])
+def test_guild_state_is_refused_on_strict_publication_paths(bundle, monkeypatch, name, phase):
+    real_copy = workspace.shutil.copyfile
+    real_rename = Path.rename
+    if phase == "publish_recovery":
+        def interrupt_owner_rename(path, destination):
+            if path.name.endswith(".staging.owner.json"):
+                raise OSError("fictional interruption before owner publication")
+            return real_rename(path, destination)
+        monkeypatch.setattr(Path, "rename", interrupt_owner_rename)
+    else:
+        def interrupt_copy(source, destination):
+            if phase == "staging_recovery":
+                raise OSError("fictional interrupted staging copy")
+            copied = real_copy(source, destination)
+            # Simulate unexpected state appearing before first publication.
+            if Path(source).relative_to(bundle[0]).as_posix() == "config/plugins.json":
+                stage = next((bundle[2] / "runtime/qq").glob("*.staging"))
+                add_guild_state(stage, (name,))
+            return copied
+        monkeypatch.setattr(workspace.shutil, "copyfile", interrupt_copy)
+    with pytest.raises(workspace.QQWorkspaceError):
+        prepare(bundle)
+    parent = bundle[2] / "runtime/qq"
+    if phase == "publish_recovery":
+        directory = next(p for p in parent.iterdir() if len(p.name) == 64)
+    else:
+        directory = next(parent.glob("*.staging"))
+    if phase != "first_publish":
+        add_guild_state(directory, (name,))
+    before = inventory(parent)
+    monkeypatch.setattr(workspace.shutil, "copyfile", real_copy)
+    monkeypatch.setattr(Path, "rename", real_rename)
+    with pytest.raises(workspace.QQWorkspaceError, match="Unknown workspace member"):
+        prepare(bundle)
+    assert inventory(parent) == before
+    if phase != "publish_recovery":
+        assert not any(p.is_dir() and len(p.name) == 64 for p in parent.iterdir())
+    else:
+        assert not (parent / (directory.name + ".owner.json")).exists()
+
+
+@pytest.mark.parametrize("damage,message", [("modify", "Work copy hash mismatch"),
+                                           ("delete", "Work copy is incomplete")])
+def test_guild_state_does_not_bypass_plugin_integrity(bundle, damage, message):
+    result = prepare(bundle)
+    add_guild_state(result.work_root)
+    plugin = result.work_root / "plugins/napcat-plugin-echo/index.mjs"
+    if damage == "modify":
+        plugin.write_bytes(b'fictional tampering')
+    else:
+        plugin.unlink()
+    before = inventory(result.work_root)
+    with pytest.raises(workspace.QQWorkspaceError, match=message):
+        prepare(bundle)
+    assert inventory(result.work_root) == before
+
+
+@pytest.mark.parametrize("damage", ["missing", "wrong_identity"])
+def test_guild_state_does_not_bypass_ownership(bundle, damage):
+    result = prepare(bundle)
+    add_guild_state(result.work_root)
+    marker = result.work_root.parent / (result.work_root.name + ".owner.json")
+    if damage == "missing":
+        marker.unlink()
+    else:
+        proof = json.loads(marker.read_text(encoding="utf-8"))
+        proof["directory_identity"][1] += 1
+        marker.write_text(json.dumps(proof), encoding="utf-8")
+    before = inventory(result.work_root.parent)
+    with pytest.raises(workspace.QQWorkspaceError):
+        prepare(bundle)
+    assert inventory(result.work_root.parent) == before
