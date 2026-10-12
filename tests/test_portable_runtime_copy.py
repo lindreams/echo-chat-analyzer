@@ -70,17 +70,7 @@ EXCLUDED_NATIVE_ASSETS = FOREIGN_NATIVE_ASSETS + (
 )
 EXCLUDED_FONT = "static/fonts/AaCute.woff"
 
-COPYRIGHT_FILES = (
-    "LICENSE",
-    "NOTICE.md",
-    "third_party/napcat/LICENSE",
-    "third_party/napcat/NOTICE.md",
-    "third_party/napcat/DPAPI-LICENSE.txt",
-    "third_party/napcat/PTY-LICENSE.txt",
-    "third_party/napcat/WINPTY-LICENSE.txt",
-    "third_party/napcat/JETBRAINS-MONO-OFL.txt",
-    "third_party/napcat/NPM-LICENSES.txt",
-)
+COPYRIGHT_FILES = tuple(RUNTIME_CONTRACT["releaseCopyrightFiles"])
 
 # Full-only: build/packaging smoke that runs build_windows_exe.ps1 and loads
 # the bundled Node runtime. Excluded from the Fast Suite (see pyproject.toml).

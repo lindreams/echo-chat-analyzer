@@ -156,7 +156,7 @@ def test_registered_console_entrypoints_use_echo_brand() -> None:
     }
     assert scripts == {
         "echo-chat": "qq_chat_analyzer.cli:main",
-        "echo-gui": "qq_chat_analyzer.gui.app:main",
+        "echo-gui": "qq_chat_analyzer.desktop:main",
     }
 
 

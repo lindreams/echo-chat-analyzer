@@ -521,3 +521,15 @@ def test_development_guide_documents_the_build_toolchain() -> None:
     assert _BUILD_EXTRA_COMMAND.search(text), (
         "DEVELOPMENT.md must show an install command that includes the 'build' extra"
     )
+
+
+def test_desktop_velopack_pin_and_upstream_license_ship_together() -> None:
+    import hashlib
+
+    project = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+    assert "velopack==1.2.161" in project["project"]["optional-dependencies"]["gui"]
+    relative = "third_party/velopack/LICENSE"
+    assert relative in _load_manifest()["releaseCopyrightFiles"]
+    assert hashlib.sha256((PROJECT_ROOT / relative).read_bytes()).hexdigest() == (
+        "91845db83551c877ebbb1118e0fb92e4e527290d23b995c55dcd438b3293943f"
+    )

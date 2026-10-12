@@ -17,7 +17,7 @@ dependencies = [
 
 [project.scripts]
 echo-chat = "qq_chat_analyzer.cli:main"
-echo-gui = "qq_chat_analyzer.gui.app:main"
+echo-gui = "qq_chat_analyzer.desktop:main"
 
 [project.optional-dependencies]
 dev = [
@@ -25,6 +25,7 @@ dev = [
 ]
 gui = [
     "PySide6>=6.6,<7",
+    "velopack==1.2.161",
 ]
 # Windows release build toolchain. `scripts/build_windows_exe.ps1` runs the
 # project .venv PyInstaller and fails closed when it is missing, so the exact
