@@ -12,7 +12,7 @@ from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
 from qq_chat_analyzer.version import APP_VERSION
 
 
-URL = "https://github.com/lingmeng-658/echo-chat-analyzer/releases/tag/v1.10.0"
+URL = "https://github.com/lindreams/echo-chat-analyzer/releases/tag/v1.10.0"
 
 
 def release(tag="v1.10.0", **changes):
@@ -189,7 +189,7 @@ def test_github_request_contract_and_bounded_response(tmp_path, monkeypatch, bod
     from qq_chat_analyzer.application import update_check_service as module
 
     def open_response(request, *, timeout):
-        assert request.full_url == "https://api.github.com/repos/lingmeng-658/echo-chat-analyzer/releases/latest"
+        assert request.full_url == "https://api.github.com/repos/lindreams/echo-chat-analyzer/releases/latest"
         assert 0 < timeout <= 5
         assert request.get_header("Accept") == "application/vnd.github+json"
         assert request.get_header("User-agent")
