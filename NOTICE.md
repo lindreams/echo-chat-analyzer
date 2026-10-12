@@ -21,9 +21,9 @@ Echo 的运营方式不限制 MPL 覆盖源码的商业使用权，也不替代�
 
 ## 获取 MPL 覆盖的源码
 
-公开仓库：https://github.com/lingmeng-658/echo-chat-analyzer
+公开仓库：https://github.com/lindreams/echo-chat-analyzer
 
-发行版本与源码下载：https://github.com/lingmeng-658/echo-chat-analyzer/releases
+发行版本与源码下载：https://github.com/lindreams/echo-chat-analyzer/releases
 
 接收 Windows Portable 的用户可在上述公开仓库获取 MPL 覆盖的源码；
 请选择与所收发行包版本对应的 Git tag / Release，并使用该页面的 Source code 下载。
