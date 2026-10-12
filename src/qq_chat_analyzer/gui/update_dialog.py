@@ -159,7 +159,7 @@ def _safe_release_url(url: object) -> bool:
         parsed = urlsplit(url)
     except ValueError:
         return False
-    prefix = "/lingmeng-658/echo-chat-analyzer/releases/tag/"
+    prefix = "/lindreams/echo-chat-analyzer/releases/tag/"
     return (parsed.scheme == "https" and parsed.netloc == "github.com"
             and parsed.path.startswith(prefix) and bool(parsed.path[len(prefix):])
             and not parsed.query and not parsed.fragment)

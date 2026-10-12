@@ -107,7 +107,7 @@ def test_five_result_states(ui, status, expected):
     dialog.check_button.click()
     executor.tasks[0].on_success(UpdateCheckResult(
         status, "7.2.1", "7.3.0",
-        "https://github.com/lingmeng-658/echo-chat-analyzer/releases/tag/v7.3.0",
+        "https://github.com/lindreams/echo-chat-analyzer/releases/tag/v7.3.0",
         public_message="虚构网络不可用" if status == "unavailable" else None,
     ))
     assert expected in dialog.status_label.text()
@@ -125,12 +125,12 @@ def test_worker_failure_allows_retry_and_clears_old_link(ui):
     assert not dialog.release_button.isVisible()
 
 
-@pytest.mark.parametrize("url", [None, "", "http://github.com/lingmeng-658/echo-chat-analyzer/releases/tag/v7",
+@pytest.mark.parametrize("url", [None, "", "http://github.com/lindreams/echo-chat-analyzer/releases/tag/v7",
     "https://evil.example/releases/tag/v7", "https://github.com/other/repo/releases/tag/v7",
-    "https://github.com/lingmeng-658/echo-chat-analyzer/releases/download/v7/app.exe",
-    "https://github.com/lingmeng-658/echo-chat-analyzer/releases/tag/v7?download=1",
-    "https://github.com/lingmeng-658/echo-chat-analyzer/releases/tag/",
-    "https://github.com@evil.example/lingmeng-658/echo-chat-analyzer/releases/tag/v7"])
+    "https://github.com/lindreams/echo-chat-analyzer/releases/download/v7/app.exe",
+    "https://github.com/lindreams/echo-chat-analyzer/releases/tag/v7?download=1",
+    "https://github.com/lindreams/echo-chat-analyzer/releases/tag/",
+    "https://github.com@evil.example/lindreams/echo-chat-analyzer/releases/tag/v7"])
 def test_missing_or_unsafe_release_url_cannot_open(ui, monkeypatch, url):
     dialog, _, executor = ui
     opened = []
@@ -148,7 +148,7 @@ def test_browser_failure_is_visible_and_link_can_retry(ui, monkeypatch, failure)
     dialog, _, executor = ui
     module = importlib.import_module("qq_chat_analyzer.gui.update_dialog")
     opened = []
-    url = "https://github.com/lingmeng-658/echo-chat-analyzer/releases/tag/v7.3.0"
+    url = "https://github.com/lindreams/echo-chat-analyzer/releases/tag/v7.3.0"
     def open_url(value):
         opened.append(value.toString())
         if isinstance(failure, Exception):
@@ -211,7 +211,7 @@ def test_successful_browser_open_and_retry_removes_previous_link(ui, monkeypatch
     module = importlib.import_module("qq_chat_analyzer.gui.update_dialog")
     opened = []
     monkeypatch.setattr(module.QDesktopServices, "openUrl", lambda u: opened.append(u.toString()) or True)
-    url = "https://github.com/lingmeng-658/echo-chat-analyzer/releases/tag/v7.3.0"
+    url = "https://github.com/lindreams/echo-chat-analyzer/releases/tag/v7.3.0"
     dialog.check_button.click()
     executor.tasks[0].on_success(UpdateCheckResult("update_available", "7.2.1", "7.3.0", url))
     dialog.release_button.click()

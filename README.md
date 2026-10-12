@@ -48,7 +48,7 @@ Echo 在 Windows 本机读取和分析聊天数据，无需上传完整聊天记
 
 当前提供 Windows x64 Portable ZIP，解压后运行 `Echo.exe`，无需安装 Python。
 
-[下载 Echo v0.1.0](https://github.com/lingmeng-658/echo-chat-analyzer/releases/tag/v0.1.0) · [查看所有版本](https://github.com/lingmeng-658/echo-chat-analyzer/releases)
+[下载 Echo v0.1.0](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.1.0) · [查看所有版本](https://github.com/lindreams/echo-chat-analyzer/releases)
 
 后续计划改用 Windows Setup 安装器，并支持软件内一键更新。当前版本尚不支持自动安装更新。
 

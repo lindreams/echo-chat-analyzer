@@ -25,7 +25,7 @@ from ..resources import user_data_dir
 from ..version import APP_VERSION
 
 
-_REPOSITORY = "lingmeng-658/echo-chat-analyzer"
+_REPOSITORY = "lindreams/echo-chat-analyzer"
 _LATEST_URL = f"https://api.github.com/repos/{_REPOSITORY}/releases/latest"
 _CHECK_INTERVAL = 24 * 60 * 60
 _MAX_RESPONSE_BYTES = 256 * 1024
