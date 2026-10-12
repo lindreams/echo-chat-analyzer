@@ -3,8 +3,8 @@
 ``MainWindow.closeEvent`` may not run the cleanup itself and Qt/interpreter
 teardown may not decide when the process leaves.  The desktop entry point
 starts the window's single-flight shutdown protocol if it has not started yet,
-waits for it with a bounded budget, and then forces the process out - always,
-including after a timeout.
+waits for it with a bounded budget, returns on completion and forces the
+process out after a timeout.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ def test_exit_starts_and_waits_for_the_window_shutdown_protocol() -> None:
 
     assert window.events == ["begin", "await"]
     assert window.waits == [module.SHUTDOWN_WAIT_SECONDS]
-    assert exits == [0]
+    assert exits == []
 
 
 def test_exit_still_forces_out_when_the_protocol_times_out() -> None:
@@ -101,7 +101,7 @@ def test_exit_handles_a_window_without_the_shutdown_protocol() -> None:
 
     module._finish_process_exit(3, window=object(), hard_exit=exits.append)
 
-    assert exits == [3]
+    assert exits == []
 
 
 def test_exit_arms_a_last_resort_forced_exit_beyond_the_wait() -> None:
@@ -139,6 +139,7 @@ def test_hard_exit_uses_the_os_level_forced_exit(
     """The fallback must bypass interpreter and Qt teardown entirely."""
     module = _app_module()
     calls: list[int] = []
+    monkeypatch.setattr(module.sys, "platform", "linux")
     monkeypatch.setattr(module.os, "_exit", calls.append)
 
     module._hard_exit(9)

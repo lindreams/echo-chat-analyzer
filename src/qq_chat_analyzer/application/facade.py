@@ -39,6 +39,7 @@ from typing import Any, Callable, Iterator, Protocol, runtime_checkable
 from uuid import uuid4
 
 from ..resources import resources_dir, user_data_dir
+from .shutdown_models import ShutdownResult, ShutdownStatus, ShutdownStepResult
 from ..analysis.timestamps import to_epoch_seconds
 from ..presentation import (
     DashboardView,
@@ -401,6 +402,8 @@ class ChatAnalyzerFacade:
         self._retained_output_directory: _RetainedReportDirectory | None = None
         self._scratch_recovery_done = False
         self._shutdown_step_seconds = shutdown_step_seconds
+        self._shutdown_lock = threading.Lock()
+        self._shutdown_result: ShutdownResult | None = None
 
     def check_for_updates(self, *, manual: bool = False) -> UpdateCheckResult:
         """Check on a worker; construction/startup never initiates a request."""
@@ -1163,13 +1166,20 @@ class ChatAnalyzerFacade:
         if previous is not None and previous is not temporary_output:
             previous.cleanup()
 
-    def shutdown(self) -> None:
+    def shutdown(self) -> ShutdownResult:
+        """Return the same conservative resource evidence on repeated shutdown."""
+        with self._shutdown_lock:
+            if self._shutdown_result is None:
+                self._shutdown_result = self._shutdown_with_result()
+            return self._shutdown_result
+
+    def _shutdown_with_result(self) -> ShutdownResult:
         """Release transient artifacts and stop LCA-owned QQ runtime processes.
 
-        Order is deliberate: the Direct DB plaintext snapshot is cleaned up
-        (and any orphan generation recovered) before NapCat / the QQ runtime
-        is stopped, so an abrupt process stop can never strand plaintext on
-        disk.  Every step is bounded and exception-safe, so neither a failure
+        Order is deliberate: attempt Direct DB plaintext cleanup/recovery
+        before stopping NapCat / the QQ runtime. Failure or timeout remains
+        explicit in the result; returning alone does not prove plaintext was
+        removed. Every step is bounded and exception-safe, so neither a failure
         nor a hung cleanup in one step can skip the steps after it - in
         particular QQ runtime termination.  Repeated calls are harmless: the
         Direct DB service refuses a second shutdown, and terminated PIDs are
@@ -1177,26 +1187,62 @@ class ChatAnalyzerFacade:
         """
         started_at = _monotonic()
         _LOGGER.info("QQ shutdown requested")
-        self._run_shutdown_step(
+        results = [self._run_shutdown_step(
             _SHUTDOWN_STEP_DIRECT_DB,
             self._shutdown_qq_direct_db_service,
             window=self._direct_db_step_window(),
-        )
-        self._run_shutdown_step(
+        ), self._run_shutdown_step(
             _SHUTDOWN_STEP_RETAINED_OUTPUT,
             self._release_retained_output,
-        )
-        self._run_shutdown_step(
+        ), self._run_shutdown_step(
             _SHUTDOWN_STEP_QQ_RUNTIME,
-            self.shutdown_qq_runtime,
+            self._shutdown_runtime_and_credential,
+        )]
+        # Services currently expose no complete lifecycle/quiescence contract.
+        # Even a successful recover RPC cannot prove every helper/read is gone.
+        # Unpublished builders can already own resources or be in-flight.
+        # Injected analysis services likewise have no drain/ownership proof.
+        used_sources = bool(self._source_builders or self._built_sources) or any(
+            value is not None for value in (
+                *self._services.values(), self._qq_connection_service,
+                self._qq_setup_service, self._qq_connection_manager,
+                self._qq_auth_bridge, self._wechat_connection_service_value,
+                self._wechat_setup_service_value,
+                self._analysis_service,
+            )
         )
-        self._retire_qq_bridge_credential()
+        results.append(ShutdownStepResult('source_lifecycle',
+                       ShutdownStatus.UNKNOWN if used_sources else ShutdownStatus.SUCCESS))
         _LOGGER.info(
             "QQ shutdown finished elapsed=%.2fs",
             _monotonic() - started_at,
         )
+        return ShutdownResult(tuple(results))
 
-    def _retire_qq_bridge_credential(self) -> None:
+    def _shutdown_runtime_and_credential(self) -> ShutdownStatus:
+        from .qq.qq_process_registry import QQProcessRegistry
+
+        registry = self._require_qq_process_registry()
+        recorded = getattr(registry, 'recorded', None)
+        try:
+            owned_before = recorded() if callable(recorded) else None
+            registry.terminate_all()
+        finally:
+            credential_status = self._retire_qq_bridge_credential()
+        if not callable(recorded):
+            return (ShutdownStatus.FAILED if credential_status is ShutdownStatus.FAILED
+                    else ShutdownStatus.UNKNOWN)
+        if recorded():
+            return ShutdownStatus.FAILED
+        if credential_status is not ShutdownStatus.SUCCESS:
+            return credential_status
+        if type(registry) is not QQProcessRegistry:
+            # A duck-typed empty inventory is not a proven ownership contract.
+            return ShutdownStatus.UNKNOWN
+        # Registry removal/Job close is not a wait for all descendants to exit.
+        return ShutdownStatus.UNKNOWN if owned_before else ShutdownStatus.SUCCESS
+
+    def _retire_qq_bridge_credential(self) -> ShutdownStatus:
         """Drop the credential of the QQ runtime Echo just stopped.
 
         Deliberately last: the plaintext recovery step above still needs it, and
@@ -1208,8 +1254,20 @@ class ChatAnalyzerFacade:
             from .qq.qq_runtime_session import default_qq_runtime_session
             session = default_qq_runtime_session()
         retire = getattr(session, "retire", None)
-        if callable(retire):
-            retire()
+        credential = getattr(session, "credential", None)
+        if not callable(retire):
+            return ShutdownStatus.UNKNOWN
+        credential_before = credential() if callable(credential) else None
+        retire()
+        if not callable(credential):
+            return ShutdownStatus.UNKNOWN
+        if credential() is not None:
+            return ShutdownStatus.FAILED
+        # Retirement clears the session's process reference, without waiting
+        # for its exit. An injected owner has no complete lifecycle contract.
+        if self._qq_runtime_session is not None or credential_before is not None:
+            return ShutdownStatus.UNKNOWN
+        return ShutdownStatus.SUCCESS
 
     def _direct_db_step_window(self) -> float:
         """Return the bounded window the Direct DB cleanup step gets.
@@ -1233,17 +1291,26 @@ class ChatAnalyzerFacade:
             float(budget) + _DIRECT_DB_STEP_MARGIN_SECONDS,
         )
 
-    def _release_retained_output(self) -> None:
+    def _release_retained_output(self) -> ShutdownStatus:
         """Drop the last retained scratch report directory, if any."""
+        previous = self._retained_output_directory
         self._replace_retained_output(None)
+        if previous is None:
+            return ShutdownStatus.SUCCESS
+        # cleanup() logs and swallows filesystem failures; verify its effect.
+        try:
+            Path(previous.name).lstat()
+        except FileNotFoundError:
+            return ShutdownStatus.SUCCESS
+        return ShutdownStatus.FAILED
 
     def _run_shutdown_step(
         self,
         label: str,
-        step: Callable[[], None],
+        step: Callable[[], Any],
         *,
         window: float | None = None,
-    ) -> None:
+    ) -> ShutdownStepResult:
         """Run one shutdown step inside its own bounded window.
 
         The step runs on a throwaway daemon thread so a cleanup that never
@@ -1255,11 +1322,16 @@ class ChatAnalyzerFacade:
         budget = self._shutdown_step_seconds if window is None else window
         finished = threading.Event()
         started_at = _monotonic()
+        outcome = ShutdownStatus.UNKNOWN
 
         def _run() -> None:
+            nonlocal outcome
             try:
-                step()
-            except Exception:
+                returned = step()
+                if isinstance(returned, ShutdownStatus):
+                    outcome = returned
+            except BaseException:
+                outcome = ShutdownStatus.FAILED
                 _LOGGER.warning(
                     "QQ shutdown step failed step=%s",
                     label,
@@ -1285,16 +1357,19 @@ class ChatAnalyzerFacade:
                 budget,
                 label,
             )
-            return
+            return ShutdownStepResult(label, ShutdownStatus.TIMED_OUT)
         _LOGGER.info(
             "QQ shutdown step finished step=%s elapsed=%.2fs",
             label,
             _monotonic() - started_at,
         )
+        return ShutdownStepResult(label, outcome)
 
-    def _shutdown_qq_direct_db_service(self) -> None:
+    def _shutdown_qq_direct_db_service(self) -> ShutdownStatus:
         """Ask the Direct DB service to recover orphan plaintext, best-effort."""
         service = self._qq_service_if_present()
+        if service is None:
+            return ShutdownStatus.SUCCESS
         shutdown = getattr(service, "shutdown", None)
         if callable(shutdown):
             try:
@@ -1304,6 +1379,8 @@ class ChatAnalyzerFacade:
                     "QQ Direct DB plaintext cleanup did not complete during "
                     "shutdown."
                 )
+                raise
+        return ShutdownStatus.UNKNOWN
 
     def _qq_service_if_present(self) -> Any:
         """Return the QQ service without building it for the first time.

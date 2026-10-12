@@ -225,20 +225,33 @@ def _finish_process_exit(
     window: Any = None,
     hard_exit: Callable[[int], None] | None = None,
 ) -> None:
-    """Wait, bounded, for the started shutdown protocol, then force the exit.
+    """Await cleanup before returning, with a bounded forced-exit fallback.
 
     Qt and CPython teardown must not decide whether Echo's owned QQ process
     tree is stopped: daemon threads are frozen when the interpreter finalizes,
     so a shutdown that was merely *started* used to be lost. The entry point
     therefore owns the outcome - it starts the window's single-flight protocol
     if the close handler had not done so, gives it one bounded window, and then
-    forces the process out either way.
+    allows natural Qt/interpreter teardown when cleanup has returned. The
+    watchdog remains armed in case that teardown itself stalls.
     """
-    force_exit = hard_exit or _hard_exit
+    exit_lock = threading.Lock()
+    exit_requested = False
+
+    def force_exit(code: int) -> None:
+        nonlocal exit_requested
+        with exit_lock:
+            if exit_requested:
+                return
+            exit_requested = True
+        (hard_exit or _hard_exit)(code)
+
     _arm_forced_exit(exit_code, force_exit)
     _begin_window_shutdown(window)
     if _await_window_shutdown(window):
         _LOGGER.info("Echo shutdown protocol completed before process exit")
+        _flush_desktop_logging()
+        return
     else:
         _LOGGER.warning(
             "Echo shutdown protocol exceeded its %.1fs window; forcing exit",
@@ -298,6 +311,21 @@ def _arm_forced_exit(
 
 def _hard_exit(exit_code: int) -> None:
     """Force the process out without waiting for interpreter/Qt finalization."""
+    if sys.platform == "win32":
+        # The os._exit path crashed in real Qt subprocess tests. In the
+        # fallback, threads may be mid-operation; do not run DLL detach code.
+        # Only the pseudo-handle of this Echo process is ever terminated.
+        import ctypes
+        from ctypes import wintypes
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.GetCurrentProcess.argtypes = []
+        kernel.GetCurrentProcess.restype = wintypes.HANDLE
+        kernel.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel.TerminateProcess.restype = wintypes.BOOL
+        if not kernel.TerminateProcess(kernel.GetCurrentProcess(), exit_code):
+            raise ctypes.WinError(ctypes.get_last_error())
+        return  # unreachable for real self-termination
     os._exit(exit_code)
 
 

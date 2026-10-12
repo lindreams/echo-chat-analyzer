@@ -646,17 +646,32 @@ class MainWindow(QMainWindow):
         self.processing_page.close()
         self.qq_workspace.cancel_analysis()
         self.wechat_workspace.cancel_analysis()
-        shutdown_workers()
         self.begin_shutdown()
         super().closeEvent(event)
         _quit_application()
 
     def begin_shutdown(self) -> bool:
         """Start the single-flight shutdown protocol; later calls are ignored."""
+        if self._shutdown_protocol.started:
+            return False
+        workers_idle = shutdown_workers()
         shutdown = getattr(self._facade, "shutdown", None)
-        return self._shutdown_protocol.begin(
-            shutdown if callable(shutdown) else None
-        )
+
+        def owner():
+            from ..application.facade import ShutdownResult, ShutdownStatus, ShutdownStepResult
+
+            result = shutdown() if callable(shutdown) else None
+            if not isinstance(result, ShutdownResult) or not result.steps:
+                result = ShutdownResult((
+                    ShutdownStepResult('facade', ShutdownStatus.UNKNOWN),
+                ))
+            return ShutdownResult(result.steps + (
+                ShutdownStepResult('gui_workers', ShutdownStatus.SUCCESS
+                                   if workers_idle is True
+                                   else ShutdownStatus.UNKNOWN),
+            ))
+
+        return self._shutdown_protocol.begin(owner)
 
     def await_shutdown(self, timeout: float | None = None) -> bool:
         """Wait, bounded, for the started shutdown protocol to finish."""
