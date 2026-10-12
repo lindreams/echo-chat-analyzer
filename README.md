@@ -44,11 +44,13 @@ Echo 在 Windows 本机读取和分析聊天数据，无需上传完整聊天记
 
 ## 下载
 
-**v0.1.0 · 首个 MVP 版本，尚未正式发布。**
+**v0.1.0 · 已发布的首个测试版（Pre-release）。**
 
-首个版本计划提供 Windows Portable ZIP，解压即可运行，无需安装 Python。
+当前提供 Windows x64 Portable ZIP，解压后运行 `Echo.exe`，无需安装 Python。
 
-[GitHub Releases](https://github.com/lingmeng-658/echo-chat-analyzer/releases)
+[下载 Echo v0.1.0](https://github.com/lingmeng-658/echo-chat-analyzer/releases/tag/v0.1.0) · [查看所有版本](https://github.com/lingmeng-658/echo-chat-analyzer/releases)
+
+后续计划改用 Windows Setup 安装器，并支持软件内一键更新。当前版本尚不支持自动安装更新。
 
 0.1.0 已经实现基础的聊天分析与报告分享，但内容仍不够完整。更多分析功能、报告设计和分享体验会在后续版本逐步完善。
 
@@ -57,7 +59,7 @@ Echo 在 Windows 本机读取和分析聊天数据，无需上传完整聊天记
 ## 开源与开发
 
 - [开发指南](DEVELOPMENT.md) · [项目架构](ARCHITECTURE.md)
-- [发布进度](docs/HARDENING.md) · [产品路线图](docs/ROADMAP.md)
+- [维护状态](docs/HARDENING.md) · [产品路线图](docs/ROADMAP.md)
 - [MPL 2.0 开源许可](LICENSE) · [许可声明](NOTICE.md) · [第三方许可](third_party/napcat/NOTICE.md)
 
 Echo 自有且有权授权的源码采用 MPL 2.0。官方 Echo 免费、非商业运营，第三方组件遵循各自许可证。

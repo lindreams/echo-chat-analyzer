@@ -357,16 +357,17 @@ NapCat -> Direct DB -> qq_db_adapter -> unified message model -> Analysis
   ChatAnalyzerFacade. Analysis does not know source formats or runtime tools.
 
 Current architecture and acceptance boundaries are in ARCHITECTURE.md and
-docs/HARDENING.md. This integration working tree targets NapCat 4.18.33 with
+docs/HARDENING.md. The main branch released Echo v0.1.0 as a Windows Portable
+ZIP (Pre-release). The pinned QQ runtime is NapCat 4.18.34 with Echo patches,
 per-launch RPC credentials, Worker boot_id isolation, explicit reconnection,
-and Echo staging-input witnesses instead of native-read telemetry patches.
-Implementation and automated test completion do not imply merge into main,
-fresh Frozen / Portable acceptance, real-user acceptance, or a formal release.
-Earlier Direct DB E2E / smoke acceptance applies to its historical version;
-the current changes require final acceptance as tracked in docs/HARDENING.md.
-Earlier QCE integration and acceptance remain historical
-records in docs/BUG_JOURNAL.md and docs/superpowers/; their old commands, token
-paths and tests are not supported current interfaces.
+and staging-input witnesses rather than native-read telemetry patches.
+Check scripts/qq_napcat_runtime_pins.json and the runtime bootstrap contract
+before packaging; a source checkout alone does not guarantee a current local
+runtime directory. The published build does not establish compatibility on
+every Windows machine; see docs/HARDENING.md for known follow-ups.
+Earlier Direct DB / QCE E2E records describe historical versions and are not
+current runtime interfaces. They remain in docs/BUG_JOURNAL.md,
+docs/research/ and docs/superpowers/ for engineering context.
 
 ## 7.4 GUI / Facade / Presentation 开发规则
 
