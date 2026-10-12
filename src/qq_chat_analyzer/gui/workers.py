@@ -241,11 +241,13 @@ def submit(
     return worker
 
 
-def shutdown() -> None:
-    """Best-effort cancel pending workers without waiting for them."""
+def shutdown() -> bool:
+    """Cancel without waiting; report only an already quiescent pool/relay set."""
     for worker in tuple(_PENDING):
         worker.cancel()
-    QThreadPool.globalInstance().clear()
+    pool = QThreadPool.globalInstance()
+    pool.clear()
+    return not _PENDING and not _RELAYS and pool.activeThreadCount() == 0
 
 
 def run_inline(

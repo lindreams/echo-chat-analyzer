@@ -898,7 +898,8 @@ QQ 与微信的页面状态互相隔离。切换来源或返回数据源选择�
   （`gui/shutdown.py`），`begin()` 只允许启动一次，重复 close 不会产生第二个
   互相竞争的清理流程。
 - **入口点拥有结束权。** `gui/app.py` 在 `app.exec()` 返回后，先调用
-  `window.begin_shutdown()`（幂等），再以有限时长等待同一个 protocol，然后强制进程退出。
+  `window.begin_shutdown()`（幂等），再以有限时长等待同一个 protocol。
+  清理调用返回后优先自然退出；等待超时或异常才立即强制退出。
   原因：CPython 不会 join daemon 线程，解释器收尾会冻结清理线程，
   因此“只启动不等待”的清理会丢失，Echo 启动的进程树会残留。
 - **清理顺序由 Facade 拥有。** `ChatAnalyzerFacade.shutdown()` 按
@@ -914,8 +915,25 @@ QQ 与微信的页面状态互相隔离。切换来源或返回数据源选择�
   不按端口、进程名或路径扫描认领，不接管外部健康服务或旧版本孤儿进程，
   不触碰用户自己启动的 QQ。
 - **超时有明确 fallback。** 超过 bounded 窗口后强制退出；跨步骤总预算与
-  last-resort watchdog 都是有限值。
+  last-resort watchdog 都是有限值。watchdog 在正常返回后仍保持 armed，
+  用于解释器收尾被后台线程拖住的情况；与立即强制退出共享一次性出口。
+  Windows 兜底只对当前 Echo 进程的 pseudo-handle 调用 `TerminateProcess`，
+  不走本机 Qt 子进程中已复现访问冲突的 `os._exit` 路径；其他平台保留 `os._exit`。
+- **结束与成功分别表达。** `ShutdownProtocol.finished` / `wait()` 只表示
+  owner 调用已结束；`result` 传播 Facade 的不可变 `ShutdownResult`，逐步记录
+  `SUCCESS`、`FAILED`、`TIMED_OUT`、`UNKNOWN`。更新准入只接受整体 `SUCCESS`，
+  空证据、异常、超时和未知均不允许更新，普通退出仍保持有界。
+  Facade 验证临时报告实际移除，保留异常与步骤超时，缓存首次结果避免重复清理
+  把失败洗成成功。协议尚未 finished 时不发布成功结果。
+  已使用 QQ/微信来源、注册但未发布的 builder、注入的分析服务/runtime session
+  尚无完整生命周期证明，保持 `UNKNOWN`；
+  注册 PID 被移除也不代表所有后代已退出。GUI 将未静止的 worker/pool/relay
+  状态作为未知证据加入结果。本阶段没有调用 Velopack 应用更新。
+  无资源成功只适用于已知清点为空的关闭快照；未来更新编排还必须停止生产者，
+  不得在可继续创建资源的界面缓存这个结果作为安装授权。
 
 守护测试：`tests/test_gui_shutdown_protocol.py`、
 `tests/test_desktop_exit_ownership.py`、`tests/test_shutdown_ownership.py`，
+`tests/test_shutdown_results.py`、`tests/test_shutdown_worker_results.py`、
+`tests/test_desktop_natural_exit.py`、`tests/test_desktop_exit_subprocess.py`，
 以及 `tests/test_gui.py` 的 close 用例。

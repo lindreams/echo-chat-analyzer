@@ -41,7 +41,7 @@ def test_echo_release_has_license_scope_and_public_source_notice() -> None:
     assert {"LICENSE", "NOTICE.md"} <= set(manifest["releaseCopyrightFiles"])
     notice = (PROJECT_ROOT / "NOTICE.md").read_text(encoding="utf-8")
     assert "This Source Code Form is subject to the terms of the Mozilla Public" in notice
-    assert "https://github.com/lingmeng-658/echo-chat-analyzer" in notice
+    assert "https://github.com/lindreams/echo-chat-analyzer" in notice
     assert "third_party/napcat/NOTICE.md" in notice
     readme = (PROJECT_ROOT / "README.md").read_text(encoding="utf-8")
     assert "[MPL 2.0 开源许可](LICENSE)" in readme

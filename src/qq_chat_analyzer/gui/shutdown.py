@@ -25,6 +25,8 @@ import threading
 import time
 from typing import Callable
 
+from ..application.facade import ShutdownResult, ShutdownStatus, ShutdownStepResult
+
 
 _LOGGER = logging.getLogger("qq_chat_analyzer.desktop.shutdown")
 
@@ -51,6 +53,18 @@ class ShutdownProtocol:
         self._elapsed_seconds = 0.0
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
+        self._result = ShutdownResult()
+
+    @property
+    def result(self) -> ShutdownResult:
+        """Separate resource evidence from finished/wait task-completion flags."""
+        if self._timed_out:
+            return ShutdownResult(self._result.steps + (
+                ShutdownStepResult('protocol_wait', ShutdownStatus.TIMED_OUT),
+            ))
+        if not self.finished:
+            return ShutdownResult()
+        return self._result
 
     @property
     def wait_seconds(self) -> float:
@@ -77,7 +91,7 @@ class ShutdownProtocol:
         """Return how long the owner callable took, once it has finished."""
         return self._elapsed_seconds
 
-    def begin(self, owner: Callable[[], None] | None) -> bool:
+    def begin(self, owner: Callable[[], ShutdownResult | None] | None) -> bool:
         """Start the protocol once; every later call is ignored.
 
         Returns ``True`` only for the call that actually started it.  ``None``
@@ -120,11 +134,16 @@ class ShutdownProtocol:
         )
         return False
 
-    def _run(self, owner: Callable[[], None]) -> None:
+    def _run(self, owner: Callable[[], ShutdownResult | None]) -> None:
         started_at = time.monotonic()
         try:
-            owner()
+            result = owner()
+            if isinstance(result, ShutdownResult):
+                self._result = result
         except BaseException as error:  # noqa: BLE001 - shutdown never raises
+            self._result = ShutdownResult((
+                ShutdownStepResult('owner', ShutdownStatus.FAILED),
+            ))
             _LOGGER.warning(
                 "Echo shutdown protocol failed error=%s",
                 type(error).__name__,
