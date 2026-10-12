@@ -426,6 +426,7 @@
   "releaseCopyrightFiles": [
     "LICENSE",
     "NOTICE.md",
+    "third_party/velopack/LICENSE",
     "third_party/napcat/LICENSE",
     "third_party/napcat/NOTICE.md",
     "third_party/napcat/DPAPI-LICENSE.txt",

@@ -350,6 +350,16 @@ QCE Python provider/service、`qce_compat`、文件 adapter 与旧 `parser` 均�
 过滤发生在 ImportService 之后、现有智能过滤和 Analyzer 之前；Analyzer 不感知范围配置。
 “全部”模式直接保留原消息，指定范围过滤为空时在进入 Analyzer 前返回应用错误。
 
+**Desktop Bootstrap（A1 工作树实现）** —— `desktop.py:main` 是源码
+`echo-gui`、`python -m qq_chat_analyzer.gui` 与 Frozen `desktop_entry.py` 的
+共同入口。它先运行固定版本 Velopack 1.2.161 的 Hook 分派，显式禁用
+`auto_apply_on_startup`，再导入 `gui.app._run_gui`。安装、更新与卸载 Hook
+由 SDK 结束进程，不创建 GUI。`gui.app.main` 保留为兼容入口别名。
+`scripts/package_windows_setup.py` 将现有 onedir 的已校验副本交给固定版本 vpk；
+版本来自 `pyproject.toml`，安装目录与现有用户数据目录分离。
+这里不包含软件内下载、应用更新或更新后重启编排；发行状态与实际验收见
+[A1 审计](docs/research/2026-10-12-windows-setup-a1.md)。
+
 **Update Check Core（QA-04）** —— `application/update_check_service.py` 提供
 Qt 无关、聊天来源无关的 `UpdateCheckResult`、`UpdateChecker.check(manual=False)`
 与默认 `UpdateCheckService`。当前版本只读取 `version.APP_VERSION`，标准库 HTTP

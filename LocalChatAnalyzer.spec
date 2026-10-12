@@ -23,6 +23,8 @@ if version("qq-chat-analyzer") != release_version:
         "Installed Echo version differs from pyproject.toml; "
         "refresh the project installation before building."
     )
+if version("velopack") != "1.2.161":
+    raise RuntimeError("The desktop build requires Velopack 1.2.161.")
 resources = (
     project_root / "stopwords.txt",
     project_root / "stopwords_topic.txt",
@@ -39,6 +41,7 @@ datas = [(str(path), ".") for path in resources]
 datas.append((str(project_root / "scripts/windows_runtime_manifest.json"), "scripts"))
 datas.append((str(project_root / "scripts/qq_napcat_runtime_pins.json"), "scripts"))
 datas += copy_metadata("qq-chat-analyzer")
+datas += copy_metadata("velopack")
 datas.append((str(echo_icon), "assets/branding/echo"))
 datas.append((str(echo_favicon), "assets/branding/echo"))
 datas.append((str(echo_report_logo), "assets/branding/echo"))

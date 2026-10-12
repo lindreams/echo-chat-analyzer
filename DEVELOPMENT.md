@@ -440,3 +440,42 @@ src/qq_chat_analyzer/
     analyzer.py        # analysis algorithms
     exporters.py       # local artifact generation
     cli.py             # command line adapter
+
+## Windows Setup: A1 integration
+
+The desktop extra requires `velopack==1.2.161`. `echo-gui`, the package GUI
+module and the frozen entry dispatch Velopack before importing the GUI, with
+pending-update auto apply disabled. This does not implement in-app updates.
+
+Build the existing onedir release with `scripts/build_windows_exe.ps1` first.
+Its runtime pins, app-local MSVC checks, copyright files and private-state
+exclusions still apply. The Velopack [1.2.161 upstream license](https://github.com/velopack/velopack/blob/1.2.161/LICENSE)
+is included through the same copyright manifest.
+
+Use an explicitly selected vpk 1.2.161 and local .NET 8 SDK. Do not install
+global tools or change system PATH. With the approved `$EchoPython`, source
+isolation and process-local `DOTNET_ROOT` already verified:
+
+```powershell
+& $EchoPython scripts/package_windows_setup.py `
+    --source dist/Echo --output <new-external-artifact-directory> `
+    --vpk <local-tool-directory>/vpk.exe `
+    --pack-id EchoA1.Fictional --channel win-x64-a1
+```
+
+The wrapper checks frozen Echo/SDK versions, runtime hashes, licenses and
+private-state exclusions before invoking vpk. It packages a staging copy,
+checks feed identity and package integrity, verifies every application file
+and source immutability, then publishes the new directory. Existing output
+directories are refused. vpk self-update and delta generation are disabled.
+The project version supplies packVersion; there is no independent installer
+version override. The test packId/channel are explicit; production identity,
+feed policy and signing are separate release decisions.
+
+For real acceptance, use a lab-only packId, external `--installto`, isolated
+process-local `LOCALAPPDATA` and fictional configuration. Check install and
+user-data paths independently. Use the test installation's registered
+`Update.exe --uninstall --silent` command, and verify data hashes afterward.
+Never infer a clean exit from disappearance of the window: record the native
+process exit code. See the [A1 audit](docs/research/2026-10-12-windows-setup-a1.md)
+for actual results and remaining gates.

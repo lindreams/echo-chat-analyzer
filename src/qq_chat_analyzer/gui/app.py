@@ -18,6 +18,7 @@ from typing import Any, Callable
 from ..application.facade import ChatAnalyzerFacade, ChatSource
 from ..resources import resources_dir
 from ..version import APP_VERSION
+from ..desktop import main
 from .desktop_runtime import (
     STARTUP_FAILED_MESSAGE,
     configure_logging,
@@ -179,7 +180,7 @@ def _optional_wechat_setup_service(
     )
 
 
-def main(argv: list[str] | None = None) -> int:
+def _run_gui(argv: list[str] | None = None) -> int:
     """Start the Qt event loop with the main window."""
     install_global_exception_handler()
     logger = None

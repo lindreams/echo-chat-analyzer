@@ -8,3 +8,4 @@ third_party/napcat/PTY-LICENSE.txt -text whitespace=-blank-at-eol,-blank-at-eof
 third_party/napcat/WINPTY-LICENSE.txt -text whitespace=-blank-at-eol,-blank-at-eof
 third_party/napcat/JETBRAINS-MONO-OFL.txt -text whitespace=-blank-at-eol,-blank-at-eof
 third_party/napcat/NPM-LICENSES.txt -text whitespace=-blank-at-eol,-blank-at-eof
+third_party/velopack/LICENSE -text whitespace=-blank-at-eol,-blank-at-eof
