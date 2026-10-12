@@ -921,8 +921,10 @@ QQ 与微信的页面状态互相隔离。切换来源或返回数据源选择�
   不走本机 Qt 子进程中已复现访问冲突的 `os._exit` 路径；其他平台保留 `os._exit`。
 - **结束与成功分别表达。** `ShutdownProtocol.finished` / `wait()` 只表示
   owner 调用已结束；`result` 传播 Facade 的不可变 `ShutdownResult`，逐步记录
-  `SUCCESS`、`FAILED`、`TIMED_OUT`、`UNKNOWN`。更新准入只接受整体 `SUCCESS`，
-  空证据、异常、超时和未知均不允许更新，普通退出仍保持有界。
+  `SUCCESS`、`FAILED`、`TIMED_OUT`、`UNKNOWN`。`status=SUCCESS` 只汇总已有证据；
+  更新准入还要求 `direct_db_cleanup`、`retained_output_cleanup`、
+  `qq_runtime_termination`、`source_lifecycle`、`gui_workers` 各出现恰好一次且全部成功。
+  缺项、重复项、未识别项、空证据、异常、超时和未知均不允许更新，普通退出仍保持有界。
   Facade 验证临时报告实际移除，保留异常与步骤超时，缓存首次结果避免重复清理
   把失败洗成成功。协议尚未 finished 时不发布成功结果。
   已使用 QQ/微信来源、注册但未发布的 builder、注入的分析服务/runtime session

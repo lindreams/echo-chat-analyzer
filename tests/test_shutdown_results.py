@@ -7,6 +7,59 @@ from qq_chat_analyzer.application import facade as module
 from qq_chat_analyzer.gui.shutdown import ShutdownProtocol
 
 
+UPDATE_EVIDENCE = (
+    'direct_db_cleanup', 'retained_output_cleanup', 'qq_runtime_termination',
+    'source_lifecycle', 'gui_workers',
+)
+
+
+def successful_evidence(names=UPDATE_EVIDENCE):
+    return module.ShutdownResult(tuple(
+        module.ShutdownStepResult(name, module.ShutdownStatus.SUCCESS)
+        for name in names
+    ))
+
+
+@pytest.mark.parametrize('missing', UPDATE_EVIDENCE)
+def test_missing_required_evidence_cannot_authorize_update(missing):
+    result = successful_evidence(name for name in UPDATE_EVIDENCE if name != missing)
+    assert_status(result, 'success')
+
+
+@pytest.mark.parametrize('duplicate', UPDATE_EVIDENCE)
+def test_duplicate_evidence_cannot_authorize_update(duplicate):
+    assert_status(successful_evidence((*UPDATE_EVIDENCE, duplicate)), 'success')
+
+
+def test_duplicate_cannot_replace_missing_gui_evidence():
+    names = (*UPDATE_EVIDENCE[:-1], 'qq_runtime_termination')
+    assert_status(successful_evidence(names), 'success')
+
+
+def test_runtime_success_alone_cannot_authorize_update():
+    assert_status(successful_evidence(('qq_runtime_termination',)), 'success')
+
+
+def test_unrecognized_success_evidence_cannot_extend_update_contract():
+    assert_status(successful_evidence((*UPDATE_EVIDENCE, 'unverified_resource')), 'success')
+
+
+def test_complete_success_evidence_can_pass_shutdown_admission():
+    assert_status(successful_evidence(), 'success', update=True)
+
+
+@pytest.mark.parametrize('status', [module.ShutdownStatus.FAILED,
+                                  module.ShutdownStatus.TIMED_OUT,
+                                  module.ShutdownStatus.UNKNOWN])
+@pytest.mark.parametrize('name', UPDATE_EVIDENCE)
+def test_complete_evidence_with_non_success_still_blocks_update(name, status):
+    result = module.ShutdownResult(tuple(
+        module.ShutdownStepResult(step, status if step == name else module.ShutdownStatus.SUCCESS)
+        for step in UPDATE_EVIDENCE
+    ))
+    assert_status(result, status.value)
+
+
 def assert_status(result, status, *, update=False):
     assert result is not None, 'shutdown must return resource evidence'
     assert result.status.value == status
@@ -16,7 +69,7 @@ def assert_status(result, status, *, update=False):
 def test_no_resources_are_successful_and_repeated_shutdown_preserves_result():
     facade = module.ChatAnalyzerFacade()
     result = facade.shutdown()
-    assert_status(result, 'success', update=True)
+    assert_status(result, 'success')
     assert facade.shutdown() is result
 
 
@@ -25,7 +78,7 @@ def test_real_owned_report_removal_is_verified(tmp_path):
     owned = module._RetainedReportDirectory(tmp_path)
     facade._retained_output_directory = owned
     result = facade.shutdown()
-    assert_status(result, 'success', update=True)
+    assert_status(result, 'success')
     from pathlib import Path
     assert not Path(owned.name).exists()
 
@@ -143,7 +196,7 @@ def test_protocol_propagates_verified_result():
     protocol = ShutdownProtocol()
     protocol.begin(module.ChatAnalyzerFacade().shutdown)
     assert protocol.wait(1)
-    assert_status(getattr(protocol, 'result', None), 'success', update=True)
+    assert_status(getattr(protocol, 'result', None), 'success')
 
 
 def test_protocol_timeout_cannot_become_update_permission_later():
@@ -180,7 +233,7 @@ def test_protocol_result_is_not_published_before_task_finishes(monkeypatch):
 
     monkeypatch.setattr(shutdown, 'time', SimpleNamespace(monotonic=clock))
     protocol = ShutdownProtocol()
-    protocol.begin(module.ChatAnalyzerFacade().shutdown)
+    protocol.begin(successful_evidence)
     try:
         assert finalizing.wait(1)
         assert not protocol.finished
