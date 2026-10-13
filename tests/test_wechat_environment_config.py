@@ -196,6 +196,151 @@ def test_load_or_default_repairs_stale_runtime_paths(
     assert config.wcdb_dll_path == wechat / "WCDB.dll"
 
 
+def _fictional_runtime(root: Path) -> Path:
+    """Create a fictional ``runtime/wechat`` directory holding one pair."""
+    wechat = root / "runtime" / "wechat"
+    wechat.mkdir(parents=True)
+    (wechat / "wcdb_cli.exe").write_text("fake", encoding="utf-8")
+    (wechat / "WCDB.dll").write_text("fake", encoding="utf-8")
+    return wechat
+
+
+def _config_module():
+    return importlib.import_module(
+        "qq_chat_analyzer.application.wechat.wechat_environment_config"
+    )
+
+
+def test_load_or_default_rebinds_a_removed_portable_install_to_this_setup_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A Portable install the user removed falls back to this Setup runtime.
+
+    The whole path chain is exercised end to end: the loader asks the resource
+    helper, which resolves the runtime next to the frozen executable of the
+    current installation rather than inside the bundle or a source checkout.
+    """
+    resources = importlib.import_module("qq_chat_analyzer.resources")
+    current = tmp_path / "Echo" / "current"
+    setup_wechat = _fictional_runtime(current)
+    monkeypatch.setattr(resources, "_PROJECT_ROOT", tmp_path / "source-checkout")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(current / "Echo.exe"))
+    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "meipass"), raising=False)
+    removed_portable = tmp_path / "Echo-0.1.0-portable"
+    loader = _loader(
+        tmp_path,
+        {
+            "data_root": str(tmp_path / "saved-root"),
+            "db_key": "b" * 64,
+            "wcdb_cli_path": str(
+                removed_portable / "runtime" / "wechat" / "wcdb_cli.exe"
+            ),
+            "wcdb_dll_path": str(
+                removed_portable / "runtime" / "wechat" / "WCDB.dll"
+            ),
+        },
+    )
+
+    config = loader.load_or_default()
+
+    assert config.wcdb_cli_path == setup_wechat / "wcdb_cli.exe"
+    assert config.wcdb_dll_path == setup_wechat / "WCDB.dll"
+    assert config.data_root == tmp_path / "saved-root"
+    assert config.db_key == "b" * 64
+
+
+def test_load_or_default_keeps_a_complete_pair_from_an_older_install(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """A saved pair that still exists is kept, whatever install produced it."""
+    bundle = tmp_path / "current-setup"
+    _fictional_runtime(bundle)
+    module = _config_module()
+    _patch_bundled_defaults(monkeypatch, module, bundle)
+    older = _fictional_runtime(tmp_path / "Echo-0.1.0-portable")
+    loader = _loader(
+        tmp_path,
+        {
+            "wcdb_cli_path": str(older / "wcdb_cli.exe"),
+            "wcdb_dll_path": str(older / "WCDB.dll"),
+        },
+    )
+
+    config = loader.load_or_default()
+
+    assert config.wcdb_cli_path == older / "wcdb_cli.exe"
+    assert config.wcdb_dll_path == older / "WCDB.dll"
+
+
+@pytest.mark.parametrize("surviving", ["older-install", "custom-directory"])
+def test_load_or_default_never_mixes_a_surviving_path_with_this_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    surviving: str,
+) -> None:
+    """Half of a saved pair must not be completed from another installation.
+
+    The surviving CLI may belong to the user, and an old bundled path cannot be
+    told apart from a custom one, so the saved pair is returned exactly as it is
+    instead of being blended with this installation's DLL. The missing half then
+    surfaces as a missing component instead of a runtime that looks complete.
+    """
+    bundle = tmp_path / "current-setup"
+    setup_wechat = _fictional_runtime(bundle)
+    module = _config_module()
+    _patch_bundled_defaults(monkeypatch, module, bundle)
+    source = _fictional_runtime(
+        tmp_path
+        / ("Echo-0.1.0-portable" if surviving == "older-install" else "custom-tools")
+    )
+    (source / "WCDB.dll").unlink()
+    loader = _loader(
+        tmp_path,
+        {
+            "wcdb_cli_path": str(source / "wcdb_cli.exe"),
+            "wcdb_dll_path": str(source / "WCDB.dll"),
+        },
+    )
+    saved = loader.config_path().read_text(encoding="utf-8")
+
+    config = loader.load_or_default()
+
+    assert config.wcdb_cli_path == source / "wcdb_cli.exe"
+    assert config.wcdb_dll_path == source / "WCDB.dll"
+    assert config.wcdb_dll_path != setup_wechat / "WCDB.dll"
+    assert loader.config_path().read_text(encoding="utf-8") == saved
+
+
+def test_load_or_default_reports_missing_runtime_instead_of_faking_one(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """With no usable pair anywhere, saved paths stay and nothing is invented."""
+    empty_bundle = tmp_path / "incomplete-setup"
+    empty_bundle.mkdir()
+    module = _config_module()
+    _patch_bundled_defaults(monkeypatch, module, empty_bundle)
+    loader = _loader(
+        tmp_path,
+        {
+            "data_root": str(tmp_path / "saved-root"),
+            "db_key": "d" * 64,
+            "wcdb_cli_path": str(tmp_path / "gone" / "wcdb_cli.exe"),
+            "wcdb_dll_path": str(tmp_path / "gone" / "WCDB.dll"),
+        },
+    )
+
+    config = loader.load_or_default()
+
+    assert config.wcdb_cli_path == tmp_path / "gone" / "wcdb_cli.exe"
+    assert config.wcdb_dll_path == tmp_path / "gone" / "WCDB.dll"
+    assert config.data_root == tmp_path / "saved-root"
+    assert config.db_key == "d" * 64
+
+
 def test_loader_tolerates_missing_fields(tmp_path: Path) -> None:
     loader = _loader(tmp_path, {})
 

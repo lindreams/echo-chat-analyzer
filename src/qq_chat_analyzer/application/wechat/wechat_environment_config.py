@@ -167,32 +167,19 @@ class WeChatEnvironmentConfigLoader:
         )
 
     def load_or_default(self) -> WeChatEnvironmentConfig:
-        """Load user config, falling back to bundled runtime defaults."""
+        """Load user config with one consistent runtime pair, or use defaults.
+
+        A saved pair is resolved by :func:`resolve_wechat_runtime_pair`, so a
+        saved Portable path is carried over to this Setup install as a pair.
+        """
         try:
             config = self.load()
         except WeChatConfigNotFound:
             config = None
-        if not bundled_wechat_runtime_available():
-            if config is not None:
-                return config
-            raise WeChatConfigNotFound()
-
-        defaults = default_wechat_environment_config()
         if config is None:
-            return defaults
-        return replace(
-            config,
-            wcdb_cli_path=(
-                config.wcdb_cli_path
-                if _is_file(config.wcdb_cli_path)
-                else defaults.wcdb_cli_path
-            ),
-            wcdb_dll_path=(
-                config.wcdb_dll_path
-                if _is_file(config.wcdb_dll_path)
-                else defaults.wcdb_dll_path
-            ),
-        )
+            return _bundled_runtime_config()
+
+        return resolve_wechat_runtime_pair(config)
 
 
 def bundled_wechat_runtime_available() -> bool:
@@ -201,6 +188,13 @@ def bundled_wechat_runtime_available() -> bool:
         default_wechat_wcdb_cli_path().is_file()
         and default_wechat_wcdb_dll_path().is_file()
     )
+
+
+def _bundled_runtime_config() -> WeChatEnvironmentConfig:
+    """Return the bundled CLI/DLL pair, or raise when it is not installed."""
+    if not bundled_wechat_runtime_available():
+        raise WeChatConfigNotFound()
+    return default_wechat_environment_config()
 
 
 def default_wechat_environment_config() -> WeChatEnvironmentConfig:
@@ -216,6 +210,39 @@ def default_wechat_environment_config() -> WeChatEnvironmentConfig:
             if default_wechat_wcdb_dll_path().is_file()
             else None
         ),
+    )
+
+
+def resolve_wechat_runtime_pair(
+    config: WeChatEnvironmentConfig,
+) -> WeChatEnvironmentConfig:
+    """Return one config with a single, consistent CLI/DLL runtime pair.
+
+    The CLI and the DLL are one runtime pair and are only ever rebound
+    together, so a binary from an older installation is never paired with the
+    one this installation ships. This is the one place that decides which pair
+    a saved configuration ends up using, shared by reading the config and by
+    writing it back.
+
+    A complete pair is kept, unchanged, whatever produced it: an old bundled
+    path and a user-chosen custom path cannot be told apart from the value
+    alone, so neither is overwritten. A half-valid pair is kept exactly as
+    saved too, because completing its missing half from this installation would
+    run two builds as one runtime and would discard the surviving path. Only a
+    pair that is entirely unusable is rebound, as a pair, to the bundled pair,
+    and the saved values are kept when this installation provides no complete
+    pair, so a caller reports the missing component instead of a fabricated
+    runtime.
+    """
+    if _is_file(config.wcdb_cli_path) or _is_file(config.wcdb_dll_path):
+        return config
+    if not bundled_wechat_runtime_available():
+        return config
+    defaults = default_wechat_environment_config()
+    return replace(
+        config,
+        wcdb_cli_path=defaults.wcdb_cli_path,
+        wcdb_dll_path=defaults.wcdb_dll_path,
     )
 
 
@@ -248,4 +275,5 @@ __all__ = [
     "WeChatEnvironmentConfigWriter",
     "bundled_wechat_runtime_available",
     "default_wechat_environment_config",
+    "resolve_wechat_runtime_pair",
 ]

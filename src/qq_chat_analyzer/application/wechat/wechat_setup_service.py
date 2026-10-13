@@ -37,7 +37,7 @@ from .wechat_environment_config import (
     WeChatEnvironmentConfig,
     WeChatEnvironmentConfigLoader,
     WeChatEnvironmentConfigWriter,
-    default_wechat_environment_config,
+    resolve_wechat_runtime_pair,
 )
 
 
@@ -457,22 +457,14 @@ class WeChatSetupService:
     def _apply_default_runtime(
         config: WeChatEnvironmentConfig,
     ) -> WeChatEnvironmentConfig:
-        defaults = default_wechat_environment_config()
-        return replace(
-            config,
-            wcdb_cli_path=(
-                config.wcdb_cli_path
-                if config.wcdb_cli_path is not None
-                and config.wcdb_cli_path.is_file()
-                else defaults.wcdb_cli_path
-            ),
-            wcdb_dll_path=(
-                config.wcdb_dll_path
-                if config.wcdb_dll_path is not None
-                and config.wcdb_dll_path.is_file()
-                else defaults.wcdb_dll_path
-            ),
-        )
+        """Persist the config with the runtime pair the reader will resolve.
+
+        The CLI and the DLL are chosen by the same policy used when reading, so
+        a save can never write a pair that mixes this installation's binary with
+        a surviving path from another one. ``data_root`` and ``db_key`` are
+        carried through untouched.
+        """
+        return resolve_wechat_runtime_pair(config)
     def _ensure_db_key(
         self,
         config: WeChatEnvironmentConfig,

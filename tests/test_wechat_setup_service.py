@@ -930,3 +930,178 @@ def test_verify_connection_tolerates_a_provider_without_verification(
     )
 
     assert service.verify_connection() is None
+
+
+# ------------------------------------------- runtime pair (Portable to Setup)
+
+
+def _config_module():
+    return __import__(
+        "qq_chat_analyzer.application.wechat.wechat_environment_config",
+        fromlist=["default_wechat_wcdb_cli_path"],
+    )
+
+
+def _patch_bundled_wechat_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    bundle: Path,
+) -> Path:
+    """Point the bundled runtime at a fictional current Setup install."""
+    module = _config_module()
+    wechat = bundle / "runtime" / "wechat"
+    wechat.mkdir(parents=True, exist_ok=True)
+    (wechat / "wcdb_cli.exe").write_text("fake", encoding="utf-8")
+    (wechat / "WCDB.dll").write_text("fake", encoding="utf-8")
+    monkeypatch.setattr(
+        module,
+        "default_wechat_wcdb_cli_path",
+        lambda: wechat / "wcdb_cli.exe",
+    )
+    monkeypatch.setattr(
+        module,
+        "default_wechat_wcdb_dll_path",
+        lambda: wechat / "WCDB.dll",
+    )
+    return wechat
+
+
+def _half_valid_runtime(tmp_path: Path) -> tuple[Path, Path]:
+    """Return a fictional older install whose DLL is already gone."""
+    runtime = tmp_path / "Echo-0.1.0-portable" / "runtime" / "wechat"
+    runtime.mkdir(parents=True)
+    cli = runtime / "wcdb_cli.exe"
+    cli.write_text("fake", encoding="utf-8")
+    return cli, runtime / "WCDB.dll"
+
+
+def _saved_config(
+    tmp_path: Path,
+    *,
+    cli: Path,
+    dll: Path,
+    db_key: str | None,
+) -> WeChatEnvironmentConfig:
+    return WeChatEnvironmentConfig(
+        data_root=tmp_path / "saved-root",
+        db_key=db_key,
+        wcdb_cli_path=cli,
+        wcdb_dll_path=dll,
+    )
+
+
+def _write_saved_config(tmp_path: Path, config: WeChatEnvironmentConfig) -> Path:
+    target = tmp_path / "wechat.json"
+    WeChatEnvironmentConfigWriter(target).save(config)
+    return target
+
+
+def _setup_service(tmp_path: Path, target: Path, **overrides) -> WeChatSetupService:
+    defaults = {
+        "config_loader": WeChatEnvironmentConfigLoader(target),
+        "config_writer": WeChatEnvironmentConfigWriter(target),
+    }
+    defaults.update(overrides)
+    return WeChatSetupService(**defaults)
+
+
+def test_save_environment_does_not_mix_a_surviving_path_with_the_bundled_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A surviving older path must never be completed from this install."""
+    setup_wechat = _patch_bundled_wechat_runtime(monkeypatch, tmp_path / "Echo")
+    cli, dll = _half_valid_runtime(tmp_path)
+    target = _write_saved_config(
+        tmp_path,
+        _saved_config(tmp_path, cli=cli, dll=dll, db_key="a" * 64),
+    )
+    service = _setup_service(tmp_path, target)
+
+    service.save_environment(
+        WeChatEnvironmentConfig(data_root=tmp_path / "saved-root")
+    )
+
+    stored = WeChatEnvironmentConfigLoader(target).load()
+    assert stored.wcdb_cli_path == cli
+    assert stored.wcdb_dll_path == dll
+    assert stored.wcdb_dll_path != setup_wechat / "WCDB.dll"
+    assert stored.data_root == tmp_path / "saved-root"
+    assert stored.db_key == "a" * 64
+
+
+def test_disconnect_does_not_mix_a_surviving_path_with_the_bundled_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clearing the key must not blend two installations' runtime files."""
+    setup_wechat = _patch_bundled_wechat_runtime(monkeypatch, tmp_path / "Echo")
+    cli, dll = _half_valid_runtime(tmp_path)
+    target = _write_saved_config(
+        tmp_path,
+        _saved_config(tmp_path, cli=cli, dll=dll, db_key="b" * 64),
+    )
+    service = _setup_service(tmp_path, target, key_service=_StubKeyService())
+
+    service.disconnect()
+
+    stored = WeChatEnvironmentConfigLoader(target).load()
+    assert stored.wcdb_cli_path == cli
+    assert stored.wcdb_dll_path == dll
+    assert stored.wcdb_dll_path != setup_wechat / "WCDB.dll"
+    assert stored.data_root == tmp_path / "saved-root"
+    assert stored.db_key is None
+
+
+def test_acquire_db_key_does_not_mix_a_surviving_path_with_the_bundled_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Persisting an acquired key must not blend two installations' files."""
+    setup_wechat = _patch_bundled_wechat_runtime(monkeypatch, tmp_path / "Echo")
+    cli, dll = _half_valid_runtime(tmp_path)
+    target = _write_saved_config(
+        tmp_path,
+        _saved_config(tmp_path, cli=cli, dll=dll, db_key=None),
+    )
+    service = _setup_service(
+        tmp_path,
+        target,
+        key_service=_StubKeyService(key="c" * 64),
+    )
+
+    assert service.acquire_db_key() == "c" * 64
+
+    stored = WeChatEnvironmentConfigLoader(target).load()
+    assert stored.db_key == "c" * 64
+    assert stored.wcdb_cli_path == cli
+    assert stored.wcdb_dll_path == dll
+    assert stored.wcdb_dll_path != setup_wechat / "WCDB.dll"
+
+
+def test_save_environment_rebinds_an_entirely_stale_pair_to_the_bundled_pair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fully unusable pair still follows this install as one pair."""
+    setup_wechat = _patch_bundled_wechat_runtime(monkeypatch, tmp_path / "Echo")
+    stale = tmp_path / "Echo-0.1.0-portable" / "runtime" / "wechat"
+    target = _write_saved_config(
+        tmp_path,
+        _saved_config(
+            tmp_path,
+            cli=stale / "wcdb_cli.exe",
+            dll=stale / "WCDB.dll",
+            db_key="d" * 64,
+        ),
+    )
+    service = _setup_service(tmp_path, target)
+
+    service.save_environment(
+        WeChatEnvironmentConfig(data_root=tmp_path / "saved-root")
+    )
+
+    stored = WeChatEnvironmentConfigLoader(target).load()
+    assert stored.wcdb_cli_path == setup_wechat / "wcdb_cli.exe"
+    assert stored.wcdb_dll_path == setup_wechat / "WCDB.dll"
+    assert stored.data_root == tmp_path / "saved-root"
+    assert stored.db_key == "d" * 64
