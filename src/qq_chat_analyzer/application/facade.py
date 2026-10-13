@@ -78,6 +78,9 @@ from .report_package_catalog import (
 )
 from .report_package_metadata import build_report_metadata
 from .update_check_service import UpdateChecker, UpdateCheckResult, UpdateCheckService
+from .installable_update_service import (
+    InstallableUpdater, InstallableUpdateResult, InstallableUpdateService, InstallHandoffResult,
+)
 from .wechat.wechat_connection_service import WeChatConnectionStatus
 from .wechat.wechat_connection_progress import WeChatConnectionProgress
 from .wechat.wechat_environment_config import WeChatEnvironmentConfig
@@ -375,6 +378,7 @@ class ChatAnalyzerFacade:
         presentation_builder: Any = None,
         report_package_catalog: Any = None,
         update_check_service: UpdateChecker | None = None,
+        installable_update_service: InstallableUpdater | None = None,
         stopwords_directory: Path | None = None,
         shutdown_step_seconds: float = DEFAULT_SHUTDOWN_STEP_SECONDS,
     ) -> None:
@@ -398,6 +402,10 @@ class ChatAnalyzerFacade:
         self._update_check_service = (
             update_check_service if update_check_service is not None else UpdateCheckService()
         )
+        self._installable_update_service = (
+            installable_update_service if installable_update_service is not None
+            else InstallableUpdateService()
+        )
         self._stopwords_directory = stopwords_directory or resources_dir()
         self._retained_output_directory: _RetainedReportDirectory | None = None
         self._scratch_recovery_done = False
@@ -416,6 +424,69 @@ class ChatAnalyzerFacade:
                 code="update_check_failed",
                 public_message="暂时无法检查更新，请稍后手动重试。",
             ) from exc
+
+    def check_installable_update(self) -> InstallableUpdateResult:
+        """Worker-only Velopack feed check, separate from release-page checks."""
+        try:
+            return self._installable_update_service.check()
+        except Exception as exc:
+            raise FacadeError(code="installable_update_check_failed",
+                              public_message="暂时无法检查可安装更新，请稍后重试。") from exc
+
+    def download_update(
+        self, *, progress: Callable[[int], None] | None = None,
+    ) -> InstallableUpdateResult:
+        """Worker-only download. Callbacks must marshal into the GUI thread."""
+        try:
+            return self._installable_update_service.download(progress=progress)
+        except Exception as exc:
+            raise FacadeError(code="update_download_failed",
+                              public_message="更新下载未完成，请稍后重试。") from exc
+
+    def get_update_status(self) -> InstallableUpdateResult:
+        """Read an immutable in-memory snapshot; never grants apply permission."""
+        try:
+            return self._installable_update_service.get_status()
+        except Exception as exc:
+            raise FacadeError(code="update_status_failed",
+                              public_message="暂时无法读取更新状态。") from exc
+
+    def prepare_update_install(self) -> InstallHandoffResult:
+        """Worker-only preparation; 0.2.0 supports never-connected idle sessions only.
+
+        This read-only preflight is advisory, not a replacement for final owner
+        evidence. It neither shuts down resources nor starts an installer.
+        """
+        from .source_bundle_builder import SourceBundleBuilder
+        from .analysis_service import AnalysisApplicationService
+        used = bool(self._built_sources) or any(value is not None for value in (
+            *self._services.values(), self._qq_connection_service, self._qq_setup_service,
+            self._qq_connection_manager, self._qq_auth_bridge,
+            self._wechat_connection_service_value, self._wechat_setup_service_value))
+        if (used or self._sources_closing.is_set()
+                or any(type(builder) is not SourceBundleBuilder or not builder.is_unused
+                       for builder in self._source_builders.values())
+                or (self._analysis_service is not None and
+                    (type(self._analysis_service) is not AnalysisApplicationService or not self._analysis_service.is_idle))):
+            raise FacadeError(code='update_idle_required', public_message=
+                '当前仅支持未连接且没有分析任务的空闲安装。请先完成任务、断开连接并正常退出，再重新打开 Echo 安装更新。')
+        try:
+            return self._installable_update_service.prepare_install()
+        except Exception as exc:
+            raise FacadeError(code='update_prepare_failed', public_message='更新包复验失败，请重新检查并下载。') from exc
+
+    def handoff_update_install(self, token: str, result: ShutdownResult) -> InstallHandoffResult:
+        """Existing desktop exit owner calls this AFTER its final protocol result.
+
+        Final GUI evidence must contain the exact cached resource-owner result;
+        caller-supplied SUCCESS values cannot stand in for a real shutdown.
+        """
+        if (not isinstance(result, ShutdownResult) or not result.can_apply_update
+                or self._shutdown_result is None
+                or tuple(step for step in result.steps if step.name != 'gui_workers')
+                   != self._shutdown_result.steps):
+            return InstallHandoffResult('denied', public_message='安全退出证据不完整，更新未安装。')
+        return self._installable_update_service.handoff(token, result)
 
     @property
     def _wechat_connection_service(self) -> Any:
@@ -631,6 +702,13 @@ class ChatAnalyzerFacade:
 
     def get_wechat_setup_status(self) -> WeChatSetupStatus:
         """Report whether the WeChat environment config is usable."""
+        from .source_bundle_builder import SourceBundleBuilder
+        builder = self._source_builders.get(ChatSource.WECHAT)
+        if (self._wechat_setup_service_value is None
+                and ChatSource.WECHAT not in self._built_sources
+                and type(builder) is SourceBundleBuilder and builder.has_setup_reader):
+            with _translated_errors(ChatSource.WECHAT):
+                return builder.read_setup_status()
         service = self._require_setup_service()
         with _translated_errors(ChatSource.WECHAT):
             return service.check_setup()
@@ -1224,17 +1302,26 @@ class ChatAnalyzerFacade:
         return ShutdownResult(tuple(results))
 
     def _shutdown_source_lifecycle(self) -> ShutdownStatus:
+        from .source_bundle_builder import SourceBundleBuilder
+        from .analysis_service import AnalysisApplicationService
+
+        builder_statuses = [builder.shutdown() if type(builder) is SourceBundleBuilder
+                            else ShutdownStatus.UNKNOWN
+                            for builder in self._source_builders.values()]
+        analysis_status = (ShutdownStatus.SUCCESS if self._analysis_service is None
+                           else self._analysis_service.shutdown()
+                           if type(self._analysis_service) is AnalysisApplicationService
+                           else ShutdownStatus.UNKNOWN)
         # Services currently expose no complete lifecycle/quiescence contract.
         # Even a successful recover RPC cannot prove every helper/read is gone.
         # Unpublished builders can already own resources or be in-flight.
-        # Injected analysis services likewise have no drain/ownership proof.
-        used_sources = bool(self._source_builders or self._built_sources) or any(
+        # Unknown analysis implementations likewise have no ownership proof.
+        used_sources = bool(self._built_sources) or any(
             value is not None for value in (
                 *self._services.values(), self._qq_connection_service,
                 self._qq_setup_service, self._qq_connection_manager,
                 self._qq_auth_bridge, self._wechat_connection_service_value,
                 self._wechat_setup_service_value,
-                self._analysis_service,
             )
         )
         setup = self._wechat_setup_service_value
@@ -1246,7 +1333,9 @@ class ChatAnalyzerFacade:
                 status = shutdown()
                 if status in (ShutdownStatus.FAILED, ShutdownStatus.TIMED_OUT):
                     return status
-        return ShutdownStatus.UNKNOWN if used_sources else ShutdownStatus.SUCCESS
+        return (ShutdownStatus.UNKNOWN if used_sources
+                or any(status is not ShutdownStatus.SUCCESS for status in (*builder_statuses, analysis_status))
+                else ShutdownStatus.SUCCESS)
 
     def _source_lifecycle_step_window(self) -> float:
         # Key-owner drain is 3s; include a 1s scheduling margin, while keeping
@@ -1257,9 +1346,15 @@ class ChatAnalyzerFacade:
         from .qq.qq_process_registry import QQProcessRegistry
 
         registry = self._require_qq_process_registry()
+        if type(registry) is QQProcessRegistry:
+            try:
+                runtime_status = registry.shutdown()
+            finally:
+                credential_status = self._retire_qq_bridge_credential()
+            return ShutdownResult((ShutdownStepResult('runtime', runtime_status),
+                                   ShutdownStepResult('credential', credential_status))).status
         recorded = getattr(registry, 'recorded', None)
         try:
-            owned_before = recorded() if callable(recorded) else None
             registry.terminate_all()
         finally:
             credential_status = self._retire_qq_bridge_credential()
@@ -1270,11 +1365,8 @@ class ChatAnalyzerFacade:
             return ShutdownStatus.FAILED
         if credential_status is not ShutdownStatus.SUCCESS:
             return credential_status
-        if type(registry) is not QQProcessRegistry:
-            # A duck-typed empty inventory is not a proven ownership contract.
-            return ShutdownStatus.UNKNOWN
-        # Registry removal/Job close is not a wait for all descendants to exit.
-        return ShutdownStatus.UNKNOWN if owned_before else ShutdownStatus.SUCCESS
+        # A duck-typed empty inventory is not a proven ownership contract.
+        return ShutdownStatus.UNKNOWN
 
     def _retire_qq_bridge_credential(self) -> ShutdownStatus:
         """Drop the credential of the QQ runtime Echo just stopped.
@@ -1284,6 +1376,9 @@ class ChatAnalyzerFacade:
         whatever might answer on the port later.
         """
         session = self._qq_runtime_session
+        from .qq.qq_runtime_session import QQRuntimeSession
+        if type(session) is QQRuntimeSession:
+            return session.shutdown()
         if session is None:
             from .qq.qq_runtime_session import default_qq_runtime_session
             session = default_qq_runtime_session()
@@ -1400,14 +1495,20 @@ class ChatAnalyzerFacade:
         return ShutdownStepResult(label, outcome)
 
     def _shutdown_qq_direct_db_service(self) -> ShutdownStatus:
-        """Ask the Direct DB service to recover orphan plaintext, best-effort."""
+        """Recover plaintext and consume only owned, explicit cleanup evidence."""
         service = self._qq_service_if_present()
         if service is None:
             return ShutdownStatus.SUCCESS
         shutdown = getattr(service, "shutdown", None)
         if callable(shutdown):
             try:
-                shutdown()
+                status = shutdown()
+                from .qq.qq_direct_database_import_service import QQDirectDatabaseImportService
+                # Only the owned implementation proves acquisition admission,
+                # drain and recover. A duck-typed return is not ownership proof.
+                if (type(service) is QQDirectDatabaseImportService
+                        and isinstance(status, ShutdownStatus)):
+                    return status
             except Exception:
                 _LOGGER.warning(
                     "QQ Direct DB plaintext cleanup did not complete during "

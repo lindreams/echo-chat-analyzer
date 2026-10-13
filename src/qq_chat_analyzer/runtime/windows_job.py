@@ -154,6 +154,42 @@ class WindowsJobProcess:
         self._external_readers = () if external_readers else None
         self._output = [None, None]
         self._read_errors = []
+        self._exit_verified = False
+
+    @property
+    def exit_verified(self):
+        """Sticky proof obtained while the native Job was still queryable."""
+        with self._lock:
+            return (self._exit_verified and self.closed
+                    and not any(reader.is_alive() for reader in (self._readers or ()))
+                    and all(stream is None or stream.closed
+                            for stream in (self.stdout, self.stderr)))
+
+    def close_with_exit_evidence(self, timeout=5.0):
+        """QQ-only close: query whole-tree exit BEFORE releasing the Job.
+
+        Historical close/closed/tree_running flags are not exit attestations.
+        External helper readers retain their separate owner protocol.
+        """
+        deadline = time.monotonic() + timeout
+        if not self._close_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+            raise subprocess.TimeoutExpired(self.args, timeout)
+        try:
+            if self.exit_verified:
+                return
+            if self._external_readers is not None or self.active_process_count() is None:
+                raise RuntimeError('No queryable QQ Job exit evidence')
+            self.terminate_tree()
+            while self.active_process_count() != 0:
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(self.args, timeout)
+                time.sleep(0.01)
+            # Record before close, which destroys the only tree-query handle.
+            with self._lock:
+                self._exit_verified = True
+            self.close()
+        finally:
+            self._close_lock.release()
 
     def poll(self):
         with self._lock:

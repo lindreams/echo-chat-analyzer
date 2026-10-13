@@ -357,13 +357,14 @@ QCE Python provider/service、`qce_compat`、文件 adapter 与旧 `parser` 均�
 由 SDK 结束进程，不创建 GUI。`gui.app.main` 保留为兼容入口别名。
 `scripts/package_windows_setup.py` 将现有 onedir 的已校验副本交给固定版本 vpk；
 版本来自 `pyproject.toml`，安装目录与现有用户数据目录分离。
-这里不包含软件内下载、应用更新或更新后重启编排；发行状态与实际验收见
+Bootstrap 不包含应用更新或更新后重启编排；独立检查/下载核心见下文 A3。
+发行状态与实际验收见
 [A1 审计](docs/research/2026-10-12-windows-setup-a1.md)。
 
 **Update Check Core（QA-04）** —— `application/update_check_service.py` 提供
 Qt 无关、聊天来源无关的 `UpdateCheckResult`、`UpdateChecker.check(manual=False)`
 与默认 `UpdateCheckService`。当前版本只读取 `version.APP_VERSION`，标准库 HTTP
-查询 GitHub `/repos/lingmeng-658/echo-chat-analyzer/releases/latest`，仅接受正式 Release。
+查询 GitHub `/repos/lindreams/echo-chat-analyzer/releases/latest`，仅接受正式 Release。
 严格校验 SemVer；可去掉 tag 的 `v` 前缀，build metadata 不影响优先级，远端
 prerelease tag 也不接受。正式版本按 major/minor/patch 比较，同号正式版高于本地 prerelease。
 
@@ -381,6 +382,52 @@ worker 中异步调用并在 GUI 线程展示结果；「关于余音」对话�
 手动检查绕过去重，但同一 service 实例的并发调用立即返回 `skipped/in_progress`。
 状态缺失、损坏或时钟回拨产生的未来时间不抑制检查；原子写入失败不影响结果，
 同一实例仍保留内存去重。该最小策略不承诺跨进程互斥或状态不可写时的跨重启去重。
+
+**Installable Update Core（A3）** —— `application/installable_update_service.py`
+独立提供 Qt 无关的 Velopack 检查与下载，保留 SDK `UpdateInfo`，不接受上述 GitHub
+Release 结果作为包元数据。GUI 通过 Facade 的 `check_installable_update()`、
+`download_update(progress=...)`、`get_update_status()` 接入；旧 `check_for_updates()`
+仍只提供发布页提示。检查和下载在 worker 执行，状态读取只访问内存。
+默认无 feed，返回 `unconfigured`；正式可信源、packId 与 channel 须由 composition root
+显式配置并注入服务，不从 GUI 输入、环境变量或 Release 页面推导。生产仅接受配置的
+HTTPS feed，本地绝对目录用于虚构测试。应用内下载要求 Windows Frozen、SDK
+经显式 locator 核验的可写 Setup `current/` 布局、非 Portable 且安装 packId/channel 匹配；
+源码和 Portable 保留发布页入口。只读 Setup/MSI 根目录的 SDK fallback cache 暂不支持，拒绝猜测缓存路径。
+服务同一实例拒绝并发请求，下载失败保留候选供显式重试，成功请求幂等；SDK 管理包缓存
+和下载锁。进度整数 0–100，100 只在下载返回且待安装包身份/大小匹配后发出。
+SDK 的本地 pending 资产没有 hash，恢复的 `downloaded` 仅表示包缓存待安装，
+不证明可信完整性，也不授予应用更新权限。A2 完整 SUCCESS
+证据要求保持不变。检查/下载接口见
+[A3 交接](docs/research/2026-10-13-a3-update-core.md)。
+
+**A3 GUI 集成** —— 关于对话框保留发布页检查展示，并直接调用上述 Facade 接口。
+检查 worker 先检查可安装更新；`unsupported` / `unconfigured` 才回退发布页检查，
+两种结果仍分别解释，不将发布页版本作为下载候选。下载 worker 将现有 worker 的
+位置参数 reporter 转成 `download_update(progress=reporter)`，Qt relay 在 GUI 线程
+交付进度与结果。只有 `InstallableUpdateResult.status=downloaded` 确认下载完成，
+百分比和 worker 正常返回不意味着成功。关闭不取消下载；重开从 Facade 内存快照恢复，
+对话框用 GUI QTimer 观察同一服务，不能以本地对话框状态代替候选/缓存事实。
+请求代际、终态后回调退役及单调百分比保护处理重复点击与迟到事件。
+不再保留候选 `updater.download(report)`、模拟 phase 进度协议或“重启后自动安装”提示；
+更新 worker 纳入现有全局 worker 跟踪。下载后提供用户确认的“安装并重启”入口，
+0.2.0 只允许未建立来源连接、无分析任务的空闲会话。Facade 的
+`prepare_update_install()` 在 worker 刷新可信 feed，验证 pending、SHA256、大小及包内
+id/version/channel，返回不含路径/SDK 对象的 `InstallHandoffResult` 和一次性 token。
+确认/复验不启动安装器；关闭/迟到回调不能提出退出意图。
+MainWindow 在 worker relay 退场后记录意图并正常关闭，仍使用原 ShutdownProtocol。
+桌面退出入口等待最终结果；只有五项完整 SUCCESS 且资源步骤等于 Facade 的实际缓存
+关闭证据，才调用 `handoff_update_install(token, result)`。交接无网络，以 5 秒协作式预算重新验证
+安装/包状态；Windows 只读共享句柄禁止写入/删除，持续保护包直至进程退出。
+之后才调用 `wait_exit_then_apply_updates(..., silent=False, restart=True)`，并自然退出。
+不调用立即退出的 apply API，保留原有限 watchdog；失败/超时/UNKNOWN 均不启动安装器。
+40 秒 ShutdownProtocol 等待与 50 秒 Python watchdog 不是持有 GIL 的原生阻塞的绝对超时保证；
+固定 SDK 的交接未释放 GIL，此时 watchdog 线程也可能被阻塞。保留并记录该边界，不另建退出架构。
+B1/B2 已通过真实隔离 Setup A 0.2.0 → B 0.2.1、自动启动、正常关闭、再次启动及文件/虚构数据校验。
+B2-W1 独立证明固定 SDK 的仅同步句柄可成功等待、随后退出码查询却因缺少权限失败；
+B2 的 Access denied 警告高度可信地由此引起，不等同于未等待旧进程退出。
+真正等待错误及 60 秒超时后上游仍继续安装是另一个尚待处置的发行风险；
+A3 功能/隔离实验通过不代表正式 feed、发行身份、签名及安全发行审批已经完成。
+接口、验收边界和正式发布条件见 [A3 安装交接](docs/research/2026-10-13-a3-install-handoff.md)。
 
 **Report Package 生命周期（BUG-03）** —— Report Package 是 Echo 唯一持久分析对象，
 也是 Local Data 历史列表的事实来源。`ReportHistoryManager`、`analysis_history.jsonl`
@@ -905,7 +952,7 @@ QQ 与微信的页面状态互相隔离。切换来源或返回数据源选择�
 - **清理顺序由 Facade 拥有。** `ChatAnalyzerFacade.shutdown()` 按
   “停止接受新的 Direct DB acquisition → bounded drain / recover plaintext →
   终止 Echo 自有的 QQ runtime 进程树”执行。每一步都有独立时间窗，
-  某一步失败或卡死都不会跳过后续步骤，也不会让退出无限挂住。
+  某一步失败或超时仍尝试后续步骤；持续持有 GIL 的原生阻塞受下述 fallback 能力边界限制。
 - **Windows 托管进程在创建时获得所有权。** 两条 QQ 启动入口通过
   `runtime/windows_job.py` 的 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 原子创建到
   不可继承、未命名的 kill-on-close Job 中。`QQProcessRegistry` 持有会话资源，
@@ -914,9 +961,11 @@ QQ 与微信的页面状态互相隔离。切换来源或返回数据源选择�
   旧 PID 记录仅保留兼容清理；Job 对应 PID 不再执行 taskkill。
   不按端口、进程名或路径扫描认领，不接管外部健康服务或旧版本孤儿进程，
   不触碰用户自己启动的 QQ。
-- **超时有明确 fallback。** 超过 bounded 窗口后强制退出；跨步骤总预算与
+- **超时有明确 fallback。** 等待超过 bounded 窗口后请求强制退出；跨步骤总预算与
   last-resort watchdog 都是有限值。watchdog 在正常返回后仍保持 armed，
   用于解释器收尾被后台线程拖住的情况；与立即强制退出共享一次性出口。
+  40 秒协议等待与 50 秒 Python watchdog 均不保证中断持续持有 GIL 的原生调用，
+  包括固定 SDK 安装交接；这是已记录的能力边界，不放宽更新准入。
   Windows 兜底只对当前 Echo 进程的 pseudo-handle 调用 `TerminateProcess`，
   不走本机 Qt 子进程中已复现访问冲突的 `os._exit` 路径；其他平台保留 `os._exit`。
 - **结束与成功分别表达。** `ShutdownProtocol.finished` / `wait()` 只表示
@@ -924,14 +973,31 @@ QQ 与微信的页面状态互相隔离。切换来源或返回数据源选择�
   `SUCCESS`、`FAILED`、`TIMED_OUT`、`UNKNOWN`。`status=SUCCESS` 只汇总已有证据；
   更新准入还要求 `direct_db_cleanup`、`retained_output_cleanup`、
   `qq_runtime_termination`、`source_lifecycle`、`gui_workers` 各出现恰好一次且全部成功。
-  缺项、重复项、未识别项、空证据、异常、超时和未知均不允许更新，普通退出仍保持有界。
+  缺项、重复项、未识别项、空证据、异常、超时和未知均不允许更新，普通退出保留上述预算与 fallback 边界。
   Facade 验证临时报告实际移除，保留异常与步骤超时，缓存首次结果避免重复清理
   把失败洗成成功。协议尚未 finished 时不发布成功结果。
-  已使用 QQ/微信来源、注册但未发布的 builder、注入的分析服务/runtime session
-  尚无完整生命周期证明，保持 `UNKNOWN`；
-  注册 PID 被移除也不代表所有后代已退出。GUI 将未静止的 worker/pool/relay
-  状态作为未知证据加入结果。本阶段没有调用 Velopack 应用更新。
-  无资源成功只适用于已知清点为空的关闭快照；未来更新编排还必须停止生产者，
+  Direct DB 自有实现的 `shutdown()` 返回 `ShutdownStatus`：禁止新 acquisition 后，
+  仅 drain 成功、无活动 startup/acquisition 且 recover 成功才给出 SUCCESS；
+  drain 超时即使 recover 成功仍保留 TIMED_OUT，recover 异常保留 FAILED。
+  重复调用保留该次结果，进行中为 UNKNOWN；可重试 startup 失败不能凭 CLOSED
+  跳过已有 client 的 recover。Facade 仅接受此具体自有实现的证据，其他注入服务仍为 UNKNOWN。
+  这仅补齐 `direct_db_cleanup`，不证明来源或进程树已释放，不放宽总更新准入。
+  生产 SourceBundleBuilder 仅在已封闭构造入口且从未调用资源 factory 时证明为空；
+  未知 callable、已调用但未发布的 factory 和已使用 QQ/微信来源仍为 UNKNOWN。
+  微信主页只读配置状态通过既有 setup 检查逻辑读取，不提前构造 provider/key helper。
+  自有 AnalysisApplicationService 封闭新执行并清点 execute 中的活动数；静止且无外部
+  legacy writer 时为 SUCCESS，活动分析或未知注入实现为 UNKNOWN。
+  自有 QQRuntimeSession 封闭新 launch 并保留绑定进程的历史，retire 不清除退出证据；
+  pending launch、未知进程或缺少树退出证明为 UNKNOWN。新鲜无运行时的 owner 可证明为空。
+  QQProcessRegistry 封闭登记后，WindowsJobProcess 在释放 Job 前有界确认 ActiveProcesses
+  为零，再清理句柄/PIPE/readers；只有这种可查询的整树退出证据可成功。既有 PID 清理、
+  普通 close、清空或 discard 均不能凭登记表为空追补证明，缺证历史保留 UNKNOWN。
+  退出失败仍 FAILED、步骤超时仍 TIMED_OUT。未知 registry/session 仍不得自证成功。
+  GUI 将未静止的 worker/pool/relay
+  状态作为未知证据加入结果。A2 仅提供准入证据；A3 在正常退出入口复验后调用 Velopack 交接。
+  隔离 Qt 子进程已验证启动后不连接、不分析的正常窗口关闭可取得完整五项 SUCCESS；
+  这只是关闭准入，不是包复验或安装授权。普通连接后断开仍受来源完整证据缺口限制。
+  无资源成功只适用于已知清点为空的关闭快照；A3 更新编排仍必须停止生产者，
   不得在可继续创建资源的界面缓存这个结果作为安装授权。
 
 - **微信 helper 清理由获取请求唯一拥有。** GUI 经 Facade 传递每次请求的取消
