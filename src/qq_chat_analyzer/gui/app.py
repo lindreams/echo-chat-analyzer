@@ -54,6 +54,8 @@ def build_facade() -> ChatAnalyzerFacade:
     from ..application.analysis_service import AnalysisApplicationService
     from ..application.qq.qq_runtime_session import QQRuntimeSession
     from ..application.report_package_catalog import ReportPackageCatalog
+    from ..application.source_bundle_builder import SourceBundleBuilder
+    from ..application.wechat.wechat_setup_service import WeChatSetupService
 
     # One owner for the local bridge credential of the QQ runtime Echo launches:
     # every QQ service below is wired with the same session, and the facade keeps
@@ -61,8 +63,9 @@ def build_facade() -> ChatAnalyzerFacade:
     session = QQRuntimeSession()
     return ChatAnalyzerFacade(
         source_builders={
-            ChatSource.QQ: lambda: _qq_bundle_factory(session),
-            ChatSource.WECHAT: _wechat_bundle_factory,
+            ChatSource.QQ: SourceBundleBuilder(lambda: _qq_bundle_factory(session)),
+            ChatSource.WECHAT: SourceBundleBuilder(
+                _wechat_bundle_factory, setup_reader=WeChatSetupService().check_setup),
         },
         qq_runtime_session=session,
         analysis_service=AnalysisApplicationService(),
@@ -250,6 +253,14 @@ def _finish_process_exit(
     _begin_window_shutdown(window)
     if _await_window_shutdown(window):
         _LOGGER.info("Echo shutdown protocol completed before process exit")
+        handoff = getattr(window, 'finish_update_handoff', None)
+        if callable(handoff):
+            try:
+                result = handoff()
+                if result is not None:
+                    _LOGGER.info('Echo update handoff status=%s', result.status)
+            except Exception as error:
+                _LOGGER.warning('Echo update handoff failed error=%s', type(error).__name__)
         _flush_desktop_logging()
         return
     else:

@@ -14,6 +14,7 @@ import signal
 import subprocess
 import threading
 from typing import Any, Callable
+from ..shutdown_models import ShutdownStatus
 
 
 _LOGGER = logging.getLogger("qq_chat_analyzer.desktop.qq_process_registry")
@@ -37,6 +38,8 @@ class QQProcessRegistry:
         # PID from turning into taskkill against an unrelated, reused PID.
         self._job_pids: set[int] = set()
         self._lock = threading.RLock()
+        self._unverified_retired = False
+        self._closing = False
 
     def record_process(self, process: Any) -> None:
         """Retain a session's native resource; never convert it to PID cleanup."""
@@ -46,6 +49,8 @@ class QQProcessRegistry:
         if not callable(getattr(process, "close", None)):
             raise ValueError("Owned process must have explicit resource cleanup")
         with self._lock:
+            if self._closing:
+                raise RuntimeError('QQ process registration is closed')
             self._jobs[id(process)] = process
             self._job_pids.add(pid)
             self._pids.discard(pid)
@@ -56,6 +61,8 @@ class QQProcessRegistry:
         if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
             return
         with self._lock:
+            if self._closing:
+                raise RuntimeError('QQ process registration is closed')
             if pid in self._job_pids:
                 return
             self._pids.add(pid)
@@ -70,6 +77,13 @@ class QQProcessRegistry:
         if isinstance(pid, bool) or not isinstance(pid, int):
             return
         with self._lock:
+            if pid in self._pids:
+                self._unverified_retired = True
+            from ...runtime.windows_job import WindowsJobProcess
+            for process in self._jobs.values():
+                if (process.pid == pid and getattr(process, 'closed', False)
+                        and not (type(process) is WindowsJobProcess and process.exit_verified)):
+                    self._unverified_retired = True
             self._pids.discard(pid)
             self._jobs = {key: process for key, process in self._jobs.items()
                           if process.pid != pid or not getattr(process, "closed", False)}
@@ -90,8 +104,31 @@ class QQProcessRegistry:
                     _LOGGER.warning("QQ Job cleanup failed pid=%s error=%s",
                                     process.pid, type(error).__name__)
                 else:
+                    from ...runtime.windows_job import WindowsJobProcess
+                    if not (type(process) is WindowsJobProcess and process.exit_verified):
+                        self._unverified_retired = True
                     self._jobs.pop(key, None)
+            if self._pids:
+                self._unverified_retired = True
             return count + self._terminate_legacy_pids()
+
+    def shutdown(self) -> ShutdownStatus:
+        """Seal registration and collect existing native whole-tree evidence."""
+        from ...runtime.windows_job import WindowsJobProcess
+        with self._lock:
+            self._closing = True
+            for process in tuple(self._jobs.values()):
+                if type(process) is WindowsJobProcess:
+                    try:
+                        process.close_with_exit_evidence()
+                    except Exception:
+                        # Preserve ordinary exit cleanup and ownership on failure.
+                        pass
+            self.terminate_all()
+            if self._jobs or self._pids:
+                return ShutdownStatus.FAILED
+            return (ShutdownStatus.UNKNOWN if self._unverified_retired
+                    else ShutdownStatus.SUCCESS)
 
     def _terminate_legacy_pids(self) -> int:
         """Terminate every recorded process tree and clear the registry.
@@ -143,6 +180,8 @@ class QQProcessRegistry:
     def clear(self) -> None:
         """Forget legacy PIDs; native resources remain owned until closed."""
         with self._lock:
+            if self._pids:
+                self._unverified_retired = True
             self._pids.clear()
 
 

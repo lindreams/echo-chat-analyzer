@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 import secrets
 import threading
+from ..shutdown_models import ShutdownStatus
 
 #: 256 bits of entropy, lowercase hex: the same shape rule the runtime identity
 #: uses, so no encoding question arises when the value crosses the env/header.
@@ -42,6 +43,10 @@ class QQRuntimeSession:
         self._lock = threading.RLock()
         self._credential: str | None = None
         self._process: object | None = None
+        self._closing = False
+        self._pending_launch = False
+        self._unverified_launch = False
+        self._owned_history: dict[int, object] = {}
 
     def begin_launch(self) -> str:
         """Mint a new credential for a launch and make it the current one.
@@ -51,15 +56,36 @@ class QQRuntimeSession:
         """
         credential = mint_bridge_credential()
         with self._lock:
+            if self._closing:
+                raise RuntimeError('QQ runtime launch is closed')
+            if self._pending_launch:
+                self._unverified_launch = True
             self._credential = credential
             self._process = None
+            self._pending_launch = True
         return credential
 
     def bind_process(self, process: object, credential: str) -> None:
         """Associate the owned process tree with exactly this launch."""
         with self._lock:
+            # Retiring a credential must not erase an unverified owned tree.
+            self._owned_history[id(process)] = process
             if self._credential == credential:
                 self._process = process
+                self._pending_launch = False
+
+    def shutdown(self) -> ShutdownStatus:
+        """Seal launches and retire secrets, retaining process exit evidence."""
+        from ...runtime.windows_job import WindowsJobProcess
+        with self._lock:
+            self._closing = True
+            self._credential = None
+            self._process = None
+            if self._pending_launch or self._unverified_launch:
+                return ShutdownStatus.UNKNOWN
+            return (ShutdownStatus.SUCCESS if all(
+                type(process) is WindowsJobProcess and process.exit_verified
+                for process in self._owned_history.values()) else ShutdownStatus.UNKNOWN)
 
     def retire_process(self, process: object) -> None:
         """Retire a cancelled late launch without affecting a newer process."""

@@ -41,6 +41,8 @@ from .theme import (
 from .wechat_workspace import WeChatWorkspace
 from .workers import shutdown as shutdown_workers
 from .workers import submit
+from .workers import is_idle as workers_idle
+from ..application.facade import InstallHandoffResult
 
 
 WINDOW_TITLE = "\u4f59\u97f3 Echo"
@@ -111,6 +113,7 @@ class MainWindow(QMainWindow):
         self._image_opener = image_opener or _open_image_path
         self._active_source: str | None = None
         self._shutdown_protocol = ShutdownProtocol()
+        self._update_install_token: str | None = None
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -300,9 +303,32 @@ class MainWindow(QMainWindow):
         if self._update_dialog is None:
             self._update_dialog = UpdateDialog(self._facade, self, executor=self._executor)
             self._update_dialog.finished.connect(self._clear_update_dialog)
+            self._update_dialog.install_requested.connect(self.request_update_install)
         self._update_dialog.show()
         self._update_dialog.raise_()
         self._update_dialog.activateWindow()
+
+    def request_update_install(self, prepared: InstallHandoffResult) -> None:
+        """GUI-thread, user-confirmed intent only. Normal close owns cleanup."""
+        if (self._shutdown_protocol.started or self._update_install_token is not None
+                or not isinstance(prepared, InstallHandoffResult)
+                or prepared.status != 'ready' or not prepared.token):
+            return
+        if not workers_idle():
+            QMessageBox.warning(self, '暂不能安装更新', '请等待后台任务完成，再重试安装。')
+            return
+        self._update_install_token = prepared.token
+        self.close()
+
+    def finish_update_handoff(self) -> InstallHandoffResult | None:
+        """Entry point only, after the same ShutdownProtocol has completed."""
+        token, self._update_install_token = self._update_install_token, None
+        if token is None:
+            return None
+        result = self._shutdown_protocol.result
+        if not self._shutdown_protocol.finished or not result.can_apply_update:
+            return InstallHandoffResult('denied', public_message='未取得完整安全退出证据，更新未安装。')
+        return self._facade.handoff_update_install(token, result)
 
     def _clear_update_dialog(self, _result: int) -> None:
         self._update_dialog = None

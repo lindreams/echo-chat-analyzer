@@ -241,13 +241,18 @@ def submit(
     return worker
 
 
+def is_idle() -> bool:
+    """Read existing worker ownership only; no cancellation or waiting."""
+    return not _PENDING and not _RELAYS and QThreadPool.globalInstance().activeThreadCount() == 0
+
+
 def shutdown() -> bool:
     """Cancel without waiting; report only an already quiescent pool/relay set."""
     for worker in tuple(_PENDING):
         worker.cancel()
     pool = QThreadPool.globalInstance()
     pool.clear()
-    return not _PENDING and not _RELAYS and pool.activeThreadCount() == 0
+    return is_idle()
 
 
 def run_inline(

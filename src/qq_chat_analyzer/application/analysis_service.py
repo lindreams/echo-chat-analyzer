@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -59,6 +60,13 @@ from .errors import (
 from .import_request import ImportRequest
 from .import_service import ImportService
 from .scope_filter import AnalysisScopeMode, filter_messages
+from .shutdown_models import ShutdownStatus
+from .errors import ApplicationServiceError
+
+
+class AnalysisServiceClosing(ApplicationServiceError):
+    code = 'application_closing'
+    public_message = 'Echo 正在关闭。'
 
 
 _LOGGER = logging.getLogger("qq_chat_analyzer.desktop.identity")
@@ -108,11 +116,34 @@ class AnalysisApplicationService:
     ) -> None:
         """Create the service; the desktop build injects no legacy writer."""
         self._legacy_word_artifacts = legacy_word_artifacts
+        self._lifecycle_lock = threading.Lock()
+        self._closing = False
+        self._active = 0
+
+    @property
+    def is_idle(self) -> bool:
+        with self._lifecycle_lock:
+            return not self._closing and not self._active and self._legacy_word_artifacts is None
+
+    def shutdown(self) -> ShutdownStatus:
+        """Seal new analysis admission; do not wait for/certify active work."""
+        with self._lifecycle_lock:
+            self._closing = True
+            return (ShutdownStatus.UNKNOWN if self._active or self._legacy_word_artifacts is not None
+                    else ShutdownStatus.SUCCESS)
 
     def execute(self, request: AnalysisRequestDTO) -> AnalysisResultDTO:
         """Analyze supported local exports and return a privacy-safe result."""
-        with timed_stage("total"):
-            return self._execute(request)
+        with self._lifecycle_lock:
+            if self._closing:
+                raise AnalysisServiceClosing()
+            self._active += 1
+        try:
+            with timed_stage("total"):
+                return self._execute(request)
+        finally:
+            with self._lifecycle_lock:
+                self._active -= 1
 
     def _execute(self, request: AnalysisRequestDTO) -> AnalysisResultDTO:
         _validate_request(request)

@@ -37,6 +37,7 @@ from ...providers.qq_direct_snapshot_runtime import (
 from ...providers.napcat_qq_provider import NapCatQQWorkerGenerationChanged, NapCatQQError, NapCatQQAuthRejected
 from ...qq_db_identity import QQ_DB_SELF_NAMESPACE, canonical_qq_uin
 from ..errors import ApplicationServiceError
+from ..shutdown_models import ShutdownStatus
 from .qq_environment_config import QQEnvironmentConfigLoader
 from .qq_runtime_session import default_qq_runtime_session
 from .qq_provider_factory import QQReconnectRequired
@@ -186,6 +187,7 @@ class QQDirectDatabaseImportService:
         self._state = QQDirectDatabaseState.CLOSED
         self._startup_attempted = False
         self._shutdown_started = False
+        self._shutdown_status = ShutdownStatus.UNKNOWN
         self._active_acquisitions = 0
         self._condition = threading.Condition()
         self._reconnect_required = False
@@ -210,6 +212,7 @@ class QQDirectDatabaseImportService:
             self._reconnect_required = False
             self._startup_attempted = False
             self._shutdown_started = False
+            self._shutdown_status = ShutdownStatus.UNKNOWN
             self._state = QQDirectDatabaseState.CLOSED
 
     @contextmanager
@@ -290,23 +293,31 @@ class QQDirectDatabaseImportService:
             with self._condition:
                 self._starting = False
                 self._condition.notify_all()
-    def shutdown(self) -> None:
+    def shutdown(self) -> ShutdownStatus:
         """Transition to SHUTTING_DOWN, drain in-flight acquisitions, then recover.
 
         Entry, drain, recover and return are each logged with their own boundary
         and elapsed time, because a real shutdown that left an owned launcher
         tree running also left no way to tell which phase had stalled.
+
+        Return only this service's cleanup evidence, not source/runtime exit
+        permission. A drain timeout remains TIMED_OUT after late completion;
+        recover errors still raise and retain FAILED for repeated calls.
+        A repeat during cleanup returns UNKNOWN rather than waiting unbounded.
         """
         started_at = time.monotonic()
         shutdown_deadline = started_at + self.shutdown_budget_seconds
         with self._condition:
             if self._shutdown_started:
                 _LOGGER.info("QQ Direct DB shutdown ignored reason=already_started")
-                return
+                return self._shutdown_status
             self._shutdown_started = True
-            if self._state is QQDirectDatabaseState.CLOSED and not self._starting:
+            if (self._state is QQDirectDatabaseState.CLOSED and not self._starting
+                    and not self._startup_attempted and not self._active_acquisitions
+                    and self._runtime_client is None):
                 _LOGGER.info("QQ Direct DB shutdown skipped reason=closed")
-                return
+                self._shutdown_status = ShutdownStatus.SUCCESS
+                return self._shutdown_status
             self._state = QQDirectDatabaseState.SHUTTING_DOWN
             active = self._active_acquisitions
         _LOGGER.info(
@@ -337,6 +348,8 @@ class QQDirectDatabaseImportService:
                 ),
             )
         except Exception as error:
+            with self._condition:
+                self._shutdown_status = ShutdownStatus.FAILED
             _LOGGER.warning(
                 "QQ Direct DB recover failed error=%s",
                 type(error).__name__,
@@ -344,6 +357,14 @@ class QQDirectDatabaseImportService:
             raise
         else:
             _LOGGER.info("QQ Direct DB recover completed")
+            with self._condition:
+                # CLOSED alone is not proof: drain can time out while recover
+                # succeeds, and late completion cannot repair that timeout.
+                self._shutdown_status = (
+                    ShutdownStatus.SUCCESS
+                    if drained and not self._starting and not self._active_acquisitions
+                    else ShutdownStatus.TIMED_OUT
+                )
         finally:
             with self._condition:
                 self._state = QQDirectDatabaseState.CLOSED
@@ -351,6 +372,7 @@ class QQDirectDatabaseImportService:
                 "QQ Direct DB shutdown returned state=closed elapsed=%.2fs",
                 time.monotonic() - started_at,
             )
+        return self._shutdown_status
     def list_sessions(self) -> list[QQSession]:
         """Discover sessions from one fresh generation, then release it.
 
