@@ -467,7 +467,7 @@ class StubFacade:
             return [Path(self._data_root)]
         return []
 
-    def acquire_wechat_db_key(self, progress=None):
+    def acquire_wechat_db_key(self, progress=None, *, cancel_event=None):
         self.acquire_wechat_db_key_calls.append(progress)
         if self._connection_status_after_connect is not None:
             self._connection_status = self._connection_status_after_connect
@@ -1101,6 +1101,40 @@ class _IndependentDeferredExecutor:
         )
         self.tasks.append(task)
         return task
+
+
+def test_wechat_cancel_queued_attempt_cannot_start_key_and_fresh_attempt_can(qt_app):
+    class Facade(StubFacade):
+        def cancel_wechat_connection(self, cancel_event):
+            cancel_event.set()
+        def acquire_wechat_db_key(self, progress=None, *, cancel_event=None):
+            assert cancel_event is not None and not cancel_event.is_set()
+            return super().acquire_wechat_db_key(progress)
+    facade = Facade()
+    executor = _IndependentDeferredExecutor()
+    workspace = _wechat_guide_module().WeChatWorkspace(facade, executor=executor)
+    workspace._start_wechat_connect(_wechat_connection_config())
+    old = executor.tasks[0]
+    workspace.cancel_connection()
+    with pytest.raises(_facade_module().FacadeError) as error:
+        old.operation(lambda _: None)
+    assert error.value.code == "wechat_key_cancelled"
+    assert facade.acquire_wechat_db_key_calls == []
+    workspace._start_wechat_connect(_wechat_connection_config())
+    executor.tasks[1].operation(lambda _: None)
+    assert len(facade.acquire_wechat_db_key_calls) == 1
+
+
+def test_begin_shutdown_signals_wechat_attempt_without_waiting_on_gui(qt_app):
+    facade = StubFacade()
+    executor = _IndependentDeferredExecutor()
+    window = _main_window(qt_app, facade, executor=executor)
+    window.wechat_workspace._start_wechat_connect(_wechat_connection_config())
+    attempt = executor.tasks[-1]
+    assert window.begin_shutdown()
+    assert attempt.cancelled
+    assert window.await_shutdown(2)
+    assert not window.shutdown_protocol.result.can_apply_update
 
 
 def _drain(page):
@@ -7474,7 +7508,14 @@ def test_wechat_structured_progress_crosses_real_facade_and_worker(
         ),
         returncode=0,
         wait=lambda **_kwargs: 0,
+        closed=False,
     )
+    def close_after_readers(readers, *, deadline):
+        assert not any(reader.is_alive() for reader in readers)
+        process.stdout.close()
+        process.stderr.close()
+        process.closed = True
+    process.close_after_readers = close_after_readers
     snapshots = iter([[], [4242]])
     monkeypatch.setattr(
         wechat_key_service, "_find_weixin_pids",

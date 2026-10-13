@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,7 @@ from PySide6.QtWidgets import (
 
 from ..application.facade import (
     ChatSource,
+    FacadeError,
     WeChatConnectionProgress,
     WeChatEnvironmentConfig,
 )
@@ -198,6 +200,7 @@ class WeChatWorkspace(QWidget):
         self._wechat_login_progress = WeChatConnectionProgress.PREPARING
         self._connection_task: Any = None
         self._wechat_attempt_generation = 0
+        self._connection_cancel_event: threading.Event | None = None
         self._wechat_guide_image_path = default_wechat_login_guide_path()
         self._sessions_loaded = False
 
@@ -629,6 +632,8 @@ class WeChatWorkspace(QWidget):
         """
         self._wechat_attempt_generation += 1
         attempt_generation = self._wechat_attempt_generation
+        cancel_event = threading.Event()
+        self._connection_cancel_event = cancel_event
         self._wechat_login_progress = WeChatConnectionProgress.PREPARING
         self._wechat_connect_button.setText(_CANCEL_CONNECTION_LABEL)
         self._wechat_connect_button.setEnabled(True)
@@ -644,6 +649,7 @@ class WeChatWorkspace(QWidget):
                 config,
                 report,
                 capture_key=not reuse_key,
+                cancel_event=cancel_event,
             ),
             on_success=lambda status: (
                 self._after_wechat_key_acquired(status, attempt_generation)
@@ -673,11 +679,18 @@ class WeChatWorkspace(QWidget):
         progress: Any = None,
         *,
         capture_key: bool = True,
+        cancel_event: threading.Event | None = None,
     ) -> Any:
         """Save the directory, then acquire the key. Runs off the UI thread."""
+        def check_cancelled():
+            if cancel_event is not None and cancel_event.is_set():
+                raise FacadeError(code="wechat_key_cancelled", public_message="微信连接已取消。")
+        check_cancelled()
         self._facade.setup_wechat_environment(config)
+        check_cancelled()
         if capture_key:
-            self._facade.acquire_wechat_db_key(progress=progress)
+            self._facade.acquire_wechat_db_key(progress=progress, cancel_event=cancel_event)
+        check_cancelled()
         if progress is not None:
             progress(_WECHAT_READING_DATABASE)
         return self._facade.get_connection_status(ChatSource.WECHAT)
@@ -842,6 +855,13 @@ class WeChatWorkspace(QWidget):
     def cancel_connection(self) -> None:
         """Cancel an in-flight WeChat connection."""
         self._wechat_attempt_generation += 1
+        if self._connection_cancel_event is not None:
+            cancel = getattr(self._facade, "cancel_wechat_connection", None)
+            if callable(cancel):
+                cancel(self._connection_cancel_event)
+            else:
+                self._connection_cancel_event.set()
+            self._connection_cancel_event = None
         if self._connection_task is not None:
             cancel = getattr(self._connection_task, "cancel", None)
             if callable(cancel):

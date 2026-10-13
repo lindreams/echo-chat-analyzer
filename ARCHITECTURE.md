@@ -934,6 +934,15 @@ QQ 与微信的页面状态互相隔离。切换来源或返回数据源选择�
   无资源成功只适用于已知清点为空的关闭快照；未来更新编排还必须停止生产者，
   不得在可继续创建资源的界面缓存这个结果作为安装授权。
 
+- **微信 helper 清理由获取请求唯一拥有。** GUI 经 Facade 传递每次请求的取消
+  Event，取消按钮和窗口关闭均不在 GUI 线程等待；已取消的排队请求不能启动 helper。
+  Windows helper 创建时进入 Echo 自有 Job，不纳管或终止用户的 `Weixin.exe`。
+  进程树退出、reader join、PIPE 与 process/Job 句柄释放共用一次清理 deadline；
+  失败保留所有权，后续连接 worker 可重试清理，旧请求未结束不能启动第二个 helper。
+  Facade 后台关闭通过 setup 有界等待 key owner，清理失败/超时进入 `source_lifecycle`。
+  Job 空、Python 资源释放和 Node `CleanupHook` 是不同证据；即使前两者成功，
+  缺少最后一项及其他来源完整生命周期证明时仍为 `UNKNOWN`，不得用于更新安装准入。
+
 守护测试：`tests/test_gui_shutdown_protocol.py`、
 `tests/test_desktop_exit_ownership.py`、`tests/test_shutdown_ownership.py`，
 `tests/test_shutdown_results.py`、`tests/test_shutdown_worker_results.py`、

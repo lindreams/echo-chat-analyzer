@@ -23,7 +23,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ...resources import default_wechat_wx_key_dll_path
+from ...runtime.windows_job import launch_owned_process
 from ..errors import ApplicationServiceError
+from ..shutdown_models import ShutdownStatus
 from .wechat_connection_progress import WeChatConnectionProgress
 
 
@@ -34,6 +36,9 @@ DEFAULT_TIMEOUT_SECONDS = 600.0
 WECHAT_PROCESS_NAME = "Weixin.exe"
 HELPER_FILE_NAME = "wx_key_helper.cjs"
 _MAX_RETAINED_ERROR_LINES = 20
+_HELPER_WAIT_SLICE_SECONDS = 0.5
+_HELPER_RELEASE_SECONDS = 3.0
+_HELPER_TREE_POLL_SECONDS = 0.05
 _KEY_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
 # Process-local bridge for the manual WCDB diagnostic runner: the freshly
 # obtained key is exposed to child processes for the lifetime of this process
@@ -141,6 +146,17 @@ class WeChatKeyService:
         self._subprocess_runner = subprocess_runner
         self._process_launcher = process_launcher
         self._progress_callback = progress_callback
+        self._lifecycle_lock = threading.Lock()
+        self._cancel_event = threading.Event()
+        self._acquire_finished = threading.Event()
+        self._acquire_finished.set()
+        self._acquiring = False
+        self._closing = False
+        self._used = False
+        self._helper_process: Any = None
+        self._helper_tree_status = ShutdownStatus.UNKNOWN
+        self._helper_resource_status = ShutdownStatus.UNKNOWN
+        self._helper_readers: tuple[threading.Thread, ...] = ()
         self._legacy_injected = dll_loader is not None or process_finder is not None
         self._koffi_module_path = (
             Path(koffi_module_path) if koffi_module_path is not None
@@ -155,8 +171,111 @@ class WeChatKeyService:
         self,
         timeout: float | None = None,
         progress: Callable[[WeChatConnectionProgress], None] | None = None,
+        *, cancel_event: threading.Event | None = None,
     ) -> str:
         """Return one 64-hex database key, raising a user-safe error."""
+        with self._lifecycle_lock:
+            if self._closing:
+                self._check_cancelled()
+            if self._acquiring or self._helper_process is not None:
+                raise WeChatKeyUnavailable(
+                    "微信连接仍在进行或清理中，请稍后重试。",
+                    code="wechat_key_busy",
+                )
+            self._cancel_event = cancel_event if cancel_event is not None else threading.Event()
+            self._check_cancelled()
+            self._acquiring = True
+            self._acquire_finished.clear()
+            self._used = True
+        try:
+            key = self._acquire_key(timeout, progress)
+            with self._lifecycle_lock:
+                self._check_cancelled()
+                _expose_key_to_environment(key)
+            return key
+        finally:
+            with self._lifecycle_lock:
+                self._acquiring = False
+                self._acquire_finished.set()
+
+    def cancel(self) -> None:
+        """Request cancellation; the acquire owner alone releases its helper.
+
+        Admission stays occupied until that owner finishes cleanup. A launcher
+        already running may return later; its result is still owned by acquire.
+        """
+        with self._lifecycle_lock:
+            if self._acquiring:
+                self._cancel_event.set()
+
+    def shutdown(self, timeout: float = 0) -> ShutdownStatus:
+        """Close admission; only background callers opt into a bounded drain.
+
+        Tree/resource evidence cannot prove Node CleanupHook completion.
+        Once used, even a fully released helper remains UNKNOWN.
+        """
+        deadline = self._monotonic() + max(0.0, timeout)
+        with self._lifecycle_lock:
+            self._closing = True
+            self._cancel_event.set()
+            if not self._used:
+                return ShutdownStatus.SUCCESS
+        if timeout > 0:
+            if not self._acquire_finished.wait(max(0.0, deadline - self._monotonic())):
+                return ShutdownStatus.TIMED_OUT
+            status = self.retry_cleanup(timeout=max(0.0, deadline - self._monotonic()))
+            if status in (ShutdownStatus.FAILED, ShutdownStatus.TIMED_OUT):
+                return status
+        return ShutdownStatus.UNKNOWN
+
+    @property
+    def helper_tree_status(self) -> ShutdownStatus:
+        """Latest helper tree evidence only; excludes readers, pipes and handles."""
+        with self._lifecycle_lock:
+            return self._helper_tree_status
+
+    @property
+    def helper_resource_status(self) -> ShutdownStatus:
+        """Python/native-handle evidence, independent of Node CleanupHook."""
+        with self._lifecycle_lock:
+            return self._helper_resource_status
+
+    def retry_cleanup(self, timeout: float = _HELPER_RELEASE_SECONDS) -> ShutdownStatus:
+        """Retry retained resources under the existing single-owner admission.
+
+        Shutdown/cancel still only signal; a concurrent owner is never joined or
+        displaced here. A successful resource retry is not native-hook evidence.
+        """
+        with self._lifecycle_lock:
+            if self._acquiring:
+                return ShutdownStatus.UNKNOWN
+            process = self._helper_process
+            if process is None:
+                return self._helper_resource_status
+            readers = self._helper_readers
+            self._acquiring = True
+            self._acquire_finished.clear()
+        try:
+            return self._release_helper(
+                process, list(readers), process.returncode is not None,
+                deadline=self._monotonic() + max(0.0, timeout),
+            )
+        finally:
+            with self._lifecycle_lock:
+                self._acquiring = False
+                self._acquire_finished.set()
+
+    def _check_cancelled(self) -> None:
+        if self._cancel_event.is_set():
+            raise WeChatKeyUnavailable(
+                "已取消微信连接，请重新点击连接。", code="wechat_key_cancelled"
+            )
+
+    def _acquire_key(
+        self,
+        timeout: float | None,
+        progress: Callable[[WeChatConnectionProgress], None] | None,
+    ) -> str:
         _LOGGER.info("wechat.connect.start")
         timeout_seconds = self._timeout if timeout is None else timeout
         deadline = self._monotonic() + max(0.0, timeout_seconds)
@@ -178,7 +297,9 @@ class WeChatKeyService:
 
         report(WeChatConnectionProgress.PREPARING)
         try:
+            self._check_cancelled()
             key = self._acquire(deadline=deadline, progress=report)
+            self._check_cancelled()
         except Exception as error:
             _LOGGER.warning(
                 "wechat.key.capture success=false error_type=%s code=%s",
@@ -207,7 +328,6 @@ class WeChatKeyService:
 
         if not self._legacy_injected:
             key = self._acquire_with_helper(deadline, progress)
-            _expose_key_to_environment(key)
             return key
 
         pids = self._wait_for_new_pids(deadline, progress)
@@ -240,7 +360,6 @@ class WeChatKeyService:
                 key = self._poll_key(api, deadline)
                 if key:
                     self._remaining_budget(deadline)
-                    _expose_key_to_environment(key)
                     _LOGGER.info("wechat.key.capture key_capture_success=true")
                     return key
             finally:
@@ -307,6 +426,7 @@ class WeChatKeyService:
             self._sleep(min(self._poll_interval, remaining))
 
     def _remaining_budget(self, deadline: float) -> float:
+        self._check_cancelled()
         remaining = deadline - self._monotonic()
         if remaining <= 0:
             raise WeChatKeyUnavailable(
@@ -450,14 +570,25 @@ class WeChatKeyService:
         while the main thread waits for stdout. Timeouts are distinguished from
         launch failures because they need different user guidance.
         """
-        launcher = self._process_launcher or subprocess.Popen
+        launcher = self._process_launcher or (
+            launch_owned_process if os.name == "nt" else subprocess.Popen
+        )
         popen_options = dict(options)
         wait_timeout = popen_options.pop("timeout")
         popen_options["stdout"] = subprocess.PIPE
         popen_options["stderr"] = subprocess.PIPE
         popen_options["stdin"] = subprocess.DEVNULL
+        if launcher is launch_owned_process:
+            # Declare PIPE ownership before the process enters the atexit registry.
+            popen_options["external_readers"] = True
 
         started = self._monotonic()
+        self._check_cancelled()
+        with self._lifecycle_lock:
+            if self._helper_process is not None:
+                raise WeChatKeyUnavailable(
+                    "微信连接仍在清理中，请稍后重试。", code="wechat_key_busy"
+                )
         try:
             process = launcher(command, **popen_options)
         except subprocess.TimeoutExpired:
@@ -467,14 +598,17 @@ class WeChatKeyService:
         except (OSError, subprocess.SubprocessError):
             raise WeChatKeyUnavailable(_helper_launch_message()) from None
 
+        # From this point acquire is the sole release owner, even if a reader
+        # cannot be constructed/started or the launcher returned after shutdown.
+        with self._lifecycle_lock:
+            self._helper_process = process
+            self._helper_tree_status = ShutdownStatus.UNKNOWN
+            self._helper_resource_status = ShutdownStatus.UNKNOWN
+            self._helper_readers = ()
         recent_errors: list[str] = []
-        reader = threading.Thread(
-            target=self._drain_progress,
-            args=(process.stderr, recent_errors, progress),
-            daemon=True,
-        )
-        reader.start()
-
+        readers: list[threading.Thread] = []
+        register_readers = getattr(process, "set_external_readers", None)
+        process_exited = False
         stdout_lines: list[str] = []
 
         def _read_stdout(stream: Any) -> None:
@@ -489,33 +623,65 @@ class WeChatKeyService:
             except Exception:
                 return
 
-        stdout_reader = threading.Thread(
-            target=_read_stdout,
-            args=(process.stdout,),
-            daemon=True,
-        )
-        stdout_reader.start()
-
         try:
-            now = self._monotonic()
-            remaining = max(
-                0.0, min(deadline - now, wait_timeout - (now - started))
+            self._check_cancelled()
+            reader = threading.Thread(
+                target=self._drain_progress,
+                args=(process.stderr, recent_errors, progress),
+                daemon=True,
             )
-            process.wait(timeout=remaining)
+            readers.append(reader)
+            with self._lifecycle_lock:
+                self._helper_readers = tuple(readers)
+            if callable(register_readers):
+                register_readers(readers)
+            reader.start()
+            stdout_reader = threading.Thread(
+                target=_read_stdout, args=(process.stdout,), daemon=True,
+            )
+            readers.append(stdout_reader)
+            with self._lifecycle_lock:
+                self._helper_readers = tuple(readers)
+            if callable(register_readers):
+                register_readers(readers)
+            stdout_reader.start()
+            wait_budget = wait_timeout - (self._monotonic() - started)
+            while True:
+                self._check_cancelled()
+                remaining = min(deadline - self._monotonic(), wait_budget)
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(command, wait_timeout)
+                wait_slice = min(_HELPER_WAIT_SLICE_SECONDS, remaining)
+                try:
+                    process.wait(timeout=wait_slice)
+                except subprocess.TimeoutExpired:
+                    wait_budget -= wait_slice
+                    continue
+                process_exited = process.returncode is not None
+                if not process_exited:
+                    raise WeChatKeyUnavailable(
+                        "微信连接组件未能确认退出，请重试。",
+                        code="wechat_helper_exit_unknown",
+                    )
+                self._check_cancelled()
+                break
         except subprocess.TimeoutExpired:
-            self._terminate(process)
             raise WeChatKeyUnavailable(
                 _helper_timeout_message(), code="wechat_key_timeout"
             ) from None
         except (OSError, subprocess.SubprocessError):
-            self._terminate(process)
             raise WeChatKeyUnavailable(_helper_launch_message()) from None
         finally:
-            stdout_reader.join(timeout=1.0)
-            reader.join(timeout=1.0)
+            cleanup_status = self._release_helper(process, readers, process_exited)
+
+        if cleanup_status is not ShutdownStatus.SUCCESS:
+            raise WeChatKeyUnavailable(
+                "微信连接组件未完成清理，请稍后重试。",
+                code="wechat_helper_cleanup_incomplete",
+            )
 
         stdout = "".join(stdout_lines)
-        if process.returncode not in (0, None):
+        if process.returncode != 0:
             stderr = "\n".join(recent_errors)
             _log_helper_diagnostics(stderr, process.returncode)
             raise WeChatKeyUnavailable(
@@ -575,17 +741,123 @@ class WeChatKeyService:
             )
             return
 
-    @staticmethod
-    def _terminate(process: Any) -> None:
-        """Stop a helper that outlived its deadline so it stops hooking WeChat."""
+    def _release_helper(
+        self, process: Any, readers: list[threading.Thread], process_exited: bool,
+        *, deadline: float | None = None,
+    ) -> ShutdownStatus:
+        """One owner/deadline for tree, root, readers, pipes and native handles."""
+        if deadline is None:
+            deadline = self._monotonic() + _HELPER_RELEASE_SECONDS
+        if callable(getattr(process, "active_process_count", None)):
+            with self._lifecycle_lock:
+                tree_status = self._helper_tree_status
+            # A prior empty-Job observation remains valid on this same retained
+            # helper, including a partial close that already released its Job.
+            if tree_status is not ShutdownStatus.SUCCESS:
+                tree_status = self._release_helper_tree(process, deadline=deadline)
+            with self._lifecycle_lock:
+                self._helper_tree_status = tree_status
+            if tree_status is not ShutdownStatus.SUCCESS:
+                return tree_status
         try:
-            process.kill()
+            status = self._release_helper_resources(process, readers, process_exited, deadline)
+        except subprocess.TimeoutExpired:
+            status = ShutdownStatus.TIMED_OUT
         except Exception:
-            return
-        try:
-            process.wait(timeout=5.0)
-        except Exception:
-            return
+            status = ShutdownStatus.FAILED
+        with self._lifecycle_lock:
+            self._helper_resource_status = status
+            if status is ShutdownStatus.SUCCESS:
+                self._helper_process = None
+                self._helper_readers = ()
+        return status
+
+    def _cleanup_remaining(self, deadline: float) -> float:
+        remaining = deadline - self._monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired("wechat helper cleanup", 0)
+        return remaining
+
+    def _release_helper_resources(
+        self, process: Any, readers: list[threading.Thread], process_exited: bool,
+        deadline: float,
+    ) -> ShutdownStatus:
+        if not process_exited or process.returncode is None:
+            if not callable(getattr(process, "active_process_count", None)):
+                self._cleanup_remaining(deadline)
+                process.kill()
+            process.wait(timeout=self._cleanup_remaining(deadline))
+        if process.returncode is None:
+            return ShutdownStatus.UNKNOWN
+        for reader in readers:
+            if reader.ident is None:
+                continue
+            reader.join(timeout=self._cleanup_remaining(deadline))
+            if reader.is_alive():
+                return ShutdownStatus.TIMED_OUT
+        self._cleanup_remaining(deadline)
+        closer = getattr(process, "close_after_readers", None)
+        if callable(closer):
+            closer(readers, deadline=deadline)
+        else:
+            # Legacy/injected launchers may expose no bounded handle API. Drain
+            # their pipes but never invoke an arbitrary unbounded close().
+            status = ShutdownStatus.SUCCESS
+            for stream in (process.stdout, process.stderr):
+                if stream is None or getattr(stream, "closed", None) is True:
+                    continue
+                self._cleanup_remaining(deadline)
+                closer = getattr(stream, "close", None)
+                if callable(closer):
+                    try:
+                        closer()
+                    except Exception:
+                        status = ShutdownStatus.FAILED
+                else:
+                    status = ShutdownStatus.UNKNOWN
+            if status is not ShutdownStatus.SUCCESS:
+                return status
+        self._cleanup_remaining(deadline)
+        pipes_closed = all(stream is None or getattr(stream, "closed", None) is True
+                           for stream in (process.stdout, process.stderr))
+        if not pipes_closed or getattr(process, "closed", None) is not True:
+            return ShutdownStatus.UNKNOWN
+        return ShutdownStatus.SUCCESS
+
+    def _release_helper_tree(self, process: Any, *, deadline: float) -> ShutdownStatus:
+        """Prove the retained Job empty, never infer exit from kill/close/root."""
+        query = getattr(process, "active_process_count", None)
+        stop = getattr(process, "terminate_tree", None)
+        if not callable(query) or not callable(stop):
+            return ShutdownStatus.UNKNOWN
+        stopped = False
+        while True:
+            if self._monotonic() >= deadline:
+                return ShutdownStatus.TIMED_OUT
+            try:
+                count = query()
+            except Exception:
+                _LOGGER.warning("wechat.key.helper tree_exit_status=unknown reason=query_failed")
+                return ShutdownStatus.UNKNOWN
+            if self._monotonic() >= deadline:
+                return ShutdownStatus.TIMED_OUT
+            if count is None:
+                _LOGGER.warning("wechat.key.helper tree_exit_status=unknown reason=job_closed")
+                return ShutdownStatus.UNKNOWN
+            if type(count) is not int or count < 0:
+                return ShutdownStatus.UNKNOWN
+            if count == 0:
+                return ShutdownStatus.SUCCESS
+            if not stopped:
+                try:
+                    if stop() is not True:
+                        return ShutdownStatus.UNKNOWN
+                except Exception:
+                    return ShutdownStatus.FAILED
+                stopped = True
+                # Probe immediately after stopping, using the same deadline.
+                continue
+            self._sleep(max(0.0, min(_HELPER_TREE_POLL_SECONDS, deadline - self._monotonic())))
 
     @staticmethod
     def _finalize_key(stdout: Any) -> str:

@@ -14,6 +14,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -1096,6 +1097,10 @@ class _FakePopen:
             raise subprocess.TimeoutExpired(cmd="node", timeout=timeout or 0)
         return self.returncode
 
+    @property
+    def closed(self):
+        return self.stdout.closed and self.stderr.closed
+
 
 class _DelayedStdoutPopen:
     """Popen stand-in whose stdout opens only after stderr is written.
@@ -1131,6 +1136,10 @@ class _DelayedStdoutPopen:
     def kill(self):
         self.killed = True
 
+    @property
+    def closed(self):
+        return self.stdout.closed and self.stderr.closed
+
 
 class _DelayedStringIO:
     """StringIO whose content appears only after ``release`` is called."""
@@ -1138,6 +1147,10 @@ class _DelayedStringIO:
     def __init__(self) -> None:
         self._content: list[str] = []
         self._released = False
+        self.closed = False
+
+    def close(self):
+        self.closed = True
 
     def release(self, content: str) -> None:
         self._content.append(content)
@@ -1163,6 +1176,10 @@ class _BlockingLineStream:
 
     def close(self) -> None:
         self._closed = True
+
+    @property
+    def closed(self):
+        return self._closed
 
     def readline(self) -> str:
         while not self._lines:
@@ -1524,8 +1541,9 @@ def test_helper_failure_logs_safe_diagnostics(
     assert "process_found=true process_count=2" in caplog.text
     assert "hook_success=true" in caplog.text
     assert "key_capture_success=false" in caplog.text
-    assert "101" not in caplog.text
-    assert "202" not in caplog.text
+    messages = "\n".join(record.getMessage() for record in caplog.records)
+    assert "101" not in messages
+    assert "202" not in messages
 
 
 def test_helper_hook_failure_logs_safe_diagnostics(
@@ -1583,3 +1601,304 @@ def test_acquire_repeated_uses_newest_key(tmp_path: Path) -> None:
     service = _service(tmp_path, api=_FakeHookApi(key=second), pids=[1000])
     assert service.acquire() == second
     assert os.environ.get(module.KEY_ENVIRONMENT_VARIABLE) == second
+
+
+# R1: events hold the exact launch/wait/release boundary under test.
+class _CountedStream(io.StringIO):
+    def __init__(self, text=""):
+        super().__init__(text)
+        self.close_calls = 0
+
+    def close(self):
+        self.close_calls += 1
+        super().close()
+
+
+class _AdmissionHelper:
+    def __init__(self):
+        self.stdout = _CountedStream("ab12" * 16 + "\n")
+        self.stderr = _CountedStream()
+        self.returncode = None
+        self.kill_calls = 0
+        self.close_calls = 0
+        self.wait_entered = threading.Event()
+        self.wait_release = threading.Event()
+        self.close_entered = threading.Event()
+        self.close_release = threading.Event()
+        self.close_release.set()
+
+    def wait(self, timeout=None):
+        self.wait_entered.set()
+        assert self.wait_release.wait(5), "test did not release helper wait"
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired("fictional-helper", timeout)
+        return self.returncode
+
+    def kill(self):
+        self.kill_calls += 1
+        self.returncode = -1
+        self.wait_release.set()
+
+    def close(self):
+        self.close_calls += 1
+        self.close_entered.set()
+        assert self.close_release.wait(5), "test did not release helper close"
+        self.stdout.close()
+        self.stderr.close()
+
+    @property
+    def closed(self):
+        return self.stdout.closed and self.stderr.closed
+
+    def close_after_readers(self, readers, *, deadline):
+        assert not any(reader.is_alive() for reader in readers)
+        self.close()
+
+
+def _start_acquire(service):
+    outcomes = []
+
+    def run():
+        try:
+            outcomes.append(service.acquire())
+        except Exception as error:
+            outcomes.append(error)
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    return worker, outcomes
+
+
+def _join_acquire(worker):
+    worker.join(5)
+    assert not worker.is_alive(), "acquire did not finish"
+
+
+def test_r1_cancel_does_not_reopen_admission_during_launch(tmp_path):
+    helper = _AdmissionHelper()
+    entered, release = threading.Event(), threading.Event()
+    launches = []
+
+    def launch(*_args, **_kwargs):
+        launches.append(helper)
+        if len(launches) > 1:
+            return _FakePopen(stdout="cd34" * 16)
+        entered.set()
+        assert release.wait(5)
+        return helper
+
+    service = _streaming_service(tmp_path, launch)
+    snapshots = iter([[], [4242], [], [4242]])
+    service._process_finder = lambda: next(snapshots, [4242])
+    worker, outcomes = _start_acquire(service)
+    try:
+        assert entered.wait(5)
+        with pytest.raises(_module().WeChatKeyUnavailable) as busy:
+            service.acquire()
+        assert busy.value.code == "wechat_key_busy"
+        service.cancel()
+        with pytest.raises(_module().WeChatKeyUnavailable) as busy:
+            service.acquire()
+        assert busy.value.code == "wechat_key_busy"
+    finally:
+        release.set()
+        helper.wait_release.set()
+        _join_acquire(worker)
+    assert len(launches) == 1
+    assert outcomes[0].code == "wechat_key_cancelled"
+    assert helper.kill_calls == helper.close_calls == 1
+    assert _module().KEY_ENVIRONMENT_VARIABLE not in os.environ
+    service._process_launcher = lambda *_a, **_k: _FakePopen(stdout="cd34" * 16)
+    assert service.acquire() == "cd34" * 16
+
+
+def test_r1_shutdown_during_launch_adopts_late_helper(tmp_path):
+    from qq_chat_analyzer.application.shutdown_models import ShutdownStatus
+
+    helper = _AdmissionHelper()
+    entered, release = threading.Event(), threading.Event()
+
+    def launch(*_args, **_kwargs):
+        entered.set()
+        assert release.wait(5)
+        return helper
+
+    service = _streaming_service(tmp_path, launch)
+    worker, outcomes = _start_acquire(service)
+    try:
+        assert entered.wait(5)
+        assert service.shutdown() is ShutdownStatus.UNKNOWN
+        with pytest.raises(_module().WeChatKeyUnavailable) as closed:
+            service.acquire()
+        assert closed.value.code == "wechat_key_cancelled"
+    finally:
+        release.set()
+        helper.wait_release.set()
+        _join_acquire(worker)
+    assert outcomes[0].code == "wechat_key_cancelled"
+    assert helper.kill_calls == helper.close_calls == 1
+    assert helper.stdout.close_calls == helper.stderr.close_calls == 1
+    assert service.shutdown() is ShutdownStatus.UNKNOWN
+    assert helper.close_calls == 1
+
+
+@pytest.mark.parametrize("completed", [False, True])
+def test_r1_cancel_shutdown_and_completion_release_once(tmp_path, completed):
+    helper = _AdmissionHelper()
+    service = _streaming_service(tmp_path, lambda *_a, **_k: helper)
+    worker, outcomes = _start_acquire(service)
+    barrier = threading.Barrier(3)
+    errors = []
+
+    def request(action):
+        try:
+            barrier.wait(5)
+            action()
+        except Exception as error:
+            errors.append(error)
+
+    cancel = threading.Thread(target=request, args=(lambda: service.cancel(),))
+    shutdown = threading.Thread(target=request, args=(lambda: service.shutdown(),))
+    try:
+        assert helper.wait_entered.wait(5)
+        cancel.start()
+        shutdown.start()
+        barrier.wait(5)
+        cancel.join(5)
+        shutdown.join(5)
+        assert not cancel.is_alive() and not shutdown.is_alive()
+        if completed:
+            helper.returncode = 0
+    finally:
+        helper.wait_release.set()
+        _join_acquire(worker)
+    assert errors == []
+    assert outcomes[0].code == "wechat_key_cancelled"
+    assert helper.kill_calls == (0 if completed else 1)
+    assert helper.close_calls == 1
+
+
+@pytest.mark.parametrize("failed_start", [1, 2])
+def test_r1_reader_start_failure_keeps_release_owner(tmp_path, monkeypatch, failed_start):
+    helper = _AdmissionHelper()
+    helper.wait_release.set()
+    service = _streaming_service(tmp_path, lambda *_a, **_k: helper)
+    real_start, real_join = threading.Thread.start, threading.Thread.join
+    starts = 0
+    unstarted_joins = []
+
+    def start(reader):
+        nonlocal starts
+        starts += 1
+        if starts == failed_start:
+            raise RuntimeError("fictional reader start failure")
+        return real_start(reader)
+
+    def join(reader, *args, **kwargs):
+        if reader.ident is None:
+            unstarted_joins.append(reader)
+        return real_join(reader, *args, **kwargs)
+
+    monkeypatch.setattr(threading.Thread, "start", start)
+    monkeypatch.setattr(threading.Thread, "join", join)
+    with pytest.raises(RuntimeError, match="fictional reader start failure"):
+        service.acquire()
+    assert helper.kill_calls == helper.close_calls == 1
+    assert unstarted_joins == []
+
+
+def test_r1_admission_stays_closed_until_normal_release_finishes(tmp_path):
+    helper = _AdmissionHelper()
+    helper.returncode = 0
+    helper.wait_release.set()
+    helper.close_release.clear()
+    service = _streaming_service(tmp_path, lambda *_a, **_k: helper)
+    worker, outcomes = _start_acquire(service)
+    try:
+        assert helper.close_entered.wait(5)
+        service.cancel()
+        with pytest.raises(_module().WeChatKeyUnavailable) as busy:
+            service.acquire()
+        assert busy.value.code == "wechat_key_busy"
+    finally:
+        helper.close_release.set()
+        _join_acquire(worker)
+    assert outcomes[0].code == "wechat_key_cancelled"
+    assert helper.kill_calls == 0
+    assert helper.close_calls == 1
+
+
+def test_r1_shutdown_before_first_acquire_refuses_launch(tmp_path):
+    from qq_chat_analyzer.application.shutdown_models import ShutdownStatus
+
+    service = _streaming_service(tmp_path, lambda *_a, **_k: pytest.fail("launched after shutdown"))
+    assert service.shutdown() is ShutdownStatus.SUCCESS
+    with pytest.raises(_module().WeChatKeyUnavailable) as closed:
+        service.acquire()
+    assert closed.value.code == "wechat_key_cancelled"
+
+
+def test_r1_source_isolation_in_test_subprocess():
+    code = (
+        "from pathlib import Path; import sys, qq_chat_analyzer; "
+        "from qq_chat_analyzer.application.wechat import wechat_key_service; "
+        "root=Path(sys.argv[1]).resolve(); "
+        "assert Path(qq_chat_analyzer.__file__).resolve() == root/'qq_chat_analyzer/__init__.py'; "
+        "assert Path(wechat_key_service.__file__).resolve() == "
+        "root/'qq_chat_analyzer/application/wechat/wechat_key_service.py'; "
+        "print(wechat_key_service.__file__)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(SRC_ROOT)],
+        cwd=PROJECT_ROOT, env=dict(os.environ, PYTHONPATH=str(SRC_ROOT)),
+        capture_output=True, text=True, timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert Path(_module().__file__).resolve() == SRC_ROOT / "qq_chat_analyzer/application/wechat/wechat_key_service.py"
+
+
+def test_r1_failed_stop_does_not_launch_next_pid_candidate(tmp_path):
+    launches = []
+    helper = _FakePopen(timeout_after=True)
+
+    def failed_kill():
+        raise OSError("fictional stop failure")
+
+    helper.kill = failed_kill
+
+    def launch(*_a, **_k):
+        launches.append(helper)
+        return helper if len(launches) == 1 else _FakePopen(stdout="ab12" * 16)
+
+    service = _streaming_service(tmp_path, launch)
+    snapshots = iter([[], [4242, 4243]])
+    service._process_finder = lambda: next(snapshots, [4242, 4243])
+    with pytest.raises(_module().WeChatKeyUnavailable):
+        service.acquire()
+    assert len(launches) == 1
+    with pytest.raises(_module().WeChatKeyUnavailable) as busy:
+        service.acquire()
+    assert busy.value.code == "wechat_key_busy"
+
+
+def test_r1_pipe_close_failure_still_releases_other_pipe(tmp_path):
+    helper = _FakePopen(stdout="ab12" * 16)
+    helper.stdout = _CountedStream("ab12" * 16)
+    helper.stderr = _CountedStream()
+
+    def failed_close():
+        raise OSError("fictional close failure")
+
+    helper.stdout.close = failed_close
+    service = _streaming_service(tmp_path, lambda *_a, **_k: helper)
+    try:
+        with pytest.raises(_module().WeChatKeyUnavailable) as incomplete:
+            service.acquire()
+        assert incomplete.value.code == "wechat_helper_cleanup_incomplete"
+        assert helper.stderr.closed
+        assert helper.stderr.close_calls == 1
+        with pytest.raises(_module().WeChatKeyUnavailable) as busy:
+            service.acquire()
+        assert busy.value.code == "wechat_key_busy"
+    finally:
+        io.StringIO.close(helper.stdout)

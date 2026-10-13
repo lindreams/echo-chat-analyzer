@@ -20,6 +20,7 @@ Deliberate boundaries:
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -113,6 +114,9 @@ class WeChatSetupService:
         self._data_roots_detector = (
             data_roots_detector or detect_wechat_data_roots
         )
+        self._key_request_lock = threading.Lock()
+        self._key_request_generation = 0
+        self._key_commit_lock = threading.Lock()
 
     def check_setup(self) -> WeChatSetupStatus:
         """Report whether a usable configuration is stored, never raising."""
@@ -248,6 +252,7 @@ class WeChatSetupService:
     def acquire_db_key(
         self,
         progress: Callable[[WeChatConnectionProgress], None] | None = None,
+        *, cancel_event: threading.Event | None = None,
     ) -> str | None:
         """Acquire the WeChat database key and persist it, for the connect flow.
 
@@ -259,8 +264,26 @@ class WeChatSetupService:
         if self._key_service is None:
             return None
 
+        with self._key_request_lock:
+            self._key_request_generation += 1
+            generation = self._key_request_generation
+
+        def check_current_request():
+            with self._key_request_lock:
+                current = generation == self._key_request_generation
+            if not current or (cancel_event is not None and cancel_event.is_set()):
+                from .wechat_key_service import WeChatKeyUnavailable
+                raise WeChatKeyUnavailable("微信连接已取消。", code="wechat_key_cancelled")
+
+        check_current_request()
         _LOGGER.info("[wechat setup] acquire_db_key progress=%s", progress is not None)
-        key = self._key_service.acquire(progress=progress)
+        if cancel_event is None or not cancel_event.is_set():
+            retry = getattr(self._key_service, "retry_cleanup", None)
+            if callable(retry):
+                retry()  # Runs on the connection worker; never displaces acquire.
+        options = {"cancel_event": cancel_event} if cancel_event is not None else {}
+        key = self._key_service.acquire(progress=progress, **options)
+        check_current_request()
         if not key or not key.strip():
             return None
 
@@ -271,11 +294,26 @@ class WeChatSetupService:
             stored = WeChatEnvironmentConfig()
 
         config = self._apply_default_runtime(replace(stored, db_key=key))
-        self._config_writer.save(config)
-
-        if self._provider_factory is not None:
-            self._provider_factory.invalidate()
+        # Only connection workers wait here; GUI cancellation just sets its Event.
+        # A stale read is rejected. An already-started save must finish (including
+        # invalidation) before a newer request may commit, so it cannot overwrite it.
+        with self._key_commit_lock:
+            check_current_request()
+            self._config_writer.save(config)
+            if self._provider_factory is not None:
+                self._provider_factory.invalidate()
+            check_current_request()
         return key
+
+    def shutdown(self):
+        """Drain the key owner off the GUI thread; do not claim Node-hook proof."""
+        from ..shutdown_models import ShutdownStatus
+        if self._key_service is None:
+            return ShutdownStatus.SUCCESS
+        shutdown = getattr(self._key_service, "shutdown", None)
+        if not callable(shutdown):
+            return ShutdownStatus.UNKNOWN
+        return shutdown(timeout=3.0)
 
     def disconnect(self) -> Any:
         """Release the current WeChat connection key without deleting data.

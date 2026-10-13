@@ -129,6 +129,7 @@ def test_default_direct_db_step_window_covers_the_real_service_budget() -> None:
     assert window > service.shutdown_budget_seconds
     assert (
         window + 2 * facade_module.DEFAULT_SHUTDOWN_STEP_SECONDS
+        + facade._source_lifecycle_step_window()
         < importlib.import_module(
             "qq_chat_analyzer.gui.app"
         ).SHUTDOWN_WAIT_SECONDS

@@ -102,6 +102,7 @@ def _kernel32():
         "WaitForSingleObject": ([W.HANDLE, W.DWORD], W.DWORD),
         "GetExitCodeProcess": ([W.HANDLE, C.POINTER(W.DWORD)], W.BOOL),
         "TerminateProcess": ([W.HANDLE, W.UINT], W.BOOL),
+        "TerminateJobObject": ([W.HANDLE, W.UINT], W.BOOL),
     }
     for name, (args, result) in signatures.items():
         function = getattr(api, name)
@@ -138,7 +139,7 @@ class WindowsJobProcess:
     entire session. Neither waiting nor draining logs releases ownership.
     """
 
-    def __init__(self, api, info, job, args, stdout, stderr):
+    def __init__(self, api, info, job, args, stdout, stderr, *, external_readers=False):
         self.pid = info.dwProcessId
         self.args = args
         self.returncode = None
@@ -150,6 +151,7 @@ class WindowsJobProcess:
         self._lock = threading.RLock()
         self._close_lock = threading.RLock()
         self._readers = None
+        self._external_readers = () if external_readers else None
         self._output = [None, None]
         self._read_errors = []
 
@@ -188,6 +190,33 @@ class WindowsJobProcess:
                 self._job_handle, 1, C.byref(accounting), C.sizeof(accounting), None))
             return accounting.ActiveProcesses > 0
 
+    def active_process_count(self):
+        """Query a live Job; None means its handle was already closed.
+
+        Unlike tree_running's historical QQ contract, an unavailable Job is
+        never reported as empty. Query and close serialize on the same lock.
+        Native query failure raises rather than manufacturing exit evidence.
+        """
+        with self._lock:
+            if self._job_handle is None:
+                return None
+            accounting = _Accounting()
+            _check(self._api.QueryInformationJobObject(
+                self._job_handle, 1, C.byref(accounting), C.sizeof(accounting), None))
+            return accounting.ActiveProcesses
+
+    def terminate_tree(self):
+        """Terminate our tree without closing the Job needed to prove exit.
+
+        False means the Job was already closed; True only confirms the native
+        termination request, not process exit. Existing QQ kill/close stays as-is.
+        """
+        with self._lock:
+            if self._job_handle is None:
+                return False
+            _check(self._api.TerminateJobObject(self._job_handle, 1))
+            return True
+
     def terminate(self):
         """Close only our Job; never issue taskkill against the launcher PID."""
         with self._lock:
@@ -210,6 +239,8 @@ class WindowsJobProcess:
             raise ValueError("QQ owned launcher stdin is DEVNULL")
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._lock:
+            if self._external_readers is not None:
+                raise RuntimeError("PIPE readers belong to the helper owner")
             if self._readers is None:
                 self._readers = []
                 for index, stream in enumerate((self.stdout, self.stderr)):
@@ -231,6 +262,8 @@ class WindowsJobProcess:
 
     def close(self):
         """Idempotent session shutdown, including launcher and pipe resources."""
+        if self._external_readers is not None:
+            return self._close_external_readers(deadline=time.monotonic() + 5)
         with self._close_lock:
             self.terminate()
             self.wait(timeout=5)
@@ -246,10 +279,111 @@ class WindowsJobProcess:
                 with _LIVE_LOCK:
                     _LIVE.discard(self)
 
+    def set_external_readers(self, readers):
+        """Record the helper's existing readers before they start; never read PIPEs."""
+        with self._close_lock, self._lock:
+            if self.closed:
+                raise RuntimeError("Cannot register readers after process close")
+            if self._readers is not None:
+                raise RuntimeError("PIPE readers already belong to communicate")
+            self._external_readers = tuple(readers)
+
+    def _close_external_readers(self, *, deadline):
+        """Exit fallback: kill the tree and join only registered helper readers."""
+        remaining = lambda: max(0, deadline - time.monotonic())
+        if not self._close_lock.acquire(timeout=remaining()):
+            raise subprocess.TimeoutExpired(self.args, 5)
+        try:
+            if not self._lock.acquire(timeout=remaining()):
+                raise subprocess.TimeoutExpired(self.args, 5)
+            try:
+                self.terminate()  # Kill-on-close still covers every descendant.
+            finally:
+                self._lock.release()
+            try:
+                self.wait(timeout=remaining())
+                for reader in self._external_readers:
+                    if reader.ident is not None:
+                        reader.join(remaining())
+                self.close_after_readers(self._external_readers, deadline=deadline)
+            finally:
+                # A stuck reader retains its PIPE, but must not leak native handles.
+                if self._lock.acquire(timeout=remaining()):
+                    try:
+                        if self._process_handle is not None:
+                            _close_handle(self._api, self._process_handle)
+                            self._process_handle = None
+                    finally:
+                        self._lock.release()
+        finally:
+            self._close_lock.release()
+
+    def close_after_readers(self, readers, *, deadline):
+        """Release drained helper resources without communicate or new readers.
+
+        The caller owns/drains the pipes and supplies ONE monotonic deadline.
+        Successful closes are recorded individually, so retries skip released
+        resources. This additive API leaves QQ's existing close path unchanged.
+        """
+        def remaining():
+            value = deadline - time.monotonic()
+            if value <= 0:
+                raise subprocess.TimeoutExpired(self.args, 0)
+            return value
+
+        if not self._close_lock.acquire(timeout=remaining()):
+            raise subprocess.TimeoutExpired(self.args, 0)
+        try:
+            if not self._lock.acquire(timeout=remaining()):
+                raise subprocess.TimeoutExpired(self.args, 0)
+            try:
+                if any(reader.is_alive() for reader in (*readers, *(self._readers or ()))):
+                    raise RuntimeError("Cannot release pipes with active readers")
+                self.wait(timeout=remaining())
+                if self._job_handle is not None and self.active_process_count() != 0:
+                    raise RuntimeError("Cannot release a running Job")
+                errors = []
+                for stream in (self.stdout, self.stderr):
+                    if stream is None or stream.closed:
+                        continue
+                    remaining()
+                    try:
+                        stream.close()
+                    except Exception as error:
+                        errors.append(error)
+                    remaining()
+                for name in ("_process_handle", "_job_handle"):
+                    handle = getattr(self, name)
+                    if handle is None:
+                        continue
+                    remaining()
+                    try:
+                        _close_handle(self._api, handle)
+                    except Exception as error:
+                        errors.append(error)
+                    else:
+                        setattr(self, name, None)
+                    remaining()
+                pipes_closed = all(stream is None or stream.closed
+                                   for stream in (self.stdout, self.stderr))
+                if pipes_closed:
+                    # The wrappers already closed their raw readers. Discard
+                    # callbacks only after verifying both closures, not before.
+                    self._stream_resources.pop_all()
+                if errors:
+                    raise errors[0]
+                if self.closed and pipes_closed:
+                    with _LIVE_LOCK:
+                        _LIVE.discard(self)
+            finally:
+                self._lock.release()
+        finally:
+            self._close_lock.release()
+
 
 def launch_owned_process(args, *, cwd=None, env=None, stdin=None, stdout=None,
                          stderr=None, text=False, encoding=None, errors=None,
-                         creationflags=0):
+                         creationflags=0, external_readers=False):
     """Create an executable atomically inside a new kill-on-close Job.
 
     None standard streams become DEVNULL, including Frozen/windowed parents
@@ -350,7 +484,8 @@ def launch_owned_process(args, *, cwd=None, env=None, stdin=None, stdout=None,
         # pipe ends have closed successfully. Any earlier failure kills Job.
         for stream in (child_stdin, *child_streams):
             stream.close()
-        process = WindowsJobProcess(api, info, job, command_args, *parent_streams)
+        process = WindowsJobProcess(api, info, job, command_args, *parent_streams,
+                                    external_readers=external_readers)
         process._stream_resources = readers.pop_all()
         with _LIVE_LOCK:
             _LIVE.add(process)

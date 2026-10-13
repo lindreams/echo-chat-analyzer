@@ -654,6 +654,7 @@ class MainWindow(QMainWindow):
         """Start the single-flight shutdown protocol; later calls are ignored."""
         if self._shutdown_protocol.started:
             return False
+        self.wechat_workspace.cancel_connection()
         workers_idle = shutdown_workers()
         shutdown = getattr(self._facade, "shutdown", None)
 

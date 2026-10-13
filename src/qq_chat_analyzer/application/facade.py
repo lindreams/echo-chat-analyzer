@@ -404,6 +404,8 @@ class ChatAnalyzerFacade:
         self._shutdown_step_seconds = shutdown_step_seconds
         self._shutdown_lock = threading.Lock()
         self._shutdown_result: ShutdownResult | None = None
+        self._sources_closing = threading.Event()
+        self._source_publication_lock = threading.Lock()
 
     def check_for_updates(self, *, manual: bool = False) -> UpdateCheckResult:
         """Check on a worker; construction/startup never initiates a request."""
@@ -685,6 +687,7 @@ class ChatAnalyzerFacade:
     def acquire_wechat_db_key(
         self,
         progress: Callable[[WeChatConnectionProgress], None] | None = None,
+        *, cancel_event: threading.Event | None = None,
     ) -> str | None:
         """Acquire and persist the WeChat database key for the connect flow.
 
@@ -699,7 +702,16 @@ class ChatAnalyzerFacade:
             progress is not None,
         )
         with _translated_errors(ChatSource.WECHAT):
-            return service.acquire_db_key(progress=progress)
+            options = {"cancel_event": cancel_event} if cancel_event is not None else {}
+            return service.acquire_db_key(progress=progress, **options)
+
+    def cancel_wechat_connection(self, cancel_event: threading.Event) -> None:
+        """Signal the exact attempt, including queued work, without GUI waits.
+
+        The event reaches the key owner through acquire, so cancellation never
+        builds a source or accidentally signals a newer connection attempt.
+        """
+        cancel_event.set()
 
     def get_session_message_range(
         self,
@@ -1186,6 +1198,12 @@ class ChatAnalyzerFacade:
         forgotten by the process registry.
         """
         started_at = _monotonic()
+        with self._source_publication_lock:
+            self._sources_closing.set()
+        source_result = self._run_shutdown_step(
+            'source_lifecycle', self._shutdown_source_lifecycle,
+            window=self._source_lifecycle_step_window(),
+        )
         _LOGGER.info("QQ shutdown requested")
         results = [self._run_shutdown_step(
             _SHUTDOWN_STEP_DIRECT_DB,
@@ -1198,6 +1216,14 @@ class ChatAnalyzerFacade:
             _SHUTDOWN_STEP_QQ_RUNTIME,
             self._shutdown_runtime_and_credential,
         )]
+        results.append(source_result)
+        _LOGGER.info(
+            "QQ shutdown finished elapsed=%.2fs",
+            _monotonic() - started_at,
+        )
+        return ShutdownResult(tuple(results))
+
+    def _shutdown_source_lifecycle(self) -> ShutdownStatus:
         # Services currently expose no complete lifecycle/quiescence contract.
         # Even a successful recover RPC cannot prove every helper/read is gone.
         # Unpublished builders can already own resources or be in-flight.
@@ -1211,13 +1237,21 @@ class ChatAnalyzerFacade:
                 self._analysis_service,
             )
         )
-        results.append(ShutdownStepResult('source_lifecycle',
-                       ShutdownStatus.UNKNOWN if used_sources else ShutdownStatus.SUCCESS))
-        _LOGGER.info(
-            "QQ shutdown finished elapsed=%.2fs",
-            _monotonic() - started_at,
-        )
-        return ShutdownResult(tuple(results))
+        setup = self._wechat_setup_service_value
+        if setup is None:
+            setup = getattr(self._built_sources.get(ChatSource.WECHAT), 'setup', None)
+        if setup is not None:
+            shutdown = getattr(setup, 'shutdown', None)
+            if callable(shutdown):
+                status = shutdown()
+                if status in (ShutdownStatus.FAILED, ShutdownStatus.TIMED_OUT):
+                    return status
+        return ShutdownStatus.UNKNOWN if used_sources else ShutdownStatus.SUCCESS
+
+    def _source_lifecycle_step_window(self) -> float:
+        # Key-owner drain is 3s; include a 1s scheduling margin, while keeping
+        # the existing desktop exit window large enough for QQ's later steps.
+        return min(self._shutdown_step_seconds, 4.0)
 
     def _shutdown_runtime_and_credential(self) -> ShutdownStatus:
         from .qq.qq_process_registry import QQProcessRegistry
@@ -1610,7 +1644,11 @@ class ChatAnalyzerFacade:
         return service
 
     def _require_setup_service(self) -> Any:
+        if self._sources_closing.is_set():
+            raise FacadeError(code="application_closing", public_message="Echo 正在关闭。")
         service = self._wechat_setup_service
+        if self._sources_closing.is_set():
+            raise FacadeError(code="application_closing", public_message="Echo 正在关闭。")
         if service is None:
             bundle = self._source_bundle(ChatSource.WECHAT)
             service = getattr(bundle, "setup", None)
@@ -1624,7 +1662,23 @@ class ChatAnalyzerFacade:
             builder = self._source_builders.get(source)
             if builder is None:
                 raise SourceUnavailable(source)
-            self._built_sources[source] = builder()
+            if source is ChatSource.WECHAT and self._sources_closing.is_set():
+                raise FacadeError(code="application_closing", public_message="Echo 正在关闭。")
+            bundle = builder()
+            if source is ChatSource.WECHAT:
+                # Never hold this short publication lock while building/draining.
+                # Close takes the same boundary before its ownership snapshot.
+                with self._source_publication_lock:
+                    closing = self._sources_closing.is_set()
+                    if not closing:
+                        self._built_sources[source] = bundle
+                if closing:
+                    shutdown = getattr(getattr(bundle, "setup", None), "shutdown", None)
+                    if callable(shutdown):
+                        shutdown()
+                    raise FacadeError(code="application_closing", public_message="Echo 正在关闭。")
+            else:
+                self._built_sources[source] = bundle
         return self._built_sources[source]
 
     def _require_analysis_service(self) -> Any:
