@@ -39,7 +39,10 @@ export function createWorkspace(rootDirectory) {
     // A fixed program receives the path only through the environment. No shell
     // interpolation, PID liveness guessing or persistent lock-file deletion.
     const command = "$ErrorActionPreference='Stop'; try { $f=[IO.File]::Open($env:ECHO_SNAPSHOT_LEASE,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None); [Console]::WriteLine('ready'); [Console]::Out.Flush(); [Console]::In.ReadLine() | Out-Null; $f.Dispose() } catch { exit 1 }";
-    const child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', command], {
+    // Windows PowerShell is an OS component; a desktop launcher's PATH need
+    // not include its nested directory. Resolve it independently of PATH.
+    const powershell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    const child = spawn(powershell, ['-NoProfile', '-NonInteractive', '-Command', command], {
       windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'],
       env: { ...process.env, ECHO_SNAPSHOT_LEASE: join(root, 'lease.lock') },
     });

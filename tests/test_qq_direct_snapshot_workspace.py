@@ -1,6 +1,8 @@
 """Formal Windows snapshot lease and ownership, with fictional artifacts."""
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -8,6 +10,50 @@ import pytest
 PROJECT = Path(__file__).parents[1]
 MODULE = (PROJECT / 'scripts/qq_direct_db_snapshot/workspace.mjs').as_uri()
 pytestmark = pytest.mark.slow_integration
+
+
+def test_recover_without_powershell_on_path_still_validates_owned_files(tmp_path):
+    # Windows PowerShell lives below System32, which need not be on PATH.
+    # Resolve Node before restricting PATH so only the lease lookup is tested.
+    node = shutil.which('node')
+    root = tmp_path / 'fictional 工作区'
+    stage = root / 'staging'
+    stage.mkdir(parents=True)
+    (root / 'owner.json').write_text('{"kind":"echo-qq-snapshot","version":1}')
+    (stage / 'owner.json').write_text('{"kind":"echo-qq-snapshot","version":1}')
+    (stage / 'snapshot.db').write_bytes(b'fictional plaintext')
+    log = tmp_path / 'diagnostic.log'
+    environment = {
+        **os.environ,
+        'PATH': str(Path(os.environ['SystemRoot']) / 'System32'),
+        'QCE_LOG_FILE': str(log),
+    }
+    snapshot = (PROJECT / 'scripts/qq_direct_db_snapshot/snapshot.mjs').as_uri()
+    program = f"""
+import {{createEchoSnapshotApi}} from {json.dumps(snapshot)};
+console.log(JSON.stringify(await createEchoSnapshotApi({{}}, {{rootDirectory:process.argv[1]}}).recover()));
+"""
+
+    def recover():
+        result = subprocess.run(
+            [node, '--input-type=module', '-e', program, str(root)],
+            env=environment, capture_output=True, text=True, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    assert recover() == {'ok': True, 'status': 'recovered'}
+    assert not stage.exists()
+    assert 'stage=recover_finished' in log.read_text()
+
+    # Fixing executable discovery must not bypass ownership validation.
+    stage.mkdir()
+    (stage / 'owner.json').write_text('{"kind":"echo-qq-snapshot","version":1}')
+    unknown = stage / 'unknown.txt'
+    unknown.write_bytes(b'fictional unrelated file')
+    assert recover() == {'ok': False, 'code': 'recover_failed', 'status': 'failed'}
+    assert unknown.read_bytes() == b'fictional unrelated file'
+    assert 'failure_stage=cleanup guard_code=workspace_invalid' in log.read_text()
 
 
 def _run(root, operation):
