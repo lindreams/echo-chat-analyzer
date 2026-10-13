@@ -128,6 +128,36 @@ def test_parent_cycles_do_not_hang_or_hide_user_qq(native_api):
     assert _module().find_conflicting_qq_pids((10,)) == [11, 12, 20]
 
 
+@pytest.mark.parametrize("external_session", [1, 2, 0])
+def test_unowned_qq_blocks_regardless_of_windows_session(native_api, external_session):
+    # Fictional Echo runs in session 1. Session 2 models another signed-in
+    # desktop; session 0 models a noninteractive session. Toolhelp's process
+    # entry has no session ID, so the session metadata stays in this fixture.
+    # This characterizes current blocking, not proof that ignoring it is safe.
+    processes = [
+        {"pid": 10, "parent": 1, "name": "NapCatWinBootMain.exe", "session": 1},
+        {"pid": 11, "parent": 10, "name": "QQ.exe", "session": 1},
+        {"pid": 20, "parent": 1, "name": "QQ.exe", "session": external_session},
+    ]
+    api = native_api(_SnapshotApi([
+        (row["pid"], row["parent"], row["name"]) for row in processes
+    ]))
+    assert _module().find_conflicting_qq_pids((10,)) == [20]
+    assert api.closed == [api.handle]
+
+
+def test_detection_reads_a_fresh_snapshot_after_external_qq_exits(native_api):
+    first = native_api(_SnapshotApi([(501, 1, "QQ.exe")]))
+    assert _module().find_conflicting_qq_pids(()) == [501]
+    assert first.closed == [first.handle]
+
+    # Keep the loaded DLL and detector; only the fictional OS snapshot changes.
+    first.rows = []
+    first.index = 0
+    assert _module().find_conflicting_qq_pids(()) == []
+    assert first.closed == [first.handle, first.handle]
+
+
 @pytest.mark.parametrize("stage", ["snapshot", "first", "next"])
 @pytest.mark.parametrize("error", [0, 5, 6, 299])
 def test_detection_fails_closed_on_native_error(native_api, stage, error):

@@ -344,6 +344,62 @@ def test_process_wait_timeout_does_not_launch(monkeypatch):
     assert launcher.calls == 0
 
 
+@pytest.mark.parametrize("first_sample,expected_code", [
+    ([101], "qq_process_exit_timeout"),
+    (OSError("fictional snapshot failure"), "qq_process_detection_failed"),
+])
+def test_same_bridge_rechecks_processes_after_failed_attempt(
+    monkeypatch, first_sample, expected_code,
+):
+    # Catch a failed attempt retaining a launch/wait guard or cached conflict.
+    # A zero deadline makes the timeout deterministic without sleeping.
+    bridge, launcher, observed = _process_wait_bridge(
+        monkeypatch, [first_sample, []], process_wait_timeout=0,
+    )
+    failed = bridge.start_auth_flow()
+    assert failed.code == expected_code
+    assert failed.state is _connection_module().ConnectionState.ERROR
+    assert launcher.calls == 0
+    assert bridge.get_snapshot().state is _connection_module().ConnectionState.DISCONNECTED
+    assert bridge.is_qrcode_ready() is False
+
+    # External QQ has exited (or enumeration recovered). Reuse the bridge,
+    # without disconnecting it or manually resetting any internal state.
+    progress = []
+    retried = bridge.start_auth_flow(progress.append)
+    assert observed == [first_sample, []]
+    assert retried.state is _connection_module().ConnectionState.WAITING_AUTH
+    assert launcher.calls == 1
+    assert "请完全退出 QQ" not in progress
+    assert _bridge_module().PROGRESS_WAITING_LOGIN in progress
+
+
+def test_same_bridge_retries_after_cancelled_conflict_wait(monkeypatch):
+    bridge, launcher, observed = _process_wait_bridge(monkeypatch, [[101], []])
+    old = threading.Event()
+
+    def cancel_when_waiting(message):
+        if message == "请完全退出 QQ":
+            old.set()
+
+    cancelled = bridge.start_auth_flow(cancel_when_waiting, cancel_event=old)
+    assert cancelled.code == "qq_auth_cancelled"
+    assert launcher.calls == 0
+    assert bridge.get_snapshot().state is _connection_module().ConnectionState.DISCONNECTED
+    assert bridge.is_qrcode_ready() is False
+
+    current = threading.Event()
+    retried = bridge.start_auth_flow(cancel_event=current)
+    assert retried.state is _connection_module().ConnectionState.WAITING_AUTH
+    assert observed == [[101], []]
+    assert launcher.calls == 1
+    # Cleanup queued by the old cancelled worker must preserve the new wait.
+    bridge.cancel_auth_flow(old)
+    assert bridge.get_snapshot().state is _connection_module().ConnectionState.WAITING_AUTH
+    assert bridge.start_auth_flow(cancel_event=current).state is _connection_module().ConnectionState.WAITING_AUTH
+    assert launcher.calls == 1
+
+
 def test_process_wait_timeout_has_safe_phase_and_duration(monkeypatch, caplog):
     bridge, launcher, _ = _process_wait_bridge(monkeypatch, [[87654321]], process_wait_timeout=0)
     with caplog.at_level("INFO", logger=_bridge_module()._LOGGER.name):
