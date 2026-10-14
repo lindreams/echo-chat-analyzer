@@ -4,6 +4,8 @@ import os
 import subprocess
 import sys
 import time
+from queue import Queue
+from threading import Thread
 
 import pytest
 
@@ -17,6 +19,209 @@ def native():
     name = 'qq_chat_analyzer.application.windows_update_broker'
     assert importlib.util.find_spec(name) is not None, 'Windows witnesses are missing'
     return importlib.import_module(name)
+
+
+def test_startup_admission_is_shared_and_excludes_maintenance(tmp_path):
+    mod = native()
+    path = tmp_path / '.echo-startup-admission'
+    with mod.StartupAdmission(path), mod.StartupAdmission(path):
+        with pytest.raises(OSError):
+            mod.MaintenanceLease(path)
+        with pytest.raises(OSError):
+            path.unlink()
+    with mod.MaintenanceLease(path):
+        with pytest.raises(OSError):
+            mod.StartupAdmission(path)
+    with mod.StartupAdmission(path):
+        pass
+
+
+def _admission_child(path, kind):
+    script = '''
+import sys, os
+print('pid:' + str(os.getpid()), flush=True)
+from pathlib import Path
+from qq_chat_analyzer.application.windows_update_broker import StartupAdmission, MaintenanceLease
+print('ready', flush=True)
+sys.stdin.readline()
+try:
+    handle = (StartupAdmission if sys.argv[2] == 'startup' else MaintenanceLease)(Path(sys.argv[1]))
+except OSError:
+    print('denied', flush=True)
+else:
+    print('held', flush=True)
+    sys.stdin.readline()
+    handle.close()
+'''
+    child = subprocess.Popen([sys.executable, '-u', '-c', script, str(path), kind],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    child.actual_pid = int(_line(child).removeprefix('pid:'))
+    return child
+
+
+def _line(child):
+    result = Queue()
+    Thread(target=lambda: result.put(child.stdout.readline().strip()), daemon=True).start()
+    return result.get(timeout=5)
+
+
+def _desktop_child(root, hook=False):
+    script = '''
+import sys, os, importlib.abc, importlib.util
+print('pid:' + str(os.getpid()), flush=True)
+from types import SimpleNamespace
+from pathlib import Path
+sys.frozen = True
+sys.executable = str(Path(sys.argv[1]) / 'current' / 'Echo.exe')
+class App:
+    def set_args(self, args): return self
+    def set_auto_apply_on_startup(self, value):
+        assert value is False
+        return self
+    def run(self):
+        if sys.argv[2] == 'hook': raise SystemExit(0)
+sys.modules['velopack'] = SimpleNamespace(App=App)
+class GUI(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == 'qq_chat_analyzer.gui.app':
+            return importlib.util.spec_from_loader(fullname, self)
+    def create_module(self, spec): return None
+    def exec_module(self, module):
+        print('gui-imported', flush=True)
+        module._run_gui = lambda args: 7
+sys.meta_path.insert(0, GUI())
+from qq_chat_analyzer.desktop import main
+print('result:' + str(main([])), flush=True)
+sys.stdin.readline()
+'''
+    child = subprocess.Popen([sys.executable, '-u', '-c', script, str(root),
+        'hook' if hook else 'normal'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    child.actual_pid = int(_line(child).removeprefix('pid:'))
+    return child
+
+
+def _stop_child(child):
+    if child.poll() is None:
+        # Windows venv redirectors can have a distinct child PID. Terminate only
+        # the synthetic PID reported through this child's private pipe.
+        import _winapi
+        try:
+            handle = _winapi.OpenProcess(1, False, child.actual_pid)
+        except OSError:
+            pass
+        else:
+            try:
+                _winapi.TerminateProcess(handle, 77)
+            finally:
+                _winapi.CloseHandle(handle)
+    child.wait(timeout=5)
+    for stream in (child.stdin, child.stdout, child.stderr):
+        stream.close()
+
+
+def test_desktop_rejects_before_gui_import_during_maintenance(tmp_path):
+    with native().MaintenanceLease(tmp_path / '.echo-startup-admission'):
+        child = _desktop_child(tmp_path)
+        try:
+            assert _line(child) == 'result:75'
+        finally:
+            _stop_child(child)
+
+
+def test_desktop_retains_admission_after_gui_returns_until_process_exit(tmp_path):
+    child = _desktop_child(tmp_path)
+    try:
+        assert _line(child) == 'gui-imported'
+        assert _line(child) == 'result:7'
+        with pytest.raises(OSError):
+            native().MaintenanceLease(tmp_path / '.echo-startup-admission')
+        child.stdin.write('exit\n')
+        child.stdin.flush()
+        assert child.wait(timeout=5) == 0
+    finally:
+        _stop_child(child)
+    with native().MaintenanceLease(tmp_path / '.echo-startup-admission'):
+        pass
+
+
+def test_desktop_unknown_admission_failure_is_closed(tmp_path):
+    (tmp_path / '.echo-startup-admission').mkdir()
+    child = _desktop_child(tmp_path)
+    try:
+        assert _line(child) == 'result:75'
+    finally:
+        _stop_child(child)
+
+
+def test_installer_hook_dispatch_still_exits_before_admission(tmp_path):
+    with native().MaintenanceLease(tmp_path / '.echo-startup-admission'):
+        child = _desktop_child(tmp_path, hook=True)
+        try:
+            assert child.wait(timeout=5) == 0
+            assert child.stdout.read() == ''
+        finally:
+            _stop_child(child)
+
+
+def test_pre_admission_suspended_package_process_can_still_be_force_stopped(tmp_path,
+                                                                          recording_exe):
+    # Reproduce the OS boundary, not a fake invocation of the real updater:
+    # CreateProcess maps an image before even its first instruction can acquire
+    # admission. Velopack's directory selection has no admission-state filter.
+    import shutil
+    import _winapi
+    from qq_chat_analyzer.application.setup_update_broker import WaitStatus
+    current = tmp_path / 'current'
+    current.mkdir()
+    image = current / 'Echo.exe'
+    shutil.copyfile(recording_exe, image)
+    with native().MaintenanceLease(tmp_path / '.echo-startup-admission'):
+        child = subprocess.Popen([str(image), 'hold'],
+            creationflags=0x4 | subprocess.CREATE_NO_WINDOW)  # CREATE_SUSPENDED
+        try:
+            with native().ProcessHandle.open(child.pid) as witness:
+                assert os.path.samefile(witness.identity().image, image)
+                assert child.poll() is None
+                # Same rights as 1.2.161 get_processes_running_in_directory.
+                handle = _winapi.OpenProcess(0x1000 | 1, False, child.pid)
+                try:
+                    _winapi.TerminateProcess(handle, 77)
+                finally:
+                    _winapi.CloseHandle(handle)
+                exited = witness.wait(time.monotonic() + 5)
+                assert exited.status is WaitStatus.EXITED and exited.exit_code == 77
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+
+
+@pytest.mark.parametrize('first', ['startup', 'maintenance', 'simultaneous'])
+def test_real_subprocess_admission_race_has_exactly_one_winner(tmp_path, first):
+    # Synchronize starts and retain the winner until both results are observed.
+    children = {kind: _admission_child(tmp_path / '.echo-startup-admission', kind)
+                for kind in ('startup', 'maintenance')}
+    try:
+        for child in children.values():
+            assert _line(child) == 'ready'
+        results = {}
+        order = list(children) if first == 'simultaneous' else [first,
+            'maintenance' if first == 'startup' else 'startup']
+        for kind in order:
+            children[kind].stdin.write('go\n')
+            children[kind].stdin.flush()
+            if first != 'simultaneous':
+                results[kind] = _line(children[kind])
+        if first == 'simultaneous':
+            results = {kind: _line(child) for kind, child in children.items()}
+        assert sorted(results.values()) == ['denied', 'held']
+        if first != 'simultaneous':
+            assert results[first] == 'held'
+    finally:
+        for child in children.values():
+            _stop_child(child)
 
 
 @pytest.mark.parametrize('code', [0, 7])

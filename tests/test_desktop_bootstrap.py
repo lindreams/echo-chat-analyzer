@@ -15,6 +15,24 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize('runtime', ['source', 'portable', 'portable-current'])
+def test_unmanaged_runtime_does_not_open_setup_admission(monkeypatch, tmp_path, runtime):
+    from qq_chat_analyzer import desktop
+    from qq_chat_analyzer.application import windows_update_broker
+    monkeypatch.setattr(sys, 'frozen', runtime != 'source', raising=False)
+    monkeypatch.setattr(sys, 'executable', str(tmp_path / (
+        'Echo.exe' if runtime == 'portable' else 'current/Echo.exe')))
+    if runtime == 'portable-current':
+        (tmp_path / '.portable').touch()
+
+    def unexpected(*args):
+        raise AssertionError('Unmanaged runtime opened Setup admission')
+
+    monkeypatch.setattr(windows_update_broker, 'StartupAdmission', unexpected)
+    desktop._admit_setup_startup()
+    assert not (tmp_path / '.echo-startup-admission').exists()
+
+
 def test_importing_frozen_entry_does_not_import_gui(monkeypatch):
     class BlockGUI(importlib.abc.MetaPathFinder):
         def find_spec(self, fullname, path=None, target=None):

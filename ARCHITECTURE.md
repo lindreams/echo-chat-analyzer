@@ -439,8 +439,13 @@ apply 预约共享锁，预约前的撤销禁止副作用。预约后已经开�
 `application/windows_update_broker.py` 已提供 Windows 原生进程句柄、身份捕获、绝对期限
 等待、退出码查询、文件防写/删共享句柄和排他 Broker 文件预约。进程使用同步与有限查询
 权限，等待复用同一保留句柄，失败不能成为退出成功。
-这些原语尚非完整 `WitnessSource` 或独立更新执行器：排他文件预约只排斥其他 Broker，
-真实子进程测试证明其不能阻止另一个包进程启动，不能据此签发 `LeaseStatus.HELD`。
+桌面 Setup `current` 入口在 SDK Hook 分派后、GUI 导入前取得安装根目录
+`.echo-startup-admission` 的共享句柄，并保留到进程终止；维护方须在原实例正常退出后
+对同一文件取得排他句柄。真实 Windows 子进程验证双方竞争只有一方成功，失败拒绝启动。
+Source/Portable 不取得此准入。此机制保护受管 GUI 进入，不能阻止 Windows 在准入代码
+执行前创建/映射包进程；已挂起的新包进程仍可被目录式强杀终止。固定 Velopack 1.2.161
+apply 无条件调用该强杀且忽略返回错误，不能保证不误伤新实例。
+这些原语尚非完整 `WitnessSource` 或独立更新执行器，不能据此签发 `LeaseStatus.HELD`。
 在生产者准入及其跨更新生命周期未闭合前，不接通 P2 安装或现有 A3 SDK 安装路径；
 当前处于安全阻塞，尚未到 0.2.0 联合验收。证据见
 [P2 实现与阻塞记录](docs/research/2026-10-14-p2-native-broker-progress.md)。

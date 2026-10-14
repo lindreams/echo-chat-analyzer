@@ -184,3 +184,14 @@ class MaintenanceLease(FileGuard):
     """
     def __init__(self, path: Path):
         self._open(Path(path), access=0x80000000 | 0x40000000, sharing=0, disposition=4)
+
+
+class StartupAdmission(FileGuard):
+    """Shared lifetime admission; maintenance must use the identical root file.
+
+    No delete sharing: a live admission cannot be bypassed by replacing its file.
+    An exclusive maintenance holder denies new admission atomically in CreateFile.
+    This does not prevent Windows creating a process before it runs admission.
+    """
+    def __init__(self, path: Path):
+        self._open(Path(path), access=0x80000000, sharing=3, disposition=4)

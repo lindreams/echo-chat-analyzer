@@ -79,3 +79,54 @@ worktree/src，实际导入路径属于本 worktree，未修改共享环境。
 
 当前功能不满足“等待 0.2.0 联合验收”：Windows 原语和协议修复可以审查，完整 Broker 与
 A3 安全安装交接尚未完成；P1 生产门始终关闭。
+
+## PR #45 后续：最小启动准入与 SDK 阻塞结论
+
+本阶段保留原实现，仅增加 `StartupAdmission` 与共享桌面入口的早期准入。
+Windows Frozen Setup 的 `current` 入口在 SDK Hook 分派后、GUI 导入前打开安装根目录
+`.echo-startup-admission`。启动使用 READ + FILE_SHARE_READ/WRITE，维护使用 READ/WRITE
+及无共享，同一内核文件对象原子决定成功方。启动句柄保留到进程终止，不在 GUI 返回或
+atexit 时释放；Source/Portable 不创建该文件。未知 IO、目录、reparse 等打开失败均返回
+75，不进入 GUI。布局判定不是安装身份认证，不替代 Broker 证明。
+
+维护方须先用保留的 owner 句柄确认正常退出，再对该同一文件取得排他句柄。新启动先赢
+则维护失败、拒绝 apply；维护先赢则新启动拒绝进入 GUI。原独立 Broker 预约不能替代它。
+没有添加反复进程扫描、重写协议或接通生产安装；根目录生命周期、旧版本/非受管 helper
+及完整 WitnessSource 仍未获此最小实现证明。
+
+TDD：原语测试先因原语缺失失败；桌面测试先复现维护期间 GUI 仍导入、GUI 返回后没有
+准入保护、未知失败仍启动，然后实现 GREEN。真实 Windows 子进程覆盖启动先赢、维护
+先赢、同时竞争（保留胜方直到双方结果可见）、共享多实例、禁止删除、正常退出释放、
+GUI 返回后保留、Hook 先退出、未知失败拒绝。测试用私有管道报告的实际合成 PID 清理，
+避免 venv redirector 外层退出与内部进程清理的时间差；不清理非测试进程。
+
+最终 focused：295 passed，含 24 项 native slow_integration、10 项 bootstrap，以及此前
+协议/P1/A3/GUI/本地 SDK 回归。Full/Fast 未重新运行：此前已确认共享环境缺少 jieba 字典
+且无可用替代环境；没有安装依赖或修改环境。focused 不代表 Full 通过。
+
+### Velopack 1.2.161 核对
+
+- [util_windows.rs L32–94](https://github.com/velopack/velopack/blob/1.2.161/src/bins/src/shared/util_windows.rs#L32)：
+  枚举 PID，以 QUERY_LIMITED_INFORMATION | TERMINATE 打开句柄，查询镜像并按安装根
+  目录筛选，只跳过更新器自身，不检查准入或新实例授权。
+- [process_win.rs L395–403](https://github.com/velopack/velopack/blob/1.2.161/src/lib-rust/src/process_win.rs#L395)：
+  kill_process 调用 TerminateProcess(handle, 1)。
+- [apply_windows_impl.rs L136–158](https://github.com/velopack/velopack/blob/1.2.161/src/bins/src/commands/apply_windows_impl.rs#L136)：
+  替换 current 前调用 force_stop_package，忽略返回结果。
+- [apply.rs L21–59](https://github.com/velopack/velopack/blob/1.2.161/src/bins/src/commands/apply.rs#L21)：
+  restart 只控制 apply 后重启，wait/Hook 模式不能关闭目录强杀。
+
+实际边界测试 `test_pre_admission_suspended_package_process_can_still_be_force_stopped`：
+维护句柄持有期间，CREATE_SUSPENDED 创建虚构 `current/Echo.exe`，真实镜像句柄确认其
+路径和存活，然后以 SDK 相同权限打开并强杀，原保留句柄观察到终止。程序第一条指令
+尚未执行，Python/GUI 内的准入来不及阻止该进程被目录筛选并终止。该测试验证源码所用
+Windows 原语，没有运行真实 Update.exe，不能称为完整更新器二进制 E2E。
+
+**技术结论：准入可保护受管 GUI 进入，但原版 1.2.161 不能保证不误伤新建实例。**
+按用户要求停止安装侧开发，PR 保持 Draft，生产门关闭，不能进入联合验收。
+
+最小替代方案：当前保留检查/下载与人工安装提示，不执行应用内 SDK apply。继续自动
+安装需先采用可核验的禁用目录强杀、遇占用/无法证明安全即中止的 updater 模式或最小
+上游补丁，再固定更新器摘要并补真实交接测试。no-wait/no-restart、额外进程扫描、更早
+的 Python 行或包内 launcher 都不能消除映射到首条指令的窗口。本阶段没有修改第三方
+更新器、升级 SDK、发布包、合并 PR 或启用生产安装。
