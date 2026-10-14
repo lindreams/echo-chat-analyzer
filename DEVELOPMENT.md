@@ -23,8 +23,22 @@ The project is designed to:
 
 ## 2. Development Environment
 
-Requirements: - Windows (primary development platform) - Python 3.x -
-Git
+Requirements: - Windows (primary development platform) - Python - Git
+
+For QQ development, use Python 3.11+; the fresh-clone acceptance on
+2026-10-14 verified Python 3.13.9 at public main commit
+`6ee8828a4574bcbab81903da2442a8690ba6f6fc`.
+The existing `pyproject.toml` declaration remains `requires-python = ">=3.10"`,
+but QQ workspace validation in
+`src/qq_chat_analyzer/application/qq/qq_runtime_workspace.py` uses
+`hashlib.file_digest`, which is available only in Python 3.11+.
+This is a known inconsistency; Python 3.10 was not verified by that acceptance,
+and this documentation update does not change the project's global minimum.
+
+Some JavaScript focused tests require a system Node.js executable on `PATH`.
+Node.js is not a separate prerequisite for the NapCat bootstrap or the GUI
+initialization verified in that acceptance. Install it when running tests that
+execute the JavaScript helpers; the `dev` Python extra does not install it.
 
 The project uses a Python virtual environment:
 
@@ -54,6 +68,39 @@ Install the complete development environment from `pyproject.toml`:
 All project commands after creation should use the explicit `.venv` interpreter;
 shell activation is not required.
 
+For QQ development, rebuild the runtime from the repository root after installing
+the dependencies:
+
+``` powershell
+$EchoPython = (Resolve-Path .\.venv\Scripts\python.exe).Path
+& $EchoPython scripts/bootstrap_qq_napcat_runtime.py
+```
+
+Use the fixed official **NapCat 4.18.34** `NapCat.Shell.zip` from
+`NapNeko/NapCatQQ`, as pinned in `scripts/qq_napcat_runtime_pins.json`.
+The bootstrap downloads the official archive, verifies its size and SHA256 and
+the pinned key files, applies and verifies the Echo NapCat patch, and installs
+the hash-verified Echo plugin templates and plugin enable configuration.
+It checks `scripts/qq_napcat_runtime_manifest.json` before publishing
+`runtime/qq-napcat-candidate`. It does not start QQ or log in to an account.
+Do not substitute another NapCat version or copy a runtime from an existing
+development checkout.
+
+If GitHub downloads are restricted, download the exact official archive using
+a browser or download tool with network access, then pass it to the bootstrap.
+For example, save it as `NapCat.Shell.zip` in the repository root:
+
+``` powershell
+curl.exe --location --fail --output .\NapCat.Shell.zip https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.34/NapCat.Shell.zip
+& $EchoPython scripts/bootstrap_qq_napcat_runtime.py --archive .\NapCat.Shell.zip
+```
+
+The `--archive` option retains all size, SHA256, patch and plugin checks; do not
+use an unofficial repack or disable validation. Configure any required network
+proxy locally for the downloader you use: Git's proxy configuration does not
+automatically configure Python's downloader. Keep proxy addresses, credentials
+and downloaded archives out of commits.
+
 Public terminal entrypoints are `echo-chat` (CLI) and `echo-gui` (Desktop).
 After installation, developers can launch them without activating the shell:
 
@@ -61,6 +108,13 @@ After installation, developers can launch them without activating the shell:
 .\.venv\Scripts\echo-chat.exe --help
 .\.venv\Scripts\echo-gui.exe
 ```
+
+Successful GUI initialization, including opening the QQ page, does not establish
+that real QQ login, database snapshot acquisition or analysis works. The
+fresh-clone acceptance used temporary user-data directories and fictional
+configuration without connecting QQ or reading chat databases. Real QQ
+acceptance is a separate step requiring a local QQ installation, human login
+and explicit verification of the snapshot and analysis flow.
 
 The Python package remains `qq_chat_analyzer`; the distribution name used by
 `pip show` remains `qq-chat-analyzer`. No `qqchat` / `qqchat-gui` aliases are registered.
