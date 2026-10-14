@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
+from qq_chat_analyzer.version import APP_VERSION
 from test_update_install_handoff import evidence
 
 
@@ -16,7 +17,7 @@ def installation(tmp_path):
     executable.write_bytes(b"fictional Echo")
     (root / "Update.exe").write_bytes(b"fictional Velopack")
     (current / "sq.version").write_text(
-        '<package><metadata><id>Echo.Test</id><version>0.1.0</version>'
+        f'<package><metadata><id>Echo.Test</id><version>{APP_VERSION}</version>'
         '<channel>win-x64-test</channel><mainExe>Echo.exe</mainExe>'
         '<title>Echo</title></metadata></package>', encoding="utf-8")
     data = tmp_path / "independent-data"
@@ -24,7 +25,7 @@ def installation(tmp_path):
     (data / "report.html").write_bytes(b"fictional report")
     (data / "config.json").write_bytes(b'{}')
     registration = {
-        "InstallLocation": str(root), "DisplayVersion": "0.1.0",
+        "InstallLocation": str(root), "DisplayVersion": APP_VERSION,
         "DisplayIcon": str(executable), "DisplayName": "Echo",
         "UninstallString": f'"{root / "Update.exe"}" --uninstall',
     }

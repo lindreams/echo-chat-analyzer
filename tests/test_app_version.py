@@ -19,6 +19,9 @@ def _spec_datas(project_root):
     # Execute the spec in the same isolated interpreter used for build checks.
     script = """
 import json, runpy, sys
+# Use the exact metadata directory selected by the parent build environment,
+# while -I still rejects incidental source paths and editable imports.
+sys.path.insert(0, sys.argv[3])
 class AnalysisReached(Exception): pass
 captured = []
 def capture_analysis(*args, **kwargs):
@@ -32,7 +35,8 @@ print(json.dumps(captured))
 """
     result = subprocess.run(
         [sys.executable, "-I", "-c", script, str(ROOT / "LocalChatAnalyzer.spec"),
-         str(project_root / "LocalChatAnalyzer.spec")],
+         str(project_root / "LocalChatAnalyzer.spec"),
+         str(importlib.metadata.distribution("qq-chat-analyzer").locate_file(""))],
         capture_output=True, text=True, timeout=30,
     )
     if result.returncode:
