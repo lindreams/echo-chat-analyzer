@@ -55,6 +55,7 @@ def build_facade() -> ChatAnalyzerFacade:
     from ..application.qq.qq_runtime_session import QQRuntimeSession
     from ..application.report_package_catalog import ReportPackageCatalog
     from ..application.source_bundle_builder import SourceBundleBuilder
+    from ..application.update_channel import production_update_service
     from ..application.wechat.wechat_setup_service import WeChatSetupService
 
     # One owner for the local bridge credential of the QQ runtime Echo launches:
@@ -70,6 +71,9 @@ def build_facade() -> ChatAnalyzerFacade:
         qq_runtime_session=session,
         analysis_service=AnalysisApplicationService(),
         report_package_catalog=ReportPackageCatalog(),
+        # P1 source only. Installation remains closed pending the independent
+        # Windows broker and the 0.2.0 joint acceptance.
+        installable_update_service=production_update_service(),
         stopwords_directory=resources_dir(),
     )
 

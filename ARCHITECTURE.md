@@ -388,8 +388,11 @@ worker 中异步调用并在 GUI 线程展示结果；「关于余音」对话�
 Release 结果作为包元数据。GUI 通过 Facade 的 `check_installable_update()`、
 `download_update(progress=...)`、`get_update_status()` 接入；旧 `check_for_updates()`
 仍只提供发布页提示。检查和下载在 worker 执行，状态读取只访问内存。
-默认无 feed，返回 `unconfigured`；正式可信源、packId 与 channel 须由 composition root
-显式配置并注入服务，不从 GUI 输入、环境变量或 Release 页面推导。生产仅接受配置的
+裸服务默认无 feed，返回 `unconfigured`。桌面 composition root 显式注入 P1
+`update_channel.production_update_service()`：固定官方 GitHub 源、`Lindreams.Echo` 与
+`win-x64-stable`，构造无 I/O，不从 GUI 输入、环境变量或 Release 页面推导。
+生产安装门保持关闭；只有精确的布尔 `True` 才能打开测试注入的交接门，其他 truthy
+值均拒绝。该源配置不代表正式 packId 已完成构建验收或允许生产安装。生产仅接受配置的
 HTTPS feed，本地绝对目录用于虚构测试。应用内下载要求 Windows Frozen、SDK
 经显式 locator 核验的可写 Setup `current/` 布局、非 Portable 且安装 packId/channel 匹配；
 源码和 Portable 保留发布页入口。只读 Setup/MSI 根目录的 SDK fallback cache 暂不支持，拒绝猜测缓存路径。
@@ -428,6 +431,19 @@ B2 的 Access denied 警告高度可信地由此引起，不等同于未等待�
 真正等待错误及 60 秒超时后上游仍继续安装是另一个尚待处置的发行风险；
 A3 功能/隔离实验通过不代表正式 feed、发行身份、签名及安全发行审批已经完成。
 接口、验收边界和正式发布条件见 [A3 安装交接](docs/research/2026-10-13-a3-install-handoff.md)。
+
+**P2 Broker（未完成安装集成）** —— `application/setup_update_broker.py` 保留既有
+确定性协议，原子提交状态和 apply 预约；拒绝不可被迟到状态写入覆盖，授权撤销与
+apply 预约共享锁，预约前的撤销禁止副作用。预约后已经开始的副作用不可撤销或重试。
+观察记录的字段须具有准确类型，dataclass 相等不代替字段类型验证；目标仅接受稳定升级。
+`application/windows_update_broker.py` 已提供 Windows 原生进程句柄、身份捕获、绝对期限
+等待、退出码查询、文件防写/删共享句柄和排他 Broker 文件预约。进程使用同步与有限查询
+权限，等待复用同一保留句柄，失败不能成为退出成功。
+这些原语尚非完整 `WitnessSource` 或独立更新执行器：排他文件预约只排斥其他 Broker，
+真实子进程测试证明其不能阻止另一个包进程启动，不能据此签发 `LeaseStatus.HELD`。
+在生产者准入及其跨更新生命周期未闭合前，不接通 P2 安装或现有 A3 SDK 安装路径；
+当前处于安全阻塞，尚未到 0.2.0 联合验收。证据见
+[P2 实现与阻塞记录](docs/research/2026-10-14-p2-native-broker-progress.md)。
 
 **Report Package 生命周期（BUG-03）** —— Report Package 是 Echo 唯一持久分析对象，
 也是 Local Data 历史列表的事实来源。`ReportHistoryManager`、`analysis_history.jsonl`
