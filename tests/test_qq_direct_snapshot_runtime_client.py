@@ -82,6 +82,19 @@ class _SequenceTransport:
             self.active -= 1
 
 
+class _FakeClock:
+    """Deterministic monotonic clock so acquire budget math stays exact."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 def _client(transport, *, base_url: str = "http://127.0.0.1:40654", root: Path | None = None) -> QQDirectSnapshotRuntimeClient:
     return QQDirectSnapshotRuntimeClient(
         base_url=base_url,
@@ -255,6 +268,78 @@ def test_acquire_stops_after_the_attempt_budget_is_exhausted(
     assert transport.calls == 6
     assert transport.max_active == 1
     assert len(delays) == 5 and all(0 < delay <= 1 for delay in delays)
+
+
+def test_acquire_retries_inside_one_shared_budget_then_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every retry spends the remaining budget instead of a fresh 65 s timeout."""
+    clock = _FakeClock()
+    monkeypatch.setattr(snapshot_runtime.time, "monotonic", clock)
+    monkeypatch.setattr(snapshot_runtime.time, "sleep", clock.advance)
+    delay = snapshot_runtime._SNAPSHOT_UNSTABLE_RETRY_DELAY_SECONDS
+    timeouts: list[float] = []
+
+    def transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
+        timeouts.append(timeout)
+        clock.advance(10.0)  # one capture re-reads the whole source
+        if len(timeouts) <= 3:
+            return 200, _envelope({"ok": False, "code": "snapshot_unstable", "status": "failed"})
+        return 200, _envelope(_acquire_result("gen-budgeted"))
+
+    assert _client(transport, root=tmp_path).acquire() == "gen-budgeted"
+
+    assert timeouts == pytest.approx([
+        65.0,
+        65.0 - 10.0 - delay,
+        65.0 - 20.0 - 2 * delay,
+        65.0 - 30.0 - 3 * delay,
+    ])
+
+
+def test_acquire_stops_at_the_shared_deadline_instead_of_retrying_for_minutes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Six attempts may no longer stack six 65 s RPC timeouts."""
+    clock = _FakeClock()
+    monkeypatch.setattr(snapshot_runtime.time, "monotonic", clock)
+    monkeypatch.setattr(snapshot_runtime.time, "sleep", clock.advance)
+    timeouts: list[float] = []
+
+    def transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
+        timeouts.append(timeout)
+        clock.advance(min(20.0, timeout))  # a slow capture burns its own allowance
+        return 200, _envelope({"ok": False, "code": "snapshot_unstable", "status": "failed"})
+
+    with pytest.raises(QQSnapshotRuntimeFailure) as captured:
+        _client(transport, root=tmp_path).acquire()
+
+    assert captured.value.code == "qq_snapshot_runtime_failure"
+    assert len(timeouts) == 4
+    assert timeouts[-1] == pytest.approx(4.25)
+    assert clock.now == pytest.approx(1065.0)
+
+
+def test_acquire_does_not_retry_a_non_transient_failure_within_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeClock()
+    monkeypatch.setattr(snapshot_runtime.time, "monotonic", clock)
+    monkeypatch.setattr(snapshot_runtime.time, "sleep", clock.advance)
+    timeouts: list[float] = []
+
+    def transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
+        timeouts.append(timeout)
+        return 200, _envelope({"ok": False, "code": "decrypt_failed", "status": "failed"})
+
+    with pytest.raises(QQSnapshotRuntimeFailure):
+        _client(transport, root=tmp_path).acquire()
+
+    assert len(timeouts) == 1
+    assert clock.now == pytest.approx(1000.0)
 
 
 @pytest.mark.parametrize("failure_code", ["decrypt_failed", "identity_missing"])
