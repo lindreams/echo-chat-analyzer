@@ -23,6 +23,7 @@ import tomllib
 import zipfile
 
 import package_windows_portable as portable
+from qq_chat_analyzer.application.update_channel import PRODUCTION_PACKAGE_ID, PRODUCTION_CHANNEL
 
 PackageError = portable.PackageError
 VELOPACK_VERSION = "1.2.161"
@@ -66,8 +67,13 @@ def package_setup(source_dir: str | Path, output_dir: str | Path, *, vpk_path: P
     portable._no_links(output)
     if output.exists() or output == root or root in output.parents:
         raise PackageError("Output must be a new directory outside the source tree")
-    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9.-]{2,99}", pack_id) or pack_id.casefold() == "localchatanalyzer":
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9.-]{2,63}", pack_id) or pack_id.casefold() == "localchatanalyzer":
         raise PackageError("Invalid or data-directory-conflicting packId")
+    # vpk 1.2.161's legacy RELEASES writer selects the first version-shaped
+    # numeric pair in a filename, including a pair inside the package ID.
+    # Ordinary dotted IDs (including Lindreams.Echo) remain supported.
+    if re.search(r"[.-](0|[1-9]\d*)\.(0|[1-9]\d*)($|[^\d])", pack_id):
+        raise PackageError("packId contains a version-like prefix unsupported by vpk 1.2.161")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", channel):
         raise PackageError("Invalid channel")
     if not ECHO_SETUP_ICON.is_file():
@@ -143,8 +149,8 @@ def main() -> int:
     parser.add_argument("--source", type=Path, default=ROOT / "dist/Echo")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--vpk", type=Path, required=True)
-    parser.add_argument("--pack-id", required=True)
-    parser.add_argument("--channel", required=True)
+    parser.add_argument("--pack-id", default=PRODUCTION_PACKAGE_ID)
+    parser.add_argument("--channel", default=PRODUCTION_CHANNEL)
     args = parser.parse_args()
     try:
         print(package_setup(args.source, args.output, vpk_path=args.vpk, pack_id=args.pack_id, channel=args.channel))

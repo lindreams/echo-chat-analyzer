@@ -565,7 +565,9 @@ src/qq_chat_analyzer/
 
 The desktop extra requires `velopack==1.2.161`. `echo-gui`, the package GUI
 module and the frozen entry dispatch Velopack before importing the GUI, with
-pending-update auto apply disabled. This does not implement in-app updates.
+pending-update auto apply disabled. In-app updates use the existing A3 flow:
+explicit user confirmation, complete A2 cleanup evidence, package revalidation,
+then the official wait-exit/apply/restart API.
 
 Build the existing onedir release with `scripts/build_windows_exe.ps1` first.
 Its runtime pins, app-local MSVC checks, copyright files and private-state
@@ -580,7 +582,7 @@ isolation and process-local `DOTNET_ROOT` already verified:
 & $EchoPython scripts/package_windows_setup.py `
     --source dist/Echo --output <new-external-artifact-directory> `
     --vpk <local-tool-directory>/vpk.exe `
-    --pack-id EchoA1.Fictional --channel win-x64-a1
+    --pack-id EchoA1Fictional --channel win-x64-a1
 ```
 
 The wrapper checks frozen Echo/SDK versions, runtime hashes, licenses and
@@ -589,8 +591,14 @@ checks feed identity and package integrity, verifies every application file
 and source immutability, then publishes the new directory. Existing output
 directories are refused. vpk self-update and delta generation are disabled.
 The project version supplies packVersion; there is no independent installer
-version override. The test packId/channel are explicit; production identity,
-feed policy and signing are separate release decisions.
+version override. Omit pack-id/channel for the fixed production identity
+`Lindreams.Echo` / `win-x64-stable`; isolated tests must override both. The
+official identity has passed real pinned vpk packaging. IDs containing a numeric
+version-like pair (such as `Echo.UserTest.20261013.7abc`) are rejected before vpk:
+its legacy RELEASES filename parser mistakes that pair for the package version.
+Ordinary dotted IDs remain supported.
+The desktop consumes the same identity constants and official GitHub repository
+feed. Signing and publication remain separate release decisions.
 
 The Setup creates a desktop shortcut and a Start Menu shortcut
 (`--shortcuts Desktop,StartMenuRoot`), and it reuses `branding/Echo.ico` for the

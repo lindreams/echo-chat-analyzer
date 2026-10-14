@@ -226,7 +226,11 @@ def test_main_window_navigation_keeps_download_progress_and_install_handoff(app,
     window = MainWindow(facade, executor=executor)
     prepared = []
     monkeypatch.setattr(window, "request_update_install", prepared.append)
-    monkeypatch.setattr(module.QMessageBox, "question", lambda *args: module.QMessageBox.Yes)
+    confirmations = []
+    def confirm(*args):
+        confirmations.append(args[2])
+        return module.QMessageBox.Yes
+    monkeypatch.setattr(module.QMessageBox, "question", confirm)
     window.show()
     window.home_page._about_btn.click()
     page = window.stack.currentWidget()
@@ -245,6 +249,8 @@ def test_main_window_navigation_keeps_download_progress_and_install_handoff(app,
     assert window.stack.currentWidget() is page
     assert page.install_button.isVisible() and page.install_button.isEnabled()
     page.install_button.click()
+    assert len(confirmations) == 1
+    assert all(word in confirmations[0] for word in ('关闭', '安装', '自动重启'))
     install_task = executor.tasks[-1]
     install_task.on_success(install_task.operation())
     app.processEvents()

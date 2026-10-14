@@ -56,6 +56,7 @@ def build_facade() -> ChatAnalyzerFacade:
     from ..application.report_package_catalog import ReportPackageCatalog
     from ..application.source_bundle_builder import SourceBundleBuilder
     from ..application.wechat.wechat_setup_service import WeChatSetupService
+    from ..application.update_channel import production_update_service
 
     # One owner for the local bridge credential of the QQ runtime Echo launches:
     # every QQ service below is wired with the same session, and the facade keeps
@@ -71,6 +72,7 @@ def build_facade() -> ChatAnalyzerFacade:
         analysis_service=AnalysisApplicationService(),
         report_package_catalog=ReportPackageCatalog(),
         stopwords_directory=resources_dir(),
+        installable_update_service=production_update_service(),
     )
 
 
