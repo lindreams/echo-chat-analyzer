@@ -38,7 +38,30 @@ from .bridge_credential import authorization_headers, resolve_bridge_credential
 
 DEFAULT_RPC_TIMEOUT_SECONDS = 30
 DEFAULT_ACQUIRE_RPC_TIMEOUT_SECONDS = 65
-_SNAPSHOT_UNSTABLE_MAX_ATTEMPTS = 3
+# ``snapshot_unstable`` is the single error code the snapshot helper returns
+# whenever it refuses to publish a capture it cannot prove stable. It is a
+# failure class, not one condition: it covers the whole capture path plus the
+# input-stability witnesses (source location, workspace/lease, WAL
+# identity/header/prefix/checksum/commit boundary, main identity, checkpoint
+# witness, and the input witness taken before and after decrypt). Only the
+# helper's privacy-safe ``failure_stage`` / ``guard_code`` diagnostics name the
+# concrete cause.
+# The cause confirmed on the affected machine was the guard
+# ``main_changed_during_read`` (failure_stage ``main_stability``): the main
+# database changed inside the read window. A WAL checkpoint or QQ's post-login
+# sync can produce that, but so can any other concurrent writer, so the guard is
+# one member of the ``snapshot_unstable`` class rather than its definition.
+# That class of instability is transient, yet one attempt is not cheap: it
+# re-acquires the OS lease and re-reads the whole source, so a large database
+# makes a single attempt take several seconds. A three-attempt limit therefore
+# expired while the source was still settling and surfaced as a permanent
+# connection failure.
+# Six attempts is the new maximum, but they are not six fresh timeouts: the 65s
+# is the budget of the whole ``acquire()`` loop (one monotonic deadline), not the
+# timeout of a single RPC, so a burst of retries can never accumulate into
+# minutes of waiting. No consistency guard is relaxed: every attempt keeps the
+# same all-or-nothing capture contract.
+_SNAPSHOT_UNSTABLE_MAX_ATTEMPTS = 6
 _SNAPSHOT_UNSTABLE_RETRY_DELAY_SECONDS = 0.25
 RECOVER_READINESS_ATTEMPTS = 51
 RECOVER_READINESS_POLL_SECONDS = 0.1
@@ -191,12 +214,26 @@ class QQDirectSnapshotRuntimeClient:
     # ------------------------------------------------------------------ lifecycle
 
     def acquire(self) -> str:
-        """Acquire a fresh generation and return its validated opaque id."""
+        """Acquire a fresh generation and return its validated opaque id.
+
+        ``acquire_timeout`` is the wall-clock budget of this whole call, not the
+        timeout of one RPC: every attempt shares a single monotonic deadline, and
+        no attempt may wait longer than the budget that is still left.
+        """
         started_at = time.monotonic()
+        deadline = started_at + self._acquire_timeout
         _LOGGER.info("QQ snapshot acquire RPC started timeout=%.1fs", self._acquire_timeout)
         try:
             for attempt in range(1, _SNAPSHOT_UNSTABLE_MAX_ATTEMPTS + 1):
-                result = self._rpc(_ACQUIRE, [], timeout=self._acquire_timeout)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    _LOGGER.info(
+                        "QQ snapshot acquire RPC attempt=%d outcome=budget_exhausted elapsed=%.2fs",
+                        attempt, time.monotonic() - started_at,
+                    )
+                    raise QQSnapshotRuntimeFailure()
+                # One attempt can never outlive the shared deadline.
+                result = self._rpc(_ACQUIRE, [], timeout=remaining)
                 if not isinstance(result, Mapping):
                     raise QQSnapshotRuntimeInvalidResponse()
                 if result.get("ok") is not True or result.get("status") != "ready":
@@ -208,7 +245,9 @@ class QQDirectSnapshotRuntimeClient:
                         )
                     if (result.get("ok") is False and result.get("status") == "failed"
                             and code == "snapshot_unstable"
-                            and attempt < _SNAPSHOT_UNSTABLE_MAX_ATTEMPTS):
+                            and attempt < _SNAPSHOT_UNSTABLE_MAX_ATTEMPTS
+                            # Retry only when the budget still covers the backoff.
+                            and deadline - time.monotonic() > _SNAPSHOT_UNSTABLE_RETRY_DELAY_SECONDS):
                         time.sleep(_SNAPSHOT_UNSTABLE_RETRY_DELAY_SECONDS)
                         continue
                     raise QQSnapshotRuntimeFailure()

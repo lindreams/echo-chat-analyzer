@@ -50,6 +50,13 @@ PROGRESS_WAITING_QQ_EXIT = "请完全退出 QQ"
 # https://github.com/NapNeko/NapCatQQ/releases/tag/v4.18.33
 # Passing this gate is not a claim of full compatibility with the pinned 4.18.34.
 _MIN_WINDOWS_QQ_BUILD = 40768
+# The Direct DB snapshot helper reports its failure stage and guard code only
+# through ``QCE_LOG_FILE`` (a retained historical variable name). Its lines are
+# privacy-safe by construction: fixed stage names, stable guard codes, opaque
+# generation ids, counters, timestamps and module hashes. Without this channel
+# every capture failure collapses into the single public ``snapshot_unstable``
+# code, so the real failing stage can never be observed in production.
+SNAPSHOT_DIAGNOSTIC_FILENAME = "qq-snapshot-diagnostics.log"
 
 
 class _AuthCancelled(Exception):
@@ -1029,6 +1036,25 @@ def terminate_bundled_runtime_sessions(runtime_directory: Path) -> None:
     _LOGGER.info("[qq auth] path-only runtime cleanup skipped; ownership required")
 
 
+def _snapshot_diagnostic_log_path() -> Path | None:
+    """Return the acquisition diagnostic log path, or ``None`` if unavailable.
+
+    Best effort only: a diagnostic channel must never block the QQ launch.
+    The file lives beside ``echo.log`` so support can collect it with the rest
+    of the desktop diagnostics, and it carries only the privacy-safe lines the
+    snapshot helper already produces.
+    """
+    try:
+        from ...diagnostics import log_path
+
+        path = log_path().parent / SNAPSHOT_DIAGNOSTIC_FILENAME
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+    except Exception:  # pragma: no cover - defensive, diagnostics are optional
+        _LOGGER.info("[qq auth] snapshot diagnostic channel unavailable")
+        return None
+
+
 def _launch_auth_window(
     runtime_directory: Path,
     launcher: Path,
@@ -1090,6 +1116,13 @@ def _launch_auth_window(
     })
     if paths is not None:
         environment["ECHO_SNAPSHOT_ROOT"] = str(paths.snapshot_root)
+    # The snapshot helper's acquisition diagnostics are opt-in through a path
+    # Echo owns. An inherited value is never trusted, so a foreign parent
+    # environment cannot redirect or silence the channel.
+    environment.pop("QCE_LOG_FILE", None)
+    diagnostic_log = _snapshot_diagnostic_log_path()
+    if diagnostic_log is not None:
+        environment["QCE_LOG_FILE"] = str(diagnostic_log)
     environment.pop("ECHO_RUNTIME_ID", None)
     if managed:
         environment["ECHO_RUNTIME_ID"] = paths.runtime_id

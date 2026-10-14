@@ -82,6 +82,19 @@ class _SequenceTransport:
             self.active -= 1
 
 
+class _FakeClock:
+    """Deterministic monotonic clock so acquire budget math stays exact."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
 def _client(transport, *, base_url: str = "http://127.0.0.1:40654", root: Path | None = None) -> QQDirectSnapshotRuntimeClient:
     return QQDirectSnapshotRuntimeClient(
         base_url=base_url,
@@ -210,10 +223,33 @@ def test_acquire_retries_snapshot_unstable_then_succeeds_serially(
     assert transport.calls == 2
     assert transport.max_active == 1
     assert len(delays) == 1 and 0 < delays[0] <= 1
-    assert "attempt=1 max_attempts=3 failure_code=snapshot_unstable" in caplog.text
+    assert "attempt=1 max_attempts=6 failure_code=snapshot_unstable" in caplog.text
 
 
-def test_acquire_stops_after_three_unstable_attempts_with_existing_error(
+def test_acquire_outlasts_a_write_burst_that_exceeds_the_first_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A capture fails closed while the source is written; that is transient.
+
+    Every attempt re-reads the whole source, so on a large database a few
+    attempts can expire before QQ's post-login write burst ends. The retry
+    budget must cover that burst instead of reporting a permanent failure.
+    """
+    delays: list[float] = []
+    monkeypatch.setattr(snapshot_runtime.time, "sleep", delays.append)
+    transport = _SequenceTransport([
+        {"ok": False, "code": "snapshot_unstable", "status": "failed"}
+        for _ in range(4)
+    ] + [_acquire_result("gen-after-burst")])
+
+    assert _client(transport, root=tmp_path).acquire() == "gen-after-burst"
+    assert transport.calls == 5
+    assert transport.max_active == 1
+    assert len(delays) == 4
+
+
+def test_acquire_stops_after_the_attempt_budget_is_exhausted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -221,7 +257,7 @@ def test_acquire_stops_after_three_unstable_attempts_with_existing_error(
     monkeypatch.setattr(snapshot_runtime.time, "sleep", delays.append)
     transport = _SequenceTransport([
         {"ok": False, "code": "snapshot_unstable", "status": "failed"}
-        for _ in range(3)
+        for _ in range(6)
     ])
 
     with pytest.raises(QQSnapshotRuntimeFailure) as captured:
@@ -229,9 +265,81 @@ def test_acquire_stops_after_three_unstable_attempts_with_existing_error(
 
     assert captured.value.code == "qq_snapshot_runtime_failure"
     assert captured.value.public_message == QQSnapshotRuntimeFailure.public_message
-    assert transport.calls == 3
+    assert transport.calls == 6
     assert transport.max_active == 1
-    assert len(delays) == 2 and all(0 < delay <= 1 for delay in delays)
+    assert len(delays) == 5 and all(0 < delay <= 1 for delay in delays)
+
+
+def test_acquire_retries_inside_one_shared_budget_then_succeeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every retry spends the remaining budget instead of a fresh 65 s timeout."""
+    clock = _FakeClock()
+    monkeypatch.setattr(snapshot_runtime.time, "monotonic", clock)
+    monkeypatch.setattr(snapshot_runtime.time, "sleep", clock.advance)
+    delay = snapshot_runtime._SNAPSHOT_UNSTABLE_RETRY_DELAY_SECONDS
+    timeouts: list[float] = []
+
+    def transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
+        timeouts.append(timeout)
+        clock.advance(10.0)  # one capture re-reads the whole source
+        if len(timeouts) <= 3:
+            return 200, _envelope({"ok": False, "code": "snapshot_unstable", "status": "failed"})
+        return 200, _envelope(_acquire_result("gen-budgeted"))
+
+    assert _client(transport, root=tmp_path).acquire() == "gen-budgeted"
+
+    assert timeouts == pytest.approx([
+        65.0,
+        65.0 - 10.0 - delay,
+        65.0 - 20.0 - 2 * delay,
+        65.0 - 30.0 - 3 * delay,
+    ])
+
+
+def test_acquire_stops_at_the_shared_deadline_instead_of_retrying_for_minutes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Six attempts may no longer stack six 65 s RPC timeouts."""
+    clock = _FakeClock()
+    monkeypatch.setattr(snapshot_runtime.time, "monotonic", clock)
+    monkeypatch.setattr(snapshot_runtime.time, "sleep", clock.advance)
+    timeouts: list[float] = []
+
+    def transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
+        timeouts.append(timeout)
+        clock.advance(min(20.0, timeout))  # a slow capture burns its own allowance
+        return 200, _envelope({"ok": False, "code": "snapshot_unstable", "status": "failed"})
+
+    with pytest.raises(QQSnapshotRuntimeFailure) as captured:
+        _client(transport, root=tmp_path).acquire()
+
+    assert captured.value.code == "qq_snapshot_runtime_failure"
+    assert len(timeouts) == 4
+    assert timeouts[-1] == pytest.approx(4.25)
+    assert clock.now == pytest.approx(1065.0)
+
+
+def test_acquire_does_not_retry_a_non_transient_failure_within_budget(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = _FakeClock()
+    monkeypatch.setattr(snapshot_runtime.time, "monotonic", clock)
+    monkeypatch.setattr(snapshot_runtime.time, "sleep", clock.advance)
+    timeouts: list[float] = []
+
+    def transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
+        timeouts.append(timeout)
+        return 200, _envelope({"ok": False, "code": "decrypt_failed", "status": "failed"})
+
+    with pytest.raises(QQSnapshotRuntimeFailure):
+        _client(transport, root=tmp_path).acquire()
+
+    assert len(timeouts) == 1
+    assert clock.now == pytest.approx(1000.0)
 
 
 @pytest.mark.parametrize("failure_code", ["decrypt_failed", "identity_missing"])
