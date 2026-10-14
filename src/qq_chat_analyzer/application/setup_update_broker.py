@@ -131,6 +131,7 @@ class HandoffAuthorization:
             raise ValueError('A nonempty authorization token is required')
         self._digest = self._hash(token)
         self._available = True
+        self._apply_claimed = False
         self._lock = Lock()
 
     @staticmethod
@@ -164,6 +165,29 @@ class _Denied(Exception):
     """Fixed diagnostic codes only; external exception text never escapes."""
 
 
+def _process_identity(value: object) -> bool:
+    return (type(value) is ProcessIdentity and type(value.pid) is int and value.pid > 0
+            and type(value.created_at) is int and value.created_at > 0
+            and type(value.image) is str and bool(value.image))
+
+
+def _installation_identity(value: object) -> bool:
+    return (type(value) is InstallationIdentity
+            and all(type(field) is str and bool(field) for field in
+                    (value.root, value.package_id, value.channel, value.version))
+            and type(value.updater_sha256) is str
+            and re.fullmatch(r'[a-f0-9]{64}', value.updater_sha256) is not None)
+
+
+def _package_identity(value: object) -> bool:
+    return (type(value) is PackageIdentity
+            and all(type(field) is str and bool(field) for field in
+                    (value.package_id, value.channel, value.version, value.path))
+            and type(value.size) is int and value.size > 0
+            and type(value.sha256) is str
+            and re.fullmatch(r'[a-f0-9]{64}', value.sha256) is not None)
+
+
 class UpdateBroker:
     """Single exchange with a fixed deadline and a terminal rejection latch.
 
@@ -187,38 +211,67 @@ class UpdateBroker:
         self._owner: OwnerWitness | None = None
         self._last_time: float | None = None
         self._operation = Lock()
+        self._state_lock = Lock()
         self._apply_attempted = False
 
     @property
     def state(self) -> BrokerState:
-        return self._state
+        with self._state_lock:
+            return self._state
 
     @property
     def reason(self) -> str | None:
-        return self._reason
+        with self._state_lock:
+            return self._reason
 
     def _reject(self, reason: str) -> BrokerState:
-        if self._state is not BrokerState.REJECTED:
-            self._reason = reason
-        self._state = BrokerState.REJECTED
-        self._authorization._revoke()
-        return self._state
+        with self._state_lock:
+            if self._state is not BrokerState.REJECTED:
+                self._reason = reason
+            self._state = BrokerState.REJECTED
+        if type(self._authorization) is HandoffAuthorization:
+            self._authorization._revoke()
+        return BrokerState.REJECTED
+
+    def _commit(self, expected: BrokerState, target: BrokerState) -> None:
+        # No external calls while holding this lock. Rejection and publication
+        # must be one atomic decision, including on free-threaded Python.
+        with self._state_lock:
+            if self._state is not expected:
+                raise _Denied('out_of_order')
+            self._state = target
+
+    def _reserve_apply(self) -> None:
+        # Linearization point for the irreversible side effect. Rejection
+        # before reservation forbids it; rejection afterwards cannot undo it.
+        grant = self._authorization
+        # Rejection releases the state lock BEFORE revoking the grant, so the
+        # grant -> state order here cannot deadlock with the rejection path.
+        with grant._lock, self._state_lock:
+            if self._state is not BrokerState.ARMED:
+                raise _Denied('out_of_order')
+            if self._apply_attempted or grant._apply_claimed:
+                raise _Denied('apply_already_attempted')
+            if grant._digest is None or grant._available:
+                raise _Denied('authorization_invalid')
+            self._apply_attempted = True
+            grant._apply_claimed = True
 
     def _begin(self, expected: BrokerState) -> bool:
         if not self._operation.acquire(blocking=False):
             self._reject('out_of_order')
             return False
-        if self._state is not expected:
+        if self.state is not expected:
             self._reject('out_of_order')
             self._operation.release()
             return False
         return True
 
     def _checkpoint(self, expected: BrokerState) -> None:
-        if self._state is not expected:
+        if self.state is not expected:
             raise _Denied('out_of_order')
         now = self._clock()
-        if self._state is not expected:
+        if self.state is not expected:
             raise _Denied('out_of_order')
         if (type(now) not in (int, float) or not math.isfinite(now)
                 or type(self._deadline) not in (int, float) or not math.isfinite(self._deadline)
@@ -233,8 +286,8 @@ class UpdateBroker:
         evidence = self._witnesses.inspect(phase, self._deadline)
         self._checkpoint(state)
         if (type(evidence) is not AdmissionEvidence
-                or type(evidence.installation) is not InstallationIdentity
-                or type(evidence.package) is not PackageIdentity
+                or not _installation_identity(evidence.installation)
+                or not _package_identity(evidence.package)
                 or evidence.installation != self._installation
                 or evidence.package != self._package
                 or evidence.plain_paths is not Verification.VERIFIED
@@ -247,7 +300,8 @@ class UpdateBroker:
         self._checkpoint(state)
         permit = self._witnesses.exit_permit(self._deadline)
         self._checkpoint(state)
-        if (type(permit) is not ExitPermit or permit.owner != self._expected_owner
+        if (type(permit) is not ExitPermit or not _process_identity(permit.owner)
+                or permit.owner != self._expected_owner
                 or permit.status is not PermitStatus.ACTIVE
                 or not self._authorization._matches(permit.authorization)):
             raise _Denied('exit_permission')
@@ -256,19 +310,14 @@ class UpdateBroker:
         return self._reject(str(error) if isinstance(error, _Denied) else 'witness_error')
 
     def _validate_expected(self) -> None:
+        if type(self._authorization) is not HandoffAuthorization:
+            raise _Denied('invalid_authorization')
         owner, installation, package = self._expected_owner, self._installation, self._package
-        if (type(owner) is not ProcessIdentity or type(owner.pid) is not int or owner.pid <= 0
-                or type(owner.created_at) is not int or owner.created_at <= 0
-                or type(installation) is not InstallationIdentity or type(package) is not PackageIdentity):
+        if (not _process_identity(owner) or not _installation_identity(installation)
+                or not _package_identity(package)):
             raise _Denied('invalid_identity')
-        if any(type(value) is not str or not value for value in (
-                owner.image, installation.root, installation.package_id, installation.channel,
-                installation.version, package.package_id, package.channel, package.version, package.path)):
-            raise _Denied('invalid_identity')
-        if (any(type(value) is not str or re.fullmatch(r'[a-f0-9]{64}', value) is None
-                for value in (installation.updater_sha256, package.sha256))
-                or type(package.size) is not int or package.size <= 0
-                or (package.package_id, package.channel) != (installation.package_id, installation.channel)
+        if ((package.package_id, package.channel) != (installation.package_id, installation.channel)
+                or not _parse_version(package.version)[0][3]
                 or _parse_version(package.version)[0] <= _parse_version(installation.version)[0]):
             raise _Denied('invalid_identity')
 
@@ -282,12 +331,13 @@ class UpdateBroker:
                 raise _Denied('authorization_used')
             owner = self._witnesses.capture_owner(self._expected_owner, self._deadline)
             self._checkpoint(BrokerState.NEW)
-            if (type(owner) is not OwnerWitness or owner.identity != self._expected_owner
+            if (type(owner) is not OwnerWitness or not _process_identity(owner.identity)
+                    or owner.identity != self._expected_owner
                     or owner.handle is None or isinstance(owner.handle, bool)):
                 raise _Denied('owner_identity')
             self._owner = owner
             self._admission('initial', BrokerState.NEW)
-            self._state = BrokerState.READY
+            self._commit(BrokerState.NEW, BrokerState.READY)
         except BaseException as error:
             self._failure(error)
         finally:
@@ -301,7 +351,7 @@ class UpdateBroker:
             self._checkpoint(BrokerState.READY)
             if not self._authorization._consume(token):
                 raise _Denied('authorization_invalid')
-            self._state = BrokerState.GO
+            self._commit(BrokerState.READY, BrokerState.GO)
         except BaseException as error:
             self._failure(error)
         finally:
@@ -314,7 +364,7 @@ class UpdateBroker:
         try:
             self._admission('armed', BrokerState.GO)
             self._permit(BrokerState.GO)
-            self._state = BrokerState.ARMED
+            self._commit(BrokerState.GO, BrokerState.ARMED)
         except BaseException as error:
             self._failure(error)
         finally:
@@ -330,6 +380,7 @@ class UpdateBroker:
             self._checkpoint(BrokerState.ARMED)
             if (type(exit_evidence) is not OwnerExit
                     or type(exit_evidence.owner) is not OwnerWitness
+                    or not _process_identity(exit_evidence.owner.identity)
                     or exit_evidence.owner.identity != self._expected_owner
                     or exit_evidence.owner.handle is not self._owner.handle
                     or exit_evidence.status is not WaitStatus.EXITED
@@ -338,16 +389,12 @@ class UpdateBroker:
             self._admission('final', BrokerState.ARMED)
             self._permit(BrokerState.ARMED)
             self._checkpoint(BrokerState.ARMED)
-            if self._apply_attempted:
-                raise _Denied('apply_already_attempted')
-            self._apply_attempted = True  # Before side effects, including exceptions/reentry.
+            self._reserve_apply()
             try:
                 self._recorder(self._package)
             except BaseException:
                 raise _Denied('apply_error') from None
-            if self._state is not BrokerState.ARMED:
-                raise _Denied('out_of_order')
-            self._state = BrokerState.APPLY_APPROVED
+            self._commit(BrokerState.ARMED, BrokerState.APPLY_APPROVED)
         except BaseException as error:
             self._failure(error)
         finally:

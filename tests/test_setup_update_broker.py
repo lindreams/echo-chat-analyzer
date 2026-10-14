@@ -425,3 +425,106 @@ def test_approval_is_not_published_before_recorder_completes(setup):
     arm(local)
     assert broker.approve() is core.BrokerState.APPLY_APPROVED
     assert calls == [witnesses.package]
+
+
+@pytest.mark.parametrize('stage', ['ready', 'go', 'arm', 'approve'])
+def test_concurrent_rejection_after_validation_cannot_be_overwritten(setup, monkeypatch, stage):
+    """Pause after the real validation, before the state/side-effect commit."""
+    from threading import Event, Thread
+    core, broker, _, _, grant, calls = setup
+    if stage != 'ready':
+        broker.ready()
+    if stage in ('arm', 'approve'):
+        broker.go('fictional-grant')
+    if stage == 'approve':
+        broker.arm()
+    entered, resume = Event(), Event()
+    name = {'ready': '_admission', 'go': '_consume', 'arm': '_permit',
+            'approve': '_checkpoint'}[stage]
+    target = grant if stage == 'go' else broker
+    original = getattr(target, name)
+    checkpoints = 0
+    def pause(*args):
+        nonlocal checkpoints
+        result = original(*args)
+        checkpoints += 1
+        # Seven checkpoints in approve; pause only after the last one.
+        final = stage != 'approve' or checkpoints == 7
+        if final:
+            entered.set()
+            assert resume.wait(5)
+        return result
+    monkeypatch.setattr(target, name, pause)
+    invoke = lambda: broker.go('fictional-grant') if stage == 'go' else getattr(broker, stage)()
+    thread = Thread(target=invoke)
+    thread.start()
+    try:
+        assert entered.wait(5)
+        assert broker.ready() is core.BrokerState.REJECTED
+    finally:
+        resume.set()
+        thread.join(5)
+    assert not thread.is_alive()
+    rejected(setup)
+
+
+@pytest.mark.parametrize('location', ['capture', 'permit', 'exit', 'package'])
+def test_equal_but_wrongly_typed_witness_fields_are_rejected(setup, location):
+    core, broker, witnesses, *_ = setup
+    if location == 'capture':
+        witnesses.owner = replace(witnesses.owner,
+            identity=replace(witnesses.identity, pid=float(witnesses.identity.pid)))
+        broker.ready()
+    elif location == 'package':
+        witnesses.evidence = replace(witnesses.evidence,
+            package=replace(witnesses.package, size=float(witnesses.package.size)))
+        broker.ready()
+    else:
+        arm(setup)
+        malformed = replace(witnesses.identity, created_at=float(witnesses.identity.created_at))
+        if location == 'permit':
+            witnesses.permit = replace(witnesses.permit, owner=malformed)
+        else:
+            witnesses.exit = replace(witnesses.exit,
+                owner=replace(witnesses.owner, identity=malformed))
+        broker.approve()
+    rejected(setup)
+
+
+def test_prerelease_target_is_not_a_stable_upgrade(setup):
+    core, _, witnesses, clock, grant, calls = setup
+    package = replace(witnesses.package, version='0.3.0-alpha')
+    witnesses.evidence = replace(witnesses.evidence, package=package)
+    broker = core.UpdateBroker(owner=witnesses.identity, installation=witnesses.installation,
+        package=package, authorization=grant, witnesses=witnesses,
+        deadline=10, clock=clock, apply_recorder=calls.append)
+    broker.ready()
+    rejected((core, broker, witnesses, clock, grant, calls))
+
+
+def test_revoked_shared_authorization_at_final_checkpoint_cannot_apply(setup, monkeypatch):
+    _, broker, _, _, grant, _ = setup
+    arm(setup)
+    original = broker._checkpoint
+    checkpoints = 0
+    def revoke(expected):
+        nonlocal checkpoints
+        original(expected)
+        checkpoints += 1
+        if checkpoints == 7:
+            grant._revoke()
+    monkeypatch.setattr(broker, '_checkpoint', revoke)
+    broker.approve()
+    rejected(setup)
+
+
+@pytest.mark.parametrize('authorization', [None, True, object()])
+def test_invalid_authorization_is_terminal_without_unhandled_exception(setup, authorization):
+    core, _, witnesses, clock, _, calls = setup
+    broker = core.UpdateBroker(owner=witnesses.identity, installation=witnesses.installation,
+        package=witnesses.package, authorization=authorization, witnesses=witnesses,
+        deadline=10, clock=clock, apply_recorder=calls.append)
+    assert broker.ready() is core.BrokerState.REJECTED
+    assert broker.reason == 'invalid_authorization'
+    assert broker.approve() is core.BrokerState.REJECTED
+    assert witnesses.calls == [] and calls == []
