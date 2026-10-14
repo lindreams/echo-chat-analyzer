@@ -44,15 +44,16 @@ Echo 在 Windows 本机读取和分析聊天数据，无需上传完整聊天记
 
 ## 下载
 
-**v0.1.0 · 已发布的首个测试版（Pre-release）。**
+**v0.2.0 · 当前正式版本。**
 
-当前提供 Windows x64 Portable ZIP，解压后运行 `Echo.exe`，无需安装 Python。
+下载 `Echo-0.2.0-windows-x64-Setup.exe` 运行安装，无需安装 Python。
+安装后可在软件内检查更新：发现、下载、校验后安装并重启，无需重新手动下载。
 
-[下载 Echo v0.1.0](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.1.0) · [查看所有版本](https://github.com/lindreams/echo-chat-analyzer/releases)
+[下载 Echo v0.2.0](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.0) · [查看所有版本](https://github.com/lindreams/echo-chat-analyzer/releases)
 
-后续计划改用 Windows Setup 安装器，并支持软件内一键更新。当前版本尚不支持自动安装更新。
+v0.1.0 曾以 Windows Portable ZIP 发布，不能通过软件内更新升级，请按上面的 Setup 手动安装；旧版本和原有数据都会保留。
 
-0.1.0 已经实现基础的聊天分析与报告分享，但内容仍不够完整。更多分析功能、报告设计和分享体验会在后续版本逐步完善。
+0.2.0 已经实现基础的聊天分析与报告分享，但内容仍不够完整。更多分析功能、报告设计和分享体验会在后续版本逐步完善。
 
 [查看后续开发计划](docs/ROADMAP.md)
 

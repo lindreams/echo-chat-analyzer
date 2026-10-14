@@ -477,8 +477,10 @@ NapCat -> Direct DB -> qq_db_adapter -> unified message model -> Analysis
   ChatAnalyzerFacade. Analysis does not know source formats or runtime tools.
 
 Current architecture and acceptance boundaries are in ARCHITECTURE.md and
-docs/HARDENING.md. The main branch released Echo v0.1.0 as a Windows Portable
-ZIP (Pre-release). The pinned QQ runtime is NapCat 4.18.34 with Echo patches,
+docs/HARDENING.md. The main branch released Echo v0.2.0 as a Windows x64 Setup
+with in-app discovery, download, verification, install and automatic restart; the
+earlier v0.1.0 Portable ZIP (Pre-release) remains a historical release.
+The pinned QQ runtime is NapCat 4.18.34 with Echo patches,
 per-launch RPC credentials, Worker boot_id isolation, explicit reconnection,
 and staging-input witnesses rather than native-read telemetry patches.
 Check scripts/qq_napcat_runtime_pins.json and the runtime bootstrap contract
