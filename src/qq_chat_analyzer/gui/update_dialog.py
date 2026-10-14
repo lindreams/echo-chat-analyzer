@@ -249,7 +249,7 @@ def update_presentation(
         text = ("正在下载更新…" if shown_percent is None
                 else f"正在下载更新…  {shown_percent}%")
     elif phase is UpdatePhase.DOWNLOAD_COMPLETE:
-        text = "更新已下载完成。仅支持未连接、无分析任务时安装并重启。"
+        text = "更新已下载完成。Echo 将关闭、安装更新并自动重启。仅支持未连接、无分析任务时安装。"
     if note:
         text = f"{text}\n{note}"
     busy = phase in (UpdatePhase.CHECKING, UpdatePhase.DOWNLOADING)
@@ -831,7 +831,7 @@ class UpdatePage(QWidget):
         self._local_operation = True
         self._render()
         confirmed = QMessageBox.question(self, '安装更新并重启？',
-            '仅支持未连接、没有分析任务的空闲安装。\n确认后将正常退出 Echo、安装已下载更新并重新启动。',
+            'Echo 将关闭、安装更新并自动重启。\n安装前会清理当前业务；清理失败则取消安装。',
             QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
         if confirmed != QMessageBox.Yes or self._closed:
             self._local_operation = False

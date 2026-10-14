@@ -388,8 +388,9 @@ worker 中异步调用并在 GUI 线程展示结果；「关于余音」对话�
 Release 结果作为包元数据。GUI 通过 Facade 的 `check_installable_update()`、
 `download_update(progress=...)`、`get_update_status()` 接入；旧 `check_for_updates()`
 仍只提供发布页提示。检查和下载在 worker 执行，状态读取只访问内存。
-默认无 feed，返回 `unconfigured`；正式可信源、packId 与 channel 须由 composition root
-显式配置并注入服务，不从 GUI 输入、环境变量或 Release 页面推导。生产仅接受配置的
+裸服务默认无 feed，返回 `unconfigured`；桌面 composition root 从
+`application/update_channel.py` 注入固定 GitHub 仓库源、`Lindreams.Echo` packId 和
+`win-x64-stable` channel，不从 GUI 输入、环境变量或 Release 页面推导。生产仅接受配置的
 HTTPS feed，本地绝对目录用于虚构测试。应用内下载要求 Windows Frozen、SDK
 经显式 locator 核验的可写 Setup `current/` 布局、非 Portable 且安装 packId/channel 匹配；
 源码和 Portable 保留发布页入口。只读 Setup/MSI 根目录的 SDK fallback cache 暂不支持，拒绝猜测缓存路径。
@@ -425,8 +426,11 @@ MainWindow 在 worker relay 退场后记录意图并正常关闭，仍使用原 
 B1/B2 已通过真实隔离 Setup A 0.2.0 → B 0.2.1、自动启动、正常关闭、再次启动及文件/虚构数据校验。
 B2-W1 独立证明固定 SDK 的仅同步句柄可成功等待、随后退出码查询却因缺少权限失败；
 B2 的 Access denied 警告高度可信地由此引起，不等同于未等待旧进程退出。
-真正等待错误及 60 秒超时后上游仍继续安装是另一个尚待处置的发行风险；
-A3 功能/隔离实验通过不代表正式 feed、发行身份、签名及安全发行审批已经完成。
+0.2.0 按官方 1.2.161 标准安装与自动重启机制交接，不依赖自定义 Broker、IPC、跨进程
+认证或启动准入；PR #45 保留为历史实验，不是本链路依赖。上游真正等待错误/60 秒超时后
+继续 apply 及目录式强杀属于该固定版本行为，当前范围不承诺极端新进程竞争互斥。
+本应用仍严格要求退出前业务清理成功及包复验通过，不将普通清理失败交给上游继续处理。
+正式包、签名、跨设备验证及发布审批仍需联合验收，代码集成不代表已发布。
 接口、验收边界和正式发布条件见 [A3 安装交接](docs/research/2026-10-13-a3-install-handoff.md)。
 
 **Report Package 生命周期（BUG-03）** —— Report Package 是 Echo 唯一持久分析对象，

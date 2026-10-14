@@ -84,6 +84,33 @@ def test_setup_is_available():
     assert SCRIPT.is_file()
 
 
+def test_cli_defaults_match_the_official_runtime_identity(packager, tmp_path, monkeypatch):
+    import sys
+    called = {}
+    def package(source, output, **kwargs):
+        called.update(kwargs)
+        return tmp_path / 'fictional-Setup.exe'
+    monkeypatch.setattr(packager, 'package_setup', package)
+    monkeypatch.setattr(sys, 'argv', ['package_windows_setup.py', '--output',
+        str(tmp_path / 'new-output'), '--vpk', 'fictional-vpk.exe'])
+    assert packager.main() == 0
+    assert (called['pack_id'], called['channel']) == ('Lindreams.Echo', 'win-x64-stable')
+
+
+@pytest.mark.parametrize('pack_id', ['Echo.UserTest020.20261013.7f3c9a21',
+                                    'Echo.1.2', 'Echo-1.2lab'])
+def test_version_like_id_prefix_is_rejected_before_vpk(packager, release, monkeypatch,
+                                                     pack_id):
+    monkeypatch.setattr(packager.subprocess, 'run',
+        lambda *a, **k: pytest.fail('Ambiguous package identity reached vpk'))
+    source, output, project, manifest = release
+    with pytest.raises(packager.PackageError, match='packId'):
+        packager.package_setup(source, output, vpk_path=Path('fictional-vpk.exe'),
+            pack_id=pack_id, channel='win-x64-test', project_file=project,
+            manifest_file=manifest)
+    assert not output.exists()
+
+
 @pytest.mark.parametrize("damage", ["private", "pin", "license", "sdk-version", "app-version"])
 def test_invalid_tree_never_invokes_vpk(packager, release, monkeypatch, damage):
     source, output, _, _ = release
