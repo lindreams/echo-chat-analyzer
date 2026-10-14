@@ -324,6 +324,72 @@ within the allowed task scope.
 Do not commit: - real chat data; - generated outputs; - local
 configuration; - virtual environments.
 
+### 6.1 Worktree lifecycle and Windows PowerShell cleanup
+
+Before a new task or phase, inspect `git worktree list --porcelain`,
+`git branch -vv` and each candidate's status. Prefer a clean, suitable existing
+workspace that another task is not using. A task's completion includes disposition
+of its worktree, branch, stash and temporary assets. Uncommitted changes or an old
+backup are not, by themselves, reasons to keep an idle workspace indefinitely.
+Choose to merge useful work, preserve the minimum recoverable payload, or explicitly
+abandon reviewed work. Retained objects need an owner/task and an end condition.
+
+For an authorized cleanup, use this sequence from the repository root:
+
+1. Fetch `origin` and check the registered path, branch, HEAD and full status
+   against the approved scope. Inspect both untracked files and ignored assets:
+
+   ```powershell
+   git worktree list --porcelain
+   git branch -vv
+   git -C $ReviewedWorktree status --short --branch --untracked-files=all
+   git -C $ReviewedWorktree ls-files --others --ignored --exclude-standard --directory
+   git stash list --format='%gd %H %s'
+   ```
+
+2. Confirm the workspace is not used by another task or process. Protect user
+   data, environments, runtime directories and local configuration. If a new
+   unique result appears, retain that object and continue with other confirmed
+   targets. Do not expose private configuration or chat data in the report.
+3. Check `git merge-base --is-ancestor <reviewed-head> origin/main`. A failed
+   ancestry check is not proof of lost work after squash/rebase: verify the PR
+   and final changes before deciding. For useful unmerged commits, push the
+   branch and verify `git ls-remote --heads origin <reviewed-ref>` matches its
+   full SHA before releasing the worktree; retain the unmerged branch.
+4. Preserve only necessary files or patches outside the repository, including
+   untracked files. For a stash containing untracked files, inspect its third
+   parent as well as the tracked diff. Verify hashes and the recovery method,
+   and mark candidate fixes as unapproved. Identify stashes by full SHA, then
+   resolve their current selector immediately before an authorized drop.
+5. Use ordinary `git worktree remove` for a clean, unused worktree. If abandoning
+   changes is explicitly authorized, recheck the exact file list and discard
+   only those tracked changes and reviewed new files first. A dirty-worktree
+   refusal is a reason to investigate, never to add `--force`.
+6. Delete merged local branches with `git branch -d` after verification. Before
+   an authorized remote branch deletion, verify its live remote SHA is the
+   reviewed merged commit; a changed remote head must be retained.
+7. Treat independent clones separately: inspect their own branches, unique
+   commits, status, ignored assets and stashes. A directory absent from the
+   worktree list is not automatically disposable.
+8. For directory removal, use PowerShell throughout. Resolve each approved
+   literal target with `Get-Item`/`Resolve-Path -LiteralPath`, verify its absolute
+   location is exactly within the named scope, and reject junctions, symlinks
+   and other reparse points, including nested ones. Use `Remove-Item -LiteralPath`
+   only on checked targets. Never enumerate an unknown parent and recursively
+   delete its children or pass computed deletion paths to another shell.
+9. Recheck worktrees, branches, stashes and protected assets. Record actual
+   dispositions, remaining blockers and end conditions. Measure deleted file
+   bytes and/or disk free space; distinguish logical file size from physical
+   free-space changes and do not present an estimate as a measurement.
+
+Never use `git worktree remove --force`, `git clean -fdx` or `git reset --hard`.
+Do not automatically delete unmerged branches, another task's worktree or unknown
+files. If private historical material prevents a decision, retain only that small
+blocking payload, not its surrounding obsolete builds. Keep local cleanup records,
+absolute paths, usernames and experimental assets out of commits. A docs-only
+lifecycle update needs diff/scope verification; it does not require executing
+Python tests, packaging or installing dependencies.
+
 ------------------------------------------------------------------------
 
 ## 7. Architecture Rules

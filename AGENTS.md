@@ -137,6 +137,8 @@ GUI 通过 ChatAnalyzerFacade 接入（见 GUI原则）。
 
 1. 运行 `git status --short --branch`，识别当前分支和 working tree 状态；
 2. 识别并保护已有未提交修改，不覆盖、不 restore、不 checkout；
+   开始新任务或阶段前运行 `git worktree list --porcelain` 和 `git branch -vv`，
+   检查候选工作树的状态与使用情况，优先复用干净且合适的工作区；
 3. 优先检查 `Test-Path .\.venv\Scripts\python.exe`；当前 worktree 缺少 `.venv` 是正常现象，按 `DEVELOPMENT.md` 的 AI Existing Workspace 流程，从 `git worktree list --porcelain` 和已知 Echo 项目环境中寻找已有且验证通过的虚拟环境；
 4. 用选定环境的显式 Python 路径验证解释器、当前 `pyproject.toml` 要求的依赖和测试工具；显式将源码导入路径设为目标 worktree 的 `src`，核验 `qq_chat_analyzer.__file__` 实际位于该目录，不能导入环境所属的旧工作树。仅在没有可用环境、依赖不符或无法保证源码隔离时停止；
 5. 明确当前任务允许修改的文件范围；
@@ -180,6 +182,18 @@ GUI 通过 ChatAnalyzerFacade 接入（见 GUI原则）。
 - 提交时显式列出文件；
 - 不覆盖未知来源的 working tree 修改；
 - 不为当前任务顺手清理无关变化。
+
+### 工作树与成果生命周期
+
+- 阶段结束必须处置工作树、分支、stash 和临时资产，不能只记录“仍有修改”后永久保留。
+- 对尚未合并的成果明确选择：继续合并、最小保存或放弃；未提交修改和历史备份本身不构成长期保留理由。
+- 不再使用的工作树默认及时释放。待集成提交可先推送并核验远端 SHA，再移除干净工作树；不自动删除未合并分支。
+- PR 合并后核验最新 main、独有成果、未跟踪与忽略资产及其他任务占用，再清理已合并分支和工作树；不能根据目录名称判断。
+- 最小保存必须覆盖必要的未跟踪文件，检查敏感信息并验证完整性和恢复方法；不为过期代码另建永久档案。
+- 放弃修改须已有明确授权且精确核对文件范围；新出现或来源不明的成果保留，继续处理其他已确认对象。
+- 保护用户数据、虚拟环境、本地运行时与配置；禁止 `git worktree remove --force`、`git clean -fdx`、`git reset --hard` 或递归删除未知目录。
+- 收尾报告记录分支、HEAD、PR/合并状态、成果保存位置、工作树状态及实际处置；剩余对象必须注明保留原因和明确结束条件。
+- Windows PowerShell 的执行与核验流程见 `DEVELOPMENT.md` 第 6 节；本机路径、用户名和实验资产不写入仓库。
 
 ### Bug 修复流程
 
