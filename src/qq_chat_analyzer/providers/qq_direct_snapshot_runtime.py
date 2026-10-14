@@ -38,14 +38,24 @@ from .bridge_credential import authorization_headers, resolve_bridge_credential
 
 DEFAULT_RPC_TIMEOUT_SECONDS = 30
 DEFAULT_ACQUIRE_RPC_TIMEOUT_SECONDS = 65
-# ``snapshot_unstable`` means the capture failed closed because the source
-# changed while it was being read. A WAL checkpoint or QQ's post-login sync is
-# the usual cause, but any concurrent writer of the main database trips the same
-# guard, so the code is not a synonym for "the main database was written".
-# That condition is transient, yet one attempt is not cheap: it re-acquires the
-# OS lease and re-reads the whole source, so a large database makes a single
-# attempt take several seconds. A three-attempt limit therefore expired while
-# the source was still settling and surfaced as a permanent connection failure.
+# ``snapshot_unstable`` is the single error code the snapshot helper returns
+# whenever it refuses to publish a capture it cannot prove stable. It is a
+# failure class, not one condition: it covers the whole capture path plus the
+# input-stability witnesses (source location, workspace/lease, WAL
+# identity/header/prefix/checksum/commit boundary, main identity, checkpoint
+# witness, and the input witness taken before and after decrypt). Only the
+# helper's privacy-safe ``failure_stage`` / ``guard_code`` diagnostics name the
+# concrete cause.
+# The cause confirmed on the affected machine was the guard
+# ``main_changed_during_read`` (failure_stage ``main_stability``): the main
+# database changed inside the read window. A WAL checkpoint or QQ's post-login
+# sync can produce that, but so can any other concurrent writer, so the guard is
+# one member of the ``snapshot_unstable`` class rather than its definition.
+# That class of instability is transient, yet one attempt is not cheap: it
+# re-acquires the OS lease and re-reads the whole source, so a large database
+# makes a single attempt take several seconds. A three-attempt limit therefore
+# expired while the source was still settling and surfaced as a permanent
+# connection failure.
 # Six attempts is the new maximum, but they are not six fresh timeouts: the 65s
 # is the budget of the whole ``acquire()`` loop (one monotonic deadline), not the
 # timeout of a single RPC, so a burst of retries can never accumulate into
