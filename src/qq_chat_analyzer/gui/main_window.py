@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices, QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -27,7 +28,7 @@ from PySide6.QtWidgets import (
 from ..resources import default_echo_icon_path
 from .dashboard_page import DashboardPage
 from .home_page import HomePage
-from .update_dialog import UpdateDialog
+from .update_dialog import UpdatePage
 from .local_data_page import LocalDataPage
 from .processing_page import ProcessingPage
 from .qq_workspace import QQWorkspace
@@ -102,7 +103,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(QIcon(str(default_echo_icon_path())))
         self._facade = facade
         self._executor = executor or submit
-        self._update_dialog: UpdateDialog | None = None
+        self.about_page: UpdatePage | None = None
         self._current_report_path: Path | None = None
         self._current_report_directory: Path | None = None
         self._current_outcome: Any = None
@@ -114,6 +115,11 @@ class MainWindow(QMainWindow):
         self._active_source: str | None = None
         self._shutdown_protocol = ShutdownProtocol()
         self._update_install_token: str | None = None
+        self._uninstall_active = False
+        self._uninstall_token: str | None = None
+        self._uninstall_timer = QTimer(self)
+        self._uninstall_timer.setInterval(100)
+        self._uninstall_timer.timeout.connect(self._poll_uninstall_shutdown)
 
         container = QWidget()
         layout = QVBoxLayout(container)
@@ -227,12 +233,13 @@ class MainWindow(QMainWindow):
     # ---------------------------------------------------------------- navigation
 
     def _sync_page_chrome(self, index: int) -> None:
-        """Let Home fill the native window; restore existing chrome elsewhere."""
-        is_home = index == HOME_PAGE_INDEX
+        """Home and About fill the window; workspaces retain their existing chrome."""
+        is_brand_page = isinstance(self.stack.widget(index), (HomePage, UpdatePage))
         if index != PROCESSING_PAGE_INDEX:
             self.processing_page.stop()
-        self._title_label.setVisible(not is_home)
-        if is_home:
+        self._title_label.setVisible(not is_brand_page)
+        if is_brand_page:
+            self._home_button.setVisible(False)
             self._page_layout.setContentsMargins(0, 0, 0, 0)
             self._page_layout.setSpacing(0)
         else:
@@ -296,21 +303,97 @@ class MainWindow(QMainWindow):
         elif intent == "local_data":
             self.show_local_data_page()
         elif intent == "about":
-            self.show_update_dialog()
+            self.show_about_page()
 
-    def show_update_dialog(self) -> None:
-        """Open About without submitting any network work."""
-        if self._update_dialog is None:
-            self._update_dialog = UpdateDialog(self._facade, self, executor=self._executor)
-            self._update_dialog.finished.connect(self._clear_update_dialog)
-            self._update_dialog.install_requested.connect(self.request_update_install)
-        self._update_dialog.show()
-        self._update_dialog.raise_()
-        self._update_dialog.activateWindow()
+    def show_about_page(self) -> None:
+        """Navigate offline; keep one update owner for the window's lifetime."""
+        if self.about_page is None:
+            self.about_page = UpdatePage(self._facade, self.stack, executor=self._executor)
+            self.stack.addWidget(self.about_page)
+            self.about_page.back_requested.connect(self.show_home_page)
+            self.about_page.install_requested.connect(self.request_update_install)
+            self.about_page.uninstall_requested.connect(self.request_setup_uninstall)
+        self.stack.setCurrentWidget(self.about_page)
+        self._home_button.setVisible(False)
+        self._back_button.setVisible(False)
+        self._clear_echo_report_entry()
+
+    def request_setup_uninstall(self) -> None:
+        """One confirmation, then the existing shutdown owner; no forced exit."""
+        if (self._uninstall_active or self._shutdown_protocol.started
+                or self._update_install_token is not None or self.about_page is None):
+            return
+        button = self.about_page.maintenance_section.uninstall_button
+        self._uninstall_active = True
+        button.setEnabled(False)
+        try:
+            if not self._facade.can_uninstall_setup():
+                QMessageBox.warning(self, '无法卸载 Echo', '当前安装身份或卸载器无效，无法卸载。')
+                return
+            if not workers_idle() or self.about_page._local_operation:
+                QMessageBox.warning(self, '暂不能卸载 Echo', '请等待后台任务完成，再重试卸载。')
+                return
+            answer = QMessageBox.question(self, '卸载 Echo',
+                '将移除 Echo 程序和快捷方式，保留本地报告与配置。\n确认后 Echo 将安全退出并启动卸载。是否继续？',
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            if answer != QMessageBox.Yes:
+                return
+            # A modal dialog runs a nested event loop: check work again.
+            if not workers_idle() or self.about_page._local_operation:
+                QMessageBox.warning(self, '暂不能卸载 Echo', '请等待后台任务完成，再重试卸载。')
+                return
+            prepared = self._facade.prepare_setup_uninstall()
+            if prepared.status != 'ready' or not prepared.token:
+                QMessageBox.warning(self, '无法卸载 Echo', prepared.public_message or '当前无法准备卸载。')
+                return
+            self._uninstall_token = prepared.token
+            self.centralWidget().setEnabled(False)
+            self.about_page.maintenance_section._report(True, '正在安全退出，准备卸载…')
+            self._uninstall_started_at = time.monotonic()
+            self.begin_shutdown()
+            self._uninstall_timer.start()
+        except Exception as error:
+            from ..application.facade import FacadeError
+            message = error.public_message if isinstance(error, FacadeError) else '无法准备卸载，请稍后重试。'
+            QMessageBox.warning(self, '无法卸载 Echo', message)
+        finally:
+            if self._uninstall_token is None:
+                self._uninstall_active = False
+                try:
+                    button.setEnabled(self._facade.can_uninstall_setup())
+                except Exception:
+                    button.setEnabled(False)
+
+    def _poll_uninstall_shutdown(self) -> None:
+        if not self._shutdown_protocol.finished:
+            if time.monotonic() - self._uninstall_started_at < self._shutdown_protocol.wait_seconds:
+                return
+            self._uninstall_timer.stop()
+            self._uninstall_token = None
+            self._uninstall_failed('安全退出超时，未启动卸载。')
+            return
+        self._uninstall_timer.stop()
+        token, self._uninstall_token = self._uninstall_token, None
+        try:
+            result = self._facade.handoff_setup_uninstall(token, self._shutdown_protocol.result)
+            if result.status == 'started':
+                self.close()
+                return
+            message = result.public_message or '未取得完整安全退出证据，未启动卸载。'
+        except Exception as error:
+            from ..application.facade import FacadeError
+            message = error.public_message if isinstance(error, FacadeError) else '卸载交接失败，未确认卸载。'
+        self._uninstall_failed(message)
+
+    def _uninstall_failed(self, message: str) -> None:
+        # Resource owners have stopped. Keep the surface disabled; the window
+        # close control remains available, but stopped services cannot restart.
+        self.about_page.maintenance_section._report(True, message)
+        QMessageBox.warning(self, 'Echo 卸载未完成', message + '\nEcho 已停止后台服务，请关闭并重新打开后重试。')
 
     def request_update_install(self, prepared: InstallHandoffResult) -> None:
         """GUI-thread, user-confirmed intent only. Normal close owns cleanup."""
-        if (self._shutdown_protocol.started or self._update_install_token is not None
+        if (self._uninstall_active or self._shutdown_protocol.started or self._update_install_token is not None
                 or not isinstance(prepared, InstallHandoffResult)
                 or prepared.status != 'ready' or not prepared.token):
             return
@@ -329,9 +412,6 @@ class MainWindow(QMainWindow):
         if not self._shutdown_protocol.finished or not result.can_apply_update:
             return InstallHandoffResult('denied', public_message='未取得完整安全退出证据，更新未安装。')
         return self._facade.handoff_update_install(token, result)
-
-    def _clear_update_dialog(self, _result: int) -> None:
-        self._update_dialog = None
 
     def navigate_to_qq(self) -> None:
         """Navigate to the QQ workspace."""
@@ -667,8 +747,9 @@ class MainWindow(QMainWindow):
         shutdown protocol, and the desktop entry point waits on that same
         protocol before the process is allowed to leave.
         """
-        if self._update_dialog is not None:
-            self._update_dialog.reject()
+        self._uninstall_timer.stop()
+        if self.about_page is not None:
+            self.about_page.close()
         self.processing_page.close()
         self.qq_workspace.cancel_analysis()
         self.wechat_workspace.cancel_analysis()

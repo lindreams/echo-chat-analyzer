@@ -124,13 +124,13 @@ def test_install_confirmation_and_closed_dialog_drop_late_preparation(tmp_path, 
     from PySide6.QtWidgets import QApplication, QMessageBox
     app = QApplication.instance() or QApplication([])
     from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
-    from qq_chat_analyzer.gui.update_dialog import UpdateDialog
+    from qq_chat_analyzer.gui.update_dialog import UpdatePage
     service, _, calls = fixture(tmp_path)
     facade = ChatAnalyzerFacade(installable_update_service=service)
     requests = []
     def executor(operation, **callbacks):
         requests.append((operation, callbacks))
-    dialog = UpdateDialog(facade, executor=executor)
+    dialog = UpdatePage(facade, executor=executor)
     dialog.show()
     received = []
     dialog.install_requested.connect(received.append)
@@ -142,7 +142,7 @@ def test_install_confirmation_and_closed_dialog_drop_late_preparation(tmp_path, 
     dialog.install_button.click()
     assert len(requests) == 1
     prepared = requests[0][0]()
-    dialog.reject()
+    dialog.close()
     requests[0][1]['on_success'](prepared)
     assert received == []
     assert calls == []
@@ -296,8 +296,8 @@ def click():
     if mode == 'direct':
         window.request_update_install(prepared)
     else:
-        window.show_update_dialog()
-        window._update_dialog.install_button.click()
+        window.show_about_page()
+        window.about_page.install_button.click()
 QTimer.singleShot(0, click)
 QTimer.singleShot(10000, lambda: application.exit(91))
 code = application.exec()

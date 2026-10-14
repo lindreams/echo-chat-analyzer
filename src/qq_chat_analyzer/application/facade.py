@@ -78,6 +78,7 @@ from .report_package_catalog import (
 )
 from .report_package_metadata import build_report_metadata
 from .update_check_service import UpdateChecker, UpdateCheckResult, UpdateCheckService
+from .setup_uninstall_service import SetupUninstallService, UninstallResult
 from .installable_update_service import (
     InstallableUpdater, InstallableUpdateResult, InstallableUpdateService, InstallHandoffResult,
 )
@@ -379,6 +380,7 @@ class ChatAnalyzerFacade:
         report_package_catalog: Any = None,
         update_check_service: UpdateChecker | None = None,
         installable_update_service: InstallableUpdater | None = None,
+        setup_uninstall_service: SetupUninstallService | None = None,
         stopwords_directory: Path | None = None,
         shutdown_step_seconds: float = DEFAULT_SHUTDOWN_STEP_SECONDS,
     ) -> None:
@@ -407,6 +409,7 @@ class ChatAnalyzerFacade:
             else InstallableUpdateService()
         )
         self._stopwords_directory = stopwords_directory or resources_dir()
+        self._setup_uninstall_service = setup_uninstall_service or SetupUninstallService()
         self._retained_output_directory: _RetainedReportDirectory | None = None
         self._scratch_recovery_done = False
         self._shutdown_step_seconds = shutdown_step_seconds
@@ -414,6 +417,22 @@ class ChatAnalyzerFacade:
         self._shutdown_result: ShutdownResult | None = None
         self._sources_closing = threading.Event()
         self._source_publication_lock = threading.Lock()
+
+    def can_uninstall_setup(self) -> bool:
+        return self._setup_uninstall_service.is_available()
+
+    def prepare_setup_uninstall(self) -> UninstallResult:
+        if self._sources_closing.is_set():
+            return UninstallResult('denied', public_message='Echo 已在退出，请重新启动后再试。')
+        return self._setup_uninstall_service.prepare()
+
+    def handoff_setup_uninstall(self, token: str, result: ShutdownResult) -> UninstallResult:
+        if (not isinstance(result, ShutdownResult) or not result.can_apply_update
+                or self._shutdown_result is None
+                or tuple(step for step in result.steps if step.name != 'gui_workers')
+                   != self._shutdown_result.steps):
+            return UninstallResult('denied', public_message='安全退出证据不完整，未启动卸载。')
+        return self._setup_uninstall_service.handoff(token, result)
 
     def check_for_updates(self, *, manual: bool = False) -> UpdateCheckResult:
         """Check on a worker; construction/startup never initiates a request."""
