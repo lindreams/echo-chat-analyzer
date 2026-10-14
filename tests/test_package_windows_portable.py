@@ -8,6 +8,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
@@ -379,7 +380,8 @@ def test_cli_packages_fictional_tree_and_reports_missing_source(release):
         capture_output=True, text=True, encoding="utf-8", check=False,
     )
     assert result.returncode == 0, result.stderr
-    assert (output / "Echo-0.1.0-windows-x64.zip").is_file()
+    version = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+    assert (output / f"Echo-{version}-windows-x64.zip").is_file()
     missing_output = output.parent / "missing-output"
     result = subprocess.run(
         [sys.executable, "-B", str(SCRIPT), "--source", str(source / "missing"),
