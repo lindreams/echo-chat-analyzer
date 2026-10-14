@@ -2,6 +2,11 @@
 
 No builds, downloads, signing, installs or updates are performed by this wrapper.
 Existing output directories are never overwritten.
+
+The Setup creates a desktop shortcut and a Start Menu shortcut, and both the
+Setup and its shortcuts reuse the existing Echo application icon. Install
+branding and progress come from Velopack's native progress dialog, which is
+driven by ``--packTitle``; no custom splash image is shipped.
 """
 from __future__ import annotations
 
@@ -22,6 +27,7 @@ import package_windows_portable as portable
 PackageError = portable.PackageError
 VELOPACK_VERSION = "1.2.161"
 ROOT = Path(__file__).resolve().parents[1]
+ECHO_SETUP_ICON = ROOT / "branding/Echo.ico"
 
 
 def _validate_pins(entries: dict, contract: dict, manifest: Path) -> None:
@@ -64,6 +70,8 @@ def package_setup(source_dir: str | Path, output_dir: str | Path, *, vpk_path: P
         raise PackageError("Invalid or data-directory-conflicting packId")
     if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,63}", channel):
         raise PackageError("Invalid channel")
+    if not ECHO_SETUP_ICON.is_file():
+        raise PackageError("Missing Echo application icon for the Setup: " + str(ECHO_SETUP_ICON))
     release_version = tomllib.loads(Path(project_file).read_text(encoding="utf-8"))["project"]["version"]
     if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?", release_version):
         raise PackageError("Invalid project release version")
@@ -96,7 +104,9 @@ def package_setup(source_dir: str | Path, output_dir: str | Path, *, vpk_path: P
         _run([str(vpk_path), "pack", "--packId", pack_id, "--packVersion", release_version,
                            "--packDir", str(stage), "--mainExe", "Echo.exe", "--packTitle", "Echo",
                            "--channel", channel, "--runtime", "win-x64", "--delta", "None",
-                           "--shortcuts", "None", "--outputDir", str(artifacts), "--skip-updates", "--legacyConsole"])
+                           "--icon", str(ECHO_SETUP_ICON),
+                           "--shortcuts", "Desktop,StartMenuRoot",
+                           "--outputDir", str(artifacts), "--skip-updates", "--legacyConsole"])
         setups = list(artifacts.glob("*-Setup.exe"))
         assets = json.loads((artifacts / f"releases.{channel}.json").read_text(encoding="utf-8"))["Assets"]
         if len(setups) != 1 or len(assets) != 1:

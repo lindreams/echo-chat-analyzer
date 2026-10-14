@@ -15,7 +15,7 @@ from shiboken6 import isValid
 from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
 from qq_chat_analyzer.application.installable_update_service import InstallableUpdateResult
 from qq_chat_analyzer.application.update_check_service import UpdateCheckService
-from qq_chat_analyzer.gui.update_dialog import UpdateDialog
+from qq_chat_analyzer.gui.update_dialog import UpdatePage
 from test_gui_update_check import Executor
 from test_installable_update_service import service
 
@@ -36,7 +36,7 @@ def integrated(tmp_path, app):
     facade = ChatAnalyzerFacade(installable_update_service=core,
         update_check_service=UpdateCheckService(state_path=tmp_path / 'attempt.json', fetch_release=fetch))
     executor = Executor()
-    dialog = UpdateDialog(facade, executor=executor)
+    dialog = UpdatePage(facade, executor=executor)
     dialog.show()
     app.processEvents()
     yield dialog, executor, facade, core, manager, releases
@@ -75,8 +75,8 @@ def test_real_facade_check_download_and_reopen(integrated, app):
     assert '下载完成' in dialog.status_label.text()
     assert '重启余音后完成安装' not in dialog.status_label.text()
     assert not dialog.download_button.isVisible()
-    dialog.reject()
-    reopened = UpdateDialog(facade, executor=executor)
+    dialog.close()
+    reopened = UpdatePage(facade, executor=executor)
     reopened.show()
     assert '下载完成' in reopened.status_label.text()
     assert len(executor.tasks) == 2
@@ -174,14 +174,14 @@ def test_real_worker_closed_dialog_and_reopened_observer(integrated, app):
         assert release.wait(5)
     core.check()
     manager.hook = hold
-    dialog = UpdateDialog(facade)
+    dialog = UpdatePage(facade)
     dialog.show()
     dialog.download_button.click()
     observer = None
     try:
         wait(app, entered.is_set)
-        dialog.reject()
-        observer = UpdateDialog(facade)
+        dialog.close()
+        observer = UpdatePage(facade)
         observer.show()
         assert '正在下载' in observer.status_label.text()
         assert not observer.check_button.isEnabled()
@@ -212,7 +212,7 @@ def test_gui_real_sdk_local_feed_download_and_retry(tmp_path, app, corrupt):
     from update_feed_test_data import local_feed_service
     core, cached, package, content = local_feed_service(tmp_path, corrupt=corrupt)
     facade = ChatAnalyzerFacade(installable_update_service=core)
-    dialog = UpdateDialog(facade)
+    dialog = UpdatePage(facade)
     dialog.show()
     renders = []
     render = dialog._render

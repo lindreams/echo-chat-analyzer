@@ -111,37 +111,75 @@ def test_wrong_vpk_version_is_rejected(packager, release, monkeypatch):
     assert not release[1].exists()
 
 
+def emit_fictional_release(artifacts: Path, source: Path) -> None:
+    """Write the feed and package files a successful vpk run would produce."""
+    artifacts.mkdir()
+    package = artifacts / "EchoA1.Fictional-0.1.0-win-x64-a1-full.nupkg"
+    with zipfile.ZipFile(package, "w") as archive:
+        for path in sorted(source.rglob("*")):
+            if path.is_file():
+                archive.writestr("lib/app/" + path.relative_to(source).as_posix(), path.read_bytes())
+    (artifacts / "EchoA1.Fictional-win-x64-a1-Setup.exe").write_bytes(b"fictional setup")
+    (artifacts / "releases.win-x64-a1.json").write_text(json.dumps({"Assets": [{
+        "PackageId": "EchoA1.Fictional", "Version": "0.1.0", "Type": "Full",
+        "FileName": package.name, "SHA256": hashlib.sha256(package.read_bytes()).hexdigest(),
+        "Size": package.stat().st_size,
+    }]}))
+
+
+def fictional_vpk(source: Path, inspect):
+    """Stand in for vpk: hand the pack command to ``inspect``, then emit outputs."""
+    def runner(command, **kwargs):
+        if command[-1] == "-h":
+            return SimpleNamespace(returncode=0, stdout="Velopack CLI 1.2.161,", stderr="")
+        inspect(command)
+        emit_fictional_release(Path(command[command.index("--outputDir") + 1]), source)
+        return SimpleNamespace(returncode=0, stdout="fictional success", stderr="")
+    return runner
+
+
 def test_vpk_receives_staging_and_project_version(packager, release, monkeypatch):
     source, output, _, _ = release
     original = {p.relative_to(source).as_posix(): p.read_bytes() for p in source.rglob("*") if p.is_file()}
 
-    def runner(command, **kwargs):
-        if command[-1] == "-h":
-            return SimpleNamespace(returncode=0, stdout="Velopack CLI 1.2.161,", stderr="")
+    def inspect(command):
         assert "--skip-updates" in command
         stage = Path(command[command.index("--packDir") + 1])
-        artifacts = Path(command[command.index("--outputDir") + 1])
         assert stage != source and stage.is_dir()
         assert command[command.index("--packVersion") + 1] == "0.1.0"
         assert command[command.index("--packId") + 1] == "EchoA1.Fictional"
-        artifacts.mkdir()
-        package = artifacts / "EchoA1.Fictional-0.1.0-win-x64-a1-full.nupkg"
-        with zipfile.ZipFile(package, "w") as archive:
-            for name, body in original.items():
-                archive.writestr("lib/app/" + name, body)
-        (artifacts / "EchoA1.Fictional-win-x64-a1-Setup.exe").write_bytes(b"fictional setup")
-        (artifacts / "releases.win-x64-a1.json").write_text(json.dumps({"Assets": [{
-            "PackageId": "EchoA1.Fictional", "Version": "0.1.0", "Type": "Full",
-            "FileName": package.name, "SHA256": hashlib.sha256(package.read_bytes()).hexdigest(),
-            "Size": package.stat().st_size,
-        }]}))
-        return SimpleNamespace(returncode=0, stdout="fictional success", stderr="")
 
-    monkeypatch.setattr(packager.subprocess, "run", runner)
+    monkeypatch.setattr(packager.subprocess, "run", fictional_vpk(source, inspect))
     setup = invoke(packager, release)
     assert setup.is_file() and setup.parent == output
     assert original == {p.relative_to(source).as_posix(): p.read_bytes() for p in source.rglob("*") if p.is_file()}
     assert (output / "setup-build.json").is_file()
+
+
+def test_setup_reuses_echo_icon_and_creates_desktop_and_start_menu_shortcuts(
+        packager, release, monkeypatch):
+    source, _, _, _ = release
+    options = {}
+
+    def inspect(command):
+        options.update(zip(command, command[1:]))
+        assert "--splashImage" not in command
+
+    monkeypatch.setattr(packager.subprocess, "run", fictional_vpk(source, inspect))
+    invoke(packager, release)
+    assert options["--shortcuts"] == "Desktop,StartMenuRoot"
+    assert options["--icon"] == str(packager.ECHO_SETUP_ICON)
+    assert packager.ECHO_SETUP_ICON.is_file()
+    assert options["--packTitle"] == "Echo"
+    assert options["--mainExe"] == "Echo.exe"
+
+
+def test_missing_echo_icon_is_rejected_before_vpk(packager, release, monkeypatch):
+    monkeypatch.setattr(packager, "ECHO_SETUP_ICON", release[1].parent / "absent-icon.ico")
+    monkeypatch.setattr(packager.subprocess, "run", lambda *a, **k: pytest.fail("vpk reached"))
+    with pytest.raises(packager.PackageError, match="[Ii]con"):
+        invoke(packager, release)
+    assert not release[1].exists()
 
 
 def test_pack_failure_leaves_no_output(packager, release, monkeypatch):

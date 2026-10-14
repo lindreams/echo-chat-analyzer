@@ -472,6 +472,13 @@ The project version supplies packVersion; there is no independent installer
 version override. The test packId/channel are explicit; production identity,
 feed policy and signing are separate release decisions.
 
+The Setup creates a desktop shortcut and a Start Menu shortcut
+(`--shortcuts Desktop,StartMenuRoot`), and it reuses `branding/Echo.ico` for the
+Setup executable and those shortcuts, so an installation looks like the
+`Echo.exe` it installs. Install-time branding and progress come from Velopack's
+native progress dialog, which is titled through `--packTitle`; no custom splash
+image is shipped.
+
 For real acceptance, use a lab-only packId, external `--installto`, isolated
 process-local `LOCALAPPDATA` and fictional configuration. Check install and
 user-data paths independently. Use the test installation's registered

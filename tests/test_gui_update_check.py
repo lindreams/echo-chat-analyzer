@@ -42,7 +42,7 @@ class Facade:
 def ui(app):
     module = importlib.import_module("qq_chat_analyzer.gui.update_dialog")
     facade, executor = Facade(), Executor()
-    dialog = module.UpdateDialog(facade, executor=executor)
+    dialog = module.UpdatePage(facade, executor=executor)
     dialog.show()
     app.processEvents()
     yield dialog, facade, executor
@@ -80,7 +80,7 @@ def test_open_is_offline_and_version_uses_authoritative_source(app, monkeypatch)
     monkeypatch.setattr(version, "APP_VERSION", "7.2.1+fictional")
     module = importlib.import_module("qq_chat_analyzer.gui.update_dialog")
     facade, executor = Facade(), Executor()
-    dialog = module.UpdateDialog(facade, executor=executor)
+    dialog = module.UpdatePage(facade, executor=executor)
     assert "7.2.1+fictional" in dialog.version_label.text()
     assert executor.tasks == [] and facade.calls == []
     dialog.close()
@@ -170,7 +170,7 @@ def test_late_callbacks_after_close_never_touch_widgets(ui, app, destroy):
     dialog.check_button.click()
     task = executor.tasks[0]
     before = dialog.status_label.text()
-    dialog.reject()
+    dialog.close()
     if destroy:
         dialog.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
@@ -180,30 +180,79 @@ def test_late_callbacks_after_close_never_touch_widgets(ui, app, destroy):
         assert dialog.status_label.text() == before
 
 
-def test_main_window_about_is_offline_and_keeps_home(app):
+@pytest.mark.parametrize("maximized", [False, True])
+def test_main_window_merged_about_uses_main_stack_without_new_windows(app, maximized):
     from qq_chat_analyzer.gui.main_window import MainWindow
     from test_gui import StubFacade
     facade = StubFacade()
     executor = Executor()
     window = MainWindow(facade, executor=executor)
-    window.show()
+    window.showMaximized() if maximized else window.show()
+    app.processEvents()
+    geometry, state = window.geometry(), window.windowState()
+    top_levels = set(app.topLevelWidgets())
     assert executor.tasks == []
     about = next(b for b in window.home_page.findChildren(QPushButton)
                  if b.accessibleName() == "关于余音")
     about.click()
-    from qq_chat_analyzer.gui.update_dialog import UpdateDialog
-    dialogs = window.findChildren(UpdateDialog)
-    assert len(dialogs) == 1 and dialogs[0].isVisible()
-    assert window.stack.currentWidget() is window.home_page
+    page = window.stack.currentWidget()
+    assert page is not window.home_page
+    assert page.window() is window
+    assert set(app.topLevelWidgets()) == top_levels
+    assert window.geometry() == geometry and window.windowState() == state
     assert executor.tasks == []
-    about.click()
-    assert len(window.findChildren(UpdateDialog)) == 1
-    dialogs[0].reject()
-    QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+    assert page.maintenance_section.isVisible()
+    assert window.stack.count() == 7
+    page.back_button.click()
+    assert window.stack.currentWidget() is window.home_page
     about.setFocus()
     QTest.keyClick(about, Qt.Key_Space)
-    assert window._update_dialog.isVisible()
-    window._update_dialog.reject()
+    assert window.stack.currentWidget() is page
+    assert executor.tasks == []
+    assert set(app.topLevelWidgets()) == top_levels
+    window.hide()
+
+
+def test_main_window_navigation_keeps_download_progress_and_install_handoff(app, monkeypatch):
+    from qq_chat_analyzer.gui.main_window import MainWindow
+    from qq_chat_analyzer.application.facade import InstallHandoffResult
+    from test_gui import StubFacade
+    module = importlib.import_module("qq_chat_analyzer.gui.update_dialog")
+    facade = StubFacade()
+    facade.get_update_status = lambda: InstallableUpdateResult("available", "0.1.0", "0.2.0")
+    facade.download_update = lambda **kwargs: None
+    facade.prepare_update_install = lambda: InstallHandoffResult("ready", token="fictional-token")
+    executor = Executor()
+    window = MainWindow(facade, executor=executor)
+    prepared = []
+    monkeypatch.setattr(window, "request_update_install", prepared.append)
+    monkeypatch.setattr(module.QMessageBox, "question", lambda *args: module.QMessageBox.Yes)
+    window.show()
+    window.home_page._about_btn.click()
+    page = window.stack.currentWidget()
+    page.download_button.click()
+    task = executor.tasks[0]
+    task.on_progress(35)
+    page.back_button.click()
+    task.on_progress(68)
+    window.home_page._about_btn.click()
+    assert page.progress_bar.value() == 68
+    assert not page.check_button.isEnabled()
+    page.back_button.click()
+    task.on_success(InstallableUpdateResult("downloaded", "0.1.0", "0.2.0", 100))
+    facade.get_update_status = lambda: InstallableUpdateResult("downloaded", "0.1.0", "0.2.0", 100)
+    window.home_page._about_btn.click()
+    assert window.stack.currentWidget() is page
+    assert page.install_button.isVisible() and page.install_button.isEnabled()
+    page.install_button.click()
+    install_task = executor.tasks[-1]
+    install_task.on_success(install_task.operation())
+    app.processEvents()
+    assert len(prepared) == 1 and prepared[0].token == "fictional-token"
+    assert len(executor.tasks) == 2
+    page.close()
+    assert not page._status_timer.isActive()
+    task.on_progress(1)
     window.hide()
 
 
@@ -228,7 +277,7 @@ def test_submission_failure_allows_retry(app):
     module = importlib.import_module("qq_chat_analyzer.gui.update_dialog")
     def unavailable_executor(*args, **kwargs):
         raise RuntimeError("fictional private detail")
-    dialog = module.UpdateDialog(Facade(), executor=unavailable_executor)
+    dialog = module.UpdatePage(Facade(), executor=unavailable_executor)
     dialog.check_button.click()
     assert dialog.check_button.isEnabled()
     assert "重试" in dialog.status_label.text()
@@ -277,7 +326,7 @@ def update_ui(app):
     """About dialog with a fictional Facade, never a second updater."""
     module = importlib.import_module("qq_chat_analyzer.gui.update_dialog")
     executor, facade = Executor(), InstallableFacade()
-    dialog = module.UpdateDialog(facade, executor=executor)
+    dialog = module.UpdatePage(facade, executor=executor)
     dialog.show()
     app.processEvents()
     yield dialog, executor, facade
@@ -343,7 +392,8 @@ def test_dialog_without_install_facade_offers_no_install_or_restart_action(updat
     dialog.download_button.click()
     task = executor.tasks[1]
     task.on_success(task.operation(task.on_progress))
-    labels = [button.text() for button in dialog.findChildren(QPushButton) if button.isVisible()]
+    labels = [button.text() for button in dialog.findChildren(QPushButton)
+              if button.isVisible()]
     assert not any("安装" in label or "重启" in label for label in labels)
 
 
@@ -467,7 +517,7 @@ def test_download_progress_after_close_never_touches_widgets(update_ui, app, des
     dialog.download_button.click()
     task = executor.tasks[1]
     before = dialog.status_label.text()
-    dialog.reject()
+    dialog.close()
     if destroy:
         dialog.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
@@ -488,7 +538,7 @@ def test_real_worker_downloads_off_thread_and_relays_progress_to_gui_thread(app)
             seen.append(("download", QThread.currentThread() == app.thread()))
             return super().download_update(progress=progress)
 
-    dialog = module.UpdateDialog(ThreadFacade())
+    dialog = module.UpdatePage(ThreadFacade())
     dialog.show()
     app.processEvents()
     original = dialog._apply_progress
@@ -524,7 +574,7 @@ def test_real_worker_runs_off_gui_thread_and_returns_on_gui_thread(app):
         def check_for_updates(self, *, manual):
             seen.append((manual, QThread.currentThread() == app.thread()))
             return UpdateCheckResult("up_to_date", "7.2.1")
-    dialog = module.UpdateDialog(ThreadFacade())
+    dialog = module.UpdatePage(ThreadFacade())
     delivered = threading.Event()
     original = dialog._show_result
     def show_result(result):
