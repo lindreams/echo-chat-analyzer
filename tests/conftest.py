@@ -48,6 +48,40 @@ def release_test_widgets():
 
 
 @pytest.fixture(autouse=True)
+def release_finished_worker_relays():
+    """Detach this test's finished worker relays from the module registry.
+
+    ``qq_chat_analyzer.gui.workers`` keeps every submitted worker and its
+    callback relay in module-global sets, and ``workers.is_idle()`` reads them to
+    report whether the GUI is busy. A relay leaves ``_RELAYS`` only when the
+    queued ``finished`` slot runs on the thread that created it, so a test that
+    destroys a signal source, or that starts the connection flow from a pool
+    thread, leaves a relay behind that no later test can release. Every
+    following test then sees a busy GUI even though no work is running.
+
+    Only relays this test added, and only once their worker stopped running, are
+    detached. ``_PENDING`` and pre-existing relays stay untouched, so genuinely
+    running work still reports busy.
+    """
+    # Do not import or initialize Qt for tests that do not use it.
+    registry = sys.modules.get("qq_chat_analyzer.gui.workers")
+    if registry is None:
+        yield
+        return
+
+    existing = set(registry._RELAYS)
+    yield
+
+    for relay in tuple(registry._RELAYS):
+        if any(relay is kept for kept in existing):
+            continue
+        if any(relay is getattr(worker, "_callback_relay", None)
+               for worker in registry._PENDING):
+            continue
+        registry._RELAYS.discard(relay)
+
+
+@pytest.fixture(autouse=True)
 def isolate_qq_runtime_ownership(monkeypatch):
     """A fictional launch must never leave a PID for another test to kill."""
     from qq_chat_analyzer.application.qq import qq_process_registry, qq_runtime_session

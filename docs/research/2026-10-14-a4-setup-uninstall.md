@@ -93,8 +93,15 @@ channel `win-x64-a4-acceptance`、版本 0.2.0，外部 `--installto` 安装到�
   均未在本轮人工报告中单独记录或执行；这些分支只有自动化证据。
 
 收尾审核的自动化证据：A4 定向测试 123 passed。Fast Suite
-（`-m "not slow_integration and not known_failure"`）为 3899 passed / 169 failed / 10 errors，
-其中 152 failed、10 FacadeError、1 个 jieba 隔离测试的失败与全部 10 errors 由共享构建环境缺少
-jieba `dict.txt` 引起（既有已证明的环境问题，未重复调查）；其余 6 failed 出现在本专项新增的
-GUI 卸载测试，原因是既有 `tests/test_gui.py` 遗留 GUI worker 全局状态使 `workers_idle()` 为假，
-不是本专项生产代码缺陷。未运行 Full，未重新打包，未 push。
+（`-m "not slow_integration and not known_failure"`）为 3903 passed / 165 failed / 10 errors，
+其中 163 failed、10 FacadeError、1 个 jieba 隔离测试的失败与全部 10 errors 由共享构建环境缺少
+jieba `dict.txt` 引起（既有已证明的环境问题，未重复调查）；另有 2 项 NapCat 本机回环 socket
+偶发失败（`WinError 10053`，同一文件复跑可通过），与本专项无关。
+
+审核曾发现本专项新增的 GUI 卸载测试存在顺序依赖：`tests/test_gui.py` 中故意销毁信号源、
+或从线程池线程发起连接的用例会留下无法投递的 GUI worker relay，使 `workers.is_idle()` 在整个
+进程内持续为假，从而产生 6 个顺序相关失败。该问题只影响测试隔离，已按测试侧修复：
+`tests/conftest.py` 新增 autouse fixture，只归还本用例新增且所属 worker 已停止的 relay，
+`_PENDING` 与既有 relay 不动，运行中的任务仍如实报告繁忙（外部探针验证：
+`pending=1 relays=1 idle=False` 跨用例保持）。修复后 `tests/test_gui_setup_uninstall.py`
+单独运行 9 passed，在 `tests/test_gui.py` 之后运行 421 passed。未运行 Full，未重新打包，未 push。
