@@ -55,6 +55,7 @@ def build_facade() -> ChatAnalyzerFacade:
     from ..application.qq.qq_runtime_session import QQRuntimeSession
     from ..application.report_package_catalog import ReportPackageCatalog
     from ..application.source_bundle_builder import SourceBundleBuilder
+    from ..application.update_channel import production_update_service
     from ..application.wechat.wechat_setup_service import WeChatSetupService
 
     # One owner for the local bridge credential of the QQ runtime Echo launches:
@@ -70,6 +71,10 @@ def build_facade() -> ChatAnalyzerFacade:
         qq_runtime_session=session,
         analysis_service=AnalysisApplicationService(),
         report_package_catalog=ReportPackageCatalog(),
+        # The fixed production feed, gated so the unapproved Velopack install
+        # handoff is not exposed to real Setup users yet. Construction is inert;
+        # source/Portable/unsupported environments keep the release-page fallback.
+        installable_update_service=production_update_service(),
         stopwords_directory=resources_dir(),
     )
 
