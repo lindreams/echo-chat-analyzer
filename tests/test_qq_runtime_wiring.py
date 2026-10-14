@@ -127,6 +127,43 @@ def test_managed_launch_reuses_workspace_and_never_writes_release(release, monke
     assert client._runtime_id == paths.runtime_id
 
 
+def test_managed_launch_enables_snapshot_diagnostics_under_the_echo_log_directory(release, tmp_path, monkeypatch):
+    """A capture failure must be observable, not only reported as one code."""
+    program, loader, qq = release
+    paths = loader.runtime_paths(prepare=True)
+    from qq_chat_analyzer import diagnostics
+    monkeypatch.setattr(diagnostics, 'log_path', lambda: tmp_path / 'logs' / 'echo.log')
+    inherited = tmp_path / 'foreign-diagnostics.log'
+    monkeypatch.setenv('QCE_LOG_FILE', str(inherited))
+    seen = []
+    monkeypatch.setattr(*_launch_target(), lambda args, **kw: seen.append(kw['env']) or SimpleNamespace(poll=lambda: None))
+    auth.default_auth_window_launcher(loader.load_or_default(), paths=paths)()
+    child = seen[0]
+    expected = tmp_path / 'logs' / auth.SNAPSHOT_DIAGNOSTIC_FILENAME
+    assert child['QCE_LOG_FILE'] == str(expected)
+    assert expected.parent.is_dir()
+    # An inherited value is never adopted, and Echo's own environment is untouched.
+    assert child['QCE_LOG_FILE'] != str(inherited)
+    assert os.environ['QCE_LOG_FILE'] == str(inherited)
+
+
+def test_managed_launch_survives_an_unavailable_snapshot_diagnostic_channel(release, tmp_path, monkeypatch):
+    """A diagnostic channel is optional; it must never block the QQ launch."""
+    program, loader, qq = release
+    paths = loader.runtime_paths(prepare=True)
+    from qq_chat_analyzer import diagnostics
+
+    def unavailable():
+        raise OSError('fictional log directory failure')
+
+    monkeypatch.setattr(diagnostics, 'log_path', unavailable)
+    monkeypatch.setenv('QCE_LOG_FILE', str(tmp_path / 'foreign-diagnostics.log'))
+    seen = []
+    monkeypatch.setattr(*_launch_target(), lambda args, **kw: seen.append(kw['env']) or SimpleNamespace(poll=lambda: None))
+    auth.default_auth_window_launcher(loader.load_or_default(), paths=paths)()
+    assert 'QCE_LOG_FILE' not in seen[0]
+
+
 def test_prepare_precedes_qr_baseline_and_work_cache_preserves_freshness(release, monkeypatch):
     program, loader, qq = release
     paths = loader.runtime_paths(prepare=True)

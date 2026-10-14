@@ -38,7 +38,16 @@ from .bridge_credential import authorization_headers, resolve_bridge_credential
 
 DEFAULT_RPC_TIMEOUT_SECONDS = 30
 DEFAULT_ACQUIRE_RPC_TIMEOUT_SECONDS = 65
-_SNAPSHOT_UNSTABLE_MAX_ATTEMPTS = 3
+# ``snapshot_unstable`` is the capture failing closed because the source was
+# written inside its read window (a WAL checkpoint, or QQ's post-login sync).
+# That condition is transient, but one attempt is not cheap: it re-acquires the
+# OS lease and re-reads the whole source, so a large database makes a single
+# attempt take several seconds. A three-attempt budget therefore expired while
+# the source was still settling and surfaced as a permanent connection failure.
+# Six attempts still fit inside the 65s acquire budget on a slow machine while
+# covering a post-login write burst. No consistency guard is relaxed: every
+# attempt keeps the same all-or-nothing capture contract.
+_SNAPSHOT_UNSTABLE_MAX_ATTEMPTS = 6
 _SNAPSHOT_UNSTABLE_RETRY_DELAY_SECONDS = 0.25
 RECOVER_READINESS_ATTEMPTS = 51
 RECOVER_READINESS_POLL_SECONDS = 0.1

@@ -210,10 +210,33 @@ def test_acquire_retries_snapshot_unstable_then_succeeds_serially(
     assert transport.calls == 2
     assert transport.max_active == 1
     assert len(delays) == 1 and 0 < delays[0] <= 1
-    assert "attempt=1 max_attempts=3 failure_code=snapshot_unstable" in caplog.text
+    assert "attempt=1 max_attempts=6 failure_code=snapshot_unstable" in caplog.text
 
 
-def test_acquire_stops_after_three_unstable_attempts_with_existing_error(
+def test_acquire_outlasts_a_write_burst_that_exceeds_the_first_attempts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A capture fails closed while the source is written; that is transient.
+
+    Every attempt re-reads the whole source, so on a large database a few
+    attempts can expire before QQ's post-login write burst ends. The retry
+    budget must cover that burst instead of reporting a permanent failure.
+    """
+    delays: list[float] = []
+    monkeypatch.setattr(snapshot_runtime.time, "sleep", delays.append)
+    transport = _SequenceTransport([
+        {"ok": False, "code": "snapshot_unstable", "status": "failed"}
+        for _ in range(4)
+    ] + [_acquire_result("gen-after-burst")])
+
+    assert _client(transport, root=tmp_path).acquire() == "gen-after-burst"
+    assert transport.calls == 5
+    assert transport.max_active == 1
+    assert len(delays) == 4
+
+
+def test_acquire_stops_after_the_attempt_budget_is_exhausted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -221,7 +244,7 @@ def test_acquire_stops_after_three_unstable_attempts_with_existing_error(
     monkeypatch.setattr(snapshot_runtime.time, "sleep", delays.append)
     transport = _SequenceTransport([
         {"ok": False, "code": "snapshot_unstable", "status": "failed"}
-        for _ in range(3)
+        for _ in range(6)
     ])
 
     with pytest.raises(QQSnapshotRuntimeFailure) as captured:
@@ -229,9 +252,9 @@ def test_acquire_stops_after_three_unstable_attempts_with_existing_error(
 
     assert captured.value.code == "qq_snapshot_runtime_failure"
     assert captured.value.public_message == QQSnapshotRuntimeFailure.public_message
-    assert transport.calls == 3
+    assert transport.calls == 6
     assert transport.max_active == 1
-    assert len(delays) == 2 and all(0 < delay <= 1 for delay in delays)
+    assert len(delays) == 5 and all(0 < delay <= 1 for delay in delays)
 
 
 @pytest.mark.parametrize("failure_code", ["decrypt_failed", "identity_missing"])
