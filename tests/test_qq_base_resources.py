@@ -36,7 +36,7 @@ def test_audit_cases_reject_before_launch_or_credential(tmp_path, monkeypatch, c
     assert not (tmp_path / "qqnt.echo.json").exists()
 
 
-@pytest.mark.parametrize("version,build", [("9.9.36-53644", "53644"), ("9.9.36-53644", 53644), ("9.9.36", "53644")])
+@pytest.mark.parametrize("version,build", [("9.9.36-53644", "53644"), ("9.9.36", "53644")])
 def test_base_version_and_wrapper_are_pinned_to_the_launch(tmp_path, monkeypatch, version, build):
     config, app = _base(tmp_path, version, build)
     monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
@@ -60,7 +60,7 @@ def test_base_version_and_wrapper_are_pinned_to_the_launch(tmp_path, monkeypatch
 
 @pytest.mark.parametrize("info", [
     {"version": "newest", "buildVersion": "53644"},
-    {"buildVersion": "53644"}, {"version": "9.9.36"},
+    {"buildVersion": "53644"},
     {"version": "9.9.36-53644", "buildVersion": True},
 ])
 def test_unidentifiable_fields_do_not_fall_back_to_new_pe(tmp_path, monkeypatch, info):

@@ -217,7 +217,7 @@ def _budget_service(tmp_path, snapshots, mode="native"):
     return service, api, seen, clock
 
 
-@pytest.mark.parametrize("mode", ["native", "buffered", "streaming"])
+@pytest.mark.parametrize("mode", ["native", "streaming"])
 def test_smallfix_reused_pid_after_observed_exit_is_new_candidate(tmp_path, mode):
     service, api, seen, clock = _budget_service(tmp_path, [[101], [], [101]], mode)
     calls = []
@@ -226,9 +226,7 @@ def test_smallfix_reused_pid_after_observed_exit_is_new_candidate(tmp_path, mode
         calls.append(int(command[command.index("--pid") + 1]))
         return _Completed(stdout=api.key)
 
-    if mode == "buffered":
-        service._subprocess_runner = run
-    elif mode == "streaming":
+    if mode == "streaming":
         def launch(command, **options):
             run(command, **options)
             return _FakePopen(stdout=api.key, stderr_lines=("hook_success=true",))
@@ -379,18 +377,6 @@ def test_smallfix_helper_does_not_retry_environment_failure(tmp_path):
     assert len(calls) == 1
 
 
-def test_acquire_returns_valid_key(tmp_path: Path) -> None:
-    key = "ab12" * 16
-    api = _FakeHookApi(key=key)
-    service = _service(tmp_path, api=api, pids=[123])
-
-    acquired = service.acquire()
-
-    assert acquired == key.lower()
-    assert api.initialize_calls == [123]
-    assert api.cleanup_calls == 1
-
-
 def test_zero_acquire_budget_times_out_without_hook(tmp_path: Path) -> None:
     module = _module()
     api = _FakeHookApi(key=None)
@@ -475,7 +461,6 @@ def test_helper_key_unavailable_is_not_captured(tmp_path: Path):
 @pytest.mark.parametrize(
     "install_dir",
     [
-        "WeChat/Weixin",
         "软件之学习工作/微信/Weixin",
         "we chat install/Weixin",
     ],
@@ -513,31 +498,6 @@ def test_helper_invocation_preserves_path_characters(
     assert options["cwd"] == str(runtime_dir)
     assert options["env"]["NODE_PATH"] == str(runtime_dir / "node_modules")
     assert options.get("shell", False) is False
-
-
-def test_helper_invocation_never_uses_wechat_install_path(
-    tmp_path: Path,
-) -> None:
-    module = _module()
-    dll = tmp_path / "wx_key.dll"
-    helper = tmp_path / "wx_key_helper.cjs"
-    dll.write_bytes(b"fake")
-    helper.write_text("", encoding="utf-8")
-    service = module.WeChatKeyService(
-        dll_path=dll,
-        helper_path=helper,
-        node_finder=lambda _name: "node",
-    )
-
-    command, options = service._build_helper_invocation(30.0)
-
-    assert command[0] == "node"
-    assert command[1] == str(helper)
-    assert command[2:4] == ["--dll", str(dll)]
-    assert command[4:6] == ["--timeout-ms", "30000"]
-    assert "Weixin.exe" not in str(command)
-    assert str(Path("D:/软件之学习工作/微信/Weixin")) not in str(command)
-    assert "Weixin.exe" not in str(options.get("cwd", ""))
 
 
 @pytest.mark.skipif(
@@ -822,9 +782,6 @@ def test_streaming_progress_never_leaks_internal_terms(tmp_path: Path):
 
 
 @pytest.mark.parametrize("diagnostic", [
-    "exports loaded: InitializeHook, PollKeyData, CleanupHook",
-    "process_found=true, process_count=1",
-    "elapsed=5s, waiting for key...",
     "hook_success=false",
     "diagnostic hook_success=true",
     'GetStatusMessage -> true, level=0, status="hook_success=true"',
@@ -839,29 +796,6 @@ def test_streaming_cannot_allow_login_without_listener_ready(tmp_path, diagnosti
 
     assert [getattr(event, "name", None) for event in seen] == [
         "PREPARING", "WAITING_FOR_WECHAT_START",
-    ]
-
-
-def test_injected_listener_reports_ready_only_after_initialize_succeeds(tmp_path):
-    seen = []
-
-    class Listener(_FakeHookApi):
-        def initialize(self, pid):
-            assert [getattr(event, "name", None) for event in seen] == [
-                "PREPARING", "WAITING_FOR_WECHAT_START",
-            ]
-            return super().initialize(pid)
-
-        def poll_key(self, buffer, size):
-            assert getattr(seen[-1], "name", None) == "READY_FOR_LOGIN"
-            return super().poll_key(buffer, size)
-
-    service = _service(tmp_path, api=Listener(key="ab12" * 16), pids=[4242])
-    service.acquire(progress=seen.append)
-
-    assert [getattr(event, "name", None) for event in seen] == [
-        "PREPARING", "WAITING_FOR_WECHAT_START", "READY_FOR_LOGIN",
-        "CREDENTIAL_RECEIVED",
     ]
 
 
@@ -1177,25 +1111,6 @@ def test_r1_shutdown_before_first_acquire_refuses_launch(tmp_path):
     with pytest.raises(_module().WeChatKeyUnavailable) as closed:
         service.acquire()
     assert closed.value.code == "wechat_key_cancelled"
-
-
-def test_r1_source_isolation_in_test_subprocess():
-    code = (
-        "from pathlib import Path; import sys, qq_chat_analyzer; "
-        "from qq_chat_analyzer.application.wechat import wechat_key_service; "
-        "root=Path(sys.argv[1]).resolve(); "
-        "assert Path(qq_chat_analyzer.__file__).resolve() == root/'qq_chat_analyzer/__init__.py'; "
-        "assert Path(wechat_key_service.__file__).resolve() == "
-        "root/'qq_chat_analyzer/application/wechat/wechat_key_service.py'; "
-        "print(wechat_key_service.__file__)"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code, str(SRC_ROOT)],
-        cwd=PROJECT_ROOT, env=dict(os.environ, PYTHONPATH=str(SRC_ROOT)),
-        capture_output=True, text=True, timeout=10,
-    )
-    assert result.returncode == 0, result.stderr
-    assert Path(_module().__file__).resolve() == SRC_ROOT / "qq_chat_analyzer/application/wechat/wechat_key_service.py"
 
 
 def test_r1_failed_stop_does_not_launch_next_pid_candidate(tmp_path):

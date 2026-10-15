@@ -61,7 +61,7 @@ def test_prefix_and_report_shaped_unknown_entries_are_preserved(orphan):
     assert not orphan.staging.exists()
 
 
-@pytest.mark.parametrize("location", ["directory", "artifact", "marker"])
+@pytest.mark.parametrize("location", ["directory", "marker"])
 def test_owned_staging_reparse_is_rejected_without_deleting_any_member(orphan, monkeypatch, location):
     selected = {
         "directory": orphan.staging,

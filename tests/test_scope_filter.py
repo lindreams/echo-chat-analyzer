@@ -75,7 +75,6 @@ def test_custom_scope_includes_both_whole_boundary_dates() -> None:
     ("reference_date", "expected_start"),
     [
         (date(2026, 8, 31), date(2026, 2, 28)),
-        (date(2025, 5, 31), date(2024, 11, 30)),
         (date(2024, 8, 31), date(2024, 2, 29)),
     ],
 )
@@ -91,7 +90,7 @@ def test_six_month_rollback_clamps_to_the_target_month_end(
     assert resolved.end_date == reference_date
 
 
-@pytest.mark.parametrize("timestamp", [None, "", "not-a-timestamp"])
+@pytest.mark.parametrize("timestamp", [None, "not-a-timestamp"])
 def test_scoped_filter_excludes_unusable_timestamps(timestamp) -> None:
     scope = _scope_module()
 

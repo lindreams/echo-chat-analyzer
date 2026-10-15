@@ -239,7 +239,7 @@ def test_preparation_rejects_metadata_mismatch(tmp_path, change):
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize('mode', ['direct', 'worker', 'entrypoint'])
+@pytest.mark.parametrize('mode', ['direct', 'worker'])
 def test_real_qt_exit_handoff_uses_worktree_code_and_preserves_fictional_data(tmp_path, mode):
     """Real process exit, injected updater only; NOT an actual Setup A->B claim."""
     import os

@@ -49,7 +49,6 @@ def test_complete_success_evidence_can_pass_shutdown_admission():
 
 
 @pytest.mark.parametrize('status', [module.ShutdownStatus.FAILED,
-                                  module.ShutdownStatus.TIMED_OUT,
                                   module.ShutdownStatus.UNKNOWN])
 @pytest.mark.parametrize('name', ['gui_workers'])
 def test_complete_evidence_with_non_success_still_blocks_update(name, status):

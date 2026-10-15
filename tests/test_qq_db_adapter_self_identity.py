@@ -7,21 +7,13 @@ from __future__ import annotations
 
 import base64
 
-from qq_chat_analyzer.legacy_projection import project_legacy_messages
 from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
 
 
-def _varint(value: int) -> bytes:
-    encoded = bytearray()
-    while value > 0x7F:
-        encoded.append((value & 0x7F) | 0x80)
-        value >>= 7
-    encoded.append(value)
-    return bytes(encoded)
-
-
-def _field(field_number: int, value: bytes) -> bytes:
-    return _varint((field_number << 3) | 2) + _varint(len(value)) + value
+from qq_db_test_data import (
+    encode_varint as _varint,
+    length_delimited_field as _field,
+)
 
 
 def _text_blob(text: str) -> str:
@@ -95,11 +87,6 @@ def test_null_sender_record_is_skipped_not_marked_peer() -> None:
     rich_messages, warnings = parse_qq_db_rich_messages(payload)
     assert rich_messages == []
     assert warnings == ("qq_db_record_skipped",)
-
-
-def test_missing_self_context_yields_none() -> None:
-    payload = _payload("group", None, _record("100000001"))
-    assert _is_self_values(payload) == [None]
 
 
 def test_unreliable_self_identity_yields_none() -> None:

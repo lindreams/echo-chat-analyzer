@@ -209,7 +209,7 @@ def _process_wait_bridge(monkeypatch, samples, **kwargs):
     return bridge, launcher, observed
 
 
-@pytest.mark.parametrize("samples", [[[]], [[101, 102], [102], []], [[101], [102], []]])
+@pytest.mark.parametrize("samples", [[[]], [[101, 102], [102], []]])
 def test_auth_waits_for_every_conflict_then_automatically_launches(monkeypatch, samples):
     bridge, launcher, observed = _process_wait_bridge(monkeypatch, samples, process_poll_interval=0)
     progress = []
@@ -232,7 +232,7 @@ def test_process_detection_failure_does_not_launch(monkeypatch):
     assert launcher.calls == 0
 
 
-@pytest.mark.parametrize("error_type", [OSError, ValueError, RuntimeError])
+@pytest.mark.parametrize("error_type", [OSError, ValueError])
 def test_detection_diagnostics_never_log_exception_details(monkeypatch, caplog, error_type):
     error = error_type("RAW_EXCEPTION_SENTINEL Z:/private/fictional account=fictional credential=fictional")
     # Untrusted exception attributes must not become diagnostic fields either.

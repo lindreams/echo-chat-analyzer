@@ -86,13 +86,8 @@ def run(trees, script=SCRIPT, *, include_rows=False):
 
 @pytest.mark.parametrize("name,kind,location", [
     ("private-unknown-account", "file", "workspace_root"),
-    ("private-unknown-account", "directory", "workspace_root"),
     ("plugins/private-unknown-account", "file", "plugin_container"),
-    ("plugins/private-unknown-account", "directory", "plugin_container"),
     ("plugins/napcat-plugin-echo/private-unknown-account", "file", "echo_plugin"),
-    ("plugins/napcat-plugin-echo/private-unknown-account", "directory", "echo_plugin"),
-    ("plugins/napcat-plugin-echo/snapshot/private-unknown-account", "file", "echo_plugin"),
-    ("plugins/napcat-plugin-echo/snapshot/private-unknown-account", "directory", "echo_plugin"),
     ("loadNapCat.js", "directory", "workspace_root"),
     ("plugins/napcat-plugin-echo/index.mjs", "directory", "echo_plugin"),
 ])

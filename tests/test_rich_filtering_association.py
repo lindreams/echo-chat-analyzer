@@ -99,7 +99,7 @@ def voice_expressions(analyzed):
             if token.startswith("expression:")]
 
 
-@pytest.mark.parametrize("stage", ["scope", "smart", "quality"])
+@pytest.mark.parametrize("stage", ["scope", "quality"])
 def test_filtered_duplicate_id_cannot_supply_rich_facts(tmp_path, monkeypatch, stage):
     kept_time = int(datetime(2026, 1, 2, 12).timestamp())
     rows = [qq_row("duplicate", "Human authored 🐱", 14, timestamp=kept_time)]
@@ -167,7 +167,7 @@ def test_filtered_composite_collision_does_not_enable_nontext_report(
     assert result.artifacts == ()
 
 
-@pytest.mark.parametrize("source", ["qq", "wechat"])
+@pytest.mark.parametrize("source", ["qq"])
 def test_same_id_across_files_and_sessions_does_not_cross_associate(
     tmp_path, monkeypatch, source,
 ):

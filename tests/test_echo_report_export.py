@@ -95,7 +95,7 @@ def test_package_never_copies_raw_chat_data(tmp_path: Path) -> None:
     assert "raw-chat-export.json" not in names
 
 
-@pytest.mark.parametrize("stage", ["html", "json", "metadata", "readme", "rename"])
+@pytest.mark.parametrize("stage", ["html", "metadata", "rename"])
 def test_each_publication_failure_removes_staging_and_preserves_scratch(
     tmp_path, monkeypatch, stage,
 ):

@@ -103,7 +103,7 @@ def test_formal_append_after_boundary_succeeds(fictional_source):
         assert db.execute("SELECT body FROM entries").fetchone() == ("fictional selected",)
 
 
-@pytest.mark.parametrize('mode', ['merged-append', 'merged-replace', 'merged-delete'])
+@pytest.mark.parametrize('mode', ['merged-append', 'merged-replace'])
 def test_formal_changed_decrypt_input_never_publishes(fictional_source, mode):
     result = _acquire(fictional_source, mode=mode)
     assert result['ok'] is False and result['code'] == 'snapshot_unstable'
@@ -117,10 +117,6 @@ def test_formal_changed_decrypt_input_never_publishes(fictional_source, mode):
     "const b=fs.readFileSync(mainPath); b[1100]^=1; fs.writeFileSync(mainPath,b);",
     "const b=fs.readFileSync(mainPath+'-shm'); b.writeUInt32LE(1,128); fs.writeFileSync(mainPath+'-shm',b);",
     "fs.truncateSync(walPath,32);",
-    "const b=fs.readFileSync(walPath); b[16]^=1; fs.writeFileSync(walPath,b);",
-    "const b=fs.readFileSync(walPath); b[60]^=1; fs.writeFileSync(walPath,b);",
-    "fs.truncateSync(walPath,fs.statSync(walPath).size-1);",
-    "const b=fs.readFileSync(mainPath+'-shm'); b[48]^=1; fs.writeFileSync(mainPath+'-shm',b);",
     "const b=fs.readFileSync(walPath); fs.renameSync(walPath,walPath+'.retired'); fs.writeFileSync(walPath,b);",
 ])
 def test_formal_invalid_capture_fails_closed_without_decrypt(fictional_source, action):

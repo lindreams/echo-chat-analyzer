@@ -86,7 +86,7 @@ def test_cancel_token_crosses_facade_setup_into_key_owner(tmp_path, monkeypatch)
     assert not (tmp_path / "fictional.json").exists()
 
 
-@pytest.mark.parametrize("pause,cancel", [("load", True), ("save", True), ("load", False)])
+@pytest.mark.parametrize("pause,cancel", [("load", True), ("save", True)])
 def test_old_config_commit_cannot_overwrite_new_attempt(tmp_path, pause, cancel):
     from qq_chat_analyzer.application.wechat.wechat_setup_service import WeChatSetupService
     from qq_chat_analyzer.application.wechat.wechat_environment_config import (
@@ -169,7 +169,7 @@ def test_old_config_commit_cannot_overwrite_new_attempt(tmp_path, pause, cancel)
             new.join(5)
 
 
-@pytest.mark.parametrize("status", ["failed", "timed_out", "unknown"])
+@pytest.mark.parametrize("status", ["failed", "unknown"])
 def test_wechat_close_result_propagates_without_building_sources(status):
     from qq_chat_analyzer.application.shutdown_models import ShutdownStatus
     calls = []

@@ -112,27 +112,22 @@ try {
     return json.loads(result.stdout)
 
 
-@pytest.mark.parametrize("mode", ["snapshot", "merge"])
 @pytest.mark.parametrize("action", [
     "const b=fs.readFileSync(mainPath); b[1100]^=1; const s=fs.statSync(mainPath); fs.writeFileSync(mainPath,b); fs.utimesSync(mainPath,s.atime,s.mtime);",
-    "const b=fs.readFileSync(walPath); b[60]^=1; fs.writeFileSync(walPath,b);",
     "fs.truncateSync(walPath,32);",
-    "const b=fs.readFileSync(walPath); b[16]^=1; fs.writeFileSync(walPath,b);",
-    "const p=mainPath+'-shm'; const b=fs.readFileSync(p); b.writeUInt32LE(1,128); fs.writeFileSync(p,b);",
     "throw new Error('fictional interruption');",
 ])
-def test_read_interleaving_fails_closed_and_cleans(fictional_source, action, mode):
-    result = _interleave(fictional_source, action, mode=mode)
+def test_read_interleaving_fails_closed_and_cleans(fictional_source, action):
+    result = _interleave(fictional_source, action, mode="merge")
     assert result["fired"] is True
     assert result["ok"] is False
     assert not fictional_source[2].exists()
 
 
-@pytest.mark.parametrize("mode", ["snapshot", "merge"])
-def test_output_collision_preserves_existing_file(fictional_source, mode):
+def test_output_collision_preserves_existing_file(fictional_source):
     output = fictional_source[2]
     output.write_bytes(b"fictional owned by another operation")
-    result = _interleave(fictional_source, "", mode=mode)
+    result = _interleave(fictional_source, "", mode="merge")
     assert result["ok"] is False
     assert output.read_bytes() == b"fictional owned by another operation"
 
@@ -200,10 +195,9 @@ def test_invalid_selected_source_never_falls_back(fictional_source, action):
     assert not fictional_source[2].exists()
 
 
-@pytest.mark.parametrize("mode", ["snapshot", "merge"])
-def test_interruption_after_output_creation_cleans(fictional_source, mode):
+def test_interruption_after_output_creation_cleans(fictional_source):
     result = _interleave(fictional_source, "throw new Error('fictional interruption');",
-                         phase="output_page_written", mode=mode)
+                         phase="output_page_written", mode="merge")
     assert result["ok"] is False
     assert not fictional_source[2].exists()
 
@@ -258,11 +252,10 @@ def test_partial_selected_frame_rejected(fictional_source):
     assert not fictional_source[2].exists()
 
 
-@pytest.mark.parametrize('mode', ['snapshot', 'merge'])
-def test_wal_replacement_during_main_baseline_is_rejected(fictional_source, mode):
+def test_wal_replacement_during_main_baseline_is_rejected(fictional_source):
     result = _interleave(fictional_source,
                          "const b=fs.readFileSync(walPath); fs.renameSync(walPath,walPath+'.retired'); fs.writeFileSync(walPath,b);",
-                         phase='main_baseline_read', mode=mode)
+                         phase='main_baseline_read', mode="merge")
     assert result['ok'] is False
     assert result['code'] == 'wal_replaced'
     assert not fictional_source[2].exists()

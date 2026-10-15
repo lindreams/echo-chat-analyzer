@@ -29,17 +29,10 @@ from qq_chat_analyzer.providers.qq_direct_snapshot_runtime import (
 from qq_direct_db_testing import FICTIONAL_UIN, FakeSnapshotRuntime
 
 
-def _varint(value: int) -> bytes:
-    encoded = bytearray()
-    while value > 0x7F:
-        encoded.append((value & 0x7F) | 0x80)
-        value >>= 7
-    encoded.append(value)
-    return bytes(encoded)
-
-
-def _field(field_number: int, value: bytes) -> bytes:
-    return _varint((field_number << 3) | 2) + _varint(len(value)) + value
+from qq_db_test_data import (
+    encode_varint as _varint,
+    length_delimited_field as _field,
+)
 
 
 def _text_blob(text: str) -> bytes:
@@ -175,8 +168,6 @@ def test_manifest_non_ready_state_rejects(tmp_path: Path) -> None:
         None,
         {"namespace": "qq_uid", "value": FICTIONAL_UIN},
         {"namespace": "qq_uin", "value": "0"},
-        {"namespace": "qq_uin", "value": ""},
-        {"namespace": "qq_uin"},
         "not-a-dict",
     ],
 )

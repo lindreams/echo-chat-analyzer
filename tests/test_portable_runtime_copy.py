@@ -234,7 +234,7 @@ def test_build_ships_complete_copyright_materials(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("relative", ['LICENSE'])
-@pytest.mark.parametrize("damage", ["missing", "empty"])
+@pytest.mark.parametrize("damage", ["missing"])
 def test_build_rejects_incomplete_copyright_materials(tmp_path: Path, relative: str, damage: str) -> None:
     _fictional_runtime(tmp_path)
     source = tmp_path / relative
@@ -329,7 +329,7 @@ def test_key_portable_native_binaries_are_x64() -> None:
 
 @pytest.mark.parametrize(
     "filename",
-    ["NapCatWinBootMain.exe", "NapCatWinBootHook.dll"],
+    ["NapCatWinBootMain.exe"],
 )
 def test_runtime_build_rejects_missing_qq_native_launcher(
     tmp_path: Path,

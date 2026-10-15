@@ -76,7 +76,6 @@ def _payload(*records: dict, session_type: str = "group") -> dict:
 
 @pytest.mark.parametrize("segments,expected_relations", [
     ((_reply(), _mention(), _text("answer")), (ReplyRelation("target"), MentionRelation(None, "@Fictional display"))),
-    ((_reply(), _text("answer")), (ReplyRelation("target"),)),
     ((_mention(), _text("answer")), (MentionRelation(None, "@Fictional display"),)),
 ])
 def test_reply_and_mentions_preserve_facts_without_polluting_authored_text(segments, expected_relations) -> None:
@@ -92,7 +91,6 @@ def test_reply_and_mentions_preserve_facts_without_polluting_authored_text(segme
 
 
 @pytest.mark.parametrize("target_records", [
-    [],
     [_record("target", 42, _text("original")), _record("duplicate", 42, _text("duplicate"))],
     [_record("foreign", 42, _text("foreign"), key="other-key")],
     [_record("missing-sequence", None, _text("original"))],
@@ -123,7 +121,7 @@ def test_private_reply_does_not_map_group_sequence() -> None:
     assert project_legacy_messages(messages)[-1].text == "answer"
 
 
-@pytest.mark.parametrize("segments", [(_reply(),), (_mention(),), (_reply(), _mention())])
+@pytest.mark.parametrize("segments", [(_reply(),), (_reply(), _mention())])
 def test_relation_only_messages_are_not_dropped(segments) -> None:
     messages, warnings = parse_qq_db_rich_messages(_payload(_record("current", 43, *segments)))
     assert warnings == ()

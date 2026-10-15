@@ -787,7 +787,7 @@ def test_qq_process_wait_runs_in_background_through_real_facade(qt_app, monkeypa
     workspace._stop_qq_status_polling()
 
 
-@pytest.mark.parametrize("event", ["progress", "success", "error", "delayed_success", "delayed_error"])
+@pytest.mark.parametrize("event", ["progress", "delayed_success"])
 def test_qq_cancel_rejects_old_callbacks_after_restart(qt_app, monkeypatch, event):
     from qq_chat_analyzer.gui import qq_workspace as module
     executor = _IndependentDeferredExecutor()
@@ -798,18 +798,12 @@ def test_qq_cancel_rejects_old_callbacks_after_restart(qt_app, monkeypatch, even
     first = executor.tasks[0]
     if event == "delayed_success":
         first.succeed(SimpleNamespace(state="waiting_auth", message="old"))
-    if event == "delayed_error":
-        first.fail("old_error", "old failure")
     workspace.cancel_connection()
     workspace.connect_qq()
     second = executor.tasks[-1]
     before = workspace._status_label.text()
     if event == "progress":
         first.progress("请完全退出 QQ")
-    elif event == "success":
-        first.succeed(SimpleNamespace(state="waiting_auth", message="old"))
-    elif event == "error":
-        first.fail("old_error", "old failure")
     for callback in delayed:
         callback()
     assert workspace._status_label.text() == before

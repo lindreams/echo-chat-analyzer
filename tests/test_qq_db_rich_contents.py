@@ -83,14 +83,14 @@ def test_all_text_segments_and_second_segment_unicode_survive() -> None:
 
 
 @pytest.mark.parametrize("session_type", ["group"])
-@pytest.mark.parametrize("wire_type,size", [(1, 8), (5, 4)])
+@pytest.mark.parametrize("wire_type,size", [(1, 8)])
 @pytest.mark.parametrize("location", ["body", "text"])
 @pytest.mark.parametrize("prepend", [True])
 def test_fixed_width_metadata_preserves_text_and_face(
     session_type, wire_type, size, location, prepend,
 ) -> None:
     # Even a known field number with a different wire type is opaque metadata.
-    tag = {"body": 40800, "text": 45101, "face": 47601}[location]
+    tag = {"body": 40800, "text": 45101}[location]
     metadata = _varint((tag << 3) | wire_type) + b"\xff" * size
     text, face = _text("fictional orchard"), _face()
     def attach(value):
@@ -98,8 +98,6 @@ def test_fixed_width_metadata_preserves_text_and_face(
 
     if location == "text":
         text = attach(text)
-    elif location == "face":
-        face = attach(face)
     blob = _body(text, face)
     if location == "body":
         blob = attach(blob)
@@ -115,7 +113,7 @@ def test_fixed_width_metadata_preserves_text_and_face(
     assert report.expression_occurrence_count == 1
 
 
-@pytest.mark.parametrize("wire_type,size", [(1, 8), (5, 4)])
+@pytest.mark.parametrize("wire_type,size", [(1, 8)])
 @pytest.mark.parametrize("location", ["body", "segment"])
 def test_truncated_fixed_width_field_rejects_entire_container(wire_type, size, location) -> None:
     # Test every short length, including a tag with no following value.

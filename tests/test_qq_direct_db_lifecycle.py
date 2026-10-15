@@ -39,17 +39,10 @@ from qq_direct_db_testing import FICTIONAL_UIN, FakeSnapshotRuntime
 GROUP_SESSION_ID = "group:group-partition"
 
 
-def _varint(value: int) -> bytes:
-    encoded = bytearray()
-    while value > 0x7F:
-        encoded.append((value & 0x7F) | 0x80)
-        value >>= 7
-    encoded.append(value)
-    return bytes(encoded)
-
-
-def _field(field_number: int, value: bytes) -> bytes:
-    return _varint((field_number << 3) | 2) + _varint(len(value)) + value
+from qq_db_test_data import (
+    encode_varint as _varint,
+    length_delimited_field as _field,
+)
 
 
 def _text_blob(text: str) -> bytes:

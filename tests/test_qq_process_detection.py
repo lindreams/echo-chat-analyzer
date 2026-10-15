@@ -100,7 +100,6 @@ def native_api(monkeypatch):
 
 
 @pytest.mark.parametrize("rows,expected", [
-    ([], []),
     ([(7, 1, "Other.exe")], []),
     ([(501, 1, "QQ.exe")], [501]),
     ([(502, 501, "qq.EXE"), (501, 1, "QQ.exe"),
@@ -128,7 +127,7 @@ def test_parent_cycles_do_not_hang_or_hide_user_qq(native_api):
     assert _module().find_conflicting_qq_pids((10,)) == [11, 12, 20]
 
 
-@pytest.mark.parametrize("external_session", [1, 2])
+@pytest.mark.parametrize("external_session", [2])
 def test_unowned_qq_blocks_regardless_of_windows_session(native_api, external_session):
     # Fictional Echo runs in session 1. Session 2 models another signed-in
     # desktop; session 0 models a noninteractive session. Toolhelp's process

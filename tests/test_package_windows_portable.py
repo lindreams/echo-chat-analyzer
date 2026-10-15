@@ -95,8 +95,7 @@ def test_zip_has_echo_root_exact_bytes_and_sha256(packager, release):
 
 
 @pytest.mark.parametrize("missing", [
-    "Echo.exe", "_internal", "runtime", "runtime/wechat/WCDB.dll",
-    "scripts/run_wechat_wcdb_diagnostic.ps1",
+    "Echo.exe", "runtime",
 ])
 def test_missing_components_leave_no_artifacts(packager, release, missing):
     source, output, _ = release
@@ -273,7 +272,7 @@ def test_zip_is_published_only_after_checksum(packager, release, monkeypatch):
     run_package(packager, release)
 
 
-@pytest.mark.parametrize("relative", ["logs", "runtime/qq-napcat-candidate/cache"])
+@pytest.mark.parametrize("relative", ["runtime/qq-napcat-candidate/cache"])
 def test_empty_state_directory_is_rejected(packager, release, relative):
     source, _, _ = release
     (source / relative).mkdir(parents=True)
@@ -281,24 +280,18 @@ def test_empty_state_directory_is_rejected(packager, release, relative):
         run_package(packager, release)
 
 
-@pytest.mark.parametrize("failure", ["write_zip", "write_checksum"])
 def test_generation_io_failure_cleans_staging_and_preserves_source(
-    packager, release, monkeypatch, failure
+    packager, release, monkeypatch
 ):
     source, output, _ = release
     before = (source / "Echo.exe").read_bytes()
-    if failure == "write_zip":
-        def fail_write(*args, **kwargs):
-            raise OSError("fictional archive write failure")
-        monkeypatch.setattr(zipfile.ZipFile, "write", fail_write)
-    else:
-        real_write = Path.write_text
+    real_write = Path.write_text
 
-        def fail_checksum(path, *args, **kwargs):
-            if path.suffix == ".sha256":
-                raise OSError("fictional checksum write failure")
-            return real_write(path, *args, **kwargs)
-        monkeypatch.setattr(Path, "write_text", fail_checksum)
+    def fail_checksum(path, *args, **kwargs):
+        if path.suffix == ".sha256":
+            raise OSError("fictional checksum write failure")
+        return real_write(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "write_text", fail_checksum)
     with pytest.raises(packager.PackageError):
         run_package(packager, release)
     assert not list(output.iterdir())

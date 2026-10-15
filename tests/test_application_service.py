@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import builtins
 import dataclasses
 import importlib
 import json
@@ -17,17 +16,6 @@ import pytest
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
-
-# Artifacts retired from the desktop analysis path: they belong to the legacy
-# CLI only and must not be produced by AnalysisApplicationService.
-RETIRED_DESKTOP_ARTIFACT_FILENAMES = (
-    "word_frequency.csv",
-    "word_speaker_summary.csv",
-    "word_speaker_frequency.csv",
-    "word_top_speakers.png",
-    "wordcloud.png",
-)
-
 
 def _application_module():
     return importlib.import_module("qq_chat_analyzer.application")

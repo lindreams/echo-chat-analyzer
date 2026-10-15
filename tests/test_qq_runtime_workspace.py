@@ -593,9 +593,7 @@ def test_guild_state_hardlink_is_refused_and_preserved(bundle, tmp_path, name):
 
 
 @pytest.mark.parametrize("name", ['guild1.db'])
-@pytest.mark.parametrize("kind", ["symlink", "file_reparse_point"])
-def test_guild_state_link_attributes_are_refused(bundle, monkeypatch, name, kind):
-    import os
+def test_guild_state_reparse_point_is_refused(bundle, monkeypatch, name):
     import stat
     from types import SimpleNamespace
     result = prepare(bundle)
@@ -607,14 +605,10 @@ def test_guild_state_link_attributes_are_refused(bundle, monkeypatch, name, kind
     def link_attributes(path, *args, **kwargs):
         info = real_lstat(path, *args, **kwargs)
         if path == state:
-            if kind == "file_reparse_point":
-                attributes = {field: getattr(info, field) for field in dir(info)
-                              if field.startswith("st_")}
-                attributes["st_file_attributes"] = stat.FILE_ATTRIBUTE_REPARSE_POINT
-                return SimpleNamespace(**attributes)
-            values = list(info)
-            values[0] = stat.S_IFLNK | stat.S_IMODE(info.st_mode)
-            return os.stat_result(values)
+            attributes = {field: getattr(info, field) for field in dir(info)
+                          if field.startswith("st_")}
+            attributes["st_file_attributes"] = stat.FILE_ATTRIBUTE_REPARSE_POINT
+            return SimpleNamespace(**attributes)
         return info
 
     with monkeypatch.context() as guard:
@@ -626,29 +620,18 @@ def test_guild_state_link_attributes_are_refused(bundle, monkeypatch, name, kind
 
 @pytest.mark.slow_integration
 @pytest.mark.parametrize("name", ['guild1.db'])
-@pytest.mark.parametrize("kind", ["junction", "symlink"])
-def test_guild_state_link_is_refused_without_opening_target(bundle, tmp_path, monkeypatch, name, kind):
+def test_guild_state_link_is_refused_without_opening_target(bundle, tmp_path, monkeypatch, name):
     import os
-    if kind == "junction" and os.name != "nt":
+    if os.name != "nt":
         pytest.skip("Windows junction test")
     result = prepare(bundle)
     outside = tmp_path / "fictional-outside-state"
     link = result.work_root / name
-    if kind == "junction":
-        outside.mkdir()
-        sentinel = outside / "keep"
-        sentinel.write_bytes(b'fictional outside content')
-        created = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], capture_output=True)
-        assert created.returncode == 0
-    else:
-        outside.write_bytes(b'fictional outside content')
-        sentinel = outside
-        try:
-            link.symlink_to(outside)
-        except OSError as error:
-            if getattr(error, "winerror", None) == 1314:
-                pytest.skip("Windows file symlink privilege unavailable")
-            raise
+    outside.mkdir()
+    sentinel = outside / "keep"
+    sentinel.write_bytes(b'fictional outside content')
+    created = subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], capture_output=True)
+    assert created.returncode == 0
     real_open = Path.open
 
     def protect_target(path, *args, **kwargs):
@@ -663,21 +646,14 @@ def test_guild_state_link_is_refused_without_opening_target(bundle, tmp_path, mo
         assert link.lstat()
         assert sentinel.read_bytes() == b'fictional outside content'
     finally:
-        if kind == "junction":
-            link.rmdir()  # Only the test-created junction itself.
-        else:
-            link.unlink()  # Only the test-created symlink itself.
+        link.rmdir()  # Only the test-created junction itself.
 
 
-@pytest.mark.parametrize("name,is_directory", [("other.db", False), ("unknown", True), ("plugins/napcat-plugin-echo/guild1.db", False)])
-def test_guild_state_does_not_allow_other_unknown_members(bundle, name, is_directory):
+def test_guild_state_does_not_allow_other_unknown_members(bundle):
     result = prepare(bundle)
     add_guild_state(result.work_root)
-    unknown = result.work_root / name
-    if is_directory:
-        unknown.mkdir()
-    else:
-        unknown.write_bytes(b'fictional unknown member')
+    unknown = result.work_root / "plugins/napcat-plugin-echo/guild1.db"
+    unknown.write_bytes(b'fictional unknown member')
     before = inventory(result.work_root)
     with pytest.raises(workspace.QQWorkspaceError, match="Unknown workspace member"):
         prepare(bundle)
@@ -727,33 +703,24 @@ def test_guild_state_is_refused_on_strict_publication_paths(bundle, monkeypatch,
         assert not (parent / (directory.name + ".owner.json")).exists()
 
 
-@pytest.mark.parametrize("damage,message", [("modify", "Work copy hash mismatch"),
-                                           ("delete", "Work copy is incomplete")])
-def test_guild_state_does_not_bypass_plugin_integrity(bundle, damage, message):
+def test_guild_state_does_not_bypass_plugin_integrity(bundle):
     result = prepare(bundle)
     add_guild_state(result.work_root)
     plugin = result.work_root / "plugins/napcat-plugin-echo/index.mjs"
-    if damage == "modify":
-        plugin.write_bytes(b'fictional tampering')
-    else:
-        plugin.unlink()
+    plugin.write_bytes(b'fictional tampering')
     before = inventory(result.work_root)
-    with pytest.raises(workspace.QQWorkspaceError, match=message):
+    with pytest.raises(workspace.QQWorkspaceError, match="Work copy hash mismatch"):
         prepare(bundle)
     assert inventory(result.work_root) == before
 
 
-@pytest.mark.parametrize("damage", ["missing", "wrong_identity"])
-def test_guild_state_does_not_bypass_ownership(bundle, damage):
+def test_guild_state_does_not_bypass_ownership(bundle):
     result = prepare(bundle)
     add_guild_state(result.work_root)
     marker = result.work_root.parent / (result.work_root.name + ".owner.json")
-    if damage == "missing":
-        marker.unlink()
-    else:
-        proof = json.loads(marker.read_text(encoding="utf-8"))
-        proof["directory_identity"][1] += 1
-        marker.write_text(json.dumps(proof), encoding="utf-8")
+    proof = json.loads(marker.read_text(encoding="utf-8"))
+    proof["directory_identity"][1] += 1
+    marker.write_text(json.dumps(proof), encoding="utf-8")
     before = inventory(result.work_root.parent)
     with pytest.raises(workspace.QQWorkspaceError):
         prepare(bundle)

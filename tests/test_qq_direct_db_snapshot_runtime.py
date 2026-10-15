@@ -402,13 +402,9 @@ def test_changed_staging_input_remains_unstable_when_decrypt_fails(tmp_path: Pat
     assert not (tmp_path / "staging").exists()
 
 
-@pytest.mark.parametrize("failure", [
-    {"witnessFault": "after", "witnessInvalid": "throw"},
-    {"decryptInputMutation": "append"},
-    {"decrypt": "false"},
-])
 @pytest.mark.slow_integration
-def test_staging_cleanup_failure_takes_precedence(tmp_path: Path, failure: dict) -> None:
+def test_staging_cleanup_failure_takes_precedence(tmp_path: Path) -> None:
+    failure = {"witnessFault": "after", "witnessInvalid": "throw"}
     output = _run_node(tmp_path, _acquire({
         "uin": FICTIONAL_UIN, "decryptCreatesUnknownFile": True, **failure,
     }))

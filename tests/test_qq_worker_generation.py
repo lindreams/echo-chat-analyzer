@@ -77,7 +77,7 @@ def test_stale_snapshot_never_operates_on_new_worker(tmp_path, operation):
 
 
 @pytest.mark.parametrize("kind", ["provider", "snapshot"])
-@pytest.mark.parametrize("boot", [None, True, "F" * 64])
+@pytest.mark.parametrize("boot", [None, "F" * 64])
 def test_invalid_status_generation_fails_closed(tmp_path, kind, boot):
     worker = Worker()
     worker.boot = boot

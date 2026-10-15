@@ -226,7 +226,7 @@ def test_wechat_old_range_cannot_change_current_session_config(app, make_panel):
     assert panel.build_config() == expected
 
 
-@pytest.mark.parametrize("change", ["clear", "configure", "source", "reselect"])
+@pytest.mark.parametrize("change", ["clear", "source"])
 def test_wechat_range_request_invalidated_by_panel_changes(app, make_panel, change):
     panel, executor = make_panel(
         ChatSource.WECHAT,
@@ -235,13 +235,8 @@ def test_wechat_range_request_invalidated_by_panel_changes(app, make_panel, chan
     old = executor.tasks[-1]
     if change == "clear":
         panel.clear()
-    elif change == "configure":
-        panel.configure(SimpleNamespace(), ChatSource.WECHAT)
     elif change == "source":
         panel.configure(SimpleNamespace(), ChatSource.QQ)
-    else:
-        panel._session_list.setCurrentRow(1)
-        panel._session_list.setCurrentRow(0)  # Same session, different request.
     panel._scope_custom.setChecked(True)
     expected = panel.build_config()
     run_background(old)

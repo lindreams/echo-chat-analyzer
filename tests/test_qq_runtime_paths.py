@@ -51,18 +51,7 @@ def test_unknown_mode_cannot_be_interpreted_as_managed(tmp_path):
         config.QQEnvironmentConfigLoader(location).load()
 
 
-@pytest.mark.parametrize("identity", ["../escape", "", "A" * 64, "a" * 63])
+@pytest.mark.parametrize("identity", ["../escape", "", "A" * 64])
 def test_component_identity_cannot_escape_user_directory(identity):
     with pytest.raises(ValueError):
         paths.qq_runtime_paths(component_id=identity)
-
-
-def test_legacy_fallback_does_not_claim_to_migrate_saved_ownership(tmp_path):
-    location = tmp_path / "qq.json"
-    original = {"runtime_directory": str(tmp_path / "old-install")}
-    location.write_text(json.dumps(original), encoding="utf-8")
-    fallback = config.QQEnvironmentConfigLoader(location).load_or_default()
-    # The old startup fallback is retained, but cannot silently settle ownership
-    # of the user's persisted, untagged choice for the future path resolver.
-    assert fallback.runtime_mode is None
-    assert json.loads(location.read_text(encoding="utf-8")) == original

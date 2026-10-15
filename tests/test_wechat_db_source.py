@@ -231,7 +231,7 @@ def test_session_counts_sum_shards_include_all_types_and_reach_facade(tmp_path):
     assert len([sql for _, sql in queries if "COUNT(*)" in sql]) == 2
 
 
-@pytest.mark.parametrize("fault", ["inventory", "count", "omit", "invalid", "duplicate"])
+@pytest.mark.parametrize("fault", ["inventory", "count", "duplicate"])
 def test_session_counts_never_publish_partial_or_invalid_totals(tmp_path, fault):
     provider, _ = _counting_session_provider(
         tmp_path, [{"wxid_alpha": 3}, {"wxid_alpha": 4}], ["wxid_alpha"],

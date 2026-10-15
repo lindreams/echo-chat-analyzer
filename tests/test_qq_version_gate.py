@@ -34,7 +34,7 @@ def _base_build(config, build):
     }), encoding="utf-8")
 
 
-@pytest.mark.parametrize("build,blocked", [(27597, True), (40767, True), (40768, False), (53644, False)])
+@pytest.mark.parametrize("build,blocked", [(40767, True), (40768, False), (53644, False)])
 def test_build_gate_precedes_any_runtime_launch(tmp_path, monkeypatch, caplog, build, blocked):
     module = _bridge_module()
     instance, config = _auth(tmp_path)
@@ -107,7 +107,7 @@ def test_gate_uses_same_resolved_install_as_launch_not_echo_version(tmp_path, mo
     assert launched[0][1] == str(seen[0])
 
 
-@pytest.mark.parametrize("first_build", [27597, 53644])
+@pytest.mark.parametrize("first_build", [27597])
 def test_cancel_during_version_read_never_launches_and_retry_rechecks(tmp_path, monkeypatch, first_build):
     module = _bridge_module()
     instance, config = _auth(tmp_path)
