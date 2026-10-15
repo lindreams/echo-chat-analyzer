@@ -1,5 +1,7 @@
 # Echo 架构决策：Rich Semantic Model 与渐进迁移
 
+> 展示说明更新：下文 Dashboard 为早期设计用语；旧 Qt 页面及专属数据构建链已退休，现役展示使用 Echo Report，见 [ARCHITECTURE](../ARCHITECTURE.md)。
+
 ## 决策状态
 
 - 阶段：Phase 9.3

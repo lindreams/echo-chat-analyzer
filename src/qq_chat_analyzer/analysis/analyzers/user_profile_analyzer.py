@@ -144,7 +144,7 @@ class _SpeakerStats:
         if self.speaker is None:
             self.speaker = message.sender
         if self.speaker_key is None:
-            self.speaker_key = _speaker_key(message)
+            self.speaker_key = stable_sender_key(message)
         self.remark = _merge_identity_field(self.remark, message.sender_remark)
         self.nickname = _merge_identity_field(
             self.nickname,
@@ -180,14 +180,6 @@ def _share_percent(count: int, total: int) -> float:
     if total <= 0:
         return 0.0
     return round(count / total * 100, 2)
-
-
-def _speaker_key(message: ChatMessage) -> str:
-    """Return the stable identity key, preferring the source sender id."""
-    sender_id = message.sender_id
-    if isinstance(sender_id, str) and sender_id.strip():
-        return sender_id.strip()
-    return message.sender
 
 
 def _merge_identity_field(current: str | None, candidate: str | None) -> str | None:

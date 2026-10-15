@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from ...analysis.timestamps import to_epoch_seconds
 from ..errors import ApplicationServiceError
 from ..import_outcome import ImportOutcome
 from ..import_request import ImportRequest
@@ -72,6 +73,10 @@ class WeChatExportProvider(Protocol):
         start_time: Any = None,
         end_time: Any = None,
     ) -> Path:  # pragma: no cover - structural contract only
+        ...
+
+    def read_session_time_bounds(self, session_id: str) -> list[Any]:
+        """Return raw shard extrema and distinct non-numeric timestamps."""
         ...
 
 
@@ -142,6 +147,16 @@ class WeChatExportImportService:
         carry user-facing messages.
         """
         return self._provider.list_sessions()
+
+    def get_session_message_range(self, session_id: str) -> tuple[int, int] | None:
+        """Normalize shard time aggregates using the shared timestamp rules."""
+        epochs = [
+            epoch
+            for row in self._provider.read_session_time_bounds(session_id)
+            for name in ("min_time", "max_time")
+            if (epoch := to_epoch_seconds(row.get(name))) is not None
+        ]
+        return (min(epochs), max(epochs)) if epochs else None
 
     def export_only(self, request: WeChatExportImportRequest) -> Path:
         """Export one conversation and return the finished JSON file path.

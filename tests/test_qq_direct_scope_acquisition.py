@@ -76,17 +76,6 @@ class _RecordingAnalysisService:
         return self._result
 
 
-class _RecordingPresentationBuilder:
-    """Presentation stub so tests never build a real dashboard view."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def build(self, reports, *, top_words=()):
-        self.calls += 1
-        return object()
-
-
 def _recording_facade(
     qq_service: _RecordingQQService,
     analysis_service: _RecordingAnalysisService,
@@ -94,7 +83,6 @@ def _recording_facade(
     return ChatAnalyzerFacade(
         qq_service=qq_service,
         analysis_service=analysis_service,
-        presentation_builder=_RecordingPresentationBuilder(),
     )
 
 

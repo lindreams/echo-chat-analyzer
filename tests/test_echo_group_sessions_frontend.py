@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import os
-import subprocess
 import sys
 from html.parser import HTMLParser
 from pathlib import Path
@@ -18,106 +15,6 @@ from qq_chat_analyzer.presentation import (
     EchoReportView,
     export_echo_report_html,
 )
-
-APP_PATH = PROJECT_ROOT / "frontend" / "echo_report" / "app.js"
-
-SESSION_NODE_IDS = (
-    "session-toc",
-    "conversation-sessions",
-    "session-lead",
-    "session-median-duration",
-    "session-longest-duration",
-    "session-average-messages",
-    "session-private-initiators",
-    "session-self",
-    "session-peer",
-
-    "session-group-top",
-    "session-beat",
-    "session-beat-title",
-    "session-self-peak-hour",
-    "session-peer-peak-hour",
-    "session-reply",
-    "session-movement",
-    "session-highnotes",
-    "session-rest",
-    "session-reply-self-to-peer",
-    "session-reply-peer-to-self",
-    "session-highnotes-title",
-    "session-unknown-note",
-    "session-threshold-note",
-    "session-viewer-identity",
-    "session-peak-hour",
-    "session-character",
-    "session-loudest-messages",
-    "session-loudest-duration",
-    "session-loudest-participants",
-    "session-loudest-densest",
-    "session-loudest-messages-text",
-    "session-loudest-duration-text",
-    "session-loudest-participants-text",
-    "session-loudest-densest-text",
-    "session-loudest-messages-time",
-    "session-loudest-duration-time",
-    "session-loudest-participants-time",
-    "session-loudest-densest-time",
-    "session-loudest-back-and-forth",
-    "session-loudest-back-and-forth-text",
-    "session-loudest-back-and-forth-time",
-    "session-fields-old",
-    "session-median-duration-old",
-    "session-average-messages-old",
-)
-NODE_RUNNER = r"""
-const fs = require("fs");
-
-class FakeNode {
-  constructor(id) {
-    this.id = id || "";
-    this.textContent = "";
-    this.hidden = false;
-    this.children = [];
-    this.className = "";
-    this.style = { setProperty: function () {} };
-    this.classList = { add: function () {} };
-  }
-  appendChild(child) { this.children.push(child); return child; }
-  setAttribute() {}
-  querySelector() { return null; }
-}
-
-const ids = JSON.parse(process.env.ECHO_NODE_IDS);
-const nodes = {};
-ids.forEach(function (id) { nodes[id] = new FakeNode(id); });
-
-global.window = { ECHO_DATA: JSON.parse(process.env.ECHO_PAYLOAD) };
-global.document = {
-  title: "",
-  documentElement: new FakeNode("html"),
-  getElementById: function (id) { return nodes[id] || null; },
-  querySelectorAll: function () { return []; },
-  createElement: function () { return new FakeNode(""); }
-};
-
-eval(fs.readFileSync(process.env.ECHO_APP_PATH, "utf8"));
-
-const result = {};
-ids.forEach(function (id) {
-  result[id] = { text: nodes[id].textContent, hidden: nodes[id].hidden };
-});
-process.stdout.write(JSON.stringify(result));
-"""
-
-def _read_css_sources():
-    import sys
-
-    sys.path.insert(0, "src")
-    from qq_chat_analyzer.presentation.echo_report_template import ECHO_REPORT_CSS
-
-    css_file = __file__.rsplit("tests", 1)[0] + "frontend/echo_report/style.css"
-    css_content = open(css_file, "r", encoding="utf-8").read()
-    return ECHO_REPORT_CSS, css_content
-
 
 class _EchoPageFlowParser(HTMLParser):
     """Collect top-level report pages as (section id, folio number)."""
@@ -169,12 +66,11 @@ def test_overview_page_and_03_04_05_06_flow_regression(tmp_path: Path) -> None:
         export_echo_report_html,
     )
     from qq_chat_analyzer.presentation.echo_report_template import (
+        ECHO_REPORT_APP_JS,
         ECHO_REPORT_CSS,
         ECHO_REPORT_HTML_SKELETON,
     )
 
-    html_file = __file__.rsplit("tests", 1)[0] + "frontend/echo_report/index.html"
-    html_content = open(html_file, "r", encoding="utf-8").read()
     expected_flow = [
         ("overview", "03"),
         ("conversation-sessions", "04"),
@@ -182,10 +78,9 @@ def test_overview_page_and_03_04_05_06_flow_regression(tmp_path: Path) -> None:
         ("voices", "06"),
     ]
 
-    for html in (ECHO_REPORT_HTML_SKELETON, html_content):
-        assert 'id="overview"' in html
-        assert 'id="overview" hidden' not in html
-        assert _echo_page_flow(html) == expected_flow, _echo_page_flow(html)
+    assert 'id="overview"' in ECHO_REPORT_HTML_SKELETON
+    assert 'id="overview" hidden' not in ECHO_REPORT_HTML_SKELETON
+    assert _echo_page_flow(ECHO_REPORT_HTML_SKELETON) == expected_flow
 
     view = EchoReportView(
         title="Fictional Echo",
@@ -206,14 +101,6 @@ def test_overview_page_and_03_04_05_06_flow_regression(tmp_path: Path) -> None:
     assert 'id="overview" hidden' not in generated
     assert _echo_page_flow(generated) == expected_flow, _echo_page_flow(generated)
 
-    template_css, file_css = _read_css_sources()
-    for css in (ECHO_REPORT_CSS, template_css, file_css):
-        assert "#overview { display: none" not in css
-
-    app_js = (
-        __file__.rsplit("tests", 1)[0]
-        + "frontend/echo_report/app.js"
-    )
-    app_content = open(app_js, "r", encoding="utf-8").read()
-    assert 'setHidden("overview"' not in app_content
-    assert "overview.hidden" not in app_content
+    assert "#overview { display: none" not in ECHO_REPORT_CSS
+    assert 'setHidden("overview"' not in ECHO_REPORT_APP_JS
+    assert "overview.hidden" not in ECHO_REPORT_APP_JS

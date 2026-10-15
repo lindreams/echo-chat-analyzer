@@ -18,6 +18,10 @@ def test_user_data_isolation(pytester, monkeypatch):
     isolation = shared.read_text(encoding="utf-8") if shared.exists() else ""
     pytester.makeconftest("from pathlib import Path\nimport pytest\n" + isolation + f'''
 
+# Reuse the isolation fixtures, not the repository's domain/Smoke inventory:
+# this child project contains only the two synthetic isolation cases below.
+del pytest_collection_modifyitems
+
 @pytest.fixture(autouse=True)
 def guard_unisolated_user_directory(monkeypatch):
     original = Path.mkdir

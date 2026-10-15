@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import re
-from collections.abc import Iterable
 
 
 DESKTOP_DIAGNOSTIC_LOGGERS = (
@@ -46,16 +45,3 @@ def build_diagnostic_handler(path: object) -> logging.Handler:
     )
     handler.addFilter(SensitiveDataFilter())
     return handler
-
-
-def attach_desktop_diagnostic_handlers(
-    handlers: Iterable[logging.Handler],
-) -> None:
-    """Attach desktop file handlers to diagnostic loggers idempotently."""
-    desktop_handlers = tuple(handlers)
-    for logger_name in DESKTOP_DIAGNOSTIC_LOGGERS:
-        logger = logging.getLogger(logger_name)
-        logger.setLevel(logging.INFO)
-        for handler in desktop_handlers:
-            if handler not in logger.handlers:
-                logger.addHandler(handler)

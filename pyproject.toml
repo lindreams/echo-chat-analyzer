@@ -44,6 +44,12 @@ where = ["src"]
 testpaths = ["tests"]
 addopts = "-ra"
 markers = [
+    "core: source-neutral models, analysis, filtering and shared application orchestration",
+    "qq: QQ acquisition, adapters, authentication and runtime ownership",
+    "wechat: WeChat acquisition, adapters, setup and key lifecycle",
+    "ui_report: CLI/GUI interactions, presentation and report package lifecycle",
+    "system: desktop lifecycle, diagnostics, platform, packaging and updates",
+    "smoke: small synthetic checks for core statistics, main seams and safety refusals",
     "slow_integration: heavy integration excluded from the Fast Suite (real subprocess/browser/packaging/Qt-heavy)",
     "known_failure: pre-existing known-failing test quarantined from the Fast Suite (not fixed by this task)",
 ]

@@ -75,7 +75,6 @@ def test_provider_import_and_real_report_exports(tmp_path, with_text):
         input_path=path, output_directory=output, stopwords_path=stopwords))
     assert result.status == AnalysisStatus.COMPLETED
     assert result.valid_text_count == int(with_text)
-    assert result.reports.message_composition.total_count == len(blobs)
     assert result.reports.expression.expression_occurrence_count == 0
     assert result.reports.activity.total_message_count == len(blobs)
     assert not result.top_words if not with_text else result.top_words

@@ -44,7 +44,6 @@ flowchart TD
     subgraph ACQ["Provider 数据获取"]
         PQQDB["qq_database_provider"]
         PWXDB["wechat_database_provider"]
-        PWXCLI["wechat_cli_provider"]
     end
 
     subgraph ADP["Adapter / Parser 格式转换"]
@@ -69,13 +68,14 @@ flowchart TD
     subgraph CORE["Analysis Core 分析核心"]
         CLEAN["cleaner / tokenizer"]
         LEGACY["analyzer<br/>词频 · 说话者统计"]
-        V2["analysis/analyzers<br/>activity · length · profile · conversation"]
+        V2["analysis/analyzers<br/>activity · profile · conversation"]
         REPORTS["AnalysisReports"]
     end
 
     subgraph PRES["Presentation 展示层"]
-        BUILD["DashboardBuilder"]
-        VIEW["DashboardView"]
+        BUILD["build_echo_report_view"]
+        VIEW["EchoReportView"]
+        HTML["Echo JSON / HTML"]
     end
 
     subgraph UI["交互与输出"]
@@ -86,11 +86,10 @@ flowchart TD
 
     NAPCAT --> QQDB --> PQQDB --> AQQDB --> MSG
     WXAPP --> PWXDB --> AWXDB --> MSG
-    WXAPP --> PWXCLI --> AWXCLI --> MSG
     FILE --> PARSER --> MSG
     FILE --> AQQDB
     FILE --> AWXDB
-    FILE --> AWXCLI
+    FILE --> AWXCLI --> MSG
 
     ORCH --> PQQDB
     ORCH --> PWXDB
@@ -108,15 +107,19 @@ flowchart TD
 
     FACADE --> ORCH
     FACADE --> SVC
-    FACADE --> BUILD
     FACADE --> PACKAGER
     FACADE --> CATALOG
     GUI --> FACADE
     CLI --> SVC
-    VIEW --> GUI
+    SVC --> BUILD
+    VIEW --> HTML
+    HTML --> PACKAGER
 ```
 
 ---
+
+微信实时获取仅使用正式数据库 Provider；外部 `miyu` 实时获取链路已退役。
+`wechat_cli_adapter` 继续支持已导出 JSON 文件的本地导入。
 
 ## 3. 依赖方向
 
@@ -544,10 +547,11 @@ Analysis 仍不得出现平台分支。
 | 禁止依赖 | `gui/`、Qt、任何 GUI 框架、`providers/`、adapters |
 
 展示层是纯函数式的转换层。它拿到的数字必须已由 analyzer 算好，
-自己只做"怎么说给人听"。产出 `DashboardView`，其中包含
-`MetricCard`、`UserCard`、`ConversationCard`、`ChartData`。
+自己只做"怎么说给人听"。产出 `EchoReportView`，其中包含
+`EchoMemberCard`、会话与语言画像等展示模型；图表数据使用共享的 `ChartPoint`。
 
-`DashboardView` 不暴露 `AnalysisReports` 内部结构，GUI 只面对视图模型。
+`AnalysisApplicationService` 构建并导出 Echo JSON / HTML；Facade 返回报告位置与
+`echo_report_view`，桌面通过系统浏览器打开 HTML；独立分享图片生成已退休，历史图片不迁移或删除。
 
 ### 4.7 Facade
 
@@ -583,7 +587,8 @@ Analysis 仍不得出现平台分支。
    但这属于实现细节，不出现在返回值与 API 语义里。
 
 依赖注入构造（`qq_service`、`wechat_service`、`analysis_service`、
-`presentation_builder`、`report_package_catalog`），测试可传入 stub 或临时 reports root。
+`report_package_catalog`），测试可传入 stub 或临时 reports root。
+`AnalysisOutcome` 保留分析 DTO、会话、Echo 展示模型和报告位置，不再构建旧 Dashboard 数据。
 
 ### 4.8 GUI
 
@@ -594,8 +599,7 @@ Analysis 仍不得出现平台分支。
 | 可依赖 | `application/facade.py`、`presentation/` 的视图模型、PySide6 |
 | 禁止依赖 | `providers/`、parsers、adapters、`analyzer.py`、`tokenizer.py`、`cleaner.py`、`sqlite3` |
 
-GUI 层零业务逻辑。所有报告展示控件为只读
-（`setEditTriggers(NoEditTriggers)`），但保留选中与复制能力。
+GUI 层零业务逻辑。Echo 报告在系统浏览器中展示。
 分析成功后在现有状态栏展示报告保存状态。
 Local Data 通过 Facade 读取真实 package catalog，支持刷新、删除选中报告、删除全部报告、轻量搜索与 reopen。
 搜索仅对已加载的 summaries 做 `query.strip().casefold()` substring 匹配：会话名、来源、
@@ -605,10 +609,10 @@ Local Data 通过 Facade 读取真实 package catalog，支持刷新、删除选
 选中行的 `Qt.UserRole` 保存 `package_name`，打开按钮和双击共用 reopen 流程：
 Facade → Catalog 安全定位 `echo-report.html` → 注入的系统 opener。
 GUI 不拼接任意用户路径，metadata 不存绝对路径；定位或打开失败显示安全错误并保留记录。
-Reopen 使用系统默认浏览器查看已有 HTML，不重建 Dashboard 或重新分析。
+Reopen 使用系统默认浏览器查看已有 HTML，不重新生成报告或重新分析。
 
 当前 GUI 结构由 `MainWindow` 承载 `HomePage`、`QQWorkspace`、
-`WeChatWorkspace`、处理页、`DashboardPage`、`LocalDataPage`。
+`WeChatWorkspace`、处理页、`LocalDataPage`。
 QQ 与微信来源分别由 `QQWorkspace` / `WeChatWorkspace` 负责连接与生命周期，
 会话列表、搜索、排序、时间范围与分析按钮由两者共享的
 `SessionAnalysisPanel` 承担。
@@ -744,7 +748,6 @@ GUI 只装配控件、转发事件、展示状态。
 | --- | --- |
 | `providers/qq_database_provider.py` / `providers/napcat_qq_provider.py` | QQ Direct DB 获取 / NapCat readiness 与 metadata |
 | `providers/wechat_database_provider.py` | Provider |
-| `providers/wechat_cli_provider.py` | Provider |
 | `qq_db_adapter.py` | QQ Direct DB Adapter |
 | `wechat_db_adapter.py` | Adapter |
 | `wechat_cli_adapter.py` | Adapter |
@@ -759,8 +762,6 @@ GUI 只装配控件、转发事件、展示状态。
 | `application/qq/qq_provider_factory.py` | QQ Provider 装配与缓存 |
 | `application/qq/qq_runtime_manager.py` / `application/qq/qq_process_registry.py` | QQ runtime 管理与自有进程记录 |
 | `application/connection_models.py` | 来源无关的连接状态契约 |
-| `application/qq_connection_service.py` | 保留的公共旧模块路径，仅重导出连接服务实现对象 |
-| `application/connection/__init__.py` / `application/runtime/__init__.py` / `application/runtime/qq_runtime_manager.py` | 保留的连接与 runtime 公共兼容出口，无业务实现 |
 | `application/wechat/wechat_export_import_service.py` | 来源编排（微信） |
 | `application/wechat/wechat_connection_service.py` | 微信连接状态 |
 | `application/wechat/wechat_connection_progress.py` | 微信连接进度 |
@@ -769,7 +770,6 @@ GUI 只装配控件、转发事件、展示状态。
 | `application/wechat/wechat_provider_factory.py` | 微信 Provider 装配与缓存 |
 | `application/wechat/wechat_data_detector.py` | 微信数据位置检测 |
 | `application/wechat/wechat_key_service.py` | 微信读取授权 |
-| `application/wechat_connection_service.py` / `application/wechat_environment_config.py` | 保留的公共旧模块路径，仅重导出微信实现对象 |
 | `application/analysis_service.py` | 应用服务 |
 | `application/update_check_service.py` | 正式 Release 更新检查、来源无关结果契约与最小本地去重 |
 | `application/scope_filter.py` | 单次分析时间范围过滤 |
@@ -777,7 +777,7 @@ GUI 只装配控件、转发事件、展示状态。
 | `application/report_staging.py` | Report staging ownership、发布锁与安全恢复清理 |
 | `application/report_package_metadata.py` | Report Package metadata 构建 |
 | `application/report_package_catalog.py` | metadata catalog、安全定位、完整 package 删除与报告存储统计 |
-| `application/dto.py` / `errors.py` / `task.py` / `export_config.py` | 应用契约 |
+| `application/dto.py` / `errors.py` | 应用契约 |
 | `application/facade.py` | Facade |
 | `runtime/` | 外部运行时契约（ChatRuntime）与捆绑运行时实现（BundledQQRuntime） |
 | `cleaner.py` / `tokenizer.py` / `analyzer.py` | Analysis Core v1 |
@@ -788,7 +788,7 @@ GUI 只装配控件、转发事件、展示状态。
 | `analysis/peaks.py` / `timestamps.py` | 分析辅助 |
 | `presentation/models.py` | 视图模型 |
 | `presentation/builders.py` / `formatters.py` | 视图构建与格式化 |
-| `gui/main_window.py` / `dashboard_page.py` | GUI 界面 |
+| `gui/main_window.py` | GUI 页面装配与导航 |
 | `gui/app.py` / `__main__.py` / `workers.py` | GUI 启动与执行 |
 | `cli.py` | 交互适配（CLI） |
 | `exporters.py` | 输出适配 |
@@ -891,10 +891,13 @@ GUI 只装配控件、转发事件、展示状态。
   只负责展示状态、触发连接动作、展示错误。
 - **Facade 提供连接状态。**
   GUI 仍然只认识 `ChatAnalyzerFacade` 一个入口，
-  通过 `get_qq_connection_snapshot()` 和 `connect_qq()` 获取结果。
-- **Connection Manager 管理连接流程。**
-  位于 `application/qq/qq_connection_manager.py`，负责编排准备、启动与授权检查，
-  并把底层结果解释成用户可理解的状态。
+  通过 `get_qq_connection_snapshot()` 被动查询状态，通过 `start_qq_auth_flow()`
+  发起授权连接；`cancel_qq_auth_flow()` 和 `disconnect_qq()` 处理取消与断开。
+- **Auth Bridge 拥有连接动作，Connection Manager 映射状态。**
+  `QQAuthBridge` 负责工作区准备、实例身份检查、授权启动与取消清理；
+  `application/qq/qq_connection_manager.py` 负责被动探测和授权等待状态映射，
+  不再提供另一套 connect 动作。`QQSetupService` 保留配置读写和被动 runtime 查询，
+  不再提供 connect、start、stop 或等待就绪动作。
 - **ConnectionSnapshot 是只读状态模型。**
   定义位于 `application/connection_models.py`。
   不可变，跨层传递，GUI 只读取不重新推导。
@@ -915,10 +918,13 @@ GUI
  ↓
 Facade
  ↓
-Connection Manager
+Auth Bridge（授权动作 / 资源所有权）
  ↓
-QQ Connection Service / Runtime
+Connection Manager（被动状态 / 授权等待） / QQ Connection Service
 ```
+
+`QQRuntimeManager` 与 `BundledQQRuntime` 仍由 setup 的被动状态查询工厂构造，
+其底层生命周期及所有权测试继续保留；正式 GUI 的启动由 Auth Bridge 发起。
 
 ### 10.1 GUI 连接体验状态
 
@@ -957,7 +963,7 @@ QQ 与微信的页面状态互相隔离。切换来源或返回数据源选择�
   “停止接受新的 Direct DB acquisition → bounded drain / recover plaintext →
   终止 Echo 自有的 QQ runtime 进程树”执行。每一步都有独立时间窗，
   某一步失败或超时仍尝试后续步骤；持续持有 GIL 的原生阻塞受下述 fallback 能力边界限制。
-- **Windows 托管进程在创建时获得所有权。** 两条 QQ 启动入口通过
+- **Windows 托管进程在创建时获得所有权。** 正式 Auth Bridge 启动和保留的底层 runtime launcher 通过
   `runtime/windows_job.py` 的 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 原子创建到
   不可继承、未命名的 kill-on-close Job 中。`QQProcessRegistry` 持有会话资源，
   launcher 或日志线程结束不释放 Job；正常 shutdown 关闭 Job，Echo 异常退出

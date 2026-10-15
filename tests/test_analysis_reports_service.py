@@ -92,8 +92,10 @@ def _request(application, tmp_path: Path, input_path: Path):
     )
 
 
+@pytest.mark.parametrize("legacy_outputs", [False, True])
 def test_analysis_logs_each_timing_stage_without_private_content(
     tmp_path: Path, caplog: pytest.LogCaptureFixture,
+    legacy_outputs: bool,
 ) -> None:
     application = _application_module()
     input_path = tmp_path / "fictional-chat.json"
@@ -106,7 +108,9 @@ def test_analysis_logs_each_timing_stage_without_private_content(
     ])
     caplog.set_level("INFO")
 
-    result = application.AnalysisApplicationService().execute(
+    result = application.AnalysisApplicationService(
+        legacy_word_artifacts=(lambda **kwargs: ()) if legacy_outputs else None,
+    ).execute(
         _request(application, tmp_path, input_path)
     )
 
@@ -118,14 +122,16 @@ def test_analysis_logs_each_timing_stage_without_private_content(
     expected = {
         "import", "scope_filter", "smart_profile", "message_quality_filter",
         "text_analysis", "ExpressionAnalyzer.preflight", "word_ranking",
-        "report_build", "word_speaker_analysis", "artifact_export", "total",
-        "ActivityAnalyzer", "MessageLengthAnalyzer", "UserProfileAnalyzer",
-        "ConversationAnalyzer", "MessageCompositionAnalyzer",
+        "report_build", "artifact_export", "total",
+        "ActivityAnalyzer", "UserProfileAnalyzer",
+        "ConversationAnalyzer",
         "conversation_sessions", "DistinctiveWordAnalyzer",
         "PrivateLanguageAnalyzer", "ExpressionAnalyzer.report",
-        "robot_detector", "template_detector", "interactive_bot_detector",
+        "robot_detector", "template_detector",
         "decision_engine", "filter_pipeline",
     }
+    if legacy_outputs:
+        expected.add("word_speaker_analysis")
     actual = {re.search(r"stage=([^ ]+)", line).group(1) for line in timing_lines}
     assert actual == expected
     assert all(re.search(r"elapsed_ms=\d+", line) for line in timing_lines)
@@ -155,15 +161,10 @@ def test_execute_attaches_every_report_to_the_result(tmp_path: Path) -> None:
     assert reports.activity is not None
     assert reports.activity.total_message_count == 3
     assert len(reports.activity.hourly_counts) == 24
-    assert reports.message_length is not None
-    assert reports.message_length.message_count == 3
     assert reports.user_profiles is not None
     assert reports.user_profiles.speaker_count == 2
     assert reports.conversations is not None
     assert reports.conversations.conversation_count == 1
-    assert reports.message_composition is not None
-    assert reports.message_composition.total_count == 3
-    assert _text_category_count(reports.message_composition) == 3
     assert reports.conversation_sessions is not None
     assert reports.conversation_sessions.session_count == 3
 
@@ -209,13 +210,6 @@ def test_distinctive_report_reuses_pipeline_tokens_and_stable_sender_keys(
         "stable-b",
         "stable-c",
     }
-
-
-def _text_category_count(report) -> int:
-    for item in report.categories:
-        if item.category == "文本":
-            return item.count
-    return 0
 
 
 def test_execute_generates_echo_report_json_artifact(tmp_path: Path) -> None:
@@ -304,8 +298,18 @@ def test_report_boundary_does_not_retain_full_expression_candidates() -> None:
 
 
 def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from qq_chat_analyzer.analysis.analyzers import ExpressionAnalyzer
+    original_analyze = ExpressionAnalyzer.analyze
+    analyzed_reports = []
+
+    def record_analysis(self, *args, **kwargs):
+        report = original_analyze(self, *args, **kwargs)
+        analyzed_reports.append(report)
+        return report
+
+    monkeypatch.setattr(ExpressionAnalyzer, "analyze", record_analysis)
     application = _application_module()
     input_path = tmp_path / "sticker-only.json"
     output_directory = tmp_path / "private-output"
@@ -316,6 +320,7 @@ def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
         _request(application, tmp_path, input_path)
     )
 
+    assert len(analyzed_reports) == 1
     assert result.status is application.AnalysisStatus.EXPRESSION_ONLY
     assert result.valid_text_count == 0
     assert result.reports.expression is not None

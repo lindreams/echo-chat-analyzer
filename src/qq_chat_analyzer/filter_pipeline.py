@@ -117,24 +117,6 @@ def _sender_match_key(decision: FilterDecision) -> str:
     return decision.target
 
 
-def _decision_matches_message(
-    decision: FilterDecision,
-    message: ChatMessage,
-) -> bool:
-    if decision.target_type == "sender":
-        return stable_sender_key(message) == _sender_match_key(decision)
-    if decision.target_type == "template":
-        return _template_matches(decision.target, message.text)
-    return False
-
-
-def _template_matches(template: str, text: str) -> bool:
-    normalized_template = _normalize_template_text(template)
-    normalized_text = _normalize_template_text(text)
-    pattern = _template_pattern(normalized_template)
-    return re.fullmatch(pattern, normalized_text) is not None
-
-
 def _template_pattern(template: str) -> str:
     parts: list[str] = []
     for kind, value in template_syntax.iter_tokens(template):

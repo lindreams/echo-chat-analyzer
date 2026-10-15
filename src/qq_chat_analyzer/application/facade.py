@@ -12,7 +12,7 @@ Deliberate boundaries:
   presentation builder owns formatting. This layer only decides *which*
   collaborator runs and in *what* order.
 * No statistics are recomputed. Numbers travel from the analysis reports into
-  the dashboard view untouched.
+  the Echo report view untouched.
 * Intermediate export files are an implementation detail. Generated Echo HTML
   is the exception: its exact local path is retained for the desktop caller.
 
@@ -35,25 +35,13 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Iterator, Protocol, runtime_checkable
+from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 from ..resources import resources_dir, user_data_dir
 from .shutdown_models import ShutdownResult, ShutdownStatus, ShutdownStepResult
 from ..analysis.timestamps import to_epoch_seconds
-from ..presentation import (
-    DashboardView,
-    EchoReportView,
-    build_dashboard_view,
-    build_echo_report_view,
-)
-from ..presentation.expression_assets import expression_asset_data_uri
-from ..presentation.share.builder import ShareCardData, build_share_card_data
-from ..presentation.share.renderer import (
-    ShareImageRenderError,
-    render_share_html_to_png,
-)
-from ..presentation.share.template import build_share_card_html
+from ..presentation import EchoReportView
 from .analysis_phase import AnalysisPhase, PhaseCallback
 from .dto import AnalysisRequestDTO, AnalysisResultDTO
 from .errors import ApplicationServiceError
@@ -319,24 +307,15 @@ _SOURCE_DISPLAY_NAMES = {
 }
 
 
-@runtime_checkable
-class SessionListingService(Protocol):
-    """Shared shape of the two export services used for listing."""
-
-    def list_sessions(self) -> list[Any]:  # pragma: no cover - contract only
-        ...
-
-
 @dataclass(frozen=True, slots=True)
 class AnalysisOutcome:
     """What one finished analysis hands back to a caller.
 
-    ``view`` is what a GUI renders. ``result`` stays available for callers
-    that need the privacy-safe DTO, and ``session`` records which
-    conversation produced the view.
+    ``result`` is the privacy-safe analysis DTO. ``echo_report_view`` supports
+    report sharing, and ``session`` identifies the analyzed conversation.
+    The desktop opens the generated HTML at ``report_path``.
     """
 
-    view: DashboardView
     result: AnalysisResultDTO
     source: ChatSource
     session: SessionInfo | None = None
@@ -376,7 +355,6 @@ class ChatAnalyzerFacade:
             dict[ChatSource, Callable[[], Any]] | None
         ) = None,
         analysis_service: Any = None,
-        presentation_builder: Any = None,
         report_package_catalog: Any = None,
         update_check_service: UpdateChecker | None = None,
         installable_update_service: InstallableUpdater | None = None,
@@ -399,7 +377,6 @@ class ChatAnalyzerFacade:
         self._source_builders = dict(source_builders or {})
         self._built_sources: dict[ChatSource, Any] = {}
         self._analysis_service = analysis_service
-        self._presentation_builder = presentation_builder
         self._report_package_catalog = report_package_catalog or ReportPackageCatalog()
         self._update_check_service = (
             update_check_service if update_check_service is not None else UpdateCheckService()
@@ -618,12 +595,6 @@ class ChatAnalyzerFacade:
         with _translated_errors(ChatSource.QQ):
             return service.get_runtime_status()
 
-    def start_qq_runtime(self) -> Any:
-        """Start the configured QQ runtime and wait until ready."""
-        service = self._require_qq_setup_service()
-        with _translated_errors(ChatSource.QQ):
-            return service.start_runtime()
-
     def get_qq_connection_snapshot(self) -> ConnectionSnapshot:
         """Report the QQ connection lifecycle without starting anything.
 
@@ -632,14 +603,6 @@ class ChatAnalyzerFacade:
         error the page has to interpret.
         """
         return self._require_qq_connection_manager().get_snapshot()
-
-    def connect_qq(self) -> ConnectionSnapshot:
-        """Connect QQ through the single authorization runtime path.
-
-        Redirected to :meth:`start_qq_auth_flow` so the Echo NapCat launcher
-        owns login and its process tree.
-        """
-        return self.start_qq_auth_flow()
 
     def start_qq_auth_flow(
         self,
@@ -842,22 +805,9 @@ class ChatAnalyzerFacade:
                         ) or None,
                     )
                 return range_method(session_id)
-            provider_factory = getattr(service, "provider", None)
-            if provider_factory is None:
-                return None
-            rows = provider_factory().read_session_rows(session_id)
+            return service.get_session_message_range(session_id)
         except Exception:
             return None
-        epochs = [
-            value
-            for row in rows
-            if isinstance(row, Mapping)
-            for value in (to_epoch_seconds(row.get("create_time")),)
-            if value is not None
-        ]
-        if not epochs:
-            return None
-        return min(epochs), max(epochs)
 
     def list_report_packages(self) -> ReportPackageListing:
         """List published package summaries and unreadable package issues."""
@@ -975,38 +925,29 @@ class ChatAnalyzerFacade:
                 progress=progress,
                 on_phase=on_phase,
             )
-        if chat_source in (ChatSource.QQ, ChatSource.WECHAT):
-            raw_session = next(
-                (
-                    candidate for candidate in (service.list_sessions() or ())
-                    if getattr(candidate, "session_id", None) == session_id
-                    or getattr(candidate, "group_code", None) == session_id
-                ),
-                None,
-            )
-            session = (
-                _to_session_info(chat_source, raw_session)
-                if raw_session is not None
-                else SessionInfo(
-                    source=chat_source,
-                    session_id=session_id,
-                    display_name=session_id,
-                )
-            )
-            conversation_names = {session_id: session.display_name}
-            conversation_kind = (
-                session.session_type
-                if session.session_type in ("private", "group")
-                else "unknown"
-            )
-        else:
-            session = SessionInfo(
+        raw_session = next(
+            (
+                candidate for candidate in (service.list_sessions() or ())
+                if getattr(candidate, "session_id", None) == session_id
+                or getattr(candidate, "group_code", None) == session_id
+            ),
+            None,
+        )
+        session = (
+            _to_session_info(chat_source, raw_session)
+            if raw_session is not None
+            else SessionInfo(
                 source=chat_source,
                 session_id=session_id,
                 display_name=session_id,
             )
-            conversation_names = None
-            conversation_kind = "unknown"
+        )
+        conversation_names = {session_id: session.display_name}
+        conversation_kind = (
+            session.session_type
+            if session.session_type in ("private", "group")
+            else "unknown"
+        )
 
         with TemporaryDirectory(prefix="chat-analyzer-export-") as scratch:
             scratch_directory = Path(scratch)
@@ -1014,13 +955,8 @@ class ChatAnalyzerFacade:
                 chat_source,
                 service,
                 session_id,
-                resolved_config,
                 scratch_directory,
-                raw_session=(
-                    raw_session if chat_source is ChatSource.QQ else None
-                ),
                 scope=resolved_scope,
-                progress=progress,
                 on_phase=on_phase,
             ) as session_export:
                 return self._analyze_path(
@@ -1061,11 +997,8 @@ class ChatAnalyzerFacade:
                 ChatSource.QQ,
                 service,
                 session_id,
-                config,
                 scratch_directory,
-                raw_session=None,
                 scope=scope,
-                progress=progress,
                 on_phase=on_phase,
             ) as session_export:
                 acquired_at = _perf_counter()
@@ -1111,46 +1044,6 @@ class ChatAnalyzerFacade:
                         "ok" if completed else "failed",
                     )
 
-    def generate_share_image(
-        self,
-        outcome: AnalysisOutcome,
-        output_directory: Path | None = None,
-    ) -> Path:
-        """Render one shareable Echo overview card from a completed analysis."""
-        view = self._echo_view_for_outcome(outcome)
-        _LOGGER.info(
-            "[facade] generate_share_image called view=%s "
-            "report_directory=%s",
-            view is not None,
-            getattr(outcome, "report_directory", None),
-        )
-        if view is None:
-            raise FacadeError(
-                code="share_image_unavailable",
-                public_message="没有可生成分享图片的分析结果。",
-            )
-        data = build_share_card_data(view)
-        html = build_share_card_html(data, _share_assets(data))
-        target_directory = (
-            Path(output_directory)
-            if output_directory is not None
-            else (
-                outcome.report_directory
-                or outcome.artifact_directory
-                or (user_data_dir() / "reports")
-            )
-        )
-        target_directory.mkdir(parents=True, exist_ok=True)
-        image_path = target_directory / "echo-share.png"
-        try:
-            render_share_html_to_png(html, image_path)
-        except ShareImageRenderError as error:
-            raise FacadeError(
-                code="share_image_generation_failed",
-                public_message="分享图片生成失败，请稍后重试。",
-            ) from error
-        _LOGGER.info("[facade] share image written path=%s", image_path)
-        return image_path
 
     # ------------------------------------------------------------- internals
 
@@ -1207,7 +1100,6 @@ class ChatAnalyzerFacade:
                         )
 
             _report_progress(progress, "正在生成报告...")
-            view = self._build_view(result)
             report_generated_at = datetime.now(timezone.utc)
             report_path = _generated_echo_report_path(result, output_directory)
             echo_report_view = getattr(result, "echo_report_view", None)
@@ -1245,7 +1137,6 @@ class ChatAnalyzerFacade:
                 temporary_output = None
 
             outcome = AnalysisOutcome(
-                view=view,
                 result=result,
                 source=source,
                 session=session,
@@ -1551,48 +1442,15 @@ class ChatAnalyzerFacade:
             return getattr(bundle, "service", None)
         return None
 
-    def _build_view(self, result: AnalysisResultDTO) -> DashboardView:
-        """Hand the reports to the presentation layer without touching them."""
-        reports = getattr(result, "reports", None)
-        top_words = getattr(result, "top_words", ()) or ()
-
-        if self._presentation_builder is not None:
-            return self._presentation_builder.build(
-                reports,
-                top_words=top_words,
-            )
-        return build_dashboard_view(reports, top_words=top_words)
-
-    @staticmethod
-    def _echo_view_for_outcome(outcome: AnalysisOutcome) -> EchoReportView | None:
-        """Reuse the view already built for Echo artifacts when available."""
-        view = getattr(outcome, "echo_report_view", None)
-        if view is not None:
-            return view
-        reports = getattr(getattr(outcome, "result", None), "reports", None)
-        if reports is None:
-            return None
-        session = getattr(outcome, "session", None)
-        conversation_kind = getattr(session, "session_type", None)
-        if conversation_kind not in ("private", "group"):
-            conversation_kind = "unknown"
-        return build_echo_report_view(
-            reports,
-            conversation_kind=conversation_kind,
-        )
-
     @contextmanager
     def _session_export_context(
         self,
         source: ChatSource,
         service: Any,
         session_id: str,
-        config: AnalysisConfig,
         scratch_directory: Path,
         *,
-        raw_session: Any = None,
         scope: AnalysisScope | None = None,
-        progress: Callable[[str], None] | None = None,
         on_phase: PhaseCallback | None = None,
     ) -> Iterator[_SessionExport]:
         """Yield an export while preserving source-specific ownership.
@@ -1607,8 +1465,8 @@ class ChatAnalyzerFacade:
         ``export_only`` has returned a payload. A failed acquisition therefore
         never publishes it.
         """
+        start_seconds, end_seconds = _scope_export_window_seconds(scope)
         if source is ChatSource.QQ:
-            start_seconds, end_seconds = _scope_export_window_seconds(scope)
             with ExitStack() as ownership:
                 with _translated_errors(source):
                     acquisition = ownership.enter_context(
@@ -1639,8 +1497,8 @@ class ChatAnalyzerFacade:
                         output_path=(
                             scratch_directory / "wechat_export.json"
                         ),
-                        start_time=_scope_export_window_seconds(scope)[0],
-                        end_time=_scope_export_window_seconds(scope)[1],
+                        start_time=start_seconds,
+                        end_time=end_seconds,
                     )
                 )
             )
@@ -1844,22 +1702,6 @@ def _generated_echo_report_path(
         except OSError:
             return None
     return None
-
-
-def _share_assets(data: ShareCardData) -> dict[str, str]:
-    """Inline only the expression images referenced by the share card."""
-    assets: dict[str, str] = {}
-    expressions = data.expressions
-    if expressions is None:
-        return assets
-    for combo in expressions.combos:
-        for key in (combo.primary_asset_key, combo.secondary_asset_key):
-            if not isinstance(key, str) or not key:
-                continue
-            data_uri = expression_asset_data_uri(key)
-            if data_uri:
-                assets[key] = data_uri
-    return assets
 
 
 @contextmanager

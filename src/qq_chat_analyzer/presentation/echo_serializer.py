@@ -289,20 +289,7 @@ def _conversation_sessions_to_dict(
         "private_reply_median_peer_to_self_seconds": (
             sessions.private_reply_median_peer_to_self_seconds
         ),
-        "items": [
-            {
-                "start_timestamp": item.start_timestamp,
-                "end_timestamp": item.end_timestamp,
-                "duration_seconds": item.duration_seconds,
-                "message_count": item.message_count,
-                "participant_count": item.participant_count,
-                "initiator": item.initiator,
-                "initiator_sender_key": item.initiator_sender_key,
-                "self_message_count": item.self_message_count,
-                "peer_message_count": item.peer_message_count,
-            }
-            for item in sessions.items
-        ],
+        "items": [_session_to_dict(item) for item in sessions.items],
         "viewer_identity_reliable": sessions.viewer_identity_reliable,
         "start_hour_distribution": [
             {"label": p.label, "value": p.value}

@@ -482,9 +482,10 @@ class QQDirectDatabaseImportService:
                 cleaned_at = time.perf_counter()
                 group_names, friend_names = self._metadata_names()
                 metadata_at = time.perf_counter()
+                payload = json.loads(payload_path.read_text(encoding="utf-8"))
                 if session.session_type == "group":
                     try:
-                        sender_names = _group_sender_names_with_diagnostics(client, session, payload_path)
+                        sender_names = _group_sender_names_with_diagnostics(client, session, payload)
                     except QQSnapshotWorkerGenerationChanged as error:
                         self._require_reconnect()
                         raise QQReconnectRequired() from error
@@ -494,7 +495,9 @@ class QQDirectDatabaseImportService:
                 named_session = self._named_sessions(
                     [session], group_names=group_names, friend_names=friend_names
                 )[0]
-                _attach_sender_names(payload_path, sender_names, self_uin)
+                _attach_sender_names(payload_path, payload, sender_names, self_uin)
+                # Do not retain the full decoded payload while the consumer analyzes it.
+                del payload
                 ready_at = time.perf_counter()
                 _LOGGER.info(
                     "[analysis-timing] stage=direct_db_acquisition elapsed_ms=%d "
@@ -732,7 +735,7 @@ class QQDirectDatabaseImportService:
 def _group_sender_names_with_diagnostics(
     client: Any,
     session: QQSession,
-    payload_path: Path,
+    payload: Any,
 ) -> dict[str, str]:
     """Fetch optional member names and log anonymous identity coverage."""
     get_members = getattr(client, "get_group_member_all", None)
@@ -751,7 +754,7 @@ def _group_sender_names_with_diagnostics(
         except Exception:
             # Member metadata is optional; do not fail local DB analysis.
             rpc_status = "rpc_failed"
-    participant_uins = _payload_sender_uins(payload_path)
+    participant_uins = _payload_sender_uins(payload)
     coverage = _identity_coverage_counts(participant_uins, member_data)
     _LOGGER.info(
         "[qq-direct-identity-coverage] status=%s "
@@ -840,11 +843,11 @@ def _safe_relative_name(value: Any) -> str | None:
 
 def _attach_sender_names(
     payload_path: Path,
+    payload: Any,
     friend_names: dict[str, str],
     self_uin: str | None,
 ) -> None:
     """Add known QQ names to the transient payload after DB cleanup."""
-    payload = json.loads(payload_path.read_text(encoding="utf-8"))
     for record in payload.get("records", ()):
         fields = record.get("fields", {})
         sender_uin = canonical_qq_uin(fields.get("40033"))
@@ -971,11 +974,7 @@ def _identity_coverage_counts(
     }
 
 
-def _payload_sender_uins(payload_path: Path) -> set[str]:
-    try:
-        payload = json.loads(payload_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return set()
+def _payload_sender_uins(payload: Any) -> set[str]:
     records = payload.get("records", ()) if isinstance(payload, Mapping) else ()
     return {
         sender

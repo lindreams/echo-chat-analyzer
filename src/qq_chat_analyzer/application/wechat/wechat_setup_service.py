@@ -465,15 +465,6 @@ class WeChatSetupService:
         carried through untouched.
         """
         return resolve_wechat_runtime_pair(config)
-    def _ensure_db_key(
-        self,
-        config: WeChatEnvironmentConfig,
-    ) -> WeChatEnvironmentConfig:
-        if config.db_key and config.db_key.strip():
-            return config
-        if self._key_service is None:
-            return config
-        return replace(config, db_key=self._key_service.acquire())
 
     def _config_path(self) -> Path | None:
         getter = getattr(self._config_loader, "config_path", None)

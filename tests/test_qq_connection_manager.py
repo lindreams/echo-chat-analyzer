@@ -117,7 +117,7 @@ def test_auth_waiting_does_not_hide_runtime_fatal_failure() -> None:
     assert snapshot.action_hint
 
 
-def test_connect_returns_waiting_auth_without_waiting_for_login() -> None:
+def test_snapshot_reports_running_service_waiting_for_login_without_starting() -> None:
     module = _connection_module()
     setup = _StubSetupService(
         connect_status=_status(
@@ -137,7 +137,7 @@ def test_connect_returns_waiting_auth_without_waiting_for_login() -> None:
     snapshot = _manager(
         setup_service=setup,
         connection_service=service,
-    ).connect()
+    ).get_snapshot()
 
     assert setup.connect_calls == 0
     assert snapshot.state is module.ConnectionState.WAITING_AUTH

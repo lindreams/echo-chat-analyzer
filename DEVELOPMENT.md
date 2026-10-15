@@ -59,11 +59,14 @@ virtual environment:
 python -m venv .venv
 ```
 
-Install the complete development environment from `pyproject.toml`:
+Install the recommended complete Windows development environment from `pyproject.toml`:
 
 ``` powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[dev,gui]"
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,gui,build]"
 ```
+
+The `build` extra is for developers running build-contract tests and producing
+Windows releases; ordinary application users do not need these tools.
 
 All project commands after creation should use the explicit `.venv` interpreter;
 shell activation is not required.
@@ -184,11 +187,24 @@ subprocesses that override import paths also use the target worktree.
 The `.venv` commands in sections 4 and 5 are local-environment examples; when
 reusing an environment, use `& $EchoPython` with the same explicit source path.
 
-Stop only when no usable Echo environment exists, dependencies do not match, or
-target-source isolation cannot be guaranteed. Do not automatically install or
-upgrade dependencies, create a virtual environment, fall back to system Python,
+For the authorized Windows development environment, repair a missing build
+toolchain before rerunning build-contract tests or reporting the same failure:
+verify the selected interpreter and source path, inspect the installation plan,
+then install the existing pinned extra without upgrading satisfied dependencies:
+
+``` powershell
+& $EchoPython -m pip install --dry-run --upgrade-strategy only-if-needed -e ".[build]"
+& $EchoPython -m pip install --upgrade-strategy only-if-needed -e ".[build]"
+& $EchoPython -c "from importlib.metadata import version; print(version('pyinstaller')); print(version('pyinstaller-hooks-contrib'))"
+& $EchoPython -m pip check
+```
+
+Compare the actual versions with `pyproject.toml`; keep its pins and unrelated
+installed versions unchanged. This authorization covers missing build dependencies,
+not general dependency upgrades. Stop only when no usable environment exists,
+authorized repair cannot satisfy the requirements, or source isolation cannot be
+guaranteed. Do not create an unnecessary environment, fall back to system Python,
 or alter another worktree's virtual environment (including editable reinstallation).
-Report missing or incompatible requirements for human resolution.
 
 For a Windows release build, `scripts/build_windows_exe.ps1` requires the target
 project's `.venv\Scripts\pyinstaller.exe`. After verifying reuse is safe, a local
@@ -243,43 +259,67 @@ If package metadata is needed, query it through the same interpreter:
 
 ## 5. Running Tests
 
-Tests are run in three layers:
+After validating `$EchoPython` and the target `PYTHONPATH` as in section 3.2,
+prefer Focused, then Smoke, then the affected Domain. Expand to Fast or Full
+according to impact and risk; Full is not mandatory for every low-risk change
+or commit. Behavior changes and bug fixes still need meaningful regression
+coverage. Low-risk documentation, test grouping or equivalent mechanical changes
+may add zero tests when the rationale and appropriate verification are recorded.
 
-- **Focused**: the test file or node directly related to the change;
-- **Fast**: daily development regression, excluding `slow_integration` and
-  `known_failure`;
-- **Full**: complete regression at a phase boundary or before submission.
-
-Run the relevant focused tests first, for example:
-
-``` powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_facade.py -q
-.\.venv\Scripts\python.exe -m pytest tests/test_facade.py::test_name -q
+```powershell
+& $EchoPython -m pytest tests/test_facade.py -q
+& $EchoPython -m pytest -m smoke -q
+& $EchoPython -m pytest -m "qq and not slow_integration and not known_failure" -q
 ```
 
-The marker names are defined in `pyproject.toml`; do not replace them with
-ad-hoc exclusions. The standard Fast Suite is:
+Every collected case has exactly one primary domain; Smoke can coexist with it.
+Native markers are registered in `pyproject.toml`. The explicit module ownership
+and exact Smoke node IDs live in `tests/conftest.py`; update them when adding or
+renaming tests. New unassigned modules fail collection rather than silently
+falling outside domain selection. Full directory collection rejects missing Smoke
+nodes before marker/keyword deselection. File/node Focused runs and explicit
+`--ignore` / `--ignore-glob` runs are partial and do not require the entire Smoke
+list. Inspect full and Smoke collection after edits:
 
-``` powershell
-.\.venv\Scripts\python.exe -m pytest -m "not slow_integration and not known_failure" -q
+```powershell
+& $EchoPython -m pytest --collect-only -q
+& $EchoPython -m pytest -m smoke --collect-only -q
 ```
 
-The Full Suite is:
+| Domain marker | Primary contract and cross-domain ownership |
+| --- | --- |
+| `core` | Source-neutral analysis, models, filtering and shared import/analysis orchestration, even with source-specific fixtures |
+| `qq` | QQ providers, adapters, acquisition, authentication and runtime ownership |
+| `wechat` | WeChat providers, adapters, setup, keys and source-specific facade setup |
+| `ui_report` | CLI/GUI interaction (including source/update UI wiring), shared Facade analysis/report orchestration, presentation, report publication/storage/deletion and rendering |
+| `system` | Desktop bootstrap/exit, diagnostics, packaging (including frozen QQ contracts), updates/uninstall, cross-source shutdown and platform/test isolation |
 
-``` powershell
-.\.venv\Scripts\python.exe -m pytest -q
+Replace `qq` in the Domain command with any marker above. Domain selection alone
+includes its slow/known-failure tests; use the explicit exclusions for a fast
+Domain run, or select the relevant integration nodes directly when required.
+Shared contracts or fixture/test-infrastructure changes warrant broader regression.
+The existing Fast and Full definitions remain unchanged:
+
+```powershell
+# Fast: cross-domain regression excluding heavy integrations and known failures
+& $EchoPython -m pytest -m "not slow_integration and not known_failure" -q
+# Full: complete regression when warranted by impact/risk or release acceptance
+& $EchoPython -m pytest -q
 ```
 
-Fast does not replace focused integration tests covered by `slow_integration`.
-When a change touches packaging, Chromium rendering, CLI subprocesses,
-PowerShell helpers, Windows runtime integration, or a specific WeChat
-integration, run the relevant focused integration tests explicitly.
+Smoke uses synthetic inputs and bounded local seams; it is a small health check,
+not comprehensive coverage. Preserve privacy, authentication, generation isolation,
+path ownership and cleanup safety regressions regardless of the selected tier.
+Smoke, Domain and Fast do not replace required focused `slow_integration` tests
+when changing packaging, Chromium rendering, CLI subprocesses, PowerShell helpers,
+Windows runtime integration or specific WeChat integration. Required release
+build, Full and human acceptance gates also remain in force.
 
 If Windows temporary-directory permission problems appear, pass a local base
 directory to the same explicit interpreter:
 
-``` powershell
-.\.venv\Scripts\python.exe -m pytest --basetemp=.pytest-temp
+```powershell
+& $EchoPython -m pytest --basetemp=.pytest-temp
 ```
 
 Do not commit temporary test directories, test counts, or timing snapshots.

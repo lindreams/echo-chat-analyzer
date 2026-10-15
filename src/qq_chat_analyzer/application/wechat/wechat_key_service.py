@@ -119,7 +119,6 @@ class WeChatKeyService:
         helper_path: str | Path | None = None,
         node_executable: str = "node",
         node_finder: Callable[[str], str | None] | None = None,
-        subprocess_runner: Callable[..., Any] | None = None,
         koffi_module_path: str | Path | None = None,
         process_launcher: Callable[..., Any] | None = None,
         progress_callback: Callable[[WeChatConnectionProgress], None] | None = None,
@@ -143,7 +142,6 @@ class WeChatKeyService:
         )
         self._node_executable = node_executable
         self._node_finder = node_finder or shutil.which
-        self._subprocess_runner = subprocess_runner
         self._process_launcher = process_launcher
         self._progress_callback = progress_callback
         self._lifecycle_lock = threading.Lock()
@@ -157,7 +155,9 @@ class WeChatKeyService:
         self._helper_tree_status = ShutdownStatus.UNKNOWN
         self._helper_resource_status = ShutdownStatus.UNKNOWN
         self._helper_readers: tuple[threading.Thread, ...] = ()
-        self._legacy_injected = dll_loader is not None or process_finder is not None
+        # PID observation is shared by the helper path; only an explicit native
+        # adapter opts into the separate in-process DLL contract.
+        self._legacy_injected = dll_loader is not None
         self._koffi_module_path = (
             Path(koffi_module_path) if koffi_module_path is not None
             else self._helper_path.parent / "node_modules"
@@ -462,14 +462,9 @@ class WeChatKeyService:
             candidate_command.extend(["--pid", str(pid)])
             candidate_options = dict(options, timeout=budget)
             try:
-                if self._subprocess_runner is not None:
-                    key = self._run_helper_buffered(
-                        candidate_command, candidate_options
-                    )
-                else:
-                    key = self._run_helper_streaming(
-                        candidate_command, candidate_options, progress, deadline
-                    )
+                key = self._run_helper_streaming(
+                    candidate_command, candidate_options, progress, deadline
+                )
             except WeChatKeyUnavailable as error:
                 if error.code not in {
                     "wechat_hook_failed", "wechat_key_not_captured",
@@ -487,7 +482,7 @@ class WeChatKeyService:
     def _build_helper_invocation(
         self, timeout_seconds: float
     ) -> tuple[list[str], dict[str, Any]]:
-        """Build the one command and option set both helper paths share."""
+        """Build the streaming helper's command and acquisition budget."""
         command = [
             self._resolve_node_executable(),
             str(self._helper_path),
@@ -523,38 +518,6 @@ class WeChatKeyService:
             "微信连接组件缺少 Node.js 运行环境，"
             "请重新安装余音后重试。"
         )
-
-    def _run_helper_buffered(
-        self, command: list[str], options: dict[str, Any]
-    ) -> str:
-        """Run the helper through an injected runner, collecting output at once."""
-        runner_options = dict(options)
-        runner_options["capture_output"] = True
-        runner_options["check"] = False
-        try:
-            result = self._subprocess_runner(command, **runner_options)
-        except subprocess.TimeoutExpired:
-            raise WeChatKeyUnavailable(
-                _helper_timeout_message(), code="wechat_key_timeout"
-            ) from None
-        except (OSError, subprocess.SubprocessError):
-            raise WeChatKeyUnavailable(_helper_launch_message()) from None
-        except Exception:
-            raise WeChatKeyUnavailable(
-                "\u5fae\u4fe1\u8fde\u63a5\u51c6\u5907\u5931\u8d25\uff0c"
-                "\u8bf7\u91cd\u8bd5\u3002"
-            ) from None
-        if result.returncode != 0:
-            _log_helper_diagnostics(result.stderr, result.returncode)
-            raise WeChatKeyUnavailable(
-                _helper_failure_message(result.stderr),
-                code=_helper_failure_code(result.stderr),
-            )
-        try:
-            return self._finalize_key(result.stdout)
-        except WeChatKeyUnavailable:
-            _log_helper_diagnostics(result.stderr, result.returncode)
-            raise
 
     def _run_helper_streaming(
         self,

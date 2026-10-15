@@ -26,16 +26,6 @@ def format_count(value: int) -> str:
     return f"{value:,}"
 
 
-def format_percent(value: float) -> str:
-    """Render a percentage value already expressed in percent units."""
-    return f"{value:.1f}%"
-
-
-def format_average(value: float) -> str:
-    """Render an average length in characters."""
-    return f"{value:.1f} \u5b57"
-
-
 def format_hour(hour: int | None) -> str:
     """Render an hour bucket as a readable clock range."""
     if hour is None:
@@ -78,10 +68,3 @@ def format_duration(duration_seconds: int | None) -> str:
 
     days, hours = divmod(hours, 24)
     return f"{days} \u5929 {hours} \u5c0f\u65f6"
-
-
-def format_length_bucket(lower_bound: int, upper_bound: int | None) -> str:
-    """Render a half-open message-length range as an axis label."""
-    if upper_bound is None:
-        return f"{lower_bound}+"
-    return f"{lower_bound}-{upper_bound - 1}"

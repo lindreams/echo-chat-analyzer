@@ -78,13 +78,17 @@ def is_wechat_db_export(path: str | Path) -> bool:
     payload = _load_json_object(path)
     if payload is None:
         return False
-    return _looks_like_db_export(payload)
+    return is_wechat_db_payload(payload)
 
 
 def load_messages(path: str | Path) -> list[Any]:
     """Load raw database rows from a WCDB export document."""
-    payload = _load_json_object(path)
-    if payload is None or not _looks_like_db_export(payload):
+    return messages_from_payload(_load_json_object(path))
+
+
+def messages_from_payload(payload: Mapping[str, Any] | None) -> list[Any]:
+    """Apply the export conversation context to already-loaded rows."""
+    if payload is None or not is_wechat_db_payload(payload):
         return []
 
     messages = payload.get("messages")
@@ -402,7 +406,7 @@ def _load_json_object(path: str | Path) -> Mapping[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def _looks_like_db_export(payload: Mapping[str, Any]) -> bool:
+def is_wechat_db_payload(payload: Mapping[str, Any]) -> bool:
     if payload.get("source") != SOURCE_MARKER:
         return False
     return isinstance(payload.get("messages"), list)

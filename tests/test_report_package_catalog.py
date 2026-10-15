@@ -56,6 +56,39 @@ def test_lists_only_metadata_in_stable_generated_time_order(tmp_path, monkeypatc
     assert not listing.issues
 
 
+def test_listing_and_usage_share_observation_including_broken_and_unmeasured_packages(tmp_path, monkeypatch):
+    module = _catalog_module()
+    good, broken, unmeasured = _packages(tmp_path, 3)
+    (broken / "metadata.json").write_text("broken fictional metadata", encoding="utf-8")
+    measured_sizes = {good.name: _package_bytes(good), broken.name: _package_bytes(broken)}
+    original_candidates, original_bytes = module._candidates, module._package_bytes
+    scans, measurements = [], []
+
+    def candidates(root):
+        scans.append(root)
+        return original_candidates(root)
+
+    def measure(root, package):
+        measurements.append(package.name)
+        if package == unmeasured:
+            raise PermissionError("fictional unavailable size")
+        return original_bytes(root, package)
+
+    monkeypatch.setattr(module, "_candidates", candidates)
+    monkeypatch.setattr(module, "_package_bytes", measure)
+    listing = _catalog(tmp_path).list_reports()
+    usage = listing.storage_usage
+    assert len(scans) == 1
+    assert sorted(measurements) == sorted([good.name, broken.name, unmeasured.name])
+    assert [issue.package_name for issue in listing.issues] == [broken.name]
+    sizes = {report.package_name: report.size_bytes for report in listing.reports}
+    assert sizes == {good.name: measured_sizes[good.name], unmeasured.name: None}
+    assert usage.package_count == 3
+    assert usage.measured_bytes == sum(measured_sizes.values())
+    assert usage.unmeasured_packages == (unmeasured.name,)
+    assert not usage.complete
+
+
 def test_summary_size_does_not_follow_reparse_assets(tmp_path, monkeypatch):
     import stat
     package = _package(tmp_path)

@@ -3,6 +3,7 @@
 > **基线导航（2026-10-07）**：本文保留 Phase 9.2 的历史能力审计与设计判断。
 > 下文 QCE 原始来源基线已退休，不代表现役输入能力；当前 Direct DB / WeChat 能力以
 > [ARCHITECTURE](../ARCHITECTURE.md) 为准，发布状态见 [HARDENING](HARDENING.md)。
+> 下文 Dashboard 为历史设计用语；旧 Qt 页面及专属数据构建链已退休，现役展示使用 Echo Report。
 
 ## 1. 文档目的
 

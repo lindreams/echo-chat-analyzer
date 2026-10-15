@@ -75,10 +75,6 @@ class QQConnectionService:
             return self._provider_factory.create()
         return self._injected_provider
 
-    @property
-    def _provider(self) -> NapCatQQProvider:
-        return self.provider()
-
     def check_status(self) -> QQConnectionStatus:
         """Probe once; collapse failures to a safe status."""
         provider = None

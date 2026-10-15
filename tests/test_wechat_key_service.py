@@ -222,13 +222,9 @@ def test_smallfix_reused_pid_after_observed_exit_is_new_candidate(tmp_path, mode
     service, api, seen, clock = _budget_service(tmp_path, [[101], [], [101]], mode)
     calls = []
 
-    def run(command, **_options):
-        calls.append(int(command[command.index("--pid") + 1]))
-        return _Completed(stdout=api.key)
-
     if mode == "streaming":
-        def launch(command, **options):
-            run(command, **options)
+        def launch(command, **_options):
+            calls.append(int(command[command.index("--pid") + 1]))
             return _FakePopen(stdout=api.key, stderr_lines=("hook_success=true",))
         service._process_launcher = launch
 
@@ -259,38 +255,25 @@ def test_smallfix_native_polling_consumes_remaining_acquire_budget(tmp_path):
     assert api.cleanup_calls == 1
 
 
-@pytest.mark.parametrize("mode", ["buffered", "streaming"])
-def test_smallfix_helper_tries_second_pid_with_remaining_budget(tmp_path, mode):
-    service, api, seen, clock = _budget_service(tmp_path, [[], [], [101, 202]], mode)
+def test_smallfix_helper_tries_second_pid_with_remaining_budget(tmp_path):
+    service, api, seen, clock = _budget_service(tmp_path, [[], [], [101, 202]], "streaming")
     calls = []
 
-    def run(command, **options):
+    def launch(command, **_options):
         pid = int(command[command.index("--pid") + 1])
         budget = int(command[command.index("--timeout-ms") + 1]) / 1000
-        calls.append((pid, clock.now, budget, options.get("timeout")))
+        calls.append((pid, clock.now, budget))
         if pid == 101:
             clock.sleep(0.1)
-            return _Completed(1, stderr="InitializeHook(101) -> false\nkey unavailable")
-        return _Completed(stdout=api.key)
+            return _FakePopen(returncode=1, stderr_lines=("InitializeHook(101) -> false", "key unavailable"))
+        return _FakePopen(stdout=api.key)
 
-    if mode == "buffered":
-        service._subprocess_runner = run
-    else:
-        def launch(command, **options):
-            result = run(command, **options)
-            return _FakePopen(
-                stdout=result.stdout, stderr_lines=tuple(result.stderr.splitlines()),
-                returncode=result.returncode,
-            )
-        service._process_launcher = launch
+    service._process_launcher = launch
 
     assert service.acquire() == api.key
     assert [call[0] for call in calls] == [101, 202]
     assert calls[0][2] == pytest.approx(0.4)
     assert calls[1][2] == pytest.approx(0.7)
-    if mode == "buffered":
-        assert calls[0][3] <= 0.4
-        assert calls[1][3] <= 0.7
 
 
 def test_smallfix_candidate_seen_after_deadline_is_not_hooked(tmp_path):
@@ -329,33 +312,22 @@ def test_smallfix_hook_consumes_budget_and_cleans_up_without_ready(tmp_path):
     assert seen == ["PREPARING", "WAITING_FOR_WECHAT_START"]
 
 
-@pytest.mark.parametrize("mode", ["buffered", "streaming"])
-def test_smallfix_candidate_timeout_reserves_budget_for_second_pid(tmp_path, mode):
-    service, api, seen, clock = _budget_service(tmp_path, [[], [101, 202]], mode)
+def test_smallfix_candidate_timeout_reserves_budget_for_second_pid(tmp_path):
+    service, api, seen, clock = _budget_service(tmp_path, [[], [101, 202]], "streaming")
     calls = []
 
-    if mode == "buffered":
-        def run(command, **options):
-            pid = int(command[command.index("--pid") + 1])
-            calls.append(pid)
-            if pid == 101:
-                clock.sleep(options["timeout"])
-                raise subprocess.TimeoutExpired(command, options["timeout"])
-            return _Completed(stdout=api.key)
-        service._subprocess_runner = run
-    else:
-        class Process(_FakePopen):
-            def wait(self, timeout=None):
-                if not self.killed:
-                    clock.sleep(timeout)
-                    raise subprocess.TimeoutExpired("node", timeout)
-                return 1
+    class Process(_FakePopen):
+        def wait(self, timeout=None):
+            if not self.killed:
+                clock.sleep(timeout)
+                raise subprocess.TimeoutExpired("node", timeout)
+            return 1
 
-        def launch(command, **_options):
-            pid = int(command[command.index("--pid") + 1])
-            calls.append(pid)
-            return Process() if pid == 101 else _FakePopen(stdout=api.key)
-        service._process_launcher = launch
+    def launch(command, **_options):
+        pid = int(command[command.index("--pid") + 1])
+        calls.append(pid)
+        return Process() if pid == 101 else _FakePopen(stdout=api.key)
+    service._process_launcher = launch
 
     assert service.acquire() == api.key
     assert calls == [101, 202]
@@ -363,14 +335,14 @@ def test_smallfix_candidate_timeout_reserves_budget_for_second_pid(tmp_path, mod
 
 
 def test_smallfix_helper_does_not_retry_environment_failure(tmp_path):
-    service, api, seen, clock = _budget_service(tmp_path, [[], [101, 202]], "buffered")
+    service, api, seen, clock = _budget_service(tmp_path, [[], [101, 202]], "streaming")
     calls = []
 
     def run(command, **_options):
         calls.append(command)
-        return _Completed(1, stderr="Cannot find module 'koffi'")
+        return _FakePopen(returncode=1, stderr_lines=("Cannot find module 'koffi'",))
 
-    service._subprocess_runner = run
+    service._process_launcher = run
     with pytest.raises(_module().WeChatKeyUnavailable) as caught:
         service.acquire()
     assert caught.value.code == "wechat_environment_missing"
@@ -408,49 +380,13 @@ def test_poll_exception_does_not_leak(tmp_path: Path) -> None:
     assert "Traceback" not in caught.value.public_message
 
 
-class _Completed:
-    def __init__(self, code=0, stdout="", stderr=""):
-        self.returncode = code
-        self.stdout = stdout
-        self.stderr = stderr
-
-
-def _helper_service(
-    tmp_path: Path,
-    result=None,
-    runner=None,
-    *,
-    node_finder=lambda _name: "node",
-):
-    dll = tmp_path / "wx_key.dll"
-    helper = tmp_path / "wx_key_helper.cjs"
-    dll.write_bytes(b"fake")
-    helper.write_text("", encoding="utf-8")
-    module = _module()
-    service = module.WeChatKeyService(
-        dll_path=dll,
-        helper_path=helper,
-        subprocess_runner=runner or (lambda *_args, **_kwargs: result),
-        node_finder=node_finder,
-    )
-    snapshots = iter([[], [4242]])
-    service._process_finder = lambda: next(snapshots, [4242])
-    service._monotonic = lambda: 0.0
-    return service
-
-
 def test_helper_key_unavailable_is_not_captured(tmp_path: Path):
     module = _module()
-    service = _helper_service(
+    service = _streaming_service(
         tmp_path,
-        _Completed(
-            1,
-            stderr=(
-                "Weixin PIDs: 101, 202\n"
-                "InitializeHook(101) -> true\n"
-                "key unavailable"
-            ),
-        ),
+        lambda *_args, **_kwargs: _FakePopen(returncode=1, stderr_lines=(
+            "Weixin PIDs: 101, 202", "InitializeHook(101) -> true", "key unavailable",
+        )),
     )
     with pytest.raises(module.WeChatKeyUnavailable) as caught:
         service.acquire()
@@ -591,13 +527,13 @@ def test_helper_prefers_bundled_node_when_system_node_is_unavailable(
 
     def runner(command, **options):
         calls.append((command, options))
-        return _Completed(stdout="a" * 64)
+        return _FakePopen(stdout="a" * 64)
 
     bundled_node = tmp_path / "node.exe"
     bundled_node.write_bytes(b"fictional node")
-    service = _helper_service(
+    service = _streaming_service(
         tmp_path,
-        runner=runner,
+        runner,
         node_finder=lambda _name: None,
     )
 
@@ -720,21 +656,21 @@ class _FakePopen:
         return self.stdout.closed and self.stderr.closed
 
 
-def _streaming_service(tmp_path: Path, popen, progress=None):
+def _streaming_service(tmp_path: Path, popen, progress=None, *, node_finder=lambda _name: "node"):
     dll = tmp_path / "wx_key.dll"
     helper = tmp_path / "wx_key_helper.cjs"
     dll.write_bytes(b"fake")
     helper.write_text("", encoding="utf-8")
     module = _module()
+    snapshots = iter([[], [4242]])
     service = module.WeChatKeyService(
         dll_path=dll,
         helper_path=helper,
         process_launcher=popen,
         progress_callback=progress,
-        node_finder=lambda _name: "node",
+        node_finder=node_finder,
+        process_finder=lambda: next(snapshots, [4242]),
     )
-    snapshots = iter([[], [4242]])
-    service._process_finder = lambda: next(snapshots, [4242])
     service._monotonic = lambda: 0.0
     return service
 
@@ -760,6 +696,42 @@ def test_streaming_reader_keeps_receiving_lines_until_exit(tmp_path: Path):
         "PREPARING", "WAITING_FOR_WECHAT_START", "READY_FOR_LOGIN",
         "CREDENTIAL_RECEIVED",
     ]
+
+
+def test_pid_finder_injection_uses_streaming_ownership_not_in_process_dll(tmp_path, monkeypatch):
+    module = _module()
+    dll, helper = tmp_path / "fictional.dll", tmp_path / "fictional.cjs"
+    dll.write_bytes(b"fictional")
+    helper.write_text("", encoding="utf-8")
+    snapshots = iter([[], [4242]])
+    process = _FakePopen(stdout="ab12" * 16, stderr_lines=("hook_success=true",))
+    launches, seen = [], []
+
+    def load_dll(_path):
+        pytest.fail("PID observation must not select host-process native execution")
+
+    def launch(command, **options):
+        assert command[command.index("--pid") + 1] == "4242"
+        assert options["stdin"] == subprocess.DEVNULL
+        launches.append(command)
+        return process
+
+    monkeypatch.setattr(module, "_load_hook_api", load_dll)
+    service = module.WeChatKeyService(
+        dll_path=dll, helper_path=helper,
+        process_finder=lambda: next(snapshots, [4242]),
+        process_launcher=launch, node_finder=lambda _: "fictional-node",
+    )
+    assert service.acquire(progress=seen.append) == "ab12" * 16
+    assert len(launches) == 1
+    assert process.closed
+    assert service._helper_process is None
+    assert [event.name for event in seen] == [
+        "PREPARING", "WAITING_FOR_WECHAT_START", "READY_FOR_LOGIN", "CREDENTIAL_RECEIVED",
+    ]
+    from qq_chat_analyzer.application.shutdown_models import ShutdownStatus
+    assert service.helper_resource_status is ShutdownStatus.SUCCESS
+    assert service.shutdown() is ShutdownStatus.UNKNOWN
 
 
 def test_streaming_progress_never_leaks_internal_terms(tmp_path: Path):

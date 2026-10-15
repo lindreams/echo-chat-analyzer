@@ -117,3 +117,69 @@ def test_qq_db_auto_detection_carries_rich_messages(tmp_path):
     assert outcome.result.platform == "qq"
     assert outcome.result.format == "qq-db-json"
     assert len(outcome.rich_messages) == len(outcome.messages) == 1
+
+
+@pytest.mark.parametrize("kind", ["qq", "detailed", "db", "cli", "jsonl"])
+@pytest.mark.parametrize("hinted", [False, True])
+def test_import_reads_a_valid_file_once_without_caching_stale_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, hinted: bool,
+) -> None:
+    path = tmp_path / ("chat.jsonl" if kind == "jsonl" else "chat.json")
+    if kind == "qq":
+        _write_qq_json(path)
+    elif kind == "detailed":
+        _write_wechat_json(path)
+    elif kind == "db":
+        path.write_text(json.dumps({
+            "source": "wechat-db", "conversation": {"username": "fictional-room@chatroom"},
+            "messages": [{"local_id": 1, "create_time": 1704099600, "local_type": 1,
+                          "message_content": "fictional text", "user_name": "fictional-user"}],
+        }), encoding="utf-8")
+    elif kind == "cli":
+        path.write_text(json.dumps([{"createTime": 1704099600, "type": 1,
+                                    "content": "fictional text", "senderUsername": "fictional-user"}]), encoding="utf-8")
+    else:
+        path.write_text(json.dumps({"_type": "message", "timestamp": 1704099600,
+                                    "sender": "fictional-user", "type": 0, "content": "fictional text"}) + "\n", encoding="utf-8")
+    original_open = Path.open
+    reads = []
+
+    def record_open(candidate, mode="r", *args, **kwargs):
+        if candidate == path and "r" in mode:
+            reads.append(candidate)
+        return original_open(candidate, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", record_open)
+    platform = "qq" if kind == "qq" else "wechat"
+    request = ImportRequest(path, platform=platform if hinted else None)
+    service = ImportService()
+    outcome = service.execute(request)
+    assert outcome.result.platform == platform
+    assert outcome.result.message_count > 0
+    assert len(reads) == 1
+
+    path.write_text("corrupted input", encoding="utf-8")
+    assert service.execute(request).result.message_count == 0
+
+
+@pytest.mark.parametrize("indent", [None, 2])
+def test_qq_db_jsonl_suffix_keeps_json_document_validation(tmp_path: Path, indent: int | None) -> None:
+    path = tmp_path / "fictional-qq.jsonl"
+    document = json.dumps(qq_db_payload([qq_db_record("fictional text")]), indent=indent)
+    path.write_text(document, encoding="utf-8")
+    request = ImportRequest(path)
+    assert ImportService().execute(request).result.message_count == 1
+    path.write_text(document + "\ncorrupted trailing input", encoding="utf-8")
+    outcome = ImportService().execute(request)
+    assert outcome.result.message_count == 0
+    assert outcome.result.warnings == ("unsupported_format",)
+
+
+def test_qq_detection_does_not_inspect_unrelated_wechat_shaped_fields(tmp_path: Path) -> None:
+    path = tmp_path / "fictional-qq.json"
+    payload = qq_db_payload([qq_db_record("fictional text")])
+    payload["messages"] = [{"type": []}]
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    outcome = ImportService().execute(ImportRequest(path))
+    assert outcome.result.platform == "qq"
+    assert outcome.result.message_count == 1

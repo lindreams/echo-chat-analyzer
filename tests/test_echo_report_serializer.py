@@ -32,6 +32,36 @@ from qq_chat_analyzer.presentation import (
 )
 
 
+def test_activity_analysis_preserves_report_distribution_and_density_contract(tmp_path):
+    from qq_chat_analyzer.analysis.analyzers import ActivityAnalyzer
+    from qq_chat_analyzer.message import ChatMessage
+
+    messages = [
+        ChatMessage(timestamp=value, sender="Fictional-Alice", message_type="text",
+                    text="fictional", platform="fictional")
+        for value in ("2024-01-01 08:00:00", "2024-01-01 08:30:00", "invalid")
+    ]
+    view = build_echo_report_view(analysis_models.AnalysisReports(
+        activity=ActivityAnalyzer().analyze(messages),
+    ))
+    payload = echo_report_to_dict(view)
+    assert payload["schema_version"] == "echo-report.v0.7"
+    assert payload["overview"] == {
+        "has_data": True, "total_message_count": 3, "participant_count": 0,
+        "empty_description": "", "active_days": 1,
+        "average_messages_per_active_day": 3.0,
+    }
+    assert set(payload["activity"]) == {"hourly", "weekday"}
+    assert len(payload["activity"]["hourly"]) == 24
+    assert len(payload["activity"]["weekday"]) == 7
+    assert payload["activity"]["hourly"][8] == {"label": "08:00-08:59", "value": 2.0}
+    assert payload["activity"]["weekday"][0] == {"label": "周一", "value": 2.0}
+    output = export_echo_report_html(view, tmp_path / "echo-report.html")
+    match = re.search(r"window\.ECHO_DATA = (\{.*?\});", output.read_text(encoding="utf-8"), re.S)
+    assert match is not None
+    assert json.loads(match.group(1)) == payload
+
+
 
 def _echo_view() -> EchoReportView:
     return EchoReportView(

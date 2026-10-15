@@ -1,21 +1,7 @@
-﻿"""Own the QQ connection lifecycle behind one application-layer entry point.
+﻿"""Map passive QQ probes and auth waiting into safe connection snapshots.
 
-Before this manager existed, the desktop page asked three separate questions
-(setup state, runtime state, connection state) and stitched the answers into
-something a user could read. That made the GUI the de facto owner of the
-connection policy. This class takes that job back.
-
-Responsibilities:
-
-* sequence the lifecycle: stored setup -> runtime start -> service health and
-  authorization;
-* translate every outcome into one :class:`ConnectionSnapshot`;
-* never raise. A failed probe becomes an ``ERROR`` snapshot with safe wording.
-
-Non-responsibilities: no HTTP, no process control, no config file access. The
-setup service still owns runtime lifecycle and config persistence, and the
-connection service still owns provider probing. This manager only decides
-which of them to ask, in what order, and what the answer means to a user.
+The auth bridge owns launch, cancellation and process cleanup. This manager
+only observes status and tracks whether that bridge is waiting for login.
 """
 
 from __future__ import annotations
@@ -55,7 +41,7 @@ _LOGGER = logging.getLogger("qq_chat_analyzer.desktop.qq_connection_manager")
 
 
 class QQConnectionManager:
-    """Drive and report the QQ connection lifecycle."""
+    """Report QQ connection state without starting a runtime."""
 
     def __init__(
         self,
@@ -118,55 +104,6 @@ class QQConnectionManager:
         return snapshot
 
     # --------------------------------------------------------------- actions
-
-    def connect(self) -> ConnectionSnapshot:
-        """Run the one-click connect flow and report the result.
-
-        When the service is already running, this returns the current
-        lifecycle snapshot immediately and never waits for a login that has
-        not happened yet. An idle runtime still goes through the setup
-        service, which reports the resulting state without waiting for
-        authorization.
-        """
-        if self._setup_service is None:
-            return self._unavailable()
-
-        status = self._safe_connection_status()
-        if status is not None:
-            snapshot = self._from_connection_status(status)
-            if snapshot.state in (
-                ConnectionState.CONNECTED,
-                ConnectionState.WAITING_AUTH,
-            ):
-                _LOGGER.info(
-                    "[qq connection] connect reused state=%s",
-                    snapshot.state.value,
-                )
-                return snapshot
-
-        try:
-            status = self._setup_service.connect()
-        except Exception as error:
-            _LOGGER.info(
-                "[qq connection] connect failed error=%s",
-                type(error).__name__,
-            )
-            return self._snapshot(
-                ConnectionState.ERROR,
-                _public_message(error, MESSAGE_ERROR),
-                HINT_RETRY,
-            )
-
-        if status is None:
-            return self._snapshot(
-                ConnectionState.ERROR,
-                MESSAGE_ERROR,
-                HINT_RETRY,
-            )
-
-        snapshot = self._from_connection_status(status)
-        _LOGGER.info("[qq connection] connect state=%s", snapshot.state.value)
-        return snapshot
 
     def disconnect(self) -> ConnectionSnapshot:
         """Stop treating this lifecycle as connected and report disconnected.
@@ -299,13 +236,6 @@ class QQConnectionManager:
 
 def _clean(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
-
-
-def _public_message(error: Exception, fallback: str) -> str:
-    message = getattr(error, "public_message", None)
-    if isinstance(message, str) and message.strip():
-        return message.strip()
-    return fallback
 
 
 __all__ = ["QQConnectionManager", "SOURCE_QQ"]

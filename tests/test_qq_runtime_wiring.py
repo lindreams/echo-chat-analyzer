@@ -361,35 +361,47 @@ def test_dead_launcher_revalidates_workspace_before_relaunch(release):
 
 
 @pytest.mark.parametrize('failure', ['unknown-workspace', 'old-instance'])
-def test_setup_connect_validates_managed_workspace_and_running_identity(release, monkeypatch, failure):
+def test_auth_flow_validates_managed_workspace_and_running_identity(release, monkeypatch, failure):
     _, loader, _ = release
     paths = loader.runtime_paths(prepare=True)
     from qq_chat_analyzer.providers import napcat_qq_provider
     from qq_chat_analyzer.application.qq.qq_connection_service import QQConnectionStatus
+    runtime_id = '0' * 64 if failure == 'old-instance' else paths.runtime_id
     monkeypatch.setattr(napcat_qq_provider, 'NapCatQQProvider', lambda *a, **kw: SimpleNamespace(
-        status=lambda: SimpleNamespace(runtime_id='0' * 64)))
+        status=lambda: SimpleNamespace(runtime_id=runtime_id)))
     if failure == 'unknown-workspace':
         (paths.work_root / 'unknown.txt').write_bytes(b'keep fictional state')
     connection = SimpleNamespace(check_status=lambda: QQConnectionStatus(True, True, True, None, '', ''))
     setup = QQSetupService(config_loader=loader, connection_service=connection)
-    expected = workspace.QQWorkspaceError if failure == 'unknown-workspace' else QQSetupService.RuntimeIdentityMismatch
-    with pytest.raises(expected):
-        setup.connect()
+    before = loader.config_path().read_bytes()
+    bridge = auth.QQAuthBridge(
+        setup_service=setup, connection_service=connection,
+        window_launcher=lambda: pytest.fail('invalid workspace or identity must not launch'),
+    )
+    result = bridge.start_auth_flow()
+    assert result.state is ConnectionState.ERROR
+    if failure == 'unknown-workspace':
+        assert (paths.work_root / 'unknown.txt').read_bytes() == b'keep fictional state'
+    else:
+        assert result.code == 'qq_runtime_identity_mismatch'
+    assert loader.config_path().read_bytes() == before
+    assert not bridge._qr_session_started
 
 
-def test_setup_connect_cannot_adopt_an_untagged_configuration(release):
+def test_auth_flow_cannot_adopt_an_untagged_configuration(release):
     program, loader, qq = release
     env.QQEnvironmentConfigWriter(loader.config_path()).save(env.QQEnvironmentConfig(
         qq_install_path=qq, runtime_directory=program))
     before = loader.config_path().read_bytes()
-    calls = []
-    from qq_chat_analyzer.application.qq.qq_runtime_manager import QQRuntimeStatus, QQRuntimeState
-    manager = SimpleNamespace(get_status=lambda: QQRuntimeStatus(QQRuntimeState.STOPPED, True),
-                              start=lambda: calls.append('start') or QQRuntimeStatus(QQRuntimeState.RUNNING, True))
-    setup = QQSetupService(config_loader=loader, runtime_manager=manager)
-    with pytest.raises(ValueError):
-        setup.connect()
-    assert calls == []
+    setup = QQSetupService(config_loader=loader)
+    bridge = auth.QQAuthBridge(
+        setup_service=setup,
+        window_launcher=lambda: pytest.fail('untagged configuration must not launch'),
+    )
+    result = bridge.start_auth_flow()
+    assert result.state is ConnectionState.ERROR
+    assert result.code == 'qq_runtime_ownership_unknown'
+    assert not bridge._qr_session_started
     assert loader.config_path().read_bytes() == before
 
 
