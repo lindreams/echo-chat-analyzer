@@ -120,8 +120,3 @@ class FakeSnapshotRuntime:
             encoding="utf-8",
         )
         return generation
-
-
-def make_runtime(root: Path, **kwargs) -> FakeSnapshotRuntime:
-    """Construct a fake runtime client rooted at ``root``."""
-    return FakeSnapshotRuntime(root, **kwargs)

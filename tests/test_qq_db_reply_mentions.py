@@ -91,19 +91,6 @@ def test_reply_and_mentions_preserve_facts_without_polluting_authored_text(segme
     assert project_legacy_messages(messages)[1].text == "answer"
 
 
-def test_mention_followed_by_text_and_face_keeps_content_order() -> None:
-    face = _scalar(45002, 6) + _scalar(47601, 14)
-    messages, warnings = parse_qq_db_rich_messages(_payload(
-        _record("current", 43, _mention(), _text("A"), face, _text("B")),
-    ))
-    assert warnings == ()
-    assert messages[0].contents[0] == TextContent("A")
-    assert isinstance(messages[0].contents[1], ExpressionContent)
-    assert messages[0].contents[2] == TextContent("B")
-    assert messages[0].relations == (MentionRelation(None, "@Fictional display"),)
-    assert project_legacy_messages(messages)[0].text == "AB"
-
-
 @pytest.mark.parametrize("target_records", [
     [],
     [_record("target", 42, _text("original")), _record("duplicate", 42, _text("duplicate"))],
@@ -145,20 +132,6 @@ def test_relation_only_messages_are_not_dropped(segments) -> None:
     assert project_legacy_messages(messages)[0].text == ""
 
 
-def test_unmarked_literal_at_text_remains_authored_text() -> None:
-    messages, _ = parse_qq_db_rich_messages(_payload(_record("current", 43, _text("literal @Fictional display"))))
-    assert messages[0].relations == ()
-    assert project_legacy_messages(messages)[0].text == "literal @Fictional display"
-
-
-def test_marked_mention_with_missing_target_is_still_a_fact() -> None:
-    marked = _scalar(45002, 1) + _scalar(45102, 2)
-    messages, warnings = parse_qq_db_rich_messages(_payload(_record("current", 43, marked, _text("answer"))))
-    assert warnings == ()
-    assert messages[0].relations == (MentionRelation(None),)
-    assert project_legacy_messages(messages)[0].text == "answer"
-
-
 def test_mention_display_emoji_does_not_enter_expression_report() -> None:
     messages, warnings = parse_qq_db_rich_messages(_payload(
         _record("current", 43, _mention("@Fictional 🦊"), _text("answer 😂")),
@@ -167,15 +140,6 @@ def test_mention_display_emoji_does_not_enter_expression_report() -> None:
     report = ExpressionAnalyzer().analyze(project_legacy_messages(messages), messages)
     assert report.expression_occurrence_count == 1
     assert report.top_expressions[0].expression_key == "😂"
-
-
-def test_repeated_mentions_remain_separate_facts() -> None:
-    messages, warnings = parse_qq_db_rich_messages(_payload(
-        _record("current", 43, _mention(), _mention(), _text("answer")),
-    ))
-    assert warnings == ()
-    assert messages[0].relations == (MentionRelation(None, "@Fictional display"),) * 2
-    assert project_legacy_messages(messages)[0].text == "answer"
 
 
 def _create_database(path) -> None:

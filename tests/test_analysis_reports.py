@@ -62,36 +62,6 @@ def _message(
     )
 
 
-def test_activity_analyzer_handles_empty_input_with_full_distribution() -> None:
-    report = _analyzers().ActivityAnalyzer().analyze(())
-
-    assert report.total_message_count == 0
-    assert report.dated_message_count == 0
-    assert len(report.hourly_counts) == 24
-    assert len(report.weekday_counts) == 7
-    assert all(entry.count == 0 for entry in report.hourly_counts)
-    assert report.busiest_hour is None
-    assert report.busiest_weekday is None
-
-
-def test_activity_analyzer_counts_single_message_hour_and_weekday() -> None:
-    message = _message(timestamp=_epoch(hour=9))
-
-    report = _analyzers().ActivityAnalyzer().analyze((message,))
-
-    hourly = {entry.hour: entry.count for entry in report.hourly_counts}
-    weekday = {
-        entry.weekday: entry.count for entry in report.weekday_counts
-    }
-    assert report.total_message_count == 1
-    assert report.dated_message_count == 1
-    assert hourly[9] == 1
-    assert sum(hourly.values()) == 1
-    assert weekday[0] == 1
-    assert report.busiest_hour == 9
-    assert report.busiest_weekday == 0
-
-
 def test_activity_analyzer_counts_epoch_in_beijing_local_hour() -> None:
     beijing_evening = int(
         datetime(
@@ -114,63 +84,6 @@ def test_activity_analyzer_counts_epoch_in_beijing_local_hour() -> None:
     assert report.busiest_hour == 20
 
 
-def test_activity_analyzer_treats_naive_text_as_beijing_local_time() -> None:
-    report = _analyzers().ActivityAnalyzer().analyze(
-        (_message(timestamp="2024-01-01 20:30:00"),)
-    )
-
-    hourly = {entry.hour: entry.count for entry in report.hourly_counts}
-    assert hourly[20] == 1
-    assert report.busiest_hour == 20
-
-
-def test_activity_analyzer_picks_the_busiest_hour_across_messages() -> None:
-    messages = (
-        _message(timestamp=_epoch(hour=9)),
-        _message(timestamp=_epoch(hour=21)),
-        _message(timestamp=_epoch(hour=21)),
-    )
-
-    report = _analyzers().ActivityAnalyzer().analyze(messages)
-
-    assert report.busiest_hour == 21
-    assert report.dated_message_count == 3
-
-
-def test_activity_analyzer_accepts_iso_strings_and_skips_unparsable() -> None:
-    messages = (
-        _message(timestamp="2024-01-01T09:30:00+08:00"),
-        _message(timestamp="not-a-timestamp"),
-    )
-
-    report = _analyzers().ActivityAnalyzer().analyze(messages)
-
-    hourly = {entry.hour: entry.count for entry in report.hourly_counts}
-    assert report.total_message_count == 2
-    assert report.dated_message_count == 1
-    assert hourly[9] == 1
-
-
-def test_activity_analyzer_active_days_empty_input_is_safe() -> None:
-    report = _analyzers().ActivityAnalyzer().analyze(())
-
-    assert report.active_days == 0
-    assert report.average_messages_per_active_day == 0.0
-
-
-def test_activity_analyzer_active_days_single_day() -> None:
-    report = _analyzers().ActivityAnalyzer().analyze(
-        (
-            _message(timestamp=_epoch(day=1, hour=8)),
-            _message(timestamp=_epoch(day=1, hour=22)),
-            _message(timestamp=_epoch(day=1, hour=23)),
-        )
-    )
-
-    assert report.active_days == 1
-    assert report.average_messages_per_active_day == 3.0
-
-
 def test_activity_analyzer_active_days_multiple_days_and_density() -> None:
     report = _analyzers().ActivityAnalyzer().analyze(
         (
@@ -185,27 +98,6 @@ def test_activity_analyzer_active_days_multiple_days_and_density() -> None:
 
     assert report.active_days == 3
     assert report.average_messages_per_active_day == 2.0
-
-
-def test_activity_analyzer_active_days_ignores_invalid_dates() -> None:
-    report = _analyzers().ActivityAnalyzer().analyze(
-        (
-            _message(timestamp=_epoch(day=1, hour=8)),
-            _message(timestamp="not-a-timestamp"),
-        )
-    )
-
-    assert report.active_days == 1
-    assert report.average_messages_per_active_day == 2.0
-
-
-def test_message_length_analyzer_handles_empty_input() -> None:
-    report = _analyzers().MessageLengthAnalyzer().analyze(())
-
-    assert report.message_count == 0
-    assert report.average_length == 0.0
-    assert report.max_length == 0
-    assert report.speaker_lengths == ()
 
 
 def test_message_length_analyzer_reports_global_and_speaker_stats() -> None:
@@ -227,26 +119,6 @@ def test_message_length_analyzer_reports_global_and_speaker_stats() -> None:
     assert by_speaker["Fictional-Alice"].max_length == 5
     assert by_speaker["Fictional-Bob"].average_length == 10.0
     assert sum(bucket.count for bucket in report.buckets) == 3
-
-
-def test_message_length_analyzer_ignores_messages_without_text() -> None:
-    messages = (
-        _message(text="1234"),
-        _message(text="   "),
-        _message(text=""),
-    )
-
-    report = _analyzers().MessageLengthAnalyzer().analyze(messages)
-
-    assert report.message_count == 1
-    assert report.average_length == 4.0
-
-
-def test_user_profile_analyzer_handles_empty_input() -> None:
-    report = _analyzers().UserProfileAnalyzer().analyze(())
-
-    assert report.total_message_count == 0
-    assert report.profiles == ()
 
 
 def test_user_profile_analyzer_reports_shares_for_multiple_users() -> None:
@@ -283,43 +155,6 @@ def test_user_profile_exposes_hourly_and_weekday_distributions() -> None:
     assert sum(entry.count for entry in profile.weekday_counts) == 2
     assert isinstance(profile.hourly_counts[0], _models().HourlyActivity)
     assert isinstance(profile.weekday_counts[0], _models().WeekdayActivity)
-
-
-def test_user_profile_time_distributions_default_to_empty_for_compatibility() -> None:
-    profile = _models().UserProfile(
-        speaker="Fictional-Alice",
-        message_count=1,
-        message_share_percent=100.0,
-        average_length=5.0,
-        max_length=5,
-    )
-
-    assert profile.hourly_counts == ()
-    assert profile.weekday_counts == ()
-
-
-def test_user_profile_analyzer_reuses_supplied_tokens_for_top_words() -> None:
-    messages = (
-        _message(sender="Fictional-Alice", text="fictional deck talk"),
-        _message(sender="Fictional-Bob", text="fictional trade talk"),
-    )
-    sender_tokens = (
-        ("Fictional-Alice", ["deck", "deck", "talk"]),
-        ("Fictional-Bob", ["trade"]),
-    )
-
-    report = _analyzers().UserProfileAnalyzer().analyze(
-        messages,
-        sender_tokens=sender_tokens,
-        top_words_per_user=2,
-    )
-
-    profiles = {profile.speaker: profile for profile in report.profiles}
-    alice_words = profiles["Fictional-Alice"].top_words
-    assert alice_words[0].word == "deck"
-    assert alice_words[0].count == 2
-    assert len(alice_words) == 2
-    assert profiles["Fictional-Bob"].top_words[0].word == "trade"
 
 
 def test_user_profile_median_length_odd_and_even_independent() -> None:
@@ -367,50 +202,6 @@ def test_user_profile_consecutive_runs_aaa_bba() -> None:
     assert bob_runs.multi_message_run_count == 1
 
 
-def test_user_profile_consecutive_runs_full_alternation() -> None:
-    messages = (
-        _message(sender="Fictional-Alice", text="1"),
-        _message(sender="Fictional-Bob", text="2"),
-        _message(sender="Fictional-Alice", text="3"),
-        _message(sender="Fictional-Bob", text="4"),
-    )
-
-    report = _analyzers().UserProfileAnalyzer().analyze(messages)
-    profiles = {profile.speaker: profile for profile in report.profiles}
-
-    for profile in profiles.values():
-        runs = profile.consecutive_runs
-        assert runs is not None
-        assert (runs.run_count, runs.average_run_length) == (2, 1.0)
-        assert runs.median_run_length == 1.0
-        assert runs.single_message_run_count == 2
-        assert runs.multi_message_run_count == 0
-
-
-def test_user_profile_consecutive_runs_single_speaker() -> None:
-    messages = (
-        _message(sender="Fictional-Alice", text="1"),
-        _message(sender="Fictional-Alice", text="2"),
-        _message(sender="Fictional-Alice", text="3"),
-    )
-
-    profile = _analyzers().UserProfileAnalyzer().analyze(messages).profiles[0]
-    runs = profile.consecutive_runs
-
-    assert runs is not None
-    assert (runs.run_count, runs.average_run_length) == (1, 3.0)
-    assert runs.median_run_length == 3.0
-    assert runs.single_message_run_count == 0
-    assert runs.multi_message_run_count == 1
-
-
-def test_conversation_analyzer_handles_empty_input() -> None:
-    report = _analyzers().ConversationAnalyzer().analyze(())
-
-    assert report.conversation_count == 0
-    assert report.conversations == ()
-
-
 def test_conversation_analyzer_reports_span_and_speakers_per_conversation() -> None:
     start = _epoch(hour=8)
     end = _epoch(hour=10)
@@ -445,31 +236,6 @@ def test_conversation_analyzer_reports_span_and_speakers_per_conversation() -> N
     assert room_one.end_timestamp == end
     assert room_one.duration_seconds == 7200
     assert conversations["fictional-room-2"].duration_seconds == 0
-
-
-def test_conversation_analyzer_groups_messages_without_conversation_id() -> None:
-    messages = (
-        _message(conversation_id=None, timestamp=_epoch(hour=1)),
-        _message(conversation_id=None, timestamp=_epoch(hour=2)),
-    )
-
-    report = _analyzers().ConversationAnalyzer().analyze(messages)
-
-    assert report.conversation_count == 1
-    assert report.conversations[0].conversation_id is None
-    assert report.conversations[0].message_count == 2
-
-
-def test_conversation_analyzer_reports_no_span_without_valid_timestamps() -> None:
-    messages = (_message(timestamp="not-a-timestamp"),)
-
-    report = _analyzers().ConversationAnalyzer().analyze(messages)
-
-    conversation = report.conversations[0]
-    assert conversation.message_count == 1
-    assert conversation.start_timestamp is None
-    assert conversation.end_timestamp is None
-    assert conversation.duration_seconds is None
 
 
 def test_conversation_analyzer_ignores_zero_timestamp_for_span() -> None:

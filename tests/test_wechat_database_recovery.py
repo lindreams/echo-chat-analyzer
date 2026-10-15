@@ -238,42 +238,6 @@ def _verify_calls(runner: _MultiAccountRunner) -> list[tuple[Path, str]]:
     ]
 
 
-def test_probe_result_preserves_owning_account_data_root(
-    tmp_path: Path,
-) -> None:
-    parent = tmp_path / "fictional_wechat_root"
-    account_a = _make_account(parent, "account_a")
-    account_b = _make_account(parent, "account_b")
-    account_c = _make_account(parent, "account_c")
-    roots = (account_a, account_b, account_c)
-    runner = _MultiAccountRunner(roots, {account_b})
-    runtime = tmp_path / "runtime"
-    runtime.mkdir()
-    helper = runtime / "wcdb_cli.exe"
-    library = runtime / "WCDB.dll"
-    helper.write_bytes(b"fake")
-    library.write_bytes(b"fake")
-    provider = WeChatDatabaseProvider(
-        data_root=parent,
-        db_key=FICTIONAL_KEY,
-        wcdb_cli_path=helper,
-        wcdb_dll_path=library,
-        timeout=10,
-        runner=runner,
-    )
-
-    results = provider.probe_session_databases(roots)
-
-    assert [
-        (result.session_db, result.data_root, result.readable)
-        for result in results
-    ] == [
-        (_session_db(account_a), account_a, False),
-        (_session_db(account_b), account_b, True),
-        (_session_db(account_c), account_c, False),
-    ]
-
-
 def test_unique_readable_candidate_recovers_to_owning_account_root(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,

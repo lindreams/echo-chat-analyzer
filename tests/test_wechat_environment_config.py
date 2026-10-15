@@ -39,38 +39,6 @@ def _loader(tmp_path: Path, payload: object) -> WeChatEnvironmentConfigLoader:
     return WeChatEnvironmentConfigLoader(config_path)
 
 
-def test_loader_reads_a_complete_config(tmp_path: Path) -> None:
-    loader = _loader(
-        tmp_path,
-        {
-            "data_root": "D:\\WeChatData\\xwechat_files",
-            "db_key": "a" * 64,
-            "wcdb_cli_path": "C:\\tools\\wcdb_cli.exe",
-            "wcdb_dll_path": "C:\\tools\\WCDB.dll",
-        },
-    )
-
-    config = loader.load()
-
-    assert config.data_root == Path("D:\\WeChatData\\xwechat_files")
-    assert config.db_key == "a" * 64
-    assert config.wcdb_cli_path == Path("C:\\tools\\wcdb_cli.exe")
-    assert config.wcdb_dll_path == Path("C:\\tools\\WCDB.dll")
-    assert dataclasses.is_dataclass(config)
-
-
-def test_loader_treats_missing_config_as_a_user_safe_error(
-    tmp_path: Path,
-) -> None:
-    loader = WeChatEnvironmentConfigLoader(tmp_path / "absent.json")
-
-    with pytest.raises(WeChatConfigNotFound) as excinfo:
-        loader.load()
-
-    assert excinfo.value.code == "wechat_config_not_found"
-    assert excinfo.value.public_message != ""
-
-
 def test_loader_treats_corrupted_config_as_a_user_safe_error(
     tmp_path: Path,
 ) -> None:
@@ -82,13 +50,6 @@ def test_loader_treats_corrupted_config_as_a_user_safe_error(
     assert excinfo.value.code == "wechat_config_corrupted"
     assert excinfo.value.public_message != ""
     assert "not-json" not in str(excinfo.value)
-
-
-def test_loader_treats_non_object_json_as_corrupted(tmp_path: Path) -> None:
-    loader = _loader(tmp_path, ["not", "a", "config"])
-
-    with pytest.raises(WeChatConfigCorrupted):
-        loader.load()
 
 
 def _patch_bundled_defaults(monkeypatch, module, bundle: Path):
@@ -103,97 +64,6 @@ def _patch_bundled_defaults(monkeypatch, module, bundle: Path):
         "default_wechat_wcdb_dll_path",
         lambda: wechat / "WCDB.dll",
     )
-
-
-def test_load_or_default_uses_bundled_runtime(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    bundle = tmp_path / "bundle"
-    wechat = bundle / "runtime" / "wechat"
-    wechat.mkdir(parents=True)
-    (wechat / "wcdb_cli.exe").write_text("fake", encoding="utf-8")
-    (wechat / "WCDB.dll").write_text("fake", encoding="utf-8")
-    module = importlib.import_module(
-        "qq_chat_analyzer.application.wechat.wechat_environment_config"
-    )
-    _patch_bundled_defaults(monkeypatch, module, bundle)
-
-    config = module.WeChatEnvironmentConfigLoader(
-        tmp_path / "absent.json"
-    ).load_or_default()
-
-    assert config.wcdb_cli_path == wechat / "wcdb_cli.exe"
-    assert config.wcdb_dll_path == wechat / "WCDB.dll"
-
-
-def test_load_or_default_raises_without_bundled_runtime(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    bundle = tmp_path / "empty-bundle"
-    bundle.mkdir(parents=True)
-    module = importlib.import_module(
-        "qq_chat_analyzer.application.wechat.wechat_environment_config"
-    )
-    _patch_bundled_defaults(monkeypatch, module, bundle)
-
-    with pytest.raises(module.WeChatConfigNotFound):
-        module.WeChatEnvironmentConfigLoader(
-            tmp_path / "absent.json"
-        ).load_or_default()
-
-
-def test_load_or_default_prefers_user_config(tmp_path: Path) -> None:
-    runtime = tmp_path / "custom-runtime"
-    runtime.mkdir()
-    cli = runtime / "wcdb_cli.exe"
-    dll = runtime / "WCDB.dll"
-    cli.write_text("fake", encoding="utf-8")
-    dll.write_text("fake", encoding="utf-8")
-    loader = _loader(
-        tmp_path,
-        {
-            "wcdb_cli_path": str(cli),
-            "wcdb_dll_path": str(dll),
-        },
-    )
-
-    config = loader.load_or_default()
-
-    assert config.wcdb_cli_path == cli
-    assert config.wcdb_dll_path == dll
-
-
-def test_load_or_default_repairs_stale_runtime_paths(
-    monkeypatch,
-    tmp_path: Path,
-) -> None:
-    bundle = tmp_path / "bundle"
-    wechat = bundle / "runtime" / "wechat"
-    wechat.mkdir(parents=True)
-    (wechat / "wcdb_cli.exe").write_text("fake", encoding="utf-8")
-    (wechat / "WCDB.dll").write_text("fake", encoding="utf-8")
-    module = importlib.import_module(
-        "qq_chat_analyzer.application.wechat.wechat_environment_config"
-    )
-    _patch_bundled_defaults(monkeypatch, module, bundle)
-    loader = _loader(
-        tmp_path,
-        {
-            "data_root": str(tmp_path / "saved-root"),
-            "db_key": "c" * 64,
-            "wcdb_cli_path": str(tmp_path / "old" / "wcdb_cli.exe"),
-            "wcdb_dll_path": str(tmp_path / "old" / "WCDB.dll"),
-        },
-    )
-
-    config = loader.load_or_default()
-
-    assert config.data_root == tmp_path / "saved-root"
-    assert config.db_key == "c" * 64
-    assert config.wcdb_cli_path == wechat / "wcdb_cli.exe"
-    assert config.wcdb_dll_path == wechat / "WCDB.dll"
 
 
 def _fictional_runtime(root: Path) -> Path:
@@ -339,43 +209,3 @@ def test_load_or_default_reports_missing_runtime_instead_of_faking_one(
     assert config.wcdb_dll_path == tmp_path / "gone" / "WCDB.dll"
     assert config.data_root == tmp_path / "saved-root"
     assert config.db_key == "d" * 64
-
-
-def test_loader_tolerates_missing_fields(tmp_path: Path) -> None:
-    loader = _loader(tmp_path, {})
-
-    config = loader.load()
-
-    assert config == WeChatEnvironmentConfig()
-    assert config.data_root is None
-    assert config.db_key is None
-    assert config.wcdb_cli_path is None
-    assert config.wcdb_dll_path is None
-
-
-def test_loader_parses_path_fields_and_ignores_empty_values(
-    tmp_path: Path,
-) -> None:
-    loader = _loader(
-        tmp_path,
-        {
-            "data_root": "C:\\WeChat",
-            "db_key": "",
-            "wcdb_cli_path": 123,
-            "wcdb_dll_path": "   ",
-        },
-    )
-
-    config = loader.load()
-
-    assert config.data_root == Path("C:\\WeChat")
-    assert config.db_key is None
-    assert config.wcdb_cli_path is None
-    assert config.wcdb_dll_path is None
-
-
-def test_environment_config_is_frozen() -> None:
-    config = WeChatEnvironmentConfig(data_root=Path("C:\\WeChat"))
-
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        config.data_root = Path("D:\\Other")

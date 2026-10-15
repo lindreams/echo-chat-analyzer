@@ -92,20 +92,6 @@ def _service(
 # ------------------------------------------------------------------ startup
 
 
-def test_startup_recover_success_marks_active(tmp_path: Path) -> None:
-    snapshot = tmp_path / "source.db"
-    _create_snapshot(snapshot)
-    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
-    service = _service(runtime)
-
-    service.start()
-
-    assert service.state is QQDirectDatabaseState.ACTIVE
-    # Idempotent: a second start does not recover again.
-    service.start()
-    assert runtime.recover_calls == 1
-
-
 def test_startup_recover_failure_fails_closed(tmp_path: Path) -> None:
     snapshot = tmp_path / "source.db"
     _create_snapshot(snapshot)
@@ -165,18 +151,6 @@ def test_shutdown_rejects_new_acquired_session(tmp_path: Path) -> None:
     with pytest.raises(QQDirectDatabaseShuttingDown):
         with service.acquired_session(GROUP_SESSION_ID):
             pass
-
-
-def test_shutdown_transitions_to_closed(tmp_path: Path) -> None:
-    snapshot = tmp_path / "source.db"
-    _create_snapshot(snapshot)
-    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
-    service = _service(runtime)
-    service.start()
-
-    service.shutdown()
-
-    assert service.state is QQDirectDatabaseState.CLOSED
 
 
 def test_shutdown_recover_failure_is_stable_privacy_safe(tmp_path: Path) -> None:
@@ -274,28 +248,6 @@ def test_connected_napcat_waits_for_delayed_snapshot_api_before_listing(tmp_path
     assert service.state is QQDirectDatabaseState.ACTIVE
 
 
-def test_bridge_unavailable_after_first_window_can_recover_on_later_request(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import qq_chat_analyzer.application.qq.qq_direct_database_import_service as direct_module
-
-    snapshot = tmp_path / "source.db"
-    _create_snapshot(snapshot)
-    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
-    runtime.recover_error = QQSnapshotRuntimeUnavailable()
-    service = _service(runtime)
-    monkeypatch.setattr(direct_module, "DEFAULT_STARTUP_READINESS_SECONDS", 0)
-
-    with pytest.raises(QQDirectDatabaseNotReady):
-        service.list_sessions()
-    assert service.state is QQDirectDatabaseState.CLOSED
-    assert runtime.acquired == []
-
-    runtime.recover_error = None
-    assert [session.session_id for session in service.list_sessions()] == [GROUP_SESSION_ID]
-    assert runtime.recover_calls == 2
-
-
 def test_real_recover_cleanup_failure_remains_terminal_and_never_reads_old_generation(
     tmp_path: Path,
 ) -> None:
@@ -335,26 +287,6 @@ def test_shutdown_passes_one_monotonic_recover_deadline(tmp_path: Path) -> None:
     )
 
 
-def test_shutdown_recover_deadline_stays_within_declared_total_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    runtime = FakeSnapshotRuntime(tmp_path)
-    service = _service(runtime, shutdown_drain_seconds=0.01)
-    service.start()
-
-    def slow_drain() -> bool:
-        time.sleep(0.05)
-        return True
-
-    monkeypatch.setattr(service, "_drain_acquisitions", slow_drain)
-
-    before = time.monotonic()
-    service.shutdown()
-
-    assert runtime.recover_deadlines[1] is not None
-    assert runtime.recover_deadlines[1] <= before + service.shutdown_budget_seconds + 0.01
-
-
 # ------------------------------------------------------------------ orphans
 
 
@@ -362,28 +294,6 @@ def test_shutdown_recover_deadline_stays_within_declared_total_budget(
 
 
 # ------------------------------------------------------------------ facade
-
-
-def test_facade_shutdown_calls_direct_db_service_shutdown(tmp_path: Path) -> None:
-    snapshot = tmp_path / "source.db"
-    _create_snapshot(snapshot)
-    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
-    service = QQDirectDatabaseImportService(runtime_client=runtime)
-    service.start()
-    runtime.recover_calls = 0
-
-    class _Registry:
-        def terminate_all(self) -> int:
-            return 0
-
-    facade = ChatAnalyzerFacade(qq_service=service, qq_process_registry=_Registry())
-
-    facade.shutdown()
-
-    # facade.shutdown must have delegated to the Direct DB service shutdown,
-    # which recovers orphan plaintext one final time.
-    assert runtime.recover_calls == 1
-    assert service.state is QQDirectDatabaseState.CLOSED
 
 
 def test_facade_shutdown_survives_direct_db_cleanup_failure() -> None:

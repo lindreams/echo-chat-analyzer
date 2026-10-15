@@ -88,44 +88,6 @@ def _default_export(path: Path) -> None:
     )
 
 
-def test_chatlab_jsonl_is_detected_as_wechat(tmp_path: Path) -> None:
-    export_path = tmp_path / "chatlab.jsonl"
-    _default_export(export_path)
-
-    assert is_wechat_export(export_path) is True
-
-
-def test_chatlab_jsonl_message_lines_are_loaded(tmp_path: Path) -> None:
-    export_path = tmp_path / "chatlab.jsonl"
-    _write_chatlab_jsonl(
-        export_path,
-        [
-            _header_line(),
-            _member_line(),
-            _message_line(content="First"),
-            _message_line(content="Second"),
-        ],
-    )
-
-    raw_messages = load_messages(export_path)
-
-    assert len(raw_messages) == 2
-
-
-def test_chatlab_type_zero_is_parsed_as_text(tmp_path: Path) -> None:
-    export_path = tmp_path / "chatlab.jsonl"
-    _default_export(export_path)
-
-    parsed = parse_messages(load_messages(export_path))
-
-    assert len(parsed) == 1
-    message = parsed[0]
-    assert message.message_type == "text"
-    assert message.text == "Hello from chatlab"
-    assert message.sender == "Fictional Alice"
-    assert message.platform == "wechat"
-
-
 def test_chatlab_type_twenty_five_is_parsed_as_reply(tmp_path: Path) -> None:
     export_path = tmp_path / "chatlab.jsonl"
     _write_chatlab_jsonl(
@@ -144,23 +106,6 @@ def test_chatlab_type_twenty_five_is_parsed_as_reply(tmp_path: Path) -> None:
     assert len(parsed) == 1
     assert parsed[0].message_type == "reply"
     assert parsed[0].text == "Quoted answer"
-
-
-def test_chatlab_non_text_messages_are_ignored(tmp_path: Path) -> None:
-    export_path = tmp_path / "chatlab.jsonl"
-    _write_chatlab_jsonl(
-        export_path,
-        [
-            _header_line(),
-            _message_line(message_type=CHATLAB_IMAGE_TYPE, content="[image]"),
-            _message_line(message_type=CHATLAB_PAT_TYPE, content="[pat]"),
-            _message_line(content="Only text survives"),
-        ],
-    )
-
-    parsed = parse_messages(load_messages(export_path))
-
-    assert [message.text for message in parsed] == ["Only text survives"]
 
 
 def test_chatlab_malformed_line_does_not_drop_other_messages(

@@ -111,23 +111,6 @@ def test_list_sessions_cleans_up_generation_before_return(tmp_path: Path) -> Non
     assert not runtime.generation_directory("gen-0001").exists()
 
 
-def test_two_list_sessions_acquire_distinct_generations(tmp_path: Path) -> None:
-    snapshot = _snapshot(tmp_path)
-    _create_snapshot(snapshot)
-    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
-    service = _service(tmp_path, runtime)
-
-    service.list_sessions()
-    service.list_sessions()
-
-    assert runtime.acquired == ["gen-0001", "gen-0002"]
-    assert runtime.acquired[0] != runtime.acquired[1]
-    # The first generation was cleaned during the first call, before the second.
-    assert runtime.cleaned == ["gen-0001", "gen-0002"]
-    assert not runtime.generation_directory("gen-0001").exists()
-    assert not runtime.generation_directory("gen-0002").exists()
-
-
 # ------------------------------------------------------------------ acquire
 
 

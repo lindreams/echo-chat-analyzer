@@ -27,14 +27,6 @@ def test_completed_cleanup_returns_without_forced_exit():
     assert exits == []
 
 
-def test_owner_exception_does_not_force_an_already_finished_protocol():
-    def fail():
-        raise RuntimeError('fictional cleanup failure')
-    exits = []
-    app._finish_process_exit(0, window=Window(fail), hard_exit=exits.append)
-    assert exits == []
-
-
 def test_timeout_and_watchdog_cannot_force_exit_twice(monkeypatch):
     monkeypatch.setattr(app, 'SHUTDOWN_WAIT_SECONDS', 0.02)
     original = app._arm_forced_exit

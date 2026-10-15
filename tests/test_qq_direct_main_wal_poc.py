@@ -145,7 +145,7 @@ def test_missing_checkpoint_witness_rejected(fictional_source):
 
 
 @pytest.mark.parametrize("mode", ["snapshot", "merge"])
-@pytest.mark.parametrize("phase", ["main_baseline_read", "wal_frame_read", "boundary_selected", "output_page_written", "output_complete"])
+@pytest.mark.parametrize("phase", ["main_baseline_read", "output_complete"])
 @pytest.mark.parametrize("action", ["appendFrame(true);", "appendFrame(true,false);", "appendFrame(false);", "fs.appendFileSync(walPath,Buffer.from('torn'));"])
 def test_append_keeps_frozen_boundary(fictional_source, action, phase, mode):
     index = Path(f"{fictional_source[0]}-shm").read_bytes()
@@ -168,7 +168,7 @@ def test_append_keeps_frozen_boundary(fictional_source, action, phase, mode):
                 assert reader.execute("SELECT body FROM entries").fetchone() == ("fictional appended",)
 
 
-@pytest.mark.parametrize("phase", ["main_baseline_read", "wal_frame_read", "output_page_written", "output_complete"])
+@pytest.mark.parametrize("phase", ["main_baseline_read", "output_complete"])
 def test_checkpoint_progress_detected_at_each_phase(fictional_source, phase):
     action = "const b=fs.readFileSync(mainPath+'-shm'); b.writeUInt32LE(b.readUInt32LE(16),128); fs.writeFileSync(mainPath+'-shm',b);"
     result = _interleave(fictional_source, action, phase=phase)

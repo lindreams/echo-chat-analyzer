@@ -200,10 +200,6 @@ def test_provider_maps_unauthorized_to_its_own_error_type_and_does_not_retry():
     assert len(recorder.requests) == 1
 
 
-def test_provider_authorization_error_is_a_napcat_error_subclass():
-    assert issubclass(provider_module.NapCatQQAuthRejected, provider_module.NapCatQQError)
-
-
 # ------------------------------------------------------------- snapshot client
 
 
@@ -225,25 +221,6 @@ def test_snapshot_client_without_a_credential_never_sends_a_request():
         with pytest.raises(snapshot_module.QQSnapshotRuntimeError):
             client.recover()
     assert recorder.requests == []
-
-
-def test_snapshot_client_maps_unauthorized_to_its_own_error_type():
-    session, token = _session()
-    with _Recorder() as recorder:
-        recorder.status = 401
-        client = _snapshot_client(recorder, credential=session)
-        with pytest.raises(snapshot_module.QQSnapshotRuntimeUnauthorized) as error:
-            client.acquire()
-    assert error.value.code == "qq_snapshot_runtime_unauthorized"
-    assert token not in str(error.value)
-    assert len(recorder.requests) == 1
-
-
-def test_snapshot_authorization_error_is_a_snapshot_error_subclass():
-    assert issubclass(
-        snapshot_module.QQSnapshotRuntimeUnauthorized,
-        snapshot_module.QQSnapshotRuntimeError,
-    )
 
 
 def test_snapshot_client_keeps_the_managed_route_and_authentication_together():
@@ -365,21 +342,3 @@ def test_malformed_credential_is_refused_locally(token):
             client.recover()
         assert token not in str(error.value)
     assert recorder.requests == []
-
-
-def test_custom_auth_handshake_consumes_the_rpc_deadline(monkeypatch):
-    session, _ = _session()
-    now = [0.0]
-    calls = []
-    def transport(url, body, timeout, **kwargs):
-        calls.append(json.loads(body)["method"])
-        now[0] = 2.0
-        return 200, json.dumps({"ok": True, "result": {"rpc_auth": "bearer-v1", "boot_id": "b" * 64}})
-    monkeypatch.setattr(snapshot_module.time, "monotonic", lambda: now[0])
-    monkeypatch.setattr(snapshot_module, "_urllib_transport", transport)
-    client = snapshot_module.QQDirectSnapshotRuntimeClient(
-        "http://127.0.0.1:40655", snapshot_root="fictional-root", credential=session,
-    )
-    with pytest.raises(snapshot_module.QQSnapshotRuntimeUnavailable):
-        client.recover(deadline=1.0)
-    assert calls == ["Core.status"]

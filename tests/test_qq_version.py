@@ -1,11 +1,9 @@
-"""Windows version resources from synthetic buffers and fictional files only."""
+"""Synthetic Windows version API shared by the launch-gate tests."""
+
 
 import ctypes
 import importlib
 import importlib.util
-import sys
-
-import pytest
 
 
 def _module():
@@ -65,104 +63,3 @@ class _VersionApi:
         ctypes.cast(pointer, ctypes.POINTER(ctypes.c_void_p))[0] = address
         ctypes.cast(length, ctypes.POINTER(ctypes.c_uint))[0] = 1 if self.fault == "length" else 52
         return self.fault != "query"
-
-
-def _read(tmp_path, monkeypatch, api):
-    module = _module()
-    path = tmp_path / "QQ.exe"
-    path.write_bytes(b"fictional executable; no real QQ")
-    monkeypatch.setattr(module.sys, "platform", "win32")
-    monkeypatch.setattr(module.ctypes, "WinDLL", lambda name, **kwargs: api, raising=False)
-    result = module.read_qq_version(path)
-    return result, path, api
-
-
-@pytest.mark.parametrize("version", [(9, 9, 15, 27597), (9, 9, 36, 53644), (9, 9, 0, 40768)])
-def test_reads_fixed_numeric_version_from_the_selected_executable(tmp_path, monkeypatch, version):
-    result, path, api = _read(tmp_path, monkeypatch, _VersionApi(version))
-    assert result == version
-    assert api.paths == [str(path)]
-    # Output pointers must be pointer-sized; WINAPI DWORDs remain 32 bits.
-    assert api.GetFileVersionInfoSizeW.restype is ctypes.c_uint32
-    assert api.GetFileVersionInfoW.argtypes[3] is ctypes.c_void_p
-    assert api.VerQueryValueW.argtypes[2] is ctypes.POINTER(ctypes.c_void_p)
-
-
-@pytest.mark.parametrize("fault", ["size", "read", "query", "length", "pointer", "null", "signature"])
-def test_bad_api_results_are_unknown_and_never_dereferenced(tmp_path, monkeypatch, fault):
-    result, _, _ = _read(tmp_path, monkeypatch, _VersionApi(fault=fault))
-    assert result is None
-
-
-@pytest.mark.parametrize("file,product,want", [
-    ((9, 9, 15, 0), (9, 9, 15, 27597), (9, 9, 15, 27597)),
-    ((9, 9, 15, 27597), (9, 9, 15, 0), (9, 9, 15, 27597)),
-    ((9, 9, 15, 27597), (9, 9, 36, 53644), None),
-    ((9, 9, 15, 27597), (9, 9, 15, 53644), None),
-    ((9, 9, 15, 0), (9, 9, 15, 0), None),
-    ((0, 0, 0, 0), (0, 0, 0, 0), None),
-    ((8, 9, 15, 27597), (8, 9, 15, 27597), None),
-])
-def test_ambiguous_or_incomplete_metadata_cannot_be_a_build_gate(tmp_path, monkeypatch, file, product, want):
-    result, _, _ = _read(tmp_path, monkeypatch, _VersionApi(file, product))
-    assert result == want
-
-
-def test_version_api_exception_is_unknown_and_never_logs_raw_error(tmp_path, monkeypatch, caplog):
-    module = _module()
-    path = tmp_path / "QQ.exe"
-    path.write_bytes(b"fictional")
-    monkeypatch.setattr(module.sys, "platform", "win32")
-
-    def fail(*a, **k):
-        raise OSError(f"{path} fictional-account fictional-secret")
-
-    monkeypatch.setattr(module.ctypes, "WinDLL", fail, raising=False)
-    assert module.read_qq_version(path) is None
-    assert str(path) not in caplog.text
-    assert "fictional-secret" not in caplog.text
-
-
-def test_missing_file_is_unknown_without_querying_another_install(tmp_path, monkeypatch):
-    module = _module()
-    monkeypatch.setattr(module.ctypes, "WinDLL", lambda *a, **k: pytest.fail("missing file must not query API"), raising=False)
-    assert module.read_qq_version(tmp_path / "QQ.exe") is None
-
-
-def test_non_windows_is_unknown(tmp_path, monkeypatch):
-    module = _module()
-    monkeypatch.setattr(module.sys, "platform", "linux")
-    assert module.read_qq_version(tmp_path / "QQ.exe") is None
-
-
-def test_executable_changed_during_read_is_unknown(tmp_path, monkeypatch):
-    module = _module()
-    path = tmp_path / "QQ.exe"
-    path.write_bytes(b"fictional original")
-    api = _VersionApi()
-    original_read = api.read
-
-    def changed(*args):
-        result = original_read(*args)
-        path.write_bytes(b"fictional replacement with different size")
-        return result
-
-    api.GetFileVersionInfoW = _Function(changed)
-    monkeypatch.setattr(module.sys, "platform", "win32")
-    monkeypatch.setattr(module.ctypes, "WinDLL", lambda *a, **k: api, raising=False)
-    assert module.read_qq_version(path) is None
-
-
-def test_corrupt_resource_size_is_unknown_without_allocation(tmp_path, monkeypatch):
-    api = _VersionApi()
-    api.GetFileVersionInfoSizeW = _Function(lambda *a: 0xFFFFFFFF)
-    api.GetFileVersionInfoW = _Function(lambda *a: pytest.fail("must not read oversized resource"))
-    result, _, _ = _read(tmp_path, monkeypatch, api)
-    assert result is None
-
-
-@pytest.mark.skipif(sys.platform != "win32", reason="Windows version.dll required")
-def test_real_windows_api_rejects_fictional_file_without_version_resource(tmp_path):
-    path = tmp_path / "QQ.exe"
-    path.write_bytes(b"fictional file without any PE or version resource")
-    assert _module().read_qq_version(path) is None

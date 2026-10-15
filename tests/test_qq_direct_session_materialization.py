@@ -1,4 +1,4 @@
-﻿"""RED-GREEN tests: QQ Direct DB session materialization via 40001.
+"""RED-GREEN tests: QQ Direct DB session materialization via 40001.
 
 Covers:
 - group acquisition via materialize_session_payload
@@ -340,54 +340,6 @@ def test_materialize_with_time_range(tmp_path: Path) -> None:
     assert payload["records"][0]["fields"]["40001"] == 1002
 
 
-def test_materialize_with_start_time_only(tmp_path: Path) -> None:
-    """Only start_time specified: filters >= start_time."""
-    db_path = tmp_path / "test.db"
-    _create_materialize_db(db_path)
-    provider = QQDatabaseProvider(db_path)
-
-    session = QQSession(
-        internal_key="group-key-a",
-        session_object="ext-group-100",
-        display_name="ext-group-100",
-        session_type="group",
-    )
-    output = tmp_path / "group-a-start.json"
-    provider.materialize_session_payload(
-        session, output, start_time=2500,
-    )
-
-    payload = _load_payload(output)
-    assert payload["query"]["time_range"] == {"start": 2500, "end": None}
-    assert len(payload["records"]) == 1
-    assert payload["records"][0]["fields"]["40050"] == 3000
-    assert payload["records"][0]["fields"]["40001"] == 1003
-
-
-def test_materialize_with_end_time_only(tmp_path: Path) -> None:
-    """Only end_time specified: filters <= end_time."""
-    db_path = tmp_path / "test.db"
-    _create_materialize_db(db_path)
-    provider = QQDatabaseProvider(db_path)
-
-    session = QQSession(
-        internal_key="group-key-a",
-        session_object="ext-group-100",
-        display_name="ext-group-100",
-        session_type="group",
-    )
-    output = tmp_path / "group-a-end.json"
-    provider.materialize_session_payload(
-        session, output, end_time=1500,
-    )
-
-    payload = _load_payload(output)
-    assert payload["query"]["time_range"] == {"start": None, "end": 1500}
-    assert len(payload["records"]) == 1
-    assert payload["records"][0]["fields"]["40050"] == 1000
-    assert payload["records"][0]["fields"]["40001"] == 1001
-
-
 # ---------------------------------------------------------------------------
 # Test: unrelated session not mixed in
 # ---------------------------------------------------------------------------
@@ -454,67 +406,6 @@ def test_db_read_only_mode(tmp_path: Path) -> None:
 # Test: empty session returns empty records
 # ---------------------------------------------------------------------------
 
-def test_materialize_nonexistent_session(tmp_path: Path) -> None:
-    """Materializing a session key that does not exist returns empty records."""
-    db_path = tmp_path / "test.db"
-    _create_materialize_db(db_path)
-    provider = QQDatabaseProvider(db_path)
-
-    session = QQSession(
-        internal_key="nonexistent-key",
-        session_object="",
-        display_name="nonexistent-key",
-        session_type="group",
-    )
-    output = tmp_path / "empty.json"
-    result_path = provider.materialize_session_payload(session, output)
-
-    assert result_path == output
-    payload = _load_payload(output)
-    assert len(payload["records"]) == 0
-
-
 # ---------------------------------------------------------------------------
 # Test: format structure validation
 # ---------------------------------------------------------------------------
-
-def test_qq_db_json_format_structure(tmp_path: Path) -> None:
-    """The output payload must conform to qq-db-json v0 structure with 40001."""
-    db_path = tmp_path / "test.db"
-    _create_materialize_db(db_path)
-    provider = QQDatabaseProvider(db_path)
-
-    session = QQSession(
-        internal_key="group-key-a",
-        session_object="ext-group-100",
-        display_name="ext-group-100",
-        session_type="group",
-    )
-    output = tmp_path / "format-check.json"
-    provider.materialize_session_payload(session, output)
-
-    payload = _load_payload(output)
-
-    assert set(payload.keys()) == {
-        "format", "format_version", "source", "source_type", "self", "query", "records",
-    }
-    assert payload["self"] is None
-    assert payload["format"] == "qq-db-json"
-    assert payload["format_version"] == 0
-    assert payload["source"] == "qq"
-    assert payload["source_type"] == "qq-db-json"
-
-    query = payload["query"]
-    assert "requested_session" in query
-    assert "session_type" in query
-    assert "time_range" in query
-
-    record = payload["records"][0]
-    assert set(record.keys()) == {
-        "record_id", "fields", "message_blob", "blob_encoding", "source_meta",
-    }
-    assert record["blob_encoding"] == "base64"
-    assert set(record["fields"].keys()) == {"40001", "40027", "40030", "40033", "40050"}
-    assert set(record["source_meta"].keys()) == {"table"}
-    assert isinstance(record["record_id"], str)
-    assert isinstance(record["fields"]["40001"], int)

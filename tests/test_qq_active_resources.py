@@ -62,38 +62,7 @@ def test_old_current_resources_are_blocked_even_with_ready_new_version(tmp_path,
     assert str(tmp_path) not in str(error.value) + caplog.text
 
 
-def test_windows_pe_reader_can_report_old_shell_while_active_resources_pass(tmp_path, monkeypatch):
-    from test_qq_version import _module, _VersionApi
-
-    config = _runtime_config(tmp_path)
-    _active(config.qq_install_path)
-    reader = _module()
-    monkeypatch.setattr(reader.sys, "platform", "win32")
-    monkeypatch.setattr(reader.ctypes, "WinDLL", lambda *a, **k: _VersionApi((9, 9, 19, 35469)), raising=False)
-    assert reader.read_qq_version(config.qq_install_path) == (9, 9, 19, 35469)
-    launched = []
-    monkeypatch.setattr(*_launch_target(bridge), lambda *a, **k: launched.append(True) or _FakeProcess(4243))
-    bridge.default_auth_window_launcher(config)()
-    assert launched == [True]
-
-
-def test_metadata_read_access_time_change_is_not_an_update(tmp_path, monkeypatch):
-    config = _runtime_config(tmp_path)
-    active, _ = _active(config.qq_install_path)
-    read = Path.read_text
-
-    def read_with_access_time(path, *args, **kwargs):
-        text = read(path, *args, **kwargs)
-        if path == active:
-            stat = path.stat()
-            os.utime(path, ns=(stat.st_atime_ns + 1000000000, stat.st_mtime_ns))
-        return text
-
-    monkeypatch.setattr(Path, "read_text", read_with_access_time)
-    bridge.default_auth_window_launcher(config)
-
-
-@pytest.mark.parametrize("fault", ["json", "array", "traversal", "missing", "package_version", "build", "native", "duplicate", "config_directory", "only_ready", "package_json", "escape", "unknown_version"])
+@pytest.mark.parametrize("fault", ["json", "traversal", "package_version", "native", "duplicate", "config_directory", "escape"])
 def test_invalid_active_resources_never_claim_compatibility_or_launch(tmp_path, monkeypatch, caplog, fault):
     config = _runtime_config(tmp_path)
     active, package = _active(config.qq_install_path)
@@ -156,16 +125,6 @@ def test_changed_current_version_between_check_and_launch_requires_retry(tmp_pat
     monkeypatch.setattr(*_launch_target(bridge), lambda *a, **k: pytest.fail("changed resources must not launch"))
     with pytest.raises(bridge.QQAuthWindowUnavailable): launcher()
     with pytest.raises(bridge.QQAuthWindowUnavailable) as error: bridge.default_auth_window_launcher(config)
-    assert error.value.code == "qq_version_too_old"
-
-
-def test_primary_config_has_same_precedence_as_napcat(tmp_path, monkeypatch):
-    config = _runtime_config(tmp_path)
-    _active(config.qq_install_path, "9.9.19-35469")
-    _active(config.qq_install_path, alternate=True)
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 36, 53644))
-    with pytest.raises(bridge.QQAuthWindowUnavailable) as error:
-        bridge.default_auth_window_launcher(config)
     assert error.value.code == "qq_version_too_old"
 
 

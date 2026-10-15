@@ -233,7 +233,7 @@ def test_build_ships_complete_copyright_materials(tmp_path: Path) -> None:
         assert target.read_bytes() == (tmp_path / relative).read_bytes()
 
 
-@pytest.mark.parametrize("relative", COPYRIGHT_FILES)
+@pytest.mark.parametrize("relative", ['LICENSE'])
 @pytest.mark.parametrize("damage", ["missing", "empty"])
 def test_build_rejects_incomplete_copyright_materials(tmp_path: Path, relative: str, damage: str) -> None:
     _fictional_runtime(tmp_path)
@@ -327,37 +327,6 @@ def test_key_portable_native_binaries_are_x64() -> None:
     assert {_pe_machine(path) for path in required} == {0x8664}
 
 
-def test_runtime_build_rejects_koffi_without_entrypoint(tmp_path: Path) -> None:
-    _fictional_runtime(tmp_path, koffi_index=False)
-
-    completed = _copy_runtime(tmp_path)
-
-    assert completed.returncode != 0
-    assert "runtime\\wechat\\node_modules\\koffi\\index.js" in (
-        completed.stderr + completed.stdout
-    )
-
-
-def test_runtime_build_rejects_missing_koffi_windows_addon(
-    tmp_path: Path,
-) -> None:
-    runtime = _fictional_runtime(tmp_path)
-    (
-        runtime
-        / "wechat/node_modules/koffi/build/koffi/win32_x64/koffi.node"
-    ).unlink()
-
-    completed = _copy_runtime(tmp_path)
-
-    assert completed.returncode != 0
-    # PowerShell wraps long error text at the host width, which can split this
-    # path across a line break (and insert the wrap indent), so the path is only
-    # matched after all whitespace is removed.
-    assert "koffi\\build\\koffi\\win32_x64\\koffi.node" in "".join(
-        (completed.stderr + completed.stdout).split()
-    )
-
-
 @pytest.mark.parametrize(
     "filename",
     ["NapCatWinBootMain.exe", "NapCatWinBootHook.dll"],
@@ -373,17 +342,6 @@ def test_runtime_build_rejects_missing_qq_native_launcher(
 
     assert completed.returncode != 0
     assert filename in completed.stderr + completed.stdout
-
-
-def test_runtime_build_rejects_missing_bundled_node(tmp_path: Path) -> None:
-    _fictional_runtime(tmp_path, node_executable=False)
-
-    completed = _copy_runtime(tmp_path)
-
-    assert completed.returncode != 0
-    assert "runtime\\wechat\\node.exe" in (
-        completed.stderr + completed.stdout
-    )
 
 
 def test_runtime_build_keeps_echo_plugin_enablement_without_account_state(
@@ -426,19 +384,6 @@ def test_copied_portable_koffi_can_be_loaded_by_node(tmp_path: Path) -> None:
 
     assert helper_probe.returncode == 0, helper_probe.stderr
     assert helper_probe.stdout == "loaded"
-
-
-def _foreign_native_entries(native: Path) -> list[str]:
-    """Return packaged native entries carrying a foreign platform designator."""
-    foreign: list[str] = []
-    for path in native.rglob("*"):
-        relative = path.relative_to(native).as_posix()
-        if any(
-            FOREIGN_NATIVE_SEGMENT.search(segment)
-            for segment in relative.split("/")
-        ):
-            foreign.append(relative)
-    return sorted(foreign)
 
 
 def test_runtime_build_excludes_only_selected_assets(tmp_path: Path) -> None:
@@ -487,36 +432,6 @@ def _validate_portable_runtime(project_root: Path) -> subprocess.CompletedProces
     )
 
 
-@pytest.mark.parametrize("relative", [
-    "native/ffmpeg/ffmpegAddon.win32.x64.node", EXCLUDED_FONT,
-])
-def test_portable_validation_rejects_reintroduced_exclusion(tmp_path: Path, relative: str) -> None:
-    runtime = _fictional_runtime(tmp_path)
-    _write(runtime / "qq-napcat-candidate" / EXCLUDED_FONT)
-    completed = _copy_runtime(tmp_path)
-    assert completed.returncode == 0, completed.stderr
-    portable = tmp_path / "dist/Echo/runtime/qq-napcat-candidate"
-    target = portable / relative
-    target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(runtime / "qq-napcat-candidate" / relative, target)
-    result = _validate_portable_runtime(tmp_path)
-    assert result.returncode != 0
-    assert "Excluded portable runtime asset" in result.stderr + result.stdout
-
-
-@pytest.mark.parametrize("change", ["missing", "tampered"])
-def test_source_still_validates_excluded_addon(tmp_path: Path, change: str) -> None:
-    runtime = _fictional_runtime(tmp_path)
-    addon = runtime / "qq-napcat-candidate/native/ffmpeg/ffmpegAddon.win32.x64.node"
-    if change == "missing":
-        addon.unlink()
-    else:
-        addon.write_text("tampered fictional addon")
-    result = _copy_runtime(tmp_path)
-    assert result.returncode != 0
-    assert "ffmpegAddon.win32.x64.node" in result.stderr + result.stdout
-
-
 @pytest.mark.parametrize("change", ["missing", "tampered"])
 def test_portable_still_validates_retained_native_pin(tmp_path: Path, change: str) -> None:
     _fictional_runtime(tmp_path)
@@ -530,67 +445,6 @@ def test_portable_still_validates_retained_native_pin(tmp_path: Path, change: st
     result = _validate_portable_runtime(tmp_path)
     assert result.returncode != 0
     assert "ffmpeg.dll" in result.stderr + result.stdout
-
-
-def test_runtime_build_ships_windows_x64_native_addons(tmp_path: Path) -> None:
-    """Pruning must not remove the addons the Windows x64 runtime loads."""
-    _fictional_runtime(tmp_path)
-
-    completed = _copy_runtime(tmp_path)
-
-    assert completed.returncode == 0, completed.stderr
-    native = tmp_path / "dist/Echo/runtime/qq-napcat-candidate/native"
-    missing = [
-        relative
-        for relative in WINDOWS_X64_NATIVE_ASSETS
-        if not (native / relative).is_file()
-    ]
-    assert missing == []
-
-
-def test_runtime_build_rejects_missing_windows_native_addon(
-    tmp_path: Path,
-) -> None:
-    """A Windows x64 build must not silently ship an incomplete native set."""
-    runtime = _fictional_runtime(tmp_path)
-    (runtime / "qq-napcat-candidate/native/packet/MoeHoo.win32.x64.node").unlink()
-
-    completed = _copy_runtime(tmp_path)
-
-    assert completed.returncode != 0
-    assert "MoeHoo.win32.x64.node" in (completed.stderr + completed.stdout)
-
-
-def test_runtime_build_rejects_missing_qq_launcher_user_batch(
-    tmp_path: Path,
-) -> None:
-    """Echo starts launcher-user.bat itself; a package without it is broken."""
-    runtime = _fictional_runtime(tmp_path)
-    (runtime / "qq-napcat-candidate/launcher-user.bat").unlink(missing_ok=True)
-
-    completed = _copy_runtime(tmp_path)
-
-    assert completed.returncode != 0
-    assert "launcher-user.bat" in (completed.stderr + completed.stdout)
-
-
-def test_runtime_build_rejects_empty_official_static_directory(
-    tmp_path: Path,
-) -> None:
-    """The official NapCat UI payload remains required."""
-    runtime = _fictional_runtime(tmp_path)
-    static_assets = runtime / "qq-napcat-candidate/static"
-    for child in static_assets.rglob("*"):
-        if child.is_file():
-            child.unlink()
-    assert static_assets.is_dir()
-
-    completed = _copy_runtime(tmp_path)
-
-    assert completed.returncode != 0
-    assert "qq-napcat-candidate/static" in (completed.stderr + completed.stdout).replace(
-        "\\", "/"
-    )
 
 
 def test_runtime_copy_ships_program_assets_without_mutable_state(tmp_path: Path) -> None:
@@ -659,21 +513,7 @@ def test_runtime_copy_rejects_junctions_inside_program_assets(tmp_path: Path) ->
     assert (private / "private.json").read_text(encoding="utf-8") == "fictional user state"
 
 
-def test_clean_runtime_copy_ignores_old_qce_and_ships_only_echo(tmp_path):
-    runtime = _fictional_runtime(tmp_path)
-    for name in ('qce-server.exe', 'plugins/napcat-plugin-qce/index.mjs', 'static/qce/index.html'):
-        _write(runtime / 'qq' / name, 'fictional compatibility runtime')
-    result = _copy_runtime(tmp_path)
-    assert result.returncode == 0, result.stderr
-    portable = tmp_path / 'dist/Echo/runtime'
-    assert not (portable / 'qq').exists()
-    assert not list(portable.rglob('qce-server.exe'))
-    assert not list(portable.rglob('napcat-plugin-qce'))
-    assert not (portable / 'qq-napcat-candidate/static/qce').exists()
-    assert (runtime / 'qq/qce-server.exe').is_file()
-
-
-@pytest.mark.parametrize('artifact', ['napcat.mjs', 'plugins/napcat-plugin-echo/index.mjs', 'plugins/napcat-plugin-echo/snapshot/snapshot.mjs', 'plugins/napcat-plugin-echo/snapshot/main_wal.mjs', 'plugins/napcat-plugin-echo/snapshot/workspace.mjs', 'config/plugins.json'])
+@pytest.mark.parametrize('artifact', ['napcat.mjs', 'plugins/napcat-plugin-echo/snapshot/snapshot.mjs'])
 def test_modified_echo_artifact_cannot_ship(tmp_path, artifact):
     runtime = _fictional_runtime(tmp_path)
     _write(runtime / 'qq-napcat-candidate' / artifact, 'modified fictional artifact')

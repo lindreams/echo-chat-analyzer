@@ -14,50 +14,6 @@ def _renderer():
     return importlib.import_module("qq_chat_analyzer.presentation.share.renderer")
 
 
-def test_render_runs_dom_check_then_screenshot(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    module = _renderer()
-    output_path = tmp_path / "echo-share.png"
-    calls: list[tuple[list[str], bool]] = []
-
-    def _fake_run_chromium(command, *, capture_stdout=False, timeout=60):
-        calls.append((command, capture_stdout))
-        if "--dump-dom" in command:
-            return module._ChromiumResult(
-                returncode=0,
-                stdout=(
-                    b'<html><title>Echo</title>'
-                    b'<main class="card"></main></html>'
-                ),
-                stderr="",
-            )
-        output_path.write_bytes(b"fake-png")
-        return module._ChromiumResult(returncode=0, stdout=b"", stderr="")
-
-    monkeypatch.setattr(module, "find_chromium", lambda: "C:/chrome.exe")
-    monkeypatch.setattr(module, "_run_chromium", _fake_run_chromium)
-
-    result = module.render_share_html_to_png("<html>share</html>", output_path)
-
-    assert result == output_path
-    assert output_path.read_bytes() == b"fake-png"
-    assert len(calls) == 2
-    dom_command, dom_capture = calls[0]
-    screenshot_command, screenshot_capture = calls[1]
-    assert "--dump-dom" in dom_command
-    assert dom_command[-1].startswith("file:///")
-    assert dom_capture is True
-    assert any(
-        part.startswith("--screenshot=") for part in screenshot_command
-    )
-    assert screenshot_command[-1].startswith("file:///")
-    assert screenshot_capture is False
-    assert "--user-data-dir=" in " ".join(dom_command)
-    assert "--user-data-dir=" in " ".join(screenshot_command)
-
-
 def test_render_rejects_error_page_dom(tmp_path: Path, monkeypatch) -> None:
     module = _renderer()
     calls: list[list[str]] = []

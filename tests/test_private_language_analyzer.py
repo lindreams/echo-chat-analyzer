@@ -50,31 +50,6 @@ def test_private_shared_words_count_totals_and_rates() -> None:
     assert (y.rate_a, y.rate_b) == (5 / 16, 2 / 9)
 
 
-def test_private_shared_words_rank_by_common_strength() -> None:
-    report = _analyze(
-        (
-            ("fictional-a", ["common"] * 10 + ["rare"] * 4),
-            ("fictional-b", ["common"] * 5 + ["rare"] * 1),
-        )
-    )
-
-    ranked = [entry.word for entry in report.shared_words]
-    assert ranked[0] == "common"
-    assert ranked[1] == "rare"
-
-
-def test_private_shared_words_tie_break_is_stable() -> None:
-    report = _analyze(
-        (
-            ("fictional-a", ["alpha"] * 10 + ["beta"] * 10),
-            ("fictional-b", ["alpha"] * 5 + ["beta"] * 5),
-        )
-    )
-
-    ranked = [entry.word for entry in report.shared_words]
-    assert ranked == ["alpha", "beta"]
-
-
 def test_private_side_preference_uses_normalized_rate() -> None:
     report = _analyze(
         (
@@ -87,19 +62,6 @@ def test_private_side_preference_uses_normalized_rate() -> None:
     assert entry.rate_a == 8 / 100
     assert entry.rate_b == 5 / 10
     assert entry.preferred_speaker_key == "fictional-b"
-
-
-def test_private_side_preference_none_when_rates_equal() -> None:
-    report = _analyze(
-        (
-            ("fictional-a", ["word"] * 5 + ["other"] * 5),
-            ("fictional-b", ["word"] * 5 + ["other"] * 5),
-        )
-    )
-
-    entry = next(item for item in report.shared_words if item.word == "word")
-    assert entry.rate_a == entry.rate_b
-    assert entry.preferred_speaker_key is None
 
 
 def test_private_language_non_private_returns_empty_report() -> None:

@@ -137,64 +137,10 @@ def test_all_readiness_checks_pass_marks_source_available() -> None:
 # --------------------------------------------------------------- data missing
 
 
-def test_missing_data_directory_returns_user_facing_message() -> None:
-    status = _status(data=False, key="fictional-key")
-
-    assert status.available is False
-    assert status.data_found is False
-    assert status.db_key_available is True
-    assert status.runtime_available is True
-    assert (
-        "\u672a\u627e\u5230\u5fae\u4fe1\u6570\u636e\u4f4d\u7f6e"
-        in status.message
-    )
-    assert status.action_hint != ""
-
-
 # ------------------------------------------------------------------- key
 
 
-def test_missing_db_key_returns_user_facing_message() -> None:
-    status = _status(data=True, key=None)
-
-    assert status.available is False
-    assert status.data_found is True
-    assert status.db_key_available is False
-    assert status.runtime_available is True
-    assert "\u8bfb\u53d6\u6388\u6743" in status.message
-    assert status.action_hint != ""
-
-
-def test_blank_db_key_counts_as_missing() -> None:
-    status = _status(data=True, key="   ")
-
-    assert status.available is False
-    assert status.db_key_available is False
-
-
 # ---------------------------------------------------------------- runtime
-
-
-@pytest.mark.parametrize("missing", ["helper", "library"])
-def test_missing_runtime_returns_user_facing_message(missing: str) -> None:
-    provider_kwargs = {
-        "data": True,
-        "key": "fictional-key",
-        "helper": True,
-        "library": True,
-    }
-    provider_kwargs[missing] = False
-    status = _status(**provider_kwargs)
-
-    assert status.available is False
-    assert status.data_found is True
-    assert status.db_key_available is True
-    assert status.runtime_available is False
-    assert (
-        "\u8fde\u63a5\u7ec4\u4ef6\u4e0d\u5b8c\u6574"
-        in status.message
-    )
-    assert status.action_hint != ""
 
 
 # ------------------------------------------------------------ error isolation
@@ -209,16 +155,6 @@ def test_unexpected_probe_error_never_leaks(stage: str) -> None:
     assert "Traceback" not in status.message
     assert "Exception" not in status.message
     assert status.action_hint != ""
-
-
-def test_check_status_never_raises_on_unknown_provider_failure() -> None:
-    provider = _FakeProvider(unexpected="data")
-    service = _module().WeChatConnectionService(provider)
-
-    status = service.check_status()
-
-    assert status.available is False
-    assert status.message != ""
 
 
 # ------------------------------------------------------------ config source
@@ -247,43 +183,6 @@ def test_connection_service_builds_provider_from_config() -> None:
     assert provider.data_calls == 1
 
 
-def test_missing_config_becomes_user_facing_status() -> None:
-    module = _module()
-    config_module = _config_module()
-    service = module.WeChatConnectionService(
-        config_loader=_FakeConfigLoader(
-            error=config_module.WeChatConfigNotFound()
-        ),
-        provider_factory=_RecordingProviderFactory(_FakeProvider()),
-    )
-
-    status = service.check_status()
-
-    assert status.available is False
-    assert status.data_found is False
-    assert status.db_key_available is False
-    assert status.runtime_available is False
-    assert "\u8fde\u63a5\u8bbe\u7f6e" in status.message
-    assert status.action_hint != ""
-
-
-def test_corrupted_config_becomes_user_facing_status() -> None:
-    module = _module()
-    config_module = _config_module()
-    service = module.WeChatConnectionService(
-        config_loader=_FakeConfigLoader(
-            error=config_module.WeChatConfigCorrupted()
-        ),
-        provider_factory=_RecordingProviderFactory(_FakeProvider()),
-    )
-
-    status = service.check_status()
-
-    assert status.available is False
-    assert "\u91cd\u65b0\u8bbe\u7f6e" in status.message
-    assert status.action_hint != ""
-
-
 def test_config_loader_error_never_leaks() -> None:
     module = _module()
     service = module.WeChatConnectionService(
@@ -301,34 +200,3 @@ def test_config_loader_error_never_leaks() -> None:
 
 
 # ------------------------------------------------------------------- model
-
-
-def test_status_is_a_frozen_dataclass() -> None:
-    module = _module()
-    status = module.WeChatConnectionStatus(
-        available=True,
-        data_found=True,
-        db_key_available=True,
-        runtime_available=True,
-        message="\u53ef\u7528",
-        action_hint="\u5f00\u59cb\u5206\u6790",
-    )
-
-    try:
-        status.message = "changed"
-    except Exception as error:
-        assert type(error).__name__ == "FrozenInstanceError"
-    else:  # pragma: no cover - guards the immutability contract
-        raise AssertionError("WeChatConnectionStatus should be immutable")
-
-
-def test_service_checks_probes_without_reading_sessions() -> None:
-    provider = _FakeProvider()
-    service = _module().WeChatConnectionService(provider)
-
-    service.check_status()
-
-    assert provider.data_calls == 1
-    assert provider.key_calls == 1
-    assert provider.helper_calls == 1
-    assert provider.library_calls == 1

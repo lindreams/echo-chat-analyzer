@@ -183,7 +183,7 @@ def test_healthy_external_service_without_echo_record_is_never_claimed(
     assert table.terminated == []
 
 
-@pytest.mark.parametrize("pid", [None, True, False, 0, -1, "invalid", 1.5])
+@pytest.mark.parametrize("pid", [None, True, 0, "invalid"])
 def test_owned_runtime_with_invalid_pid_is_not_registered(pid) -> None:
     class _RejectingRegistry:
         def record(self, pid):

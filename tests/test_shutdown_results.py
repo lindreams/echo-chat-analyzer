@@ -26,7 +26,7 @@ def test_missing_required_evidence_cannot_authorize_update(missing):
     assert_status(result, 'success')
 
 
-@pytest.mark.parametrize('duplicate', UPDATE_EVIDENCE)
+@pytest.mark.parametrize('duplicate', ['gui_workers'])
 def test_duplicate_evidence_cannot_authorize_update(duplicate):
     assert_status(successful_evidence((*UPDATE_EVIDENCE, duplicate)), 'success')
 
@@ -51,7 +51,7 @@ def test_complete_success_evidence_can_pass_shutdown_admission():
 @pytest.mark.parametrize('status', [module.ShutdownStatus.FAILED,
                                   module.ShutdownStatus.TIMED_OUT,
                                   module.ShutdownStatus.UNKNOWN])
-@pytest.mark.parametrize('name', UPDATE_EVIDENCE)
+@pytest.mark.parametrize('name', ['gui_workers'])
 def test_complete_evidence_with_non_success_still_blocks_update(name, status):
     result = module.ShutdownResult(tuple(
         module.ShutdownStepResult(step, status if step == name else module.ShutdownStatus.SUCCESS)

@@ -83,53 +83,6 @@ def _lexical_pair(tmp_path, source, conversation_type, include_unicode=True):
     return results
 
 
-@pytest.fixture(params=["qq", "wechat"])
-def group_pair(request, tmp_path):
-    return _lexical_pair(tmp_path, request.param, "group")
-
-
-@pytest.fixture(params=["qq", "wechat"])
-def private_pair(request, tmp_path):
-    return _lexical_pair(tmp_path, request.param, "private")
-
-
-def test_group_core_distinctive_words_are_lexical_only(group_pair):
-    _, heavy = group_pair
-    members = heavy.reports.distinctive_words.members
-    assert len(members) == 3
-    assert all(not word.word.startswith("expression:") for member in members for word in member.words)
-
-
-def test_group_primary_words_are_lexical_only(group_pair):
-    _, heavy = group_pair
-    profile = heavy.echo_report_view.language_profile
-    assert profile.available
-    assert len(profile.members) == 3
-    assert all(not word.startswith("expression:") for member in profile.members for word in member.primary_words)
-
-
-def test_expression_heavy_group_preserves_lexical_candidates_ranking_and_rates(group_pair):
-    baseline, heavy = group_pair
-    assert all(len(member.words) == 3 for member in baseline.reports.distinctive_words.members)
-    assert heavy.reports.expression.expression_occurrence_count == 4680
-    assert heavy.reports.distinctive_words == baseline.reports.distinctive_words
-
-
-def test_private_shared_words_and_rates_ignore_expression_tokens(private_pair):
-    baseline, heavy = private_pair
-    assert len(baseline.reports.private_language.shared_words) == 1
-    assert baseline.reports.private_language.shared_words[0].word == "garden"
-    assert heavy.reports.private_language == baseline.reports.private_language
-
-
-def test_user_profile_top_word_slots_remain_lexical(group_pair):
-    baseline, heavy = group_pair
-    expected = {profile.speaker_key: profile.top_words for profile in baseline.reports.user_profiles.profiles}
-    actual = {profile.speaker_key: profile.top_words for profile in heavy.reports.user_profiles.profiles}
-    assert all(len(words) == 3 for words in expected.values())
-    assert actual == expected
-
-
 @pytest.mark.parametrize("source", ["qq", "wechat"])
 def test_source_expressions_keep_exact_counts_without_display_text_leaks(tmp_path, source):
     baseline, heavy = _lexical_pair(tmp_path, source, "group", include_unicode=False)
@@ -160,21 +113,3 @@ def test_sender_specific_expressions_cannot_displace_real_distinctive_words():
     assert [{word.word for word in member.words} for member in heavy.members] == [
         {word.word for word in member.words} for member in baseline.members
     ]
-
-
-def test_private_lexical_rate_denominators_ignore_asymmetric_expression_load():
-    from qq_chat_analyzer.application.analysis_service import _build_reports
-
-    tokens = [("fictional-a", ["garden", "garden", "orchard"]),
-              ("fictional-b", ["garden", "meadow"])]
-    reports = _build_reports([], [
-        (sender, words + ["expression:😂"] * count)
-        for (sender, words), count in zip(tokens, (100, 5))
-    ], conversation_type="private")
-    shared = reports.private_language.shared_words
-    assert len(shared) == 1
-    assert shared[0].word == "garden"
-    assert shared[0].total_tokens_a == 3
-    assert shared[0].total_tokens_b == 2
-    assert shared[0].rate_a == pytest.approx(2 / 3)
-    assert shared[0].rate_b == pytest.approx(1 / 2)

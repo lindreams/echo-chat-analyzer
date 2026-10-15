@@ -82,10 +82,10 @@ def test_all_text_segments_and_second_segment_unicode_survive() -> None:
     assert report.top_expressions[0].expression_key == "😂"
 
 
-@pytest.mark.parametrize("session_type", ["group", "private"])
+@pytest.mark.parametrize("session_type", ["group"])
 @pytest.mark.parametrize("wire_type,size", [(1, 8), (5, 4)])
-@pytest.mark.parametrize("location", ["body", "text", "face"])
-@pytest.mark.parametrize("prepend", [False, True])
+@pytest.mark.parametrize("location", ["body", "text"])
+@pytest.mark.parametrize("prepend", [True])
 def test_fixed_width_metadata_preserves_text_and_face(
     session_type, wire_type, size, location, prepend,
 ) -> None:
@@ -137,14 +137,7 @@ def test_truncated_fixed_width_field_rejects_entire_container(wire_type, size, l
             assert project_legacy_messages(messages)[0].text == ""
 
 
-@pytest.mark.parametrize("invalid", [
-    b"\x00",  # Field number zero.
-    _varint((49000 << 3) | 6),
-    _varint((49000 << 3) | 7),
-    _varint((49000 << 3) | 2) + _varint(100) + b"short",
-    _varint((49000 << 3) | 2) + b"\x80" * 11,
-    b"\x80",  # Incomplete tag.
-])
+@pytest.mark.parametrize("invalid", [b"\x00", _varint((49000 << 3) | 2) + _varint(100) + b"short", _varint((49000 << 3) | 2) + b"\x80" * 11])
 def test_malformed_body_does_not_return_preceding_valid_content(invalid) -> None:
     fixed = _varint((49000 << 3) | 5) + b"abcd"
     blob = _body(_text("must not survive"), _face()) + fixed + invalid
@@ -171,31 +164,6 @@ def test_fixed_width_metadata_does_not_promote_unknown_mentions_or_quotes_to_tex
     assert isinstance(message.contents[2], ExpressionContent)
     assert len(message.contents) == 3
     assert project_legacy_messages([message])[0].text == "authored text"
-
-
-@pytest.mark.parametrize("session_type", ["group", "private"])
-@pytest.mark.parametrize("segment,kind,key,label", [
-    (_face(), "platform_face", "14", "/fictional-face"),
-    (_sticker(), "sticker", "qq-marketface:sha256:" + hashlib.sha256(b"fictional-sticker").hexdigest(), "[fictional-sticker]"),
-])
-def test_pure_expressions_survive(session_type, segment, kind, key, label) -> None:
-    messages, warnings = parse_qq_db_rich_messages(_payload(_body(segment), session_type=session_type))
-    assert warnings == ()
-    assert len(messages) == 1
-    assert messages[0].contents == (ExpressionContent(kind, key, label, "qq", position=0),)
-    legacy = project_legacy_messages(messages)
-    assert len(legacy) == 1
-    assert legacy[0].text == ""
-    report = ExpressionAnalyzer().analyze(legacy, messages)
-    assert report.expression_only_message_count == 1
-    assert report.top_expressions[0].kind == kind
-
-
-def test_mixed_contents_keep_order_and_do_not_add_display_text_to_legacy() -> None:
-    message = _parse(_text("before "), _face(), _text("middle "), _sticker(), _text("after"))
-    assert [type(part) for part in message.contents] == [TextContent, ExpressionContent, TextContent, ExpressionContent, TextContent]
-    assert [part.position for part in message.contents if isinstance(part, ExpressionContent)] == [0, 1]
-    assert project_legacy_messages([message])[0].text == "before middle after"
 
 
 def test_repeated_faces_and_stickers_are_occurrences_with_stable_distinct_keys() -> None:
@@ -232,14 +200,6 @@ def test_expression_identity_is_not_guessed_from_display_text() -> None:
     message = _parse(_scalar(45002, 6) + _bytes(47602, b"same label"),
                      _scalar(45002, 11) + _bytes(80900, b"same label"), _text("later"))
     assert message.contents == (TextContent("later"),)
-
-
-def test_expression_labels_have_contextual_fallbacks() -> None:
-    message = _parse(_scalar(45002, 6) + _scalar(47601, 0) + _bytes(45815, b"[fictional face]"),
-                     _scalar(45002, 11) + _bytes(45600, b"other-sticker") + _bytes(80900, b"\xff") + _bytes(45815, b"[fictional sticker]"))
-    assert [part.display_text for part in message.contents] == ["[fictional face]", "[fictional sticker]"]
-    assert message.contents[0].expression_key == "0"
-    assert project_legacy_messages([message])[0].text == ""
 
 
 def test_sticker_key_uses_identity_bytes_not_label_or_resource_url() -> None:

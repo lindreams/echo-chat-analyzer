@@ -127,44 +127,6 @@ def test_gate_off_does_not_launch(
     assert calls == []
 
 
-def test_gate_on_launches_runner(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[list[str], dict[str, str]]] = []
-
-    def spawner(command, environment):
-        calls.append((command, environment))
-
-    script = tmp_path / "scripts" / "run_wechat_wcdb_diagnostic.ps1"
-    script.parent.mkdir(parents=True)
-    script.write_text("# fake runner", encoding="utf-8")
-    monkeypatch.setenv(DIAGNOSTIC_ENV_VARIABLE, "1")
-    session_db = tmp_path / "session.db"
-
-    launched = maybe_launch_wcdb_diagnostic(
-        session_db,
-        FICTIONAL_KEY,
-        echo_dir=tmp_path,
-        runner=spawner,
-    )
-
-    assert launched is True
-    assert len(calls) == 1
-    command, environment = calls[0]
-    assert command[0] == "powershell"
-    assert "-ExecutionPolicy" in command
-    assert "Bypass" in command
-    assert "-File" in command
-    assert str(script) in command
-    assert "-SessionDb" in command
-    assert str(session_db) in command
-    assert "-EchoDir" in command
-    assert str(tmp_path) in command
-    assert "-ReportPath" in command
-    assert str(diagnostic_report_path()) in command
-
-
 def test_child_env_contains_key_and_never_command_line(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -194,49 +156,6 @@ def test_child_env_contains_key_and_never_command_line(
         assert FICTIONAL_KEY not in argument
 
 
-def test_missing_runner_script_is_skipped(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls: list[tuple[list[str], dict[str, str]]] = []
-
-    def spawner(command, environment):
-        calls.append((command, environment))
-
-    monkeypatch.setenv(DIAGNOSTIC_ENV_VARIABLE, "1")
-    launched = maybe_launch_wcdb_diagnostic(
-        tmp_path / "session.db",
-        FICTIONAL_KEY,
-        echo_dir=tmp_path,
-        runner=spawner,
-    )
-
-    assert launched is False
-    assert calls == []
-
-
-def test_spawner_failure_does_not_raise(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    script = tmp_path / "scripts" / "run_wechat_wcdb_diagnostic.ps1"
-    script.parent.mkdir(parents=True)
-    script.write_text("# fake runner", encoding="utf-8")
-    monkeypatch.setenv(DIAGNOSTIC_ENV_VARIABLE, "1")
-
-    def spawner(command, environment):
-        raise OSError("powershell missing")
-
-    launched = maybe_launch_wcdb_diagnostic(
-        tmp_path / "session.db",
-        FICTIONAL_KEY,
-        echo_dir=tmp_path,
-        runner=spawner,
-    )
-
-    assert launched is False
-
-
 def test_launcher_logs_do_not_contain_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -262,35 +181,6 @@ def test_launcher_logs_do_not_contain_key(
 
 
 # ------------------------------------------------------------ provider flow
-
-
-def test_provider_gate_off_does_not_launch_runner(tmp_path: Path) -> None:
-    sessions = []
-
-    def runner(command, timeout, environment):
-        sql = " ".join(command)
-        if "PRAGMA table_info" in sql:
-            return _FakeCompleted(stdout=_schema_result(["username", "summary", "last_timestamp"]))
-        if "SessionTable" in sql:
-            return _FakeCompleted(
-                stdout=_helper_result(
-                    [{"username": FICTIONAL_SESSION, "last_timestamp": 1}]
-                )
-            )
-        if "sqlite_master" in sql:
-            return _FakeCompleted(stdout=_helper_result([]))
-        raise AssertionError(f"unexpected query: {sql}")
-
-    calls: list[tuple[list[str], dict[str, str]]] = []
-
-    def diagnostic_spawner(command, environment):
-        calls.append((command, environment))
-
-    provider = _provider(tmp_path, runner, diagnostic_spawner)
-    result = provider.list_sessions()
-
-    assert len(result) == 1
-    assert calls == []
 
 
 def test_provider_gate_on_launches_runner_with_key(

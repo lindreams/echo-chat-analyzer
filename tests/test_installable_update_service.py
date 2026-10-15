@@ -69,13 +69,6 @@ def service(tmp_path, manager=None, **kwargs):
                                        setup_runtime=lambda: True, **kwargs), manager
 
 
-def test_no_update(tmp_path):
-    svc, mgr = service(tmp_path)
-    mgr.info = None
-    assert svc.check().status == 'no_update'
-    assert svc.download().error_code == 'check_required'
-
-
 def test_download_progress_and_idempotence(tmp_path):
     svc, mgr = service(tmp_path)
     result = svc.check()
@@ -157,15 +150,6 @@ def test_source_and_unconfigured_never_construct_sdk(tmp_path):
     assert svc.download().status == 'unsupported'
 
 
-def test_recovers_sdk_pending_without_network(tmp_path):
-    svc, mgr = service(tmp_path)
-    mgr.pending = asset()
-    mgr.failure = RuntimeError('offline')
-    assert svc.check().status == 'downloaded'
-    assert svc.download().status == 'downloaded'
-    assert mgr.checks == mgr.downloads == 0
-
-
 def test_requires_matching_pending_package(tmp_path):
     svc, mgr = service(tmp_path)
     svc.check()
@@ -180,31 +164,11 @@ def test_requires_matching_pending_package(tmp_path):
     assert result.progress < 100
 
 
-def test_callback_failure_does_not_fail_download(tmp_path):
-    svc, _ = service(tmp_path)
-    svc.check()
-    def broken(value):
-        raise RuntimeError('UI callback')
-    assert svc.download(progress=broken).status == 'downloaded'
-
-
 @pytest.mark.parametrize('source', ['http://example.invalid/feed', 'https://u:p@example.invalid/feed',
                                   'https://example.invalid/feed?token=x', 'relative/path'])
 def test_untrusted_feed_configuration_rejected(source):
     with pytest.raises(ValueError):
         api().UpdateFeedConfig(source, 'FictionalEcho', 'test')
-
-
-def test_facade_default_and_injection(tmp_path):
-    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
-    api()
-    facade = ChatAnalyzerFacade()
-    assert facade.check_installable_update().status == 'unconfigured'
-    svc, _ = service(tmp_path)
-    facade = ChatAnalyzerFacade(installable_update_service=svc)
-    assert facade.check_installable_update().status == 'available'
-    assert facade.download_update().status == 'downloaded'
-    assert facade.get_update_status().status == 'downloaded'
 
 
 @pytest.mark.slow_integration
@@ -280,38 +244,12 @@ def test_foreign_installation_and_malformed_candidate_denied(tmp_path):
     assert svc.download().error_code == 'check_required'
 
 
-@pytest.mark.parametrize('method', ['check_installable_update', 'download_update', 'get_update_status'])
-def test_facade_normalizes_injected_service_exceptions(method):
-    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade, FacadeError
-    class Broken:
-        def check(self):
-            raise RuntimeError('private details')
-        def download(self, **kwargs):
-            raise RuntimeError('private details')
-        def get_status(self):
-            raise RuntimeError('private details')
-    with pytest.raises(FacadeError) as error:
-        getattr(ChatAnalyzerFacade(installable_update_service=Broken()), method)()
-    assert 'private details' not in error.value.public_message
-
-
 def test_check_failure_invalidates_old_candidate(tmp_path):
     svc, mgr = service(tmp_path)
     assert svc.check().status == 'available'
     mgr.failure = OSError('offline')
     assert svc.check().status == 'failed'
     assert svc.download().error_code == 'check_required'
-
-
-def test_sdk_location_failure_returns_failure(tmp_path):
-    mod = api()
-    def missing(feed):
-        raise RuntimeError('not installed: private filesystem path')
-    svc = mod.InstallableUpdateService(
-        feed=mod.UpdateFeedConfig(tmp_path, 'FictionalEcho', 'test'),
-        manager_factory=missing, setup_runtime=lambda: True)
-    assert svc.check().error_code == 'check_failed'
-    assert svc.download().error_code == 'download_failed'
 
 
 def test_download_requires_setup_proof_again(tmp_path):

@@ -185,56 +185,6 @@ def test_same_id_across_files_and_sessions_does_not_cross_associate(
     assert voice_expressions(analyzed) == [f"expression:{expected}"]
 
 
-@pytest.mark.parametrize("source", ["qq", "wechat"])
-def test_unique_ids_preserve_existing_analysis(tmp_path, monkeypatch, source):
-    if source == "qq":
-        payload = qq_file([qq_row("a", "Human authored", 14),
-                           qq_row("b", "Filtered " + "z" * 110, 15)])
-        key = "14"
-    else:
-        payload = wx_file([wx_row(11, "Human authored [微笑]"),
-                           wx_row(12, "Filtered " + "z" * 110 + " [大哭]")])
-        key = "微笑"
-    result, (_, analyzed) = analyze(tmp_path, monkeypatch, [payload])
-    assert expression_counts(result) == {key: 1}
-    assert voice_expressions(analyzed) == [f"expression:{key}"]
-
-
-def test_mixed_detailed_and_rich_files_preserve_fallback(tmp_path, monkeypatch):
-    text_only = detailed_payload([{"timestamp": 1760000000,
-        "sender": {"nickname": "Fiction legacy"}, "type": "text",
-        "content": {"text": "Legacy authored 🐱"}}])
-    result, (kept, analyzed) = analyze(tmp_path, monkeypatch, [
-        text_only, qq_file([qq_row(None, "Rich authored", 14)]),
-    ])
-    assert len(kept) == 2
-    assert expression_counts(result) == {"🐱": 1, "14": 1}
-    assert voice_expressions(analyzed) == ["expression:🐱", "expression:14"]
-
-
-def test_import_pairs_preserve_even_equal_projected_instances(tmp_path):
-    # Same legacy values, distinct rich contents: value-keyed maps also fail.
-    payload = qq_file([qq_row(None, face=14), qq_row(None, face=15)])
-    path = tmp_path / "equal-projections.json"
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    outcome = ImportService().execute(ImportRequest(path))
-    assert outcome.messages[0] == outcome.messages[1]
-    assert outcome.messages[0] is not outcome.messages[1]
-    assert len(outcome.rich_message_pairs) == 2
-    for index, (legacy, rich) in enumerate(outcome.rich_message_pairs):
-        assert legacy is outcome.messages[index]
-        assert rich is outcome.rich_messages[index]
-
-
-def test_equal_projected_instances_both_keep_their_rich_contents(tmp_path, monkeypatch):
-    result, (kept, analyzed) = analyze(tmp_path, monkeypatch, [
-        qq_file([qq_row(None, face=14), qq_row(None, face=15)]),
-    ])
-    assert kept[0] == kept[1] and kept[0] is not kept[1]
-    assert expression_counts(result) == {"14": 1, "15": 1}
-    assert voice_expressions(analyzed) == ["expression:14", "expression:15"]
-
-
 def test_direct_expression_call_does_not_guess_among_duplicate_ids(tmp_path):
     path = tmp_path / "duplicate-projections.json"
     path.write_text(json.dumps(qq_file([

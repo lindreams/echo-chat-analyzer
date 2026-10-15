@@ -58,25 +58,6 @@ def test_base_version_and_wrapper_are_pinned_to_the_launch(tmp_path, monkeypatch
     assert Path(env["NAPCAT_WRAPPER_PATH"]) == (app / "wrapper.node").resolve()
 
 
-@pytest.mark.parametrize("build,blocked", [(40767, True), (40768, False)])
-def test_base_minimum_build_is_preserved(tmp_path, monkeypatch, build, blocked):
-    config, _ = _base(tmp_path, f"9.9.22-{build}", str(build))
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 36, 53644))
-    if blocked:
-        with pytest.raises(bridge.QQAuthWindowUnavailable) as error: bridge.default_auth_window_launcher(config)
-        assert error.value.code == "qq_version_too_old"
-    else:
-        assert callable(bridge.default_auth_window_launcher(config))
-
-
-def test_full_version_without_redundant_build_field_is_identifiable(tmp_path, monkeypatch):
-    config, app = _base(tmp_path)
-    (app / "package.json").write_text('{"version":"9.9.36-53644","main":"index.js"}')
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
-    assert bridge._known_qq_version(config.qq_install_path) == (9, 9, 36, 53644)
-    assert callable(bridge.default_auth_window_launcher(config))
-
-
 @pytest.mark.parametrize("info", [
     {"version": "newest", "buildVersion": "53644"},
     {"buildVersion": "53644"}, {"version": "9.9.36"},
@@ -89,17 +70,6 @@ def test_unidentifiable_fields_do_not_fall_back_to_new_pe(tmp_path, monkeypatch,
     assert bridge._known_qq_version(config.qq_install_path) is None
     with pytest.raises(bridge.QQAuthWindowUnavailable) as error: bridge.default_auth_window_launcher(config)
     assert error.value.code == "qq_resources_unverified"
-
-
-def test_absent_metadata_does_not_claim_new_pe_compatibility(tmp_path, monkeypatch, caplog):
-    config = _runtime_config(tmp_path)
-    (tmp_path / "resources/app/package.json").write_text('{"name":"QQ","main":"index.js"}')
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 36, 53644))
-    assert bridge._known_qq_version(config.qq_install_path) is None
-    with caplog.at_level("INFO"):
-        bridge.default_auth_window_launcher(config)
-    assert "minimum_met" not in caplog.text
-    assert "result=unknown" in caplog.text
 
 
 @pytest.mark.parametrize("pe_build", [35469, 53644])

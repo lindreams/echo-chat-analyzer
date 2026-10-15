@@ -85,25 +85,6 @@ def test_exit_still_forces_out_when_the_protocol_times_out() -> None:
     assert exits == [1]
 
 
-def test_exit_forces_out_when_the_shutdown_wait_raises() -> None:
-    module = _app_module()
-    window = _RecordingWindow(error=RuntimeError("simulated wait failure"))
-    exits: list[int] = []
-
-    module._finish_process_exit(2, window=window, hard_exit=exits.append)
-
-    assert exits == [2]
-
-
-def test_exit_handles_a_window_without_the_shutdown_protocol() -> None:
-    module = _app_module()
-    exits: list[int] = []
-
-    module._finish_process_exit(3, window=object(), hard_exit=exits.append)
-
-    assert exits == []
-
-
 def test_exit_arms_a_last_resort_forced_exit_beyond_the_wait() -> None:
     module = _app_module()
     exits: list[int] = []

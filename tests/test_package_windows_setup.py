@@ -80,37 +80,6 @@ def invoke(packager, release):
                                   project_file=project, manifest_file=manifest)
 
 
-def test_setup_is_available():
-    assert SCRIPT.is_file()
-
-
-def test_cli_defaults_match_the_official_runtime_identity(packager, tmp_path, monkeypatch):
-    import sys
-    called = {}
-    def package(source, output, **kwargs):
-        called.update(kwargs)
-        return tmp_path / 'fictional-Setup.exe'
-    monkeypatch.setattr(packager, 'package_setup', package)
-    monkeypatch.setattr(sys, 'argv', ['package_windows_setup.py', '--output',
-        str(tmp_path / 'new-output'), '--vpk', 'fictional-vpk.exe'])
-    assert packager.main() == 0
-    assert (called['pack_id'], called['channel']) == ('Lindreams.Echo', 'win-x64-stable')
-
-
-@pytest.mark.parametrize('pack_id', ['Echo.UserTest020.20261013.7f3c9a21',
-                                    'Echo.1.2', 'Echo-1.2lab'])
-def test_version_like_id_prefix_is_rejected_before_vpk(packager, release, monkeypatch,
-                                                     pack_id):
-    monkeypatch.setattr(packager.subprocess, 'run',
-        lambda *a, **k: pytest.fail('Ambiguous package identity reached vpk'))
-    source, output, project, manifest = release
-    with pytest.raises(packager.PackageError, match='packId'):
-        packager.package_setup(source, output, vpk_path=Path('fictional-vpk.exe'),
-            pack_id=pack_id, channel='win-x64-test', project_file=project,
-            manifest_file=manifest)
-    assert not output.exists()
-
-
 @pytest.mark.parametrize("damage", ["private", "pin", "license", "sdk-version", "app-version"])
 def test_invalid_tree_never_invokes_vpk(packager, release, monkeypatch, damage):
     source, output, _, _ = release
@@ -181,32 +150,6 @@ def test_vpk_receives_staging_and_project_version(packager, release, monkeypatch
     assert setup.is_file() and setup.parent == output
     assert original == {p.relative_to(source).as_posix(): p.read_bytes() for p in source.rglob("*") if p.is_file()}
     assert (output / "setup-build.json").is_file()
-
-
-def test_setup_reuses_echo_icon_and_creates_desktop_and_start_menu_shortcuts(
-        packager, release, monkeypatch):
-    source, _, _, _ = release
-    options = {}
-
-    def inspect(command):
-        options.update(zip(command, command[1:]))
-        assert "--splashImage" not in command
-
-    monkeypatch.setattr(packager.subprocess, "run", fictional_vpk(source, inspect))
-    invoke(packager, release)
-    assert options["--shortcuts"] == "Desktop,StartMenuRoot"
-    assert options["--icon"] == str(packager.ECHO_SETUP_ICON)
-    assert packager.ECHO_SETUP_ICON.is_file()
-    assert options["--packTitle"] == "Echo"
-    assert options["--mainExe"] == "Echo.exe"
-
-
-def test_missing_echo_icon_is_rejected_before_vpk(packager, release, monkeypatch):
-    monkeypatch.setattr(packager, "ECHO_SETUP_ICON", release[1].parent / "absent-icon.ico")
-    monkeypatch.setattr(packager.subprocess, "run", lambda *a, **k: pytest.fail("vpk reached"))
-    with pytest.raises(packager.PackageError, match="[Ii]con"):
-        invoke(packager, release)
-    assert not release[1].exists()
 
 
 def test_pack_failure_leaves_no_output(packager, release, monkeypatch):

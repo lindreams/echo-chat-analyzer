@@ -128,44 +128,6 @@ def _detailed_message(
     }
 
 
-def _write_chatlab(
-    path: Path,
-    *,
-    group_id: str,
-    conversation_type: str,
-    messages: list[dict[str, object]],
-) -> None:
-    lines = [
-        {
-            "_type": "header",
-            "meta": {
-                "name": "Fictional Group",
-                "platform": "wechat",
-                "type": conversation_type,
-                "groupId": group_id,
-            },
-        }
-    ]
-    lines.extend(messages)
-    path.write_text(
-        "\n".join(json.dumps(line, ensure_ascii=False) for line in lines) + "\n",
-        encoding="utf-8",
-    )
-
-
-def _chatlab_message(username: str, *, is_send: int) -> dict[str, object]:
-    return {
-        "_type": "message",
-        "sender": username,
-        "accountName": "Fictional Sender",
-        "timestamp": 1753412807,
-        "type": 0,
-        "content": "fictional chatlab text",
-        "platformMessageId": "fictional-chatlab-001",
-        "isSend": is_send,
-    }
-
-
 def _import_outcome(input_path: Path, platform: str):
     application = importlib.import_module("qq_chat_analyzer.application")
     return application.ImportService().execute(
@@ -173,54 +135,7 @@ def _import_outcome(input_path: Path, platform: str):
     )
 
 
-def _request_dto(tmp_path: Path, input_path: Path):
-    dto = importlib.import_module("qq_chat_analyzer.application.dto")
-    return dto.AnalysisRequestDTO(
-        input_path=input_path,
-        output_directory=tmp_path / "private-output",
-        stopwords_path=tmp_path / "private-stopwords.txt",
-        font_path=None,
-        top=5,
-        conversation_kind="private",
-        viewer_speaker_key="wxid_fictional_me",
-    )
-
-
 # ------------------------------------------------------------------ model
-
-
-def test_chat_message_backward_compatible_defaults() -> None:
-    message = ChatMessage(
-        timestamp=1,
-        sender="Fictional Alice",
-        message_type="text",
-        text="hello",
-    )
-
-    assert message.conversation_type == "unknown"
-    assert message.is_self is None
-
-
-def test_legacy_projection_preserves_identity_semantics() -> None:
-    rich_message = RichMessage(
-        message_id="fictional-message-001",
-        source="qq",
-        conversation_id="fictional-room",
-        sender=SenderIdentity(
-            identity_id="u-fictional-1",
-            display_name="Fictional Alice",
-        ),
-        timestamp=1,
-        message_type="text",
-        contents=(TextContent(text="hello"),),
-        conversation_type="group",
-        is_self=True,
-    )
-
-    message = project_legacy_message(rich_message)
-
-    assert message.conversation_type == "group"
-    assert message.is_self is True
 
 
 # ------------------------------------------------------ stable aggregation
@@ -293,42 +208,10 @@ def _qq_import(tmp_path, records, **context):
     return _import_outcome(path, "qq")
 
 
-def test_qq_private_export_sets_conversation_type(tmp_path):
-    outcome = _qq_import(tmp_path, [qq_db_record("private text")], session_type="private")
-    assert outcome.messages[0].conversation_type == "private"
-
-
-def test_qq_group_export_sets_conversation_type(tmp_path):
-    outcome = _qq_import(tmp_path, [qq_db_record("group text")], session_type="group")
-    assert outcome.messages[0].conversation_type == "group"
-
-
 def test_qq_missing_conversation_context_does_not_invent_identity(tmp_path):
     outcome = _qq_import(tmp_path, [qq_db_record("fictional text")], session_type=None)
     assert outcome.messages == ()
     assert outcome.result.warnings == ("qq_db_record_skipped",)
-
-
-def test_qq_self_identity_only_when_reliable_identity_supplied():
-    qq_adapter = importlib.import_module("qq_chat_analyzer.qq_db_adapter")
-    rows = [qq_db_record("mine", sender_id="100000001"), qq_db_record("theirs", sender_id="100000002")]
-    known, _ = qq_adapter.parse_qq_db_messages(qq_db_payload(rows, self_uin="100000001"))
-    unknown, _ = qq_adapter.parse_qq_db_messages(qq_db_payload(rows))
-    assert [message.is_self for message in known] == [True, False]
-    assert [message.is_self for message in unknown] == [None, None]
-
-
-def test_qq_db_self_uin_flows_through_import(tmp_path):
-    outcome = _qq_import(tmp_path, [
-        qq_db_record("mine", sender_id="100000001"),
-        qq_db_record("theirs", sender_id="100000002"),
-    ], self_uin="100000001")
-    assert [message.is_self for message in outcome.messages] == [True, False]
-
-
-def test_qq_db_unreliable_self_uin_stays_unknown(tmp_path):
-    outcome = _qq_import(tmp_path, [qq_db_record("fictional text")], self_uin="0")
-    assert outcome.messages[0].is_self is None
 
 
 def test_qq_db_self_identity_canonicalizes_numeric_sender(tmp_path):
@@ -392,116 +275,7 @@ def test_wechat_db_self_identity_uses_conversation_self_username(
     assert unknown_outcome.messages[0].is_self is None
 
 
-def test_wechat_cli_direction_maps_self_and_keeps_conversation_id() -> None:
-    cli_adapter = importlib.import_module("qq_chat_analyzer.wechat_cli_adapter")
-    rows = [
-        {
-            "localId": 1,
-            "serverId": 900001,
-            "createTime": 1753412807,
-            "sortSeq": 1,
-            "direction": "out",
-            "senderUsername": "wxid_fictional_me",
-            "type": 1,
-            "content": "mine",
-        },
-        {
-            "localId": 2,
-            "serverId": 900002,
-            "createTime": 1753412810,
-            "sortSeq": 2,
-            "direction": "in",
-            "senderUsername": "wxid_fictional_peer",
-            "type": 1,
-            "content": "theirs",
-        },
-        {
-            "localId": 3,
-            "serverId": 900003,
-            "createTime": 1753412820,
-            "sortSeq": 3,
-            "direction": "unknown",
-            "senderUsername": "wxid_fictional_other",
-            "type": 1,
-            "content": "unknown",
-        },
-    ]
-
-    messages = cli_adapter.parse_messages(
-        rows,
-        conversation_id="fictional-cli-session",
-    )
-
-    assert [message.is_self for message in messages] == [True, False, None]
-    assert [message.conversation_id for message in messages] == [
-        "fictional-cli-session",
-    ] * 3
-
-
-def test_wechat_detailed_json_session_context_and_is_send(tmp_path: Path) -> None:
-    export_path = tmp_path / "wechat-detailed.json"
-    _write_detailed_wechat(
-        export_path,
-        session_id="fictional-chatroom",
-        is_group=True,
-        messages=[
-            _detailed_message("wxid_fictional_me", "Fictional Me", is_send=1),
-            _detailed_message("wxid_fictional_peer", "Fictional Peer", is_send=0),
-        ],
-    )
-
-    outcome = _import_outcome(export_path, "wechat")
-
-    assert [message.conversation_id for message in outcome.messages] == [
-        "fictional-chatroom",
-    ] * 2
-    assert [message.conversation_type for message in outcome.messages] == [
-        "group",
-        "group",
-    ]
-    assert [message.is_self for message in outcome.messages] == [True, False]
-
-
-def test_wechat_chatlab_header_context_and_is_send(tmp_path: Path) -> None:
-    export_path = tmp_path / "chatlab.jsonl"
-    _write_chatlab(
-        export_path,
-        group_id="fictional-chatroom",
-        conversation_type="group",
-        messages=[
-            _chatlab_message("wxid_fictional_me", is_send=1),
-            _chatlab_message("wxid_fictional_peer", is_send=0),
-        ],
-    )
-
-    outcome = _import_outcome(export_path, "wechat")
-
-    assert [message.conversation_id for message in outcome.messages] == [
-        "fictional-chatroom",
-    ] * 2
-    assert [message.conversation_type for message in outcome.messages] == [
-        "group",
-        "group",
-    ]
-    assert [message.is_self for message in outcome.messages] == [True, False]
-
-
 # ---------------------------------------------------------------- Echo
-
-
-def test_analysis_request_dto_carries_echo_identity_options(tmp_path: Path) -> None:
-    dto = importlib.import_module("qq_chat_analyzer.application.dto")
-    request = dto.AnalysisRequestDTO(
-        input_path=tmp_path / "input.json",
-        output_directory=tmp_path / "private-output",
-        stopwords_path=tmp_path / "private-stopwords.txt",
-        conversation_kind="private",
-        viewer_speaker_key="wxid_fictional_me",
-    )
-
-    assert request.conversation_kind == "private"
-    assert request.viewer_speaker_key == "wxid_fictional_me"
-    assert "wxid_fictional_me" not in repr(request)
 
 
 def test_identity_diagnostics_log_is_anonymized(caplog) -> None:

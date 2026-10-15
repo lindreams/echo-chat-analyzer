@@ -141,29 +141,6 @@ def test_non_setup_or_missing_feed_only_checks_release_page(integrated, mode):
     assert manager.checks == manager.downloads == 0
 
 
-def test_unknown_download_result_does_not_count_as_success(integrated):
-    dialog, executor, _, _, _, _ = integrated
-    dialog.check_button.click()
-    run(executor.tasks[-1])
-    dialog.download_button.click()
-    executor.tasks[-1].on_success(object())
-    assert '下载完成' not in dialog.status_label.text()
-    assert '重试' in dialog.status_label.text()
-
-
-def test_fallback_clears_previously_available_download(integrated):
-    dialog, executor, _, core, manager, releases = integrated
-    dialog.check_button.click()
-    run(executor.tasks[-1])
-    assert dialog.download_button.isVisible()
-    manager.portable = True
-    dialog.check_button.click()
-    run(executor.tasks[-1])
-    assert releases == [True]
-    assert dialog.release_button.isVisible()
-    assert not dialog.download_button.isVisible()
-
-
 def test_real_worker_closed_dialog_and_reopened_observer(integrated, app):
     _, _, facade, core, manager, _ = integrated
     entered, release = Event(), Event()

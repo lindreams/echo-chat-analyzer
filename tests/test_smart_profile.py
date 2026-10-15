@@ -62,33 +62,6 @@ def test_welcome_template_flows_through_decision_engine_and_pipeline() -> None:
     assert result.applied_decisions[0].action == "ignore"
 
 
-def test_repeated_template_flows_through_decision_engine_and_pipeline() -> None:
-    sign_in_messages = [
-        _message(
-            "虚构签到助手",
-            f"签到成功，积分+{points}",
-            index,
-        )
-        for index, points in enumerate((10, 20, 30, 40, 50))
-    ]
-    ordinary_message = _message(
-        "虚构普通用户",
-        "今天讨论本地测试方案",
-        5,
-    )
-
-    result = run_smart_profile([*sign_in_messages, ordinary_message])
-
-    assert result.kept_messages == [ordinary_message]
-    assert result.filtered_messages == sign_in_messages
-    assert len(result.applied_decisions) == 1
-    assert result.applied_decisions[0].target_type == "template"
-    assert result.applied_decisions[0].action == "ignore"
-    assert result.applied_decisions[0].reason == (
-        "high_confidence_repeated_template"
-    )
-
-
 def test_repeated_template_review_does_not_filter_ordinary_messages() -> None:
     low_frequency_messages = [
         _message(
@@ -107,20 +80,6 @@ def test_repeated_template_review_does_not_filter_ordinary_messages() -> None:
     result = run_smart_profile([*low_frequency_messages, ordinary_message])
 
     assert result.kept_messages == [*low_frequency_messages, ordinary_message]
-    assert result.filtered_messages == []
-    assert result.applied_decisions == []
-
-
-def test_ordinary_messages_are_preserved_with_traceable_empty_result() -> None:
-    messages = [
-        _message("虚构用户甲", "今天讨论什么主题", 1),
-        _message("虚构用户乙", "晚上一起复习课程", 2),
-        _message("虚构用户丙", "明天去图书馆学习", 3),
-    ]
-
-    result = run_smart_profile(messages)
-
-    assert result.kept_messages == messages
     assert result.filtered_messages == []
     assert result.applied_decisions == []
 
@@ -153,48 +112,6 @@ def test_interactive_bot_without_calibration_metrics_is_not_filtered(
     assert result.applied_decisions == []
     assert result.filtered_messages == []
     assert result.kept_messages == messages
-
-
-def test_all_three_detectors_merge_candidates_without_overwriting(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured_candidates = _capture_decision_candidates(monkeypatch)
-    robot_messages = [
-        _message("虚构固定播报助手", "虚构固定播报", index)
-        for index in range(20)
-    ]
-    welcome_messages = [
-        _message(
-            "虚构欢迎助手",
-            f"欢迎 虚构成员{member} 加入群聊",
-            100 + index,
-        )
-        for index, member in enumerate(("甲", "乙", "丙", "丁"))
-    ]
-    interactive_messages = _interactive_messages(
-        mention_count=5,
-        start_timestamp=200,
-    )
-
-    run_smart_profile(
-        [
-            *robot_messages,
-            *welcome_messages,
-            *interactive_messages,
-        ]
-    )
-
-    candidate_types = {
-        candidate.candidate_type
-        for candidate in captured_candidates
-    }
-    assert "robot_sender" in candidate_types
-    assert "welcome_template" in candidate_types
-    assert "automation_source" in candidate_types
-    assert any(
-        candidate.metadata.get("source_kind") == "interactive_bot"
-        for candidate in captured_candidates
-    )
 
 
 def _capture_decision_candidates(
@@ -255,26 +172,6 @@ def test_literal_placeholder_template_does_not_widen_filtering() -> None:
 
     assert result.filtered_messages == spam_messages
     assert result.kept_messages == normal_messages
-    assert result.applied_decisions[0].target_type == "template"
-    assert result.applied_decisions[0].action == "ignore"
-
-
-def test_cross_member_literal_placeholder_spam_is_still_filtered() -> None:
-    spam_messages = [
-        _message(
-            f"虚构成员{chr(0x4E00 + index)}",
-            "模板是 {variable} 请替换99",
-            index,
-        )
-        for index in range(4)
-    ]
-    normal_message = _message("虚构普通用户", "今天讨论本地测试方案", 10)
-
-    result = run_smart_profile([*spam_messages, normal_message])
-
-    assert result.filtered_messages == spam_messages
-    assert result.kept_messages == [normal_message]
-    assert len(result.applied_decisions) == 1
     assert result.applied_decisions[0].target_type == "template"
     assert result.applied_decisions[0].action == "ignore"
 

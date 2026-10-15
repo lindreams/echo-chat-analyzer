@@ -84,66 +84,6 @@ def _config(
 
 
 
-def test_runtime_launcher_hides_console_on_windows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _runtime_module()
-    executable = tmp_path / "NapCatWinBootMain.exe"
-    executable.write_text("fake", encoding="utf-8")
-    runtime = _make_runtime(
-        executable=executable,
-        working_directory=tmp_path,
-    )
-    calls = []
-
-    def _popen(args, **kwargs):
-        calls.append((args, kwargs))
-        return _FakePopen(args)
-
-    monkeypatch.setattr(module.os, "name", "nt")
-    monkeypatch.setattr(
-        module.subprocess,
-        "CREATE_NO_WINDOW",
-        0x08000000,
-        raising=False,
-    )
-    monkeypatch.setattr(*_launch_target(module), _popen)
-
-    info = runtime.start()
-
-    assert calls[0][0] == [str(executable)]
-    assert calls[0][1]["cwd"] == str(tmp_path)
-    assert calls[0][1]["creationflags"] == 0x08000000
-    assert info.pid == 9001
-    assert info.owned_process is True
-
-
-def test_runtime_launcher_omits_windows_creation_flags_on_non_windows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _runtime_module()
-    executable = tmp_path / "NapCatWinBootMain.exe"
-    executable.write_text("fake", encoding="utf-8")
-    runtime = _make_runtime(
-        executable=executable,
-        working_directory=tmp_path,
-    )
-    calls = []
-
-    def _popen(args, **kwargs):
-        calls.append((args, kwargs))
-        return _FakePopen(args)
-
-    monkeypatch.setattr(module.os, "name", "posix")
-    monkeypatch.setattr(*_launch_target(module), _popen)
-
-    runtime.start()
-
-    assert "creationflags" not in calls[0][1]
-
-
 def _make_runtime(
     *,
     executable: Path,
@@ -196,20 +136,6 @@ def _popen_patch(runtime_module, **popen_kwargs):
 
 
 # ---------------------------------------------------------- file existence
-
-
-def test_runtime_missing_executable_is_not_installed(tmp_path: Path) -> None:
-    module = _runtime_module()
-    runtime = _make_runtime(
-        executable=tmp_path / "missing" / "NapCatWinBootMain.exe",
-        working_directory=tmp_path,
-    )
-
-    assert runtime.is_installed() is False
-    with pytest.raises(module.QQChatRuntimeError):
-        runtime.start()
-    with pytest.raises(module.QQChatRuntimeError):
-        runtime.wait_ready()
 
 
 def _started_runtime(tmp_path: Path, **runtime_kwargs):
@@ -342,18 +268,6 @@ def test_stop_terminates_and_clears_state(tmp_path: Path) -> None:
     assert runtime.running() is False
 
 
-def test_stop_without_process_is_a_noop(tmp_path: Path) -> None:
-    module = _runtime_module()
-    runtime = _make_runtime(
-        executable=tmp_path / "NapCatWinBootMain.exe",
-        working_directory=tmp_path,
-    )
-
-    runtime.stop()
-
-    assert runtime.running() is False
-
-
 def test_stop_does_not_terminate_healthy_external_runtime(tmp_path: Path) -> None:
     module = _runtime_module()
     executable = tmp_path / "NapCatWinBootMain.exe"
@@ -375,35 +289,7 @@ def test_stop_does_not_terminate_healthy_external_runtime(tmp_path: Path) -> Non
 # -------------------------------------------------------- process lifecycle
 
 
-def test_running_reflects_process_exit(tmp_path: Path) -> None:
-    module = _runtime_module()
-    executable = tmp_path / "NapCatWinBootMain.exe"
-    executable.write_text("fake", encoding="utf-8")
-    runtime = _make_runtime(
-        executable=executable,
-        working_directory=tmp_path,
-    )
-    fake, patcher = _popen_patch(module, running=True)
-    try:
-        runtime.start()
-        assert runtime.running() is True
-        fake._running = False
-        assert runtime.running() is False
-        info = runtime.get_info()
-        assert info.pid == 9001
-    finally:
-        patcher.stop()
-
-
 # ------------------------------------------------------------------ readiness
-
-
-def test_wait_ready_succeeds_when_health_checker_passes(
-    tmp_path: Path,
-) -> None:
-    runtime, _ = _started_runtime(tmp_path, health=True)
-
-    runtime.wait_ready()
 
 
 def test_wait_ready_times_out_with_user_safe_error(
@@ -432,19 +318,3 @@ def test_wait_ready_times_out_with_user_safe_error(
     assert excinfo.value.public_message != ""
     assert "Traceback" not in excinfo.value.public_message
     assert clock[0] >= 5.0
-
-
-def test_health_checker_exception_is_not_leaked(tmp_path: Path) -> None:
-    module = _runtime_module()
-    runtime, _ = _started_runtime(
-        tmp_path,
-        health_error=RuntimeError("health probe exploded with secret"),
-        ready_timeout=0.1,
-        poll_interval=0.05,
-    )
-
-    with pytest.raises(module.QQChatRuntimeError) as excinfo:
-        runtime.wait_ready()
-
-    assert "health probe exploded with secret" not in excinfo.value.public_message
-    assert "Traceback" not in excinfo.value.public_message

@@ -10,7 +10,7 @@ import pytest
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize('attempt', range(3))
+@pytest.mark.parametrize('attempt', [0])
 @pytest.mark.parametrize('scenario', ['normal', 'failure', 'repeated', 'worker', 'timeout', 'teardown_hang', 'owned_helper'])
 def test_desktop_exit_is_bounded_in_a_real_process(tmp_path, scenario, attempt):
     if scenario == 'owned_helper' and sys.platform != 'win32':

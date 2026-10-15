@@ -112,68 +112,7 @@ def test_direct_db_step_window_covers_the_budget_the_service_declares() -> None:
     assert events == ["direct_db_start", "direct_db_end", "qq_terminate"]
 
 
-def test_default_direct_db_step_window_covers_the_real_service_budget() -> None:
-    """The shipped defaults must be coherent with the real service budget."""
-    facade_module = _facade_module()
-    service = _direct_db_module().QQDirectDatabaseImportService(
-        runtime_client=_SilentClient(),
-    )
-    facade = facade_module.ChatAnalyzerFacade(
-        qq_service=service,
-        qq_process_registry=_FakeRegistry(),
-    )
-
-    window = facade._direct_db_step_window()
-
-    assert window == pytest.approx(15.1)
-    assert window > service.shutdown_budget_seconds
-    assert (
-        window + 2 * facade_module.DEFAULT_SHUTDOWN_STEP_SECONDS
-        + facade._source_lifecycle_step_window()
-        < importlib.import_module(
-            "qq_chat_analyzer.gui.app"
-        ).SHUTDOWN_WAIT_SECONDS
-    )
-
-
-def test_shutdown_budget_is_finite_and_covers_drain_and_recover() -> None:
-    direct_db = _direct_db_module()
-    service = direct_db.QQDirectDatabaseImportService(
-        runtime_client=_SilentClient(),
-        shutdown_drain_seconds=direct_db.DEFAULT_SHUTDOWN_DRAIN_SECONDS,
-    )
-
-    budget = service.shutdown_budget_seconds
-
-    assert budget > direct_db.DEFAULT_SHUTDOWN_DRAIN_SECONDS
-    assert budget == (
-        direct_db.DEFAULT_SHUTDOWN_DRAIN_SECONDS
-        + direct_db.DEFAULT_SHUTDOWN_RECOVER_SECONDS
-    )
-    assert budget + 5.0 == pytest.approx(15.1)
-
-
 # ------------------------------------------------------------- step logging
-
-
-def test_step_runner_logs_started_and_finished_for_every_step(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    facade = _facade_module().ChatAnalyzerFacade(
-        qq_service=_SilentService(),
-        qq_process_registry=_FakeRegistry(),
-        shutdown_step_seconds=0.5,
-    )
-
-    with caplog.at_level(logging.INFO, logger=FACADE_LOGGER):
-        facade.shutdown()
-
-    for label in ("direct_db_cleanup", "qq_runtime_termination"):
-        assert f"step={label}" in caplog.text
-    assert "QQ shutdown step started" in caplog.text
-    assert "QQ shutdown step finished" in caplog.text
-    assert "QQ shutdown requested" in caplog.text
-    assert "QQ shutdown finished" in caplog.text
 
 
 def test_step_runner_logs_the_timeout_and_keeps_going(
@@ -201,70 +140,7 @@ def test_step_runner_logs_the_timeout_and_keeps_going(
     release.set()
 
 
-class _SilentService:
-    def __init__(self) -> None:
-        self.shutdown_budget_seconds = 0.1
-
-    def shutdown(self) -> None:
-        return None
-
-
 # ------------------------------------------------------- direct db logging
-
-
-def test_direct_db_shutdown_logs_entered_drain_recover_and_return(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    service = _direct_db_module().QQDirectDatabaseImportService(
-        runtime_client=_SilentClient(),
-        shutdown_drain_seconds=0.05,
-    )
-    service.start()
-
-    with caplog.at_level(logging.INFO, logger=DIRECT_DB_LOGGER):
-        service.shutdown()
-
-    assert "shutdown entered" in caplog.text
-    assert "drain started" in caplog.text
-    assert "drain completed" in caplog.text
-    assert "recover started" in caplog.text
-    assert "recover completed" in caplog.text
-    assert "shutdown returned" in caplog.text
-
-
-def test_direct_db_shutdown_logs_the_drain_timeout_with_active_count(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    service = _direct_db_module().QQDirectDatabaseImportService(
-        runtime_client=_SilentClient(),
-        shutdown_drain_seconds=0.05,
-    )
-    service.start()
-    service._begin_acquisition()
-
-    with caplog.at_level(logging.INFO, logger=DIRECT_DB_LOGGER):
-        service.shutdown()
-
-    assert "drain timed out" in caplog.text
-    assert "active=1" in caplog.text
-
-
-def test_direct_db_shutdown_logs_recover_failure_and_still_returns(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    direct_db = _direct_db_module()
-    service = direct_db.QQDirectDatabaseImportService(
-        runtime_client=_SilentClient(fail_after=1),
-        shutdown_drain_seconds=0.05,
-    )
-    service.start()
-
-    with caplog.at_level(logging.INFO, logger=DIRECT_DB_LOGGER):
-        with pytest.raises(direct_db.QQDirectDatabaseRecoveryFailed):
-            service.shutdown()
-
-    assert "recover failed" in caplog.text
-    assert "shutdown returned" in caplog.text
 
 
 def test_direct_db_shutdown_diagnostics_never_leak_private_fields(

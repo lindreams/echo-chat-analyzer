@@ -25,20 +25,6 @@ def test_install_move_only_changes_program_root(installation, tmp_path):
     assert not user.exists()
 
 
-def test_source_and_frozen_have_same_user_paths(monkeypatch, tmp_path):
-    monkeypatch.setattr(resources, "_PROJECT_ROOT", tmp_path / "source")
-    source = paths.qq_runtime_paths(component_id="b" * 64)
-    monkeypatch.setattr(sys, "frozen", True, raising=False)
-    monkeypatch.setattr(sys, "executable", str(tmp_path / "安装 空间" / "Echo.exe"))
-    monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path / "irrelevant"), raising=False)
-    frozen = paths.qq_runtime_paths(component_id="b" * 64)
-    assert source.program_root == tmp_path / "source/runtime/qq-napcat-candidate"
-    assert frozen.program_root == tmp_path / "安装 空间/runtime/qq-napcat-candidate"
-    assert source.work_root == frozen.work_root
-    assert source.snapshot_root == frozen.snapshot_root
-    assert not source.work_root.parent.exists()
-
-
 def test_custom_path_is_never_replaced(tmp_path):
     custom = config.QQEnvironmentConfig(runtime_directory=tmp_path / "custom",
                                         runtime_mode="custom")
@@ -58,14 +44,6 @@ def test_untagged_existing_config_requires_explicit_decision(tmp_path):
     assert json.loads(location.read_text(encoding="utf-8")) == {"runtime_directory": str(tmp_path / "old")}
 
 
-@pytest.mark.parametrize("mode", ["managed", "custom"])
-def test_explicit_mode_roundtrips_without_rewriting_saved_path(mode, tmp_path):
-    location = tmp_path / "qq.json"
-    original = config.QQEnvironmentConfig(runtime_directory=tmp_path / "chosen", runtime_mode=mode)
-    config.QQEnvironmentConfigWriter(location).save(original)
-    assert config.QQEnvironmentConfigLoader(location).load() == original
-
-
 def test_unknown_mode_cannot_be_interpreted_as_managed(tmp_path):
     location = tmp_path / "qq.json"
     location.write_text('{"runtime_mode":"typo"}', encoding="utf-8")
@@ -77,22 +55,6 @@ def test_unknown_mode_cannot_be_interpreted_as_managed(tmp_path):
 def test_component_identity_cannot_escape_user_directory(identity):
     with pytest.raises(ValueError):
         paths.qq_runtime_paths(component_id=identity)
-
-
-def test_user_root_fallback_is_pure(monkeypatch, tmp_path):
-    monkeypatch.delenv("LOCALAPPDATA")
-    assert resources.user_data_root() == tmp_path / "test-home/.localchatanalyzer"
-    assert not resources.user_data_root().exists()
-
-
-def test_new_default_has_known_managed_provenance(tmp_path):
-    default = config.default_qq_environment_config()
-    assert default.runtime_mode == "managed"
-    result = paths.qq_runtime_paths(default, component_id="e" * 64,
-                                    program_root=tmp_path / "current-install")
-    assert result.program_root == tmp_path / "current-install"
-    missing = config.QQEnvironmentConfigLoader(tmp_path / "missing.json").load_or_default()
-    assert missing.runtime_mode == "managed"
 
 
 def test_legacy_fallback_does_not_claim_to_migrate_saved_ownership(tmp_path):

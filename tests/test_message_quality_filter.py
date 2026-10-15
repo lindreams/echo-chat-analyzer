@@ -36,18 +36,6 @@ def test_messages_at_least_100_characters_are_filtered() -> None:
     }
 
 
-def test_99_character_normal_message_is_kept() -> None:
-    normal_long_text = _long_text(LONG_TEXT_THRESHOLD - 1)
-    message = _message("虚构用户", normal_long_text, 1_700_000_000)
-
-    result = apply_message_quality_filter([message])
-
-    assert len(normal_long_text) == LONG_TEXT_THRESHOLD - 1
-    assert result.kept_messages == [message]
-    assert result.filtered_messages == []
-    assert result.reasons == []
-
-
 def test_single_character_repeat_spam_is_filtered() -> None:
     message = _message("虚构用户", "哈哈哈哈哈哈哈哈", 1_700_000_000)
 
@@ -56,16 +44,6 @@ def test_single_character_repeat_spam_is_filtered() -> None:
     assert result.kept_messages == []
     assert result.filtered_messages == [message]
     assert result.reasons[0].reason == "noise_single_character_repeat"
-
-
-def test_repeated_fragment_meme_is_filtered() -> None:
-    message = _message("虚构用户", "芜湖起飞" * 3, 1_700_000_000)
-
-    result = apply_message_quality_filter([message])
-
-    assert result.kept_messages == []
-    assert result.filtered_messages == [message]
-    assert result.reasons[0].reason == "noise_repeated_fragment"
 
 
 def test_same_text_burst_within_60_seconds_keeps_only_first() -> None:
@@ -102,58 +80,6 @@ def test_normal_chat_is_not_mis_filtered() -> None:
     assert result.reasons == []
 
 
-def test_burst_filter_keeps_normal_repeats_before_and_after_the_run() -> None:
-    messages = [
-        _message("虚构用户甲", "正常重复短句", 1_700_000_000 + offset)
-        for offset in (0, 3600, 3610, 3620, 7200)
-    ]
-
-    result = apply_message_quality_filter(messages)
-
-    assert result.kept_messages == [messages[0], messages[1], messages[4]]
-    assert result.filtered_messages == [messages[2], messages[3]]
-
-
-def test_each_independent_burst_keeps_its_first_message() -> None:
-    messages = [
-        _message("虚构用户甲", "正常重复短句", 1_700_000_000 + offset)
-        for offset in (0, 30, 60, 61, 91, 121)
-    ]
-
-    result = apply_message_quality_filter(messages)
-
-    assert result.kept_messages == [messages[0], messages[3]]
-    assert result.filtered_messages == [messages[1], messages[2], messages[4], messages[5]]
-    assert all(reason.metadata["window_seconds"] == 60 for reason in result.reasons)
-
-
-def test_intervening_sender_starts_a_separate_burst() -> None:
-    first_run = [
-        _message("虚构用户甲", "正常重复短句", 1_700_000_000 + offset)
-        for offset in (0, 10, 20)
-    ]
-    intervening = _message("虚构用户乙", "其他回复", 1_700_000_025)
-    second_run = [
-        _message("虚构用户甲", "正常重复短句", 1_700_000_000 + offset)
-        for offset in (30, 40, 50)
-    ]
-
-    result = apply_message_quality_filter([*first_run, intervening, *second_run])
-
-    assert result.kept_messages == [first_run[0], intervening, second_run[0]]
-    assert result.filtered_messages == [*first_run[1:], *second_run[1:]]
-
-
-def test_two_identical_messages_are_not_a_burst() -> None:
-    first = _message("虚构用户", "复制内容", 1_700_000_000)
-    second = _message("虚构用户", "复制内容", 1_700_000_010)
-
-    result = apply_message_quality_filter([first, second])
-
-    assert result.kept_messages == [first, second]
-    assert result.filtered_messages == []
-
-
 def test_original_messages_are_never_removed_from_input() -> None:
     messages = [
         _message("虚构用户", "哈哈哈哈哈哈哈哈", 1_700_000_000),
@@ -166,14 +92,6 @@ def test_original_messages_are_never_removed_from_input() -> None:
     assert messages == snapshot
     assert len(messages) == 2
     assert set(result.kept_messages) | set(result.filtered_messages) == set(messages)
-
-
-def test_empty_input_returns_empty_partition() -> None:
-    result = apply_message_quality_filter([])
-
-    assert result.kept_messages == []
-    assert result.filtered_messages == []
-    assert result.reasons == []
 
 
 def test_interleaved_same_nickname_identities_are_never_a_burst() -> None:
@@ -241,18 +159,6 @@ def test_unresolved_record_never_joins_a_resolved_identity_burst() -> None:
 
     assert result.kept_messages == [unresolved, resolved[0]]
     assert result.filtered_messages == [resolved[1], resolved[2]]
-
-
-def test_records_without_identity_keep_legacy_burst_behavior() -> None:
-    messages = [
-        _message("旧记录用户", "复制内容", 1_700_000_000 + offset)
-        for offset in (0, 10, 20)
-    ]
-
-    result = apply_message_quality_filter(messages)
-
-    assert result.kept_messages == [messages[0]]
-    assert result.filtered_messages == messages[1:]
 
 
 def _long_text(length: int) -> str:

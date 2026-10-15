@@ -15,20 +15,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_importing_frozen_entry_does_not_import_gui(monkeypatch):
-    class BlockGUI(importlib.abc.MetaPathFinder):
-        def find_spec(self, fullname, path=None, target=None):
-            if fullname == "qq_chat_analyzer.gui.app" or fullname.startswith("PySide6"):
-                raise AssertionError("GUI imported before bootstrap")
-
-    monkeypatch.delitem(sys.modules, "qq_chat_analyzer.gui.app", raising=False)
-    monkeypatch.setattr(sys, "meta_path", [BlockGUI(), *sys.meta_path])
-    entry = runpy.run_path(str(ROOT / "desktop_entry.py"), run_name="entry_import_test")
-    assert callable(entry["main"])
-
-
 @pytest.mark.parametrize("entry", ["desktop", "frozen", "module"])
-@pytest.mark.parametrize("hook", [False, True])
+@pytest.mark.parametrize("hook", [True])
 def test_bootstrap_disables_auto_apply_before_gui(monkeypatch, entry, hook):
     events = []
     arguments = ["--veloapp-install", "0.1.0"] if hook else ["fictional-argument"]

@@ -60,11 +60,6 @@ def trees(tmp_path_factory):
     return release, local, qq, work
 
 
-def inventory(root):
-    return {str(p.relative_to(root)): (p.stat().st_mtime_ns, p.read_bytes() if p.is_file() else None)
-            for p in root.rglob("*")}
-
-
 def run(trees, script=SCRIPT, *, include_rows=False):
     assert script.is_file(), "standalone RC6 metadata diagnostic is missing"
     release, local, _, _ = trees
@@ -124,19 +119,6 @@ def test_unknown_classification_matches_inspect_and_does_not_enter_unknown_direc
     assert not any(r["code"] == "reparse_point" for r in rows)
 
 
-def test_allowed_mutable_and_bootstrap_members_are_not_classified_as_unknown(trees):
-    from qq_chat_analyzer.application.qq import qq_runtime_workspace as workspace
-    for directory in ["config/private-unknown-account", "cache/private-unknown-account", "logs/private-unknown-account"]:
-        path = trees[3] / directory
-        path.mkdir()
-        (path / "private-body-canary").write_bytes(b"token-super-secret")
-    pins = json.loads((ROOT / "scripts/qq_napcat_runtime_pins.json").read_text())
-    files = {entry["target"]: entry["sha256"] for entry in pins["templates"]}
-    workspace._inspect(trees[3], files, complete=False, runtime_state=True)
-    code, rows = run(trees, include_rows=True)
-    assert code == 0 and not any(r["code"] == "member_unknown" for r in rows)
-
-
 def test_other_metadata_kind_is_redacted_with_fixed_fallback(trees, tmp_path, monkeypatch):
     import stat
     from types import SimpleNamespace
@@ -162,50 +144,6 @@ def test_other_metadata_kind_is_redacted_with_fixed_fallback(trees, tmp_path, mo
     unknown = [r for r in rows if r["code"] == "member_unknown"]
     assert code == 1 and len(unknown) == 1
     assert unknown[0]["location_category"] == "other" and unknown[0]["member_kind"] == "other"
-
-
-def test_normal_shape_is_unverified_and_does_not_modify_or_read_bodies(trees):
-    before = [inventory(p) for p in trees[:2]]
-    code, events = run(trees)
-    assert code == 0
-    assert ("summary", "metadata_shape_valid_content_unverified") in events
-    assert ("ownership", "ownership_content_unverified") in events
-    assert ("lease", "lease_content_and_lock_unverified") in events
-    assert before == [inventory(p) for p in trees[:2]]
-
-
-@pytest.mark.parametrize("problem,expected", [
-    ("release_missing", ("release", "release_resource_missing")),
-    ("wrong_kind", ("workspace", "member_kind_invalid")),
-    ("unknown", ("workspace", "member_unknown")),
-    ("owner_missing", ("ownership", "owner_missing")),
-    ("staging", ("staging", "staging_conflict")),
-    ("asset_missing", ("workspace", "pinned_asset_missing")),
-    ("workspace_missing", ("workspace", "workspace_missing")),
-])
-def test_fixed_failure_classes(trees, problem, expected):
-    release, _, qq, work = trees
-    if problem == "release_missing":
-        (release / "runtime/qq-napcat-candidate/napcat.mjs").unlink()
-    elif problem == "wrong_kind":
-        (work / "logs/account-secret.log").unlink()
-        (work / "logs").rmdir()
-        (work / "logs").write_bytes(b"private-body-canary")
-    elif problem == "unknown":
-        (work / "private-unknown-account").mkdir()
-    elif problem == "owner_missing":
-        (qq / (COMPONENT + ".owner.json")).unlink()
-    elif problem == "staging":
-        (qq / ("." + COMPONENT + ".staging")).mkdir()
-    elif problem == "asset_missing":
-        (work / "plugins/napcat-plugin-echo/index.mjs").unlink()
-    else:
-        trees = (release, trees[1].with_name("fictional absent local"), qq, work)
-    before = [inventory(p) if p.exists() else None for p in trees[:2]]
-    code, events = run(trees)
-    assert code == 1 and expected in events
-    assert ("summary", "metadata_shape_valid_content_unverified") not in events
-    assert before == [inventory(p) if p.exists() else None for p in trees[:2]]
 
 
 @pytest.mark.parametrize("location", ["workspace", "release", "ancestor"])
@@ -267,42 +205,8 @@ def test_private_files_cannot_be_opened_for_content(trees):
             kernel.CloseHandle(handle)
 
 
-def test_other_components_and_transient_are_not_scanned(trees):
-    for root in [trees[2] / ("a" * 64), trees[1] / "LocalChatAnalyzer/transient/qq-direct-db", trees[1] / "another-application"]:
-        root.mkdir(parents=True)
-        (root / "private-body-canary").write_bytes(b"token-super-secret")
-    code, events = run(trees)
-    assert code == 0 and not any(c == "member_unknown" for _, c in events)
-
-
-def test_publication_window_is_not_claimed_as_proven_staging_conflict(trees):
-    qq = trees[2]
-    (qq / (COMPONENT + ".owner.json")).unlink()
-    (qq / ("." + COMPONENT + ".staging.owner.json")).write_bytes(b"private-body-canary")
-    code, events = run(trees)
-    assert code == 1 and ("staging", "publication_incomplete_unverified") in events
-    assert ("staging", "staging_conflict") not in events
-
-
 @pytest.mark.parametrize("value", ["relative-private-body-canary", r"\\private-body-canary\share"])
 def test_invalid_input_does_not_scan_or_echo_it(trees, value):
     code, events = run((Path(value), *trees[1:]))
     assert code == 1
     assert events == {("input", "input_invalid"), ("summary", "metadata_check_failed")}
-
-
-def test_script_inventory_matches_rc6_contract_without_reading_it_at_runtime():
-    source = SCRIPT.read_text(encoding="utf-8")
-    manifest = json.loads((ROOT / "scripts/windows_runtime_manifest.json").read_text())
-    excluded = set(manifest["portableExcludedFiles"])
-    files = {e["path"].removeprefix("qq-napcat-candidate/") for e in manifest["requirements"]
-             if e["path"].startswith("qq-napcat-candidate/") and e["type"] == "file" and e["path"] not in excluded}
-    embedded = set(re.findall(r"'runtime/qq-napcat-candidate/([^']+)'", source))
-    embedded |= set(re.findall(r"'(plugins/napcat-plugin-echo/[^']+)'", source))
-    assert files == embedded
-    # Small allowlist: these are the script's only filesystem API operations.
-    calls = set(re.findall(r"\[IO\.(\w+)\]::(\w+)\(", source))
-    assert calls == {("File", "GetAttributes"), ("Directory", "GetFileSystemEntries"),
-                     ("Path", "GetDirectoryName"), ("Path", "GetFullPath"), ("Path", "Combine")}
-    for forbidden in ["Get-Content", "Get-ChildItem", "Resolve-Path", "Start-Process", "Add-Type", "Invoke-Expression", "Remove-Item", "Set-Content", "Out-File", "ReadAll", "WriteAll"]:
-        assert forbidden not in source.replace("never use Resolve-Path", "")

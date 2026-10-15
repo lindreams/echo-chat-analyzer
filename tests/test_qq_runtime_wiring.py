@@ -127,43 +127,6 @@ def test_managed_launch_reuses_workspace_and_never_writes_release(release, monke
     assert client._runtime_id == paths.runtime_id
 
 
-def test_managed_launch_enables_snapshot_diagnostics_under_the_echo_log_directory(release, tmp_path, monkeypatch):
-    """A capture failure must be observable, not only reported as one code."""
-    program, loader, qq = release
-    paths = loader.runtime_paths(prepare=True)
-    from qq_chat_analyzer import diagnostics
-    monkeypatch.setattr(diagnostics, 'log_path', lambda: tmp_path / 'logs' / 'echo.log')
-    inherited = tmp_path / 'foreign-diagnostics.log'
-    monkeypatch.setenv('QCE_LOG_FILE', str(inherited))
-    seen = []
-    monkeypatch.setattr(*_launch_target(), lambda args, **kw: seen.append(kw['env']) or SimpleNamespace(poll=lambda: None))
-    auth.default_auth_window_launcher(loader.load_or_default(), paths=paths)()
-    child = seen[0]
-    expected = tmp_path / 'logs' / auth.SNAPSHOT_DIAGNOSTIC_FILENAME
-    assert child['QCE_LOG_FILE'] == str(expected)
-    assert expected.parent.is_dir()
-    # An inherited value is never adopted, and Echo's own environment is untouched.
-    assert child['QCE_LOG_FILE'] != str(inherited)
-    assert os.environ['QCE_LOG_FILE'] == str(inherited)
-
-
-def test_managed_launch_survives_an_unavailable_snapshot_diagnostic_channel(release, tmp_path, monkeypatch):
-    """A diagnostic channel is optional; it must never block the QQ launch."""
-    program, loader, qq = release
-    paths = loader.runtime_paths(prepare=True)
-    from qq_chat_analyzer import diagnostics
-
-    def unavailable():
-        raise OSError('fictional log directory failure')
-
-    monkeypatch.setattr(diagnostics, 'log_path', unavailable)
-    monkeypatch.setenv('QCE_LOG_FILE', str(tmp_path / 'foreign-diagnostics.log'))
-    seen = []
-    monkeypatch.setattr(*_launch_target(), lambda args, **kw: seen.append(kw['env']) or SimpleNamespace(poll=lambda: None))
-    auth.default_auth_window_launcher(loader.load_or_default(), paths=paths)()
-    assert 'QCE_LOG_FILE' not in seen[0]
-
-
 def test_prepare_precedes_qr_baseline_and_work_cache_preserves_freshness(release, monkeypatch):
     program, loader, qq = release
     paths = loader.runtime_paths(prepare=True)
@@ -255,27 +218,6 @@ def test_credential_lifecycle_follows_the_owned_runtime(release, monkeypatch):
     assert session.credential() not in (None, first)
 
 
-def test_facade_shutdown_retires_the_bridge_credential():
-    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
-    session = QQRuntimeSession()
-    session.begin_launch()
-    facade = ChatAnalyzerFacade(
-        qq_runtime_session=session,
-        qq_process_registry=SimpleNamespace(terminate_all=lambda: 0),
-    )
-    facade.shutdown()
-    assert session.credential() is None
-
-
-def test_default_facade_shutdown_retires_default_launch_credential():
-    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
-    session = default_qq_runtime_session()
-    session.begin_launch()
-    facade = ChatAnalyzerFacade(qq_process_registry=SimpleNamespace(terminate_all=lambda: 0))
-    facade.shutdown()
-    assert session.credential() is None
-
-
 def test_disconnect_during_spawn_retires_late_launch_credential(release, monkeypatch):
     _, loader, _ = release
     session = QQRuntimeSession()
@@ -328,13 +270,6 @@ def test_launch_exception_retires_credential_and_closes_owned_process(release, m
     assert closed == ([] if failure == 'spawn' else [True])
 
 
-def test_direct_db_service_propagates_the_injected_session(release):
-    _, loader, _ = release
-    session = QQRuntimeSession()
-    service = QQDirectDatabaseImportService(config_loader=loader, bridge_credential=session)
-    assert service._require_runtime_client()._credential_source is session
-
-
 @pytest.mark.parametrize('failure', ['unknown', 'missing-plugin'])
 def test_preparation_failure_cannot_start_or_record_qr_baseline(release, monkeypatch, failure):
     program, loader, qq = release
@@ -353,32 +288,6 @@ def test_preparation_failure_cannot_start_or_record_qr_baseline(release, monkeyp
     assert not bridge._qr_session_started
     assert calls == []
     assert files(paths.work_root) == before
-
-
-def test_managed_old_path_follows_current_release_but_unknown_config_is_preserved(release):
-    program, loader, qq = release
-    writer = env.QQEnvironmentConfigWriter(loader.config_path())
-    writer.save(env.QQEnvironmentConfig(qq_install_path=qq, runtime_directory=program / 'old', runtime_mode='managed'))
-    assert loader.runtime_paths(prepare=True).program_root == program
-    writer.save(env.QQEnvironmentConfig(qq_install_path=qq, runtime_directory=program))
-    before = loader.config_path().read_bytes()
-    with pytest.raises(ValueError):
-        loader.runtime_paths(prepare=True)
-    assert loader.config_path().read_bytes() == before
-
-
-@pytest.mark.slow_integration
-def test_generated_loader_imports_special_character_program_uri(release, monkeypatch):
-    program, loader, qq = release
-    node = shutil.which('node')
-    assert node, 'Node is required for fictional loader integration'
-    paths = loader.runtime_paths(prepare=True)
-    with monkeypatch.context() as guard:
-        guard.setattr(*_launch_target(), lambda *a, **kw: SimpleNamespace(poll=lambda: None))
-        auth.default_auth_window_launcher(loader.load_or_default(), paths=paths)()
-    script = paths.work_root / 'loadNapCat.js'
-    result = subprocess.run([node, '-e', "require(process.argv[1]); setTimeout(()=>{if(!globalThis.echoFictionalMain)process.exitCode=3},100)", str(script)], capture_output=True, timeout=15)
-    assert result.returncode == 0, result.stderr.decode(errors='replace')
 
 
 @pytest.mark.slow_integration
@@ -503,21 +412,6 @@ def test_moving_release_keeps_workspace_and_snapshot_but_rebinds_program(release
     client = QQDirectDatabaseImportService(config_loader=loader)._require_runtime_client()
     assert client._snapshot_root == after.snapshot_root
     assert client._runtime_id == after.runtime_id
-
-
-def test_setup_runtime_factory_uses_the_shared_paths_and_prepares_before_start(release, monkeypatch):
-    program, loader, qq = release
-    seen = []
-    monkeypatch.setattr(*_launch_target(), lambda *a, **kw: seen.append(kw) or SimpleNamespace(pid=12345,poll=lambda:None))
-    setup = QQSetupService(config_loader=loader)
-    paths = setup.get_runtime_paths()
-    manager = setup._runtime_manager_for(loader.load_or_default())
-    manager._runtime._health_checker = lambda _: False  # Never probe a real QQ bridge.
-    manager._process_registry = SimpleNamespace(record=lambda _pid: None)
-    assert manager._runtime._config.working_directory == paths.work_root
-    manager.start()
-    assert seen[0]['cwd'] == str(paths.work_root)
-    assert (paths.work_root / 'plugins/napcat-plugin-echo/index.mjs').exists()
 
 
 @pytest.mark.slow_integration

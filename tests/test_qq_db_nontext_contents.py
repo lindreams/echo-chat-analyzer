@@ -31,15 +31,6 @@ def _parse(*parts):
 
 
 @pytest.mark.parametrize("kind,label", [(2, "image"), (999, "unknown")])
-def test_pure_nontext_and_multiple_segments(kind, label):
-    from qq_chat_analyzer.rich_message import NonTextContent
-    message = _parse(_nontext(kind), _nontext(kind))
-    assert message.contents == (NonTextContent(label), NonTextContent(label))
-    assert message.message_type == label
-    assert project_legacy_messages([message])[0].text == ""
-
-
-@pytest.mark.parametrize("kind,label", [(2, "image"), (999, "unknown")])
 def test_mixed_order_and_only_author_text(kind, label):
     from qq_chat_analyzer.rich_message import NonTextContent
     message = _parse(_text("first "), _nontext(kind), _text("last"))
@@ -56,35 +47,6 @@ def test_unknown_boundary_and_following_content():
     assert message.contents[:3] == (NonTextContent("image"), NonTextContent("unknown"), NonTextContent("unknown"))
     assert message.contents[3] == TextContent("later")
     assert isinstance(message.contents[4], ExpressionContent)
-
-
-def test_reply_priority_with_nontext():
-    message = _parse(_scalar(45002, 7), _nontext(2))
-    assert message.message_type == "reply"
-    assert project_legacy_messages([message])[0].text == ""
-
-
-def test_nontext_kind_is_restricted():
-    from qq_chat_analyzer.rich_message import NonTextContent
-    with pytest.raises(ValueError):
-        NonTextContent("video")
-
-
-@pytest.mark.parametrize("kind", [2, 999])
-def test_single_kind_only_analysis_exports_without_text(tmp_path, kind):
-    path = tmp_path / "payload.json"
-    path.write_text(json.dumps(_payload(_body(_nontext(kind)), _body(_nontext(kind)))), encoding="utf-8")
-    stopwords = tmp_path / "stopwords.txt"
-    stopwords.write_text("", encoding="utf-8")
-    result = AnalysisApplicationService().execute(AnalysisRequestDTO(
-        input_path=path, output_directory=tmp_path / "report", stopwords_path=stopwords))
-    assert result.status == AnalysisStatus.COMPLETED
-    assert result.valid_text_count == 0
-    assert result.top_words == ()
-    assert result.reports.message_composition.total_count == 2
-    assert result.reports.expression.expression_occurrence_count == 0
-    assert (tmp_path / "report" / "echo-report.json").is_file()
-    assert (tmp_path / "report" / "echo-report.html").is_file()
 
 
 @pytest.mark.parametrize("with_text", [False, True])

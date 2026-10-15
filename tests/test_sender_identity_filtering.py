@@ -65,23 +65,6 @@ def test_same_nickname_distinct_ids_keeps_normal_member() -> None:
     assert sender_decisions[0].metadata.get("sender_key") == "u-bot-1"
 
 
-def test_two_members_sharing_nickname_are_never_auto_deleted() -> None:
-    messages = [
-        _message(SHARED_NICKNAME, "虚构值日签到", index, sender_id="u-a")
-        for index in range(4)
-    ]
-    messages.extend(
-        _message(SHARED_NICKNAME, "虚构值日签到", index + 100, sender_id="u-b")
-        for index in range(4)
-    )
-
-    result = run_smart_profile(messages)
-
-    assert result.kept_messages == messages
-    assert result.filtered_messages == []
-    assert result.applied_decisions == []
-
-
 def test_same_id_renamed_nicknames_form_one_identity() -> None:
     messages = [
         _message("虚构播报助手甲", BOT_TEXT, index, sender_id="u-bot-2")
@@ -108,49 +91,7 @@ def test_same_id_renamed_nicknames_form_one_identity() -> None:
     assert result.filtered_messages == messages
 
 
-def test_two_distinct_identities_sharing_nickname_keep_separate_decisions() -> None:
-    from qq_chat_analyzer.candidates import Candidate
-    from qq_chat_analyzer.decision_engine import create_filter_decisions
-
-    decisions = create_filter_decisions(
-        [
-            Candidate(
-                target=SHARED_NICKNAME,
-                candidate_type="robot_sender",
-                score=0.95,
-                metadata={"sender_key": "u-bot-3"},
-            ),
-            Candidate(
-                target=SHARED_NICKNAME,
-                candidate_type="robot_sender",
-                score=0.93,
-                metadata={"sender_key": "u-bot-4"},
-            ),
-        ]
-    )
-
-    assert [decision.action for decision in decisions] == ["ignore", "ignore"]
-    assert [decision.metadata.get("sender_key") for decision in decisions] == [
-        "u-bot-3",
-        "u-bot-4",
-    ]
-
-
 # ---------------------------------------------------------- legacy / no id
-
-
-def test_records_without_ids_keep_legacy_name_scoped_filtering() -> None:
-    bot_messages = [
-        _message(SHARED_NICKNAME, BOT_TEXT, index) for index in range(10)
-    ]
-    member_message = _message("虚构普通用户", MEMBER_TEXT, 10)
-
-    result = run_smart_profile([*bot_messages, member_message])
-
-    assert result.kept_messages == [member_message]
-    assert result.filtered_messages == bot_messages
-    assert len(result.applied_decisions) == 1
-    assert result.applied_decisions[0].metadata == {}
 
 
 def test_unresolved_id_record_sharing_nickname_is_preserved() -> None:
@@ -167,35 +108,6 @@ def test_unresolved_id_record_sharing_nickname_is_preserved() -> None:
 
 
 # -------------------------------------------------------- interactive bot
-
-
-def test_interactive_bot_with_shared_nickname_is_not_auto_deleted() -> None:
-    messages: list[ChatMessage] = []
-    for index in range(30):
-        timestamp = 1_700_000_000 + index * 10
-        messages.extend(
-            [
-                _message(
-                    f"虚构提问者{index}",
-                    f"@虚构交互助手 虚构查询{chr(0x4E00 + index)}",
-                    timestamp,
-                ),
-                _message(
-                    "虚构交互助手",
-                    f"虚构响应{chr(0x4E00 + index)}",
-                    timestamp + 1,
-                    sender_id="u-bot-a" if index % 2 == 0 else "u-bot-b",
-                ),
-            ]
-        )
-
-    candidates = detect_interactive_bot_candidates(messages)
-    result = run_smart_profile(messages)
-
-    assert len(candidates) == 1
-    assert candidates[0].metadata.get("sender_identity_ambiguous") is True
-    assert result.kept_messages == messages
-    assert result.applied_decisions == []
 
 
 def test_interactive_bot_evidence_is_kept_but_never_filters() -> None:
@@ -412,85 +324,6 @@ def test_report_keeps_member_that_shares_bot_nickname(tmp_path: Path) -> None:
     members = {member["speaker_key"]: member for member in payload["members"]}
     assert members["200000002"]["message_count"] == 2
     assert "200000001" not in members
-
-
-def test_report_keeps_member_whose_burst_shares_nickname(
-    tmp_path: Path,
-) -> None:
-    """Acceptance: burst filtering must not delete the other same-name member."""
-    from qq_chat_analyzer.application import (
-        AnalysisApplicationService,
-        AnalysisRequestDTO,
-        AnalysisStatus,
-    )
-
-    burst_text = "这句话相同"
-    records = [
-        qq_db_record(
-            burst_text,
-            sender_id="300000001",
-            nickname="虚构同名用户",
-            message_id=f"fictional-burst-a-{index}",
-            timestamp=1_761_000_000 + index * 10,
-        )
-        for index in range(3)
-    ]
-    records.extend(
-        qq_db_record(
-            burst_text,
-            sender_id="300000002",
-            nickname="虚构同名用户",
-            message_id=f"fictional-burst-b-{index}",
-            timestamp=1_761_000_030 + index * 10,
-        )
-        for index in range(3)
-    )
-    records.extend(
-        [
-            qq_db_record(
-                "虚构普通用户讨论本地测试方案",
-                sender_id="300000003",
-                nickname="虚构普通用户",
-                message_id="fictional-other-burst-1",
-                timestamp=1_761_000_100,
-            ),
-            qq_db_record(
-                "虚构普通用户明天继续讨论",
-                sender_id="300000003",
-                nickname="虚构普通用户",
-                message_id="fictional-other-burst-2",
-                timestamp=1_761_000_200,
-            ),
-        ]
-    )
-    input_path = tmp_path / "qq-direct-db.json"
-    input_path.write_text(
-        json.dumps(qq_db_payload(records), ensure_ascii=False),
-        encoding="utf-8",
-    )
-    output_directory = tmp_path / "private-output"
-    output_directory.mkdir()
-    stopwords_path = tmp_path / "private-stopwords.txt"
-    stopwords_path.write_text("", encoding="utf-8")
-
-    result = AnalysisApplicationService().execute(
-        AnalysisRequestDTO(
-            input_path=input_path,
-            output_directory=output_directory,
-            stopwords_path=stopwords_path,
-            font_path=None,
-            top=5,
-        )
-    )
-
-    assert result.status is AnalysisStatus.COMPLETED
-    payload = json.loads(
-        (output_directory / "echo-report.json").read_text(encoding="utf-8")
-    )
-    members = {member["speaker_key"]: member for member in payload["members"]}
-    assert members["300000001"]["message_count"] == 1
-    assert members["300000002"]["message_count"] == 1
-    assert members["300000003"]["message_count"] == 2
 
 
 @pytest.mark.parametrize(

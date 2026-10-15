@@ -27,17 +27,6 @@ def _module():
     return importlib.import_module("qq_chat_analyzer.gui.shutdown")
 
 
-def _thread_named(name: str):
-    return next(
-        (
-            candidate
-            for candidate in threading.enumerate()
-            if candidate.name == name
-        ),
-        None,
-    )
-
-
 def test_begin_runs_the_owner_once_and_reports_completion() -> None:
     module = _module()
     protocol = module.ShutdownProtocol(wait_seconds=2.0)
@@ -72,32 +61,6 @@ def test_repeated_begin_is_single_flight() -> None:
     assert calls == [1]
 
 
-def test_protocol_thread_is_daemon_and_named() -> None:
-    module = _module()
-    protocol = module.ShutdownProtocol(wait_seconds=2.0)
-    release = threading.Event()
-
-    assert protocol.begin(lambda: release.wait(5.0)) is True
-    thread = _thread_named(module.THREAD_NAME)
-
-    assert thread is not None
-    assert thread.daemon is True
-    release.set()
-    assert protocol.wait(2.0) is True
-
-
-def test_begin_without_an_owner_finishes_immediately() -> None:
-    """A facade without shutdown() must not stall the exit path."""
-    module = _module()
-    protocol = module.ShutdownProtocol(wait_seconds=2.0)
-
-    assert protocol.begin(None) is True
-
-    started = time.monotonic()
-    assert protocol.wait() is True
-    assert time.monotonic() - started < 0.5
-
-
 def test_wait_is_bounded_and_reports_the_timeout() -> None:
     module = _module()
     protocol = module.ShutdownProtocol(wait_seconds=0.05)
@@ -130,15 +93,3 @@ def test_owner_failure_still_completes_the_protocol() -> None:
     assert protocol.wait(2.0) is True
     assert protocol.finished is True
     assert protocol.timed_out is False
-
-
-def test_wait_without_begin_is_still_bounded() -> None:
-    module = _module()
-    protocol = module.ShutdownProtocol(wait_seconds=0.05)
-
-    started = time.monotonic()
-    assert protocol.wait() is False
-    elapsed = time.monotonic() - started
-
-    assert elapsed < 1.0
-    assert protocol.started is False

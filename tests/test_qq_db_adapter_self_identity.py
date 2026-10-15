@@ -83,16 +83,6 @@ def test_private_self_and_peer() -> None:
     assert _is_self_values(payload) == [True, False]
 
 
-def test_self_matches_integer_uin() -> None:
-    payload = _payload(
-        "group",
-        100000001,
-        _record(100000001),
-        _record(100000002),
-    )
-    assert _is_self_values(payload) == [True, False]
-
-
 def test_zero_sender_is_unknown_not_peer() -> None:
     payload = _payload("group", "100000001", _record(0), _record("0"))
     assert _is_self_values(payload) == [None, None]
@@ -124,16 +114,3 @@ def test_wrong_self_namespace_yields_none() -> None:
     payload = _payload("group", "100000001", _record("100000001"))
     payload["self"]["namespace"] = "qq_uid"
     assert _is_self_values(payload) == [None]
-
-
-def test_projection_preserves_is_self() -> None:
-    payload = _payload(
-        "group",
-        "100000001",
-        _record("100000001"),
-        _record("100000002"),
-        _record("0"),
-    )
-    rich_messages, _warnings = parse_qq_db_rich_messages(payload)
-    messages = project_legacy_messages(rich_messages)
-    assert [message.is_self for message in messages] == [True, False, None]

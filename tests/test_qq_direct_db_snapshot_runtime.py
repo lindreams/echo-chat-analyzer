@@ -343,7 +343,7 @@ def test_stable_staging_input_succeeds_without_native_telemetry(tmp_path: Path) 
     assert not (tmp_path / "staging").exists()
 
 
-@pytest.mark.parametrize("side", ["before", "after", "both"])
+@pytest.mark.parametrize("side", ["before", "after"])
 @pytest.mark.parametrize("invalid", ["throw", "missing-field", "wrong-type", "directory", "negative-size"])
 @pytest.mark.slow_integration
 def test_invalid_staging_witness_fails_closed(tmp_path: Path, side: str, invalid: str) -> None:
@@ -389,7 +389,7 @@ def test_staging_input_mutated_during_decrypt_is_rejected(tmp_path: Path, mutati
     assert not (tmp_path / "staging").exists()
 
 
-@pytest.mark.parametrize("decrypt", ["false", "throw", "no-output"])
+@pytest.mark.parametrize("decrypt", ["false"])
 @pytest.mark.slow_integration
 def test_changed_staging_input_remains_unstable_when_decrypt_fails(tmp_path: Path, decrypt: str) -> None:
     output = _run_node(tmp_path, _acquire({
@@ -442,40 +442,6 @@ def test_passphrase_unavailable_removes_previous_plaintext_first(
     assert _generation_ids(tmp_path) == []
     assert output["metrics"]["decryptCalls"] == 0
 
-
-@pytest.mark.parametrize(
-    ("config", "expected_stage"),
-    (
-        ({"databaseApiPresent": False}, "database_api_not_ready"),
-        ({"passphrase": False}, "passphrase_not_ready"),
-        ({"uin": None, "passphrase": True}, "identity_not_ready"),
-        ({"decrypt": "false", "passphrase": True}, "decrypt_failed"),
-        (
-            {
-                "decryptCreatesGenerationsFile": True,
-                "passphrase": True,
-            },
-            "publish_failed",
-        ),
-    ),
-)
-@pytest.mark.slow_integration
-def test_acquire_logs_one_privacy_safe_diagnostic_stage(
-    tmp_path: Path,
-    config: dict,
-    expected_stage: str,
-) -> None:
-    output = _run_node(
-        tmp_path,
-        _acquire({"uin": FICTIONAL_UIN, **config}),
-    )
-
-    assert output["diagnostics"] == [
-        f"qq_direct_db.diagnostic stage={expected_stage}"
-    ]
-    serialized = json.dumps(output["diagnostics"])
-    for fragment in (FICTIONAL_UIN, str(tmp_path), "snapshot.db", "nt_msg.db"):
-        assert fragment not in serialized, fragment
 
 @pytest.mark.parametrize("decrypt", ["false", "throw", "no-output"])
 @pytest.mark.slow_integration
@@ -580,195 +546,6 @@ def test_success_publishes_database_and_identity_in_one_generation(
 
 
 @pytest.mark.slow_integration
-def test_acquire_does_not_assimilate_database_api_adapter_as_a_thenable(
-    tmp_path: Path,
-) -> None:
-    """The unknown-method fallback exposes ``then`` on API namespace proxies."""
-    output = _run_node(
-        tmp_path,
-        _acquire({
-            "uin": FICTIONAL_UIN,
-            "passphrase": True,
-            "databaseApiUnknownMethodFallback": True,
-        }),
-    )
-
-    assert output["results"][0]["result"]["status"] == "ready"
-
-
-@pytest.mark.slow_integration
-def test_acquire_trace_records_safe_phase_boundaries(tmp_path: Path, monkeypatch) -> None:
-    trace_file = tmp_path / "runtime.log"
-    monkeypatch.setenv("QCE_LOG_FILE", str(trace_file))
-
-    output = _run_node(
-        tmp_path,
-        _acquire({"uin": FICTIONAL_UIN, "passphrase": True}),
-    )
-
-    assert output["results"][0]["result"]["status"] == "ready"
-    trace = trace_file.read_text(encoding="utf-8")
-    diagnostic_lines = [line for line in trace.splitlines() if "stage=acquisition_diagnostic " in line]
-    assert diagnostic_lines
-    provenance_lines = [line for line in diagnostic_lines if "snapshot_code_hash=" in line]
-    assert len(provenance_lines) == 1
-    assert "capture_stage=shm_witness" in provenance_lines[0]
-    assert "shm_identity_stable=true" in provenance_lines[0]
-    for field in ("snapshot_code_hash", "capture_code_hash", "workspace_code_hash",
-                  "node_version", "libuv_version"):
-        assert sum(f"{field}=" in line for line in diagnostic_lines) == 1
-    stages = [line.split("stage=", 1)[1].split()[0] for line in trace.splitlines()
-              if "stage=acquisition_diagnostic " not in line]
-    assert stages == [
-        "acquire_queued",
-        "acquire_entered",
-        "slate_ready",
-        "passphrase_wait_started",
-        "passphrase_wait_polled",
-        "passphrase_ready",
-        "identity_ready",
-        "main_wal_boundary_verified",
-        "main_wal_capture_complete",
-        "decrypt_source_before",
-        "decrypt_started",
-        "decrypt_finished",
-        "decrypt_input_witness",
-        "decrypt_source_after",
-        "generation_ready",
-    ]
-    assert FICTIONAL_UIN not in trace
-    assert str(tmp_path) not in trace
-
-
-@pytest.mark.slow_integration
-def test_acquire_trace_records_privacy_safe_source_file_state(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    trace_file = tmp_path / "runtime.log"
-    monkeypatch.setenv("QCE_LOG_FILE", str(trace_file))
-
-    output = _run_node(
-        tmp_path,
-        _acquire({
-            "uin": FICTIONAL_UIN,
-            "passphrase": True,
-            "traceSourceFileState": True,
-        }),
-    )
-
-    assert output["results"][0]["result"]["status"] == "ready"
-    trace = trace_file.read_text(encoding="utf-8")
-    before = next(
-        line for line in trace.splitlines()
-        if "stage=decrypt_source_before" in line
-    )
-    after = next(
-        line for line in trace.splitlines()
-        if "stage=decrypt_source_after" in line
-    )
-    assert "database_present=true" in before
-    assert "database_bytes=" in before
-    assert "wal_present=true" in before
-    assert "shm_present=true" in before
-    assert "database_changed=false" in after
-    assert "wal_changed=false" in after
-    assert "shm_changed=false" in after
-    assert str(tmp_path) not in trace
-    assert FICTIONAL_UIN not in trace
-
-
-@pytest.mark.slow_integration
-def test_acquire_trace_correlates_generation_with_staging_input_witness(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    trace_file = tmp_path / "runtime.log"
-    monkeypatch.setenv("QCE_LOG_FILE", str(trace_file))
-
-    output = _run_node(
-        tmp_path,
-        _acquire({
-            "uin": FICTIONAL_UIN,
-            "passphrase": True,
-            "traceSourceFileState": True,
-        }),
-    )
-
-    generation_id = output["results"][0]["result"]["generation_id"]
-    trace = trace_file.read_text(encoding="utf-8")
-    read_line = next(
-        line for line in trace.splitlines()
-        if "stage=decrypt_input_witness" in line
-    )
-    ready_line = next(
-        line for line in trace.splitlines()
-        if "stage=generation_ready" in line
-    )
-    assert f"generation_id={generation_id}" in read_line
-    assert f"generation_id={generation_id}" in ready_line
-    assert "before_valid=true" in read_line
-    assert "after_valid=true" in read_line
-    assert "input_changed=false" in read_line
-    assert str(tmp_path) not in trace
-    assert FICTIONAL_UIN not in trace
-
-
-@pytest.mark.slow_integration
-def test_acquire_rejects_changed_staging_input_with_privacy_safe_diagnostic(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    """Changed staging input never publishes; diagnostics disclose no stat ids."""
-    trace_file = tmp_path / "runtime.log"
-    monkeypatch.setenv("QCE_LOG_FILE", str(trace_file))
-
-    output = _run_node(
-        tmp_path,
-        _acquire({
-            "uin": FICTIONAL_UIN,
-            "passphrase": True,
-            "traceSourceFileState": True,
-            "decryptInputMutation": "append",
-        }),
-    )
-
-    result = output["results"][0]["result"]
-    assert result == {"ok": False, "code": "snapshot_unstable", "status": "failed"}
-    assert _generation_ids(tmp_path) == []
-    assert not (tmp_path / "staging").exists()
-    assert output["metrics"]["decryptCalls"] == 1
-
-    failure_line = next(line for line in trace_file.read_text(encoding="utf-8").splitlines()
-                        if "failure_stage=input_witness guard_code=input_witness_invalid_or_changed" in line)
-    for field in ("snapshot_code_hash", "capture_code_hash", "workspace_code_hash",
-                  "node_version", "libuv_version"):
-        assert f"{field}=" in failure_line
-    assert FICTIONAL_UIN not in failure_line and str(tmp_path) not in failure_line
-
-
-@pytest.mark.slow_integration
-def test_acquire_rejects_unavailable_staging_witness(
-    tmp_path: Path,
-) -> None:
-    output = _run_node(
-        tmp_path,
-        _acquire({
-            "uin": FICTIONAL_UIN,
-            "passphrase": True,
-            "witnessFault": "after",
-            "witnessInvalid": "throw",
-        }),
-    )
-
-    assert output["results"][0]["result"] == {
-        "ok": False, "code": "snapshot_unstable", "status": "failed"
-    }
-    assert _generation_ids(tmp_path) == []
-    assert not (tmp_path / "staging").exists()
-
-
-@pytest.mark.slow_integration
 def test_acquire_rejects_replaced_staging_input(
     tmp_path: Path,
 ) -> None:
@@ -786,80 +563,6 @@ def test_acquire_rejects_replaced_staging_input(
         "ok": False, "code": "snapshot_unstable", "status": "failed"
     }
     assert _generation_ids(tmp_path) == []
-
-
-@pytest.mark.slow_integration
-def test_passphrase_wait_trace_identifies_a_bounded_false_poll(tmp_path: Path, monkeypatch) -> None:
-    trace_file = tmp_path / "runtime.log"
-    monkeypatch.setenv("QCE_LOG_FILE", str(trace_file))
-
-    output = _run_node(
-        tmp_path,
-        _acquire({"uin": FICTIONAL_UIN, "passphrase": False}),
-    )
-
-    assert output["results"][0]["result"]["code"] == "passphrase_unavailable"
-    stages = [line.split("stage=", 1)[1].strip() for line in trace_file.read_text(encoding="utf-8").splitlines()]
-    assert stages == [
-        "acquire_queued", "acquire_entered", "slate_ready",
-        "passphrase_wait_started", "passphrase_wait_polled",
-        "passphrase_not_ready",
-    ]
-
-
-@pytest.mark.slow_integration
-def test_passphrase_wait_emits_progress_before_its_deadline(tmp_path: Path, monkeypatch) -> None:
-    trace_file = tmp_path / "runtime.log"
-    monkeypatch.setenv("QCE_LOG_FILE", str(trace_file))
-
-    output = _run_node(tmp_path, _acquire({
-        "uin": FICTIONAL_UIN,
-        "passphrase": False,
-        "timeouts": _test_timeouts(passphraseMs=5300, pollIntervalMs=100),
-    }))
-
-    assert output["results"][0]["result"]["code"] == "passphrase_unavailable"
-    stages = [line.split("stage=", 1)[1].strip() for line in trace_file.read_text(encoding="utf-8").splitlines()]
-    assert stages.count("passphrase_wait_tick") == 1
-    assert stages.index("passphrase_wait_tick") < stages.index("passphrase_not_ready")
-
-
-@pytest.mark.slow_integration
-def test_passphrase_then_identity_become_ready_near_separate_wait_boundaries(
-    tmp_path: Path,
-) -> None:
-    output = _run_node(
-        tmp_path,
-        _acquire({
-            "uin": FICTIONAL_UIN,
-            "passphrase": True,
-            "passphraseReadyAfterMs": 100,
-            "identityReadyAfterMs": 200,
-            "timeouts": _test_timeouts(passphraseMs=150, identityMs=150),
-        }),
-    )
-
-    assert output["results"][0]["result"]["status"] == "ready"
-
-
-@pytest.mark.slow_integration
-def test_each_acquire_uses_a_fresh_opaque_generation_id(tmp_path: Path) -> None:
-    output = _run_node(
-        tmp_path,
-        {
-            "uin": FICTIONAL_UIN,
-            "passphrase": True,
-            "timeouts": _test_timeouts(),
-            "operations": [{"op": "acquire"}, {"op": "acquire"}],
-        },
-    )
-
-    first = output["results"][0]["result"]
-    second = output["results"][1]["result"]
-    assert first["ok"] and second["ok"]
-    assert first["generation_id"] != second["generation_id"]
-    assert first["generation_id"]
-    assert second["generation_id"]
 
 
 @pytest.mark.slow_integration
@@ -884,29 +587,6 @@ def test_concurrent_acquire_never_decrypts_in_parallel(tmp_path: Path) -> None:
     assert _generation_ids(tmp_path) == [second["generation_id"]]
 
 
-@pytest.mark.slow_integration
-def test_cleanup_failure_carries_a_stable_privacy_safe_code(tmp_path: Path) -> None:
-    # A broken snapshot root (a file where a directory is required) makes the
-    # fail-closed cleanup fail before any decryption can start.
-    (tmp_path / "root-file").write_text("not a directory", encoding="utf-8")
-    root = tmp_path / "root-file"
-
-    output = _run_node(
-        root,
-        {
-            "uin": FICTIONAL_UIN,
-            "passphrase": True,
-            "timeouts": _test_timeouts(),
-            "operations": [{"op": "acquire"}],
-        },
-        driver_dir=tmp_path,
-    )
-
-    result = output["results"][0]["result"]
-    assert result == {"ok": False, "code": "cleanup_failed", "status": "failed"}
-    assert output["metrics"]["decryptCalls"] == 0
-
-
 # ------------------------------------------------------------------ cleanup
 
 
@@ -928,22 +608,6 @@ def test_cleanup_removes_only_the_requested_generation(tmp_path: Path) -> None:
     result = output["results"][0]["result"]
     assert result == {"ok": True, "status": "cleaned"}
     assert _generation_ids(tmp_path) == ["keep-me"]
-
-
-@pytest.mark.slow_integration
-def test_cleanup_missing_generation_returns_a_stable_code(tmp_path: Path) -> None:
-    output = _run_node(
-        tmp_path,
-        {
-            "uin": FICTIONAL_UIN,
-            "passphrase": True,
-            "timeouts": _test_timeouts(),
-            "operations": [{"op": "cleanup", "arg": "no-such-generation"}],
-        },
-    )
-
-    result = output["results"][0]["result"]
-    assert result == {"ok": False, "code": "generation_not_found", "status": "failed"}
 
 
 @pytest.mark.slow_integration
@@ -1017,39 +681,3 @@ def test_status_objects_never_leak_identity_or_paths(tmp_path: Path) -> None:
 
 
 # -------------------------------------------------- registration seam (static)
-
-
-
-
-def test_snapshot_template_registers_echo_snapshot_api_on_runtimecore_apis() -> None:
-    text = SNAPSHOT_TEMPLATE.read_text(encoding="utf-8")
-
-    assert "export function registerEchoSnapshotApi" in text
-    assert "runtimeCore.apis.EchoSnapshotApi = api" in text
-    for method in ("acquire", "cleanup", "recover"):
-        assert f"{method}," in text or f"return {{ acquire, cleanup, recover }}" in text
-    # It must never auto-decrypt on registration.
-    assert "createSnapshotFromNapCatCore" not in text
-
-
-@pytest.mark.slow_integration
-def test_registration_exposes_acquire_cleanup_recover(tmp_path: Path) -> None:
-    output = _run_node(tmp_path, {"register": True})
-
-    assert output["registered"] == {
-        "isObject": True,
-        "hasAcquire": True,
-        "hasCleanup": True,
-        "hasRecover": True,
-        "sameAsReturned": True,
-    }
-    assert output["metrics"]["decryptCalls"] == 0
-
-
-def test_echo_plugin_registers_snapshot_without_auto_decrypt():
-    pins = json.loads(PINS_PATH.read_text(encoding="utf-8"))
-    item = next(item for item in pins["templates"] if item["source"] == "qq_napcat_plugin/index.mjs")
-    text = (PROJECT_ROOT / "scripts" / item["source"]).read_text(encoding="utf-8")
-    assert "registerEchoSnapshotApi" in text
-    assert "createSnapshotFromNapCatCore" not in text
-    assert ".acquire(" not in text

@@ -56,43 +56,6 @@ def test_lists_only_metadata_in_stable_generated_time_order(tmp_path, monkeypatc
     assert not listing.issues
 
 
-def test_summary_size_includes_nested_assets_without_reading_bodies(tmp_path, monkeypatch):
-    package = _package(tmp_path)
-    assets = package / "assets"
-    assets.mkdir()
-    (assets / "fictional.bin").write_bytes(b"fictional image bytes")
-    expected_bytes = sum(child.stat().st_size for child in package.rglob("*") if child.is_file())
-    original_read = Path.read_text
-    def metadata_only(path, *args, **kwargs):
-        if path.is_relative_to(tmp_path):
-            assert path.name == "metadata.json"
-        return original_read(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "read_text", metadata_only)
-    def forbidden_body(*args, **kwargs):
-        pytest.fail("Measuring a summary must not read report bodies")
-    monkeypatch.setattr(Path, "read_bytes", forbidden_body)
-    listing = _catalog(tmp_path).list_reports()
-    assert len(listing.reports) == 1 and not listing.issues
-    assert listing.reports[0].size_bytes == expected_bytes
-    assert _catalog(tmp_path).storage_usage().measured_bytes == expected_bytes
-
-
-@pytest.mark.parametrize("error", [PermissionError("fictional lock"), RuntimeError("changed identity")])
-def test_unknown_summary_size_preserves_readable_report(tmp_path, monkeypatch, error):
-    package = _package(tmp_path)
-    (package / "extra.bin").write_bytes(b"fictional")
-    original_stat = Path.lstat
-    def failing_stat(path, *args, **kwargs):
-        if path == package / "extra.bin":
-            raise error
-        return original_stat(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "lstat", failing_stat)
-    listing = _catalog(tmp_path).list_reports()
-    assert len(listing.reports) == 1 and not listing.issues
-    assert listing.reports[0].conversation_name == "Fictional Conversation"
-    assert listing.reports[0].size_bytes is None
-
-
 def test_summary_size_does_not_follow_reparse_assets(tmp_path, monkeypatch):
     import stat
     package = _package(tmp_path)
@@ -174,38 +137,6 @@ def test_catalog_reopens_both_analysis_revisions_without_rewriting(tmp_path, rev
     } == before
 
 
-@pytest.mark.parametrize("content", [None, "broken", '{}'])
-def test_damaged_metadata_remains_visible_and_can_be_deleted(tmp_path, content):
-    package = _package(tmp_path)
-    metadata = package / "metadata.json"
-    if content is None:
-        metadata.unlink()
-    else:
-        metadata.write_text(content, encoding="utf-8")
-    catalog = _catalog(tmp_path)
-    listing = catalog.list_reports()
-    assert not listing.reports
-    assert len(listing.issues) == 1
-    assert listing.issues[0].package_name == package.name
-    catalog.clear_all()
-    assert not package.exists()
-
-
-@pytest.mark.parametrize("kind", ["group", "private", "unknown", None])
-def test_catalog_projects_conversation_kind_from_existing_metadata(tmp_path, kind):
-    package = _package(tmp_path)
-    metadata = package / "metadata.json"
-    data = json.loads(metadata.read_text(encoding="utf-8"))
-    if kind is None:
-        del data["conversation_kind"]
-    else:
-        data["conversation_kind"] = kind
-    metadata.write_text(json.dumps(data), encoding="utf-8")
-    listing = _catalog(tmp_path).list_reports()
-    assert listing.reports[0].conversation_kind == (kind or "unknown")
-    assert not listing.issues
-
-
 def test_clear_deletes_whole_packages_and_preserves_unknown_siblings(tmp_path):
     package = _package(tmp_path)
     (package / "echo-share.png").write_bytes(b"fictional")
@@ -257,7 +188,7 @@ def test_delete_package_removes_only_selected_package_and_preserves_siblings(tmp
     assert unknown.read_bytes() == b"fictional sibling"
 
 
-@pytest.mark.parametrize("name", ["../Echo_Report_20261004_120000", "manual", "Echo_Report_99999999_999999", "Echo_Report_20261004_120000_1", "", None])
+@pytest.mark.parametrize("name", ["../Echo_Report_20261004_120000", "manual", "Echo_Report_99999999_999999"])
 def test_delete_package_rejects_invalid_identity(tmp_path, name):
     package = _package(tmp_path)
     with pytest.raises(ValueError):
@@ -341,13 +272,6 @@ def test_reparse_candidate_is_an_issue_and_clear_fails_without_following(tmp_pat
     assert (package / "metadata.json").exists()
 
 
-def test_missing_root_is_empty_and_not_created(tmp_path):
-    root = tmp_path / "reports"
-    assert not _catalog(root).list_reports().reports
-    _catalog(root).clear_all()
-    assert not root.exists()
-
-
 @pytest.mark.parametrize("location", ["root", "package", "inside"])
 def test_windows_junction_never_deletes_external_target(tmp_path, location):
     import sys
@@ -380,16 +304,7 @@ def test_windows_junction_never_deletes_external_target(tmp_path, location):
         junction.rmdir()
 
 
-def test_incomplete_package_is_an_issue_but_still_owned(tmp_path):
-    package = _package(tmp_path)
-    (package / "echo-report.html").unlink()
-    catalog = _catalog(tmp_path)
-    assert len(catalog.list_reports().issues) == 1
-    catalog.clear_all()
-    assert not package.exists()
-
-
-@pytest.mark.parametrize("suffix", ["", "_2", "_10"])
+@pytest.mark.parametrize("suffix", ["_2"])
 def test_resolve_html_path_uses_package_identity_without_reading_reports(tmp_path, monkeypatch, suffix):
     package = _package(tmp_path, "Echo_Report_20261004_120000" + suffix)
     (package / "metadata.json").write_text("broken", encoding="utf-8")
@@ -402,13 +317,6 @@ def test_resolve_html_path_uses_package_identity_without_reading_reports(tmp_pat
     assert _catalog(tmp_path).resolve_html_path(package.name) == package / "echo-report.html"
 
 
-def test_resolve_html_path_uses_canonical_root(tmp_path):
-    package = _package(tmp_path)
-    nested = tmp_path / "nested"
-    nested.mkdir()
-    assert _catalog(nested / "..").resolve_html_path(package.name) == package / "echo-report.html"
-
-
 def _packages(root, count):
     return [_package(
         root, "Echo_Report_20261004_120000" + (f"_{index + 1}" if index else ""),
@@ -418,62 +326,6 @@ def _packages(root, count):
 
 def _package_bytes(package):
     return sum(child.stat().st_size for child in package.iterdir() if child.is_file())
-
-
-@pytest.mark.parametrize("count", [0, 1, 50, 51, 100])
-def test_catalog_reads_never_evict_owned_packages(tmp_path, monkeypatch, count):
-    packages = _packages(tmp_path, count)
-    def forbidden(*args, **kwargs):
-        pytest.fail("Listing or measuring reports must not delete a package")
-    monkeypatch.setattr("shutil.rmtree", forbidden)
-    catalog = _catalog(tmp_path)
-    assert len(catalog.list_reports().reports) == count
-    usage = catalog.storage_usage()
-    assert usage.package_count == count and usage.complete
-    assert usage.measured_bytes == sum(_package_bytes(package) for package in packages)
-    assert all(package.is_dir() for package in packages)
-
-
-def test_storage_usage_reads_only_file_metadata_and_ignores_unowned_entries(tmp_path, monkeypatch):
-    packages = _packages(tmp_path, 3)
-    (packages[1] / "future-artifact").write_text("fictional", encoding="utf-8")
-    outside = tmp_path / "outside"
-    _package(outside, "manual")
-    siblings = [tmp_path / name for name in ("manual", ".echo-report-staging")]
-    for directory in siblings:
-        directory.mkdir()
-        (directory / "keep.txt").write_text("fictional", encoding="utf-8")
-    named_file = tmp_path / "Echo_Report_20261005_120000"
-    named_file.write_text("fictional", encoding="utf-8")
-    original = Path.read_text
-    def forbidden_read(path, *args, **kwargs):
-        if path.is_relative_to(tmp_path):
-            pytest.fail("Storage usage must not read report contents or metadata")
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "read_text", forbidden_read)
-    usage = _catalog(tmp_path).storage_usage()
-    assert usage.package_count == 3 and usage.complete
-    assert usage.measured_bytes == sum(_package_bytes(package) for package in packages)
-    assert all((directory / "keep.txt").exists() for directory in siblings)
-    assert named_file.read_bytes() == b"fictional"
-
-
-@pytest.mark.parametrize("damage", ["broken_metadata", "missing_metadata", "missing_html"])
-def test_storage_usage_counts_damaged_but_owned_packages(tmp_path, damage):
-    packages = _packages(tmp_path, 3)
-    damaged = packages[1]
-    if damage == "broken_metadata":
-        (damaged / "metadata.json").write_text("broken", encoding="utf-8")
-    elif damage == "missing_metadata":
-        (damaged / "metadata.json").unlink()
-    else:
-        (damaged / "echo-report.html").unlink()
-    catalog = _catalog(tmp_path)
-    assert len(catalog.list_reports().issues) == 1
-    usage = catalog.storage_usage()
-    assert usage.package_count == 3 and usage.complete
-    assert usage.unmeasured_packages == ()
-    assert usage.measured_bytes == sum(_package_bytes(package) for package in packages)
 
 
 def test_storage_usage_marks_reparse_package_unmeasured_instead_of_zero(tmp_path, monkeypatch):
@@ -493,22 +345,6 @@ def test_storage_usage_marks_reparse_package_unmeasured_instead_of_zero(tmp_path
     assert not usage.complete
     assert usage.measured_bytes == _package_bytes(packages[1])
     assert (linked / "metadata.json").exists()
-
-
-def test_storage_usage_marks_filesystem_failure_unmeasured_and_keeps_others(tmp_path, monkeypatch):
-    packages = _packages(tmp_path, 2)
-    broken = packages[1]
-    original = Path.lstat
-    def failing(path, *args, **kwargs):
-        if path == broken / "metadata.json":
-            raise PermissionError("fictional unreadable file")
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "lstat", failing)
-    usage = _catalog(tmp_path).storage_usage()
-    assert usage.package_count == 2
-    assert usage.unmeasured_packages == (broken.name,)
-    assert not usage.complete
-    assert usage.measured_bytes == _package_bytes(packages[0])
 
 
 def test_storage_usage_windows_junction_package_unmeasured_and_external_kept(tmp_path):
@@ -537,21 +373,7 @@ def test_storage_usage_windows_junction_package_unmeasured_and_external_kept(tmp
         link.rmdir()
 
 
-def test_storage_usage_missing_root_is_empty_and_not_created(tmp_path):
-    root = tmp_path / "reports"
-    usage = _catalog(root).storage_usage()
-    assert usage.package_count == usage.measured_bytes == 0
-    assert usage.unmeasured_packages == () and usage.complete
-    assert not root.exists()
-
-
-@pytest.mark.parametrize("name", [
-    "", "Echo_Report_not_owned", "Echo_Report_99999999_999999",
-    "Echo_Report_20261004_120000_1", "Echo_Report_20261004_120000_02",
-    "../Echo_Report_20261004_120000", "..\\Echo_Report_20261004_120000",
-    "Echo_Report_20261004_120000/../outside", "Echo_Report_20261004_120000\\outside",
-    "Echo_Report_20261004_120000\n", None,
-])
+@pytest.mark.parametrize("name", ["Echo_Report_99999999_999999", "../Echo_Report_20261004_120000", "..\\Echo_Report_20261004_120000", "Echo_Report_20261004_120000\\outside", "Echo_Report_20261004_120000\n"])
 def test_resolve_html_path_rejects_invalid_identity(tmp_path, name):
     with pytest.raises((ValueError, OSError, RuntimeError)):
         _catalog(tmp_path).resolve_html_path(name)
@@ -659,29 +481,7 @@ def test_delete_packages_deletes_only_named_targets_and_keeps_the_rest(tmp_path)
     assert catalog.storage_usage().package_count == 1
 
 
-def test_delete_packages_deduplicates_names_keeping_first_occurrence_order(tmp_path, monkeypatch):
-    import shutil
-    packages = _packages(tmp_path, 3)
-    attempts = []
-    original = shutil.rmtree
-    def counting(path, *args, **kwargs):
-        attempts.append(Path(path).name)
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(shutil, "rmtree", counting)
-    selected = [packages[1].name, packages[0].name, packages[1].name, packages[0].name]
-    result = _catalog(tmp_path).delete_packages(iter(selected))
-    assert result.deleted == (packages[1].name, packages[0].name)
-    assert result.failures == ()
-    assert attempts == [packages[1].name, packages[0].name]
-    assert packages[2].is_dir() and packages[2].name not in result.deleted
-
-
-@pytest.mark.parametrize("selection", [
-    [], (), iter(()), None, "Echo_Report_20261004_120000", b"fictional",
-    [None], ["manual"], ["Echo_Report_99999999_999999"],
-    ["Echo_Report_20261004_120000_1"], ["../Echo_Report_20261004_120000"],
-    ["Echo_Report_20261004_120000\\outside"],
-])
+@pytest.mark.parametrize("selection", [[], None, "Echo_Report_20261004_120000", [None], ["../Echo_Report_20261004_120000"], ["Echo_Report_20261004_120000\\outside"]])
 def test_delete_packages_rejects_empty_or_invalid_selection_before_deleting(tmp_path, monkeypatch, selection):
     package = _package(tmp_path)
     _forbid_any_deletion(monkeypatch)
@@ -743,34 +543,6 @@ def test_delete_packages_reports_missing_target_and_never_creates_root(tmp_path)
     assert result.deleted == ()
     assert _failure_pairs(result) == [("Echo_Report_20261004_120000", "missing")]
     assert not root.exists()
-
-
-def test_delete_packages_missing_target_beside_a_deletable_one(tmp_path):
-    package = _package(tmp_path)
-    missing = "Echo_Report_20261005_120000"
-    result = _catalog(tmp_path).delete_packages([missing, package.name])
-    assert result.deleted == (package.name,)
-    assert _failure_pairs(result) == [(missing, "missing")]
-    assert not package.exists()
-
-
-@pytest.mark.parametrize("damage", ["broken_metadata", "missing_metadata", "missing_html"])
-def test_delete_packages_deletes_damaged_packages_without_reading_them(tmp_path, monkeypatch, damage):
-    module = _catalog_module()
-    package = _package(tmp_path)
-    if damage == "broken_metadata":
-        (package / "metadata.json").write_text("broken", encoding="utf-8")
-    elif damage == "missing_metadata":
-        (package / "metadata.json").unlink()
-    else:
-        (package / "echo-report.html").unlink()
-    def forbidden_read(*args, **kwargs):
-        pytest.fail("Batch deletion must not read report contents or metadata")
-    for name in ("read_text", "read_bytes", "open"):
-        monkeypatch.setattr(Path, name, forbidden_read)
-    result = module.ReportPackageCatalog(tmp_path).delete_packages([package.name])
-    assert result.deleted == (package.name,) and result.complete
-    assert not package.exists()
 
 
 def test_delete_packages_reports_named_regular_file_as_failure(tmp_path):

@@ -1,4 +1,5 @@
 """About action tests with real facade and fictional installation."""
+import importlib
 import os
 import time
 
@@ -8,7 +9,18 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
 from test_setup_uninstall import installation
-from test_gui_about_maintenance import _pin_maintenance, _module
+
+
+def _module():
+    return importlib.import_module("qq_chat_analyzer.gui.update_dialog")
+
+
+def _pin_maintenance(monkeypatch, module, *, kind, program_dir, data_dir):
+    """Monkeypatch the dialog's install identity and data root per test."""
+    monkeypatch.setattr(
+        module, "detect_install_location",
+        lambda executable, *, frozen: module.InstallLocation(kind, program_dir))
+    monkeypatch.setattr(module, "user_data_root", lambda: data_dir)
 
 
 @pytest.fixture

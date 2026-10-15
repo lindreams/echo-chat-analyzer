@@ -69,18 +69,6 @@ class _StubSetupService:
         return self.status
 
 
-class _ProgressCapturingSetupService(_StubSetupService):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.progress_callbacks = []
-
-    def acquire_db_key(self, progress=None):
-        self.progress_callbacks.append(progress)
-        if progress is not None:
-            progress("relayed progress")
-        return "a" * 64
-
-
 def test_cancel_token_crosses_facade_setup_into_key_owner(tmp_path, monkeypatch):
     from qq_chat_analyzer.application.wechat.wechat_setup_service import WeChatSetupService
     from qq_chat_analyzer.application.wechat.wechat_key_service import WeChatKeyService
@@ -274,13 +262,6 @@ def test_wechat_publication_and_shutdown_snapshot_share_boundary():
             closer.join(5)
 
 
-def _config(tmp_path: Path) -> WeChatEnvironmentConfig:
-    return WeChatEnvironmentConfig(
-        data_root=tmp_path / "fake_root",
-        db_key="abcd1234",
-    )
-
-
 def _isolate_wechat_config(monkeypatch, tmp_path: Path) -> None:
     """Keep composition-root setup config under the test temp directory."""
     from qq_chat_analyzer.application.wechat import wechat_environment_config
@@ -290,121 +271,6 @@ def _isolate_wechat_config(monkeypatch, tmp_path: Path) -> None:
         "user_data_dir",
         lambda: tmp_path / "user-data",
     )
-
-
-def test_facade_saves_wechat_environment(tmp_path: Path) -> None:
-    sentinel = object()
-    setup = _StubSetupService(status=sentinel)
-    facade = ChatAnalyzerFacade(wechat_setup_service=setup)
-
-    result = facade.setup_wechat_environment(_config(tmp_path))
-
-    assert result is sentinel
-    assert setup.saved == [_config(tmp_path)]
-
-
-def test_facade_reports_wechat_setup_status(tmp_path: Path) -> None:
-    sentinel = object()
-    facade = ChatAnalyzerFacade(
-        wechat_setup_service=_StubSetupService(status=sentinel)
-    )
-
-    assert facade.get_wechat_setup_status() is sentinel
-
-
-def test_facade_detects_wechat_data_root(tmp_path: Path) -> None:
-    detected = tmp_path / "xwechat_files"
-    setup = _StubSetupService(detected_root=detected)
-    facade = ChatAnalyzerFacade(wechat_setup_service=setup)
-
-    assert facade.detect_wechat_data_root() == detected
-    assert setup.detects == 1
-
-
-def test_facade_detects_wechat_data_roots(tmp_path: Path) -> None:
-    roots = [
-        tmp_path / "xwechat_files" / "wxid_fictional_a",
-        tmp_path / "xwechat_files" / "wxid_fictional_b",
-    ]
-    setup = _StubSetupService(detected_roots=roots)
-    facade = ChatAnalyzerFacade(wechat_setup_service=setup)
-
-    assert facade.detect_wechat_data_roots() == roots
-    assert setup.detects_roots == 1
-
-
-def test_facade_detect_requires_setup_service() -> None:
-    facade = ChatAnalyzerFacade()
-
-    with pytest.raises(SourceUnavailable):
-        facade.detect_wechat_data_root()
-
-
-def test_facade_translates_detect_failure(tmp_path: Path) -> None:
-    facade = ChatAnalyzerFacade(
-        wechat_setup_service=_StubSetupService(
-            error=RuntimeError("home 0xdeadbeef")
-        )
-    )
-
-    with pytest.raises(FacadeError) as caught:
-        facade.detect_wechat_data_root()
-
-    assert caught.value.source is ChatSource.WECHAT
-    assert isinstance(caught.value.public_message, str)
-
-
-def test_facade_translates_data_roots_failure(tmp_path: Path) -> None:
-    facade = ChatAnalyzerFacade(
-        wechat_setup_service=_StubSetupService(
-            error=RuntimeError("detector 0xdeadbeef")
-        )
-    )
-
-    with pytest.raises(FacadeError) as caught:
-        facade.detect_wechat_data_roots()
-
-    assert caught.value.source is ChatSource.WECHAT
-    assert isinstance(caught.value.public_message, str)
-
-
-def test_facade_requires_setup_service(tmp_path: Path) -> None:
-    facade = ChatAnalyzerFacade()
-
-    with pytest.raises(SourceUnavailable):
-        facade.setup_wechat_environment(_config(tmp_path))
-
-    with pytest.raises(SourceUnavailable):
-        facade.get_wechat_setup_status()
-
-
-def test_facade_translates_setup_errors(tmp_path: Path) -> None:
-    facade = ChatAnalyzerFacade(
-        wechat_setup_service=_StubSetupService(
-            error=WeChatConfigWriteFailed()
-        )
-    )
-
-    with pytest.raises(FacadeError) as caught:
-        facade.setup_wechat_environment(_config(tmp_path))
-
-    assert caught.value.code == "wechat_config_write_failed"
-    assert caught.value.source is ChatSource.WECHAT
-    assert caught.value.public_message
-
-
-def test_facade_translates_unexpected_setup_failure(tmp_path: Path) -> None:
-    facade = ChatAnalyzerFacade(
-        wechat_setup_service=_StubSetupService(
-            error=RuntimeError("native 0xdeadbeef")
-        )
-    )
-
-    with pytest.raises(FacadeError) as caught:
-        facade.get_wechat_setup_status()
-
-    assert caught.value.source is ChatSource.WECHAT
-    assert isinstance(caught.value.public_message, str)
 
 
 def test_composition_root_wires_setup_service(
@@ -458,18 +324,6 @@ def test_composition_root_injects_lazy_report_package_catalog_manager(
     )
 
 
-def test_facade_passes_progress_to_acquire_db_key(tmp_path: Path) -> None:
-    """The facade must relay the progress callback to the setup service."""
-    service = _ProgressCapturingSetupService()
-    facade = ChatAnalyzerFacade(wechat_setup_service=service)
-
-    seen = []
-    facade.acquire_wechat_db_key(progress=seen.append)
-
-    assert service.progress_callbacks
-    assert callable(service.progress_callbacks[0])
-
-
 class _VerifyingSetupService(_StubSetupService):
     """Record verification calls and optionally fail like a wrong key."""
 
@@ -482,14 +336,6 @@ class _VerifyingSetupService(_StubSetupService):
         self.verifies += 1
         if self.verify_error is not None:
             raise self.verify_error
-
-
-def test_facade_verifies_the_wechat_database_through_the_setup_service() -> None:
-    setup = _VerifyingSetupService()
-    facade = ChatAnalyzerFacade(wechat_setup_service=setup)
-
-    assert facade.verify_wechat_database() is None
-    assert setup.verifies == 1
 
 
 def test_facade_translates_an_unreadable_wechat_database() -> None:

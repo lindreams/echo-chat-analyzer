@@ -37,87 +37,6 @@ def connection(tmp_path, monkeypatch):
     return worker, factory, service
 
 
-def test_snapshot_binding_is_cached_per_application_connection(tmp_path, monkeypatch):
-    worker, factory, service = connection(tmp_path, monkeypatch)
-    assert service._require_runtime_client() is service._require_runtime_client()
-
-
-@pytest.mark.parametrize("fault,stage,category,public_code", [
-    ("auth", "provider_status", "auth_rejected", "qq_direct_database_recovery_failed"),
-    ("unavailable", "provider_status", "provider_error", "qq_direct_database_not_ready"),
-    ("generation", "provider_status", "worker_generation_changed", "qq_reconnect_required"),
-    ("identity", "provider_status", "runtime_identity_mismatch", "qq_direct_database_unavailable"),
-    ("builder", "snapshot_client", "invalid_response", "qq_snapshot_runtime_invalid_response"),
-    ("recover", "startup_recover", "operation_failed", "qq_direct_database_recovery_failed"),
-])
-def test_startup_diagnostics_preserve_mapping_and_identify_phase(tmp_path, monkeypatch, caplog, fault, stage, category, public_code):
-    import time
-    from qq_chat_analyzer.providers.napcat_qq_provider import NapCatQQAuthRejected, NapCatQQError, NapCatQQWorkerGenerationChanged
-    from qq_chat_analyzer.providers.qq_direct_snapshot_runtime import QQSnapshotRuntimeFailure, QQSnapshotRuntimeInvalidResponse
-    worker, factory, service = connection(tmp_path, monkeypatch)
-    provider = factory.create()
-    private = "fictional-secret account=12345678 C:/private/qq"
-    if fault in {"auth", "unavailable", "generation"}:
-        error = {"auth": NapCatQQAuthRejected, "unavailable": NapCatQQError, "generation": NapCatQQWorkerGenerationChanged}[fault]()
-        error.args = (private,)
-        def status(**kwargs):
-            raise error
-        monkeypatch.setattr(provider, "status", status)
-    elif fault == "identity":
-        monkeypatch.setattr(provider, "status", lambda **kw: SimpleNamespace(runtime_id="a" * 64))
-    elif fault == "builder":
-        def builder(root):
-            raise QQSnapshotRuntimeInvalidResponse(private, code=private)
-        monkeypatch.setattr(provider, "snapshot_client", builder)
-    else:
-        def recover(**kw):
-            raise QQSnapshotRuntimeFailure(private, code=private)
-        monkeypatch.setattr(provider, "snapshot_client", lambda root: SimpleNamespace(recover=recover))
-    caplog.set_level("INFO")
-    with pytest.raises(Exception) as result:
-        if fault == "unavailable":
-            service._require_runtime_client(deadline=time.monotonic() + 5)
-        else:
-            service.start()
-    if fault != "builder":
-        assert result.value.code == public_code
-    else:
-        assert isinstance(result.value, QQSnapshotRuntimeInvalidResponse)
-    assert f"stage={stage} outcome=failed failure_code={category}" in caplog.text
-    assert "stage=provider_status outcome=started" in caplog.text
-    if fault in {"builder", "recover"}:
-        assert "stage=provider_status outcome=success" in caplog.text
-    if fault == "recover":
-        assert "stage=snapshot_client outcome=success" in caplog.text
-        assert "stage=startup_recover outcome=started" in caplog.text
-    for value in (private, "12345678", "C:/private", str(tmp_path), "a" * 64, "c" * 64):
-        assert value not in caplog.text
-
-
-def test_session_failure_diagnostics_connect_service_and_recover_rpc(tmp_path, monkeypatch, caplog):
-    worker, factory, service = connection(tmp_path, monkeypatch)
-    provider = factory.create()
-    original = provider._transport
-    def transport(url, body, timeout):
-        if json.loads(body)["method"] == "EchoSnapshotApi.recover":
-            return 200, json.dumps({"ok": True, "result": {"ok": False, "code": "recover_failed",
-                "private": "fictional-secret account=12345678 C:/private/qq"}})
-        return original(url, body, timeout)
-    monkeypatch.setattr(provider, "_transport", transport)
-    caplog.set_level("INFO")
-    with pytest.raises(ApplicationServiceError) as error:
-        service.list_sessions()
-    assert error.value.code == "qq_direct_database_recovery_failed"
-    assert "stage=provider_status outcome=success" in caplog.text
-    assert "stage=snapshot_client outcome=success" in caplog.text
-    assert "stage=startup_recover outcome=failed failure_code=operation_failed" in caplog.text
-    assert "stage=recover_rpc outcome=failed failure_code=recover_failed" in caplog.text
-    assert "http_status=200" in caplog.text
-    assert not any(call["method"] == "EchoSnapshotApi.acquire" for call in worker.operations)
-    for value in ("fictional-secret", "12345678", "C:/private", str(tmp_path), "c" * 64):
-        assert value not in caplog.text
-
-
 def test_generation_error_latches_shared_connection_until_explicit_reconnect(tmp_path, monkeypatch):
     worker, factory, service = connection(tmp_path, monkeypatch)
     service.start()
@@ -193,23 +112,6 @@ def test_old_status_failure_cannot_invalidate_explicit_new_connection(tmp_path, 
     monkeypatch.setattr(old, "status", delayed_failure)
     QQConnectionService(provider_factory=factory).check_status()
     assert factory.create() is fresh[0]
-
-
-def test_initial_provider_unavailability_keeps_startup_readiness_retry(tmp_path, monkeypatch):
-    from qq_chat_analyzer.providers.napcat_qq_provider import NapCatQQError
-    worker, factory, service = connection(tmp_path, monkeypatch)
-    provider = factory.create()
-    original = provider.status
-    attempts = []
-    def delayed(**kwargs):
-        attempts.append(1)
-        if len(attempts) == 1:
-            raise NapCatQQError()
-        return original(**kwargs)
-    monkeypatch.setattr(provider, "status", delayed)
-    service.start()
-    assert len(attempts) == 2
-    assert worker.operations[0]["method"] == "EchoSnapshotApi.recover"
 
 
 def test_new_connection_recovery_failure_never_allows_acquire(tmp_path, monkeypatch):

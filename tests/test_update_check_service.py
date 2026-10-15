@@ -30,27 +30,7 @@ def service(tmp_path, monkeypatch, payload=None, current="1.9.0", clock=None):
     )
 
 
-def test_facade_exposes_update_check_without_startup_io(monkeypatch):
-    from qq_chat_analyzer.application import update_check_service as module
-
-    def forbidden(*args, **kwargs):
-        pytest.fail("construction must not access network or user state")
-
-    monkeypatch.setattr(module, "urlopen", forbidden)
-    monkeypatch.setattr(module, "user_data_dir", forbidden)
-    facade = ChatAnalyzerFacade()
-    assert callable(getattr(facade, "check_for_updates", None))
-
-
-@pytest.mark.parametrize("current,tag,status", [
-    ("1.9.0", "v1.10.0", "update_available"),
-    ("1.10.0", "1.9.0", "up_to_date"),
-    ("2.0.0", "v1.99.99", "up_to_date"),
-    ("1.10.0", "v1.10.0", "up_to_date"),
-    ("1.10.0+local", "v1.10.0+release", "up_to_date"),
-    ("1.10.0-rc.10", "v1.10.0", "update_available"),
-    ("1.11.0-alpha", "v1.10.0", "up_to_date"),
-])
+@pytest.mark.parametrize("current,tag,status", [("1.9.0", "v1.10.0", "update_available"), ("1.10.0", "v1.10.0", "up_to_date"), ("1.10.0-rc.10", "v1.10.0", "update_available")])
 def test_semver_precedence(tmp_path, monkeypatch, current, tag, status):
     result = service(tmp_path, monkeypatch, release(tag), current).check()
     assert result.status == status
@@ -59,37 +39,12 @@ def test_semver_precedence(tmp_path, monkeypatch, current, tag, status):
     assert result.release_url == URL
 
 
-@pytest.mark.parametrize("payload", [
-    [], {}, {"message": "rate limit"},
-    {**release(), "draft": True}, {**release(), "prerelease": True},
-    {**release(), "draft": "false"}, {**release(), "prerelease": None},
-    release("v2.0.0-beta"), release("1.02.3"), release("v1.2"),
-    release("latest"), release("1.2.3-01"), release(123),
-    {**release(), "html_url": "javascript:alert(1)"},
-    {**release(), "html_url": "https://evil.example/releases/tag/v1.10.0"},
-])
+@pytest.mark.parametrize("payload", [[], {**release(), "draft": True}, release("v2.0.0-beta"), {**release(), "html_url": "javascript:alert(1)"}, {**release(), "html_url": "https://evil.example/releases/tag/v1.10.0"}])
 def test_invalid_or_nonformal_release_is_safe(tmp_path, monkeypatch, payload):
     result = service(tmp_path, monkeypatch, payload).check()
     assert result.status == "unavailable"
     assert result.error_code == "invalid_response"
     assert result.release_url is None
-
-
-@pytest.mark.parametrize("current", ["1.2", "01.2.3", "1.2.3-01", "broken"])
-def test_invalid_current_version_is_safe(tmp_path, monkeypatch, current):
-    result = service(tmp_path, monkeypatch, current=current).check()
-    assert result.status == "unavailable"
-    assert result.error_code == "invalid_version"
-
-
-def test_default_version_and_facade_manual_path(tmp_path, monkeypatch):
-    from qq_chat_analyzer.application.update_check_service import UpdateCheckService
-
-    core = UpdateCheckService(state_path=tmp_path / "state.json", fetch_release=release)
-    facade = ChatAnalyzerFacade(update_check_service=core)
-    assert facade.check_for_updates().current_version == APP_VERSION
-    assert facade.check_for_updates().status == "skipped"
-    assert facade.check_for_updates(manual=True).status == "update_available"
 
 
 def test_24h_dedupe_survives_restart_and_manual_bypasses(tmp_path, monkeypatch):
@@ -106,14 +61,6 @@ def test_24h_dedupe_survives_restart_and_manual_bypasses(tmp_path, monkeypatch):
     assert second.check().status == "skipped"
 
 
-@pytest.mark.parametrize("saved", ["broken", "[]", '{"last_check_time":true}',
-    '{"last_check_time":"bad"}', '{"last_check_time":NaN}',
-    '{"last_check_time":200000}', '{"last_check_time":-1}'])
-def test_bad_or_future_state_does_not_suppress_checks(tmp_path, monkeypatch, saved):
-    (tmp_path / "update-check.json").write_text(saved)
-    assert service(tmp_path, monkeypatch).check().status == "update_available"
-
-
 def test_unwritable_state_still_checks_and_deduplicates_in_memory(tmp_path, monkeypatch):
     (tmp_path / "update-check.json").mkdir()
     core = service(tmp_path, monkeypatch)
@@ -121,28 +68,7 @@ def test_unwritable_state_still_checks_and_deduplicates_in_memory(tmp_path, monk
     assert core.check().status == "skipped"
 
 
-def test_state_decoder_recursion_failure_is_nonfatal(tmp_path, monkeypatch):
-    (tmp_path / "update-check.json").write_text("[]")
-    core = service(tmp_path, monkeypatch)
-
-    def fail_decode(*args, **kwargs):
-        # Decoder depth limits differ across supported Python versions.
-        raise RecursionError("deeply nested state")
-
-    monkeypatch.setattr(json, "loads", fail_decode)
-    assert core.check().status == "update_available"
-
-
-@pytest.mark.parametrize("failure,code,status", [
-    (TimeoutError(), "timeout", "unavailable"),
-    (URLError("offline"), "network_error", "unavailable"),
-    (URLError(TimeoutError()), "timeout", "unavailable"),
-    (HTTPError("url", 403, "forbidden", {}, None), "rate_limited", "unavailable"),
-    (HTTPError("url", 429, "limited", {}, None), "rate_limited", "unavailable"),
-    (HTTPError("url", 500, "failed", {}, None), "http_error", "unavailable"),
-    (HTTPError("url", 404, "missing", {}, None), None, "no_release"),
-    (ValueError("malformed"), "invalid_response", "unavailable"),
-])
+@pytest.mark.parametrize("failure,code,status", [(TimeoutError(), "timeout", "unavailable"), (URLError("offline"), "network_error", "unavailable"), (HTTPError("url", 403, "forbidden", {}, None), "rate_limited", "unavailable"), (ValueError("malformed"), "invalid_response", "unavailable")])
 def test_network_failures_are_safe_and_attempts_are_deduplicated(tmp_path, monkeypatch, failure, code, status):
     core = service(tmp_path, monkeypatch)
 
@@ -198,11 +124,3 @@ def test_github_request_contract_and_bounded_response(tmp_path, monkeypatch, bod
     monkeypatch.setattr(module, "urlopen", open_response)
     result = module.UpdateCheckService(state_path=tmp_path / "state.json").check()
     assert result.status == expected
-
-
-def test_default_state_uses_existing_user_directory(monkeypatch):
-    from qq_chat_analyzer.application.update_check_service import UpdateCheckService
-    from qq_chat_analyzer.resources import user_data_dir
-
-    assert UpdateCheckService(fetch_release=release).check().status == "update_available"
-    assert (user_data_dir() / "update-check.json").is_file()

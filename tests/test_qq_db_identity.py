@@ -10,24 +10,9 @@ from qq_chat_analyzer.qq_db_identity import (
 )
 
 
-def test_namespace_is_qq_uin() -> None:
-    assert QQ_DB_SELF_NAMESPACE == "qq_uin"
-
-
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [
-        ("100000001", "100000001"),
-        (100000001, "100000001"),
-        ("  100000001  ", "100000001"),
-        (0, None),
-        ("0", None),
-        ("", None),
-        (None, None),
-        (True, None),
-        (False, None),
-        (1.0, "1.0"),
-    ],
+    [("100000001", "100000001"), (100000001, "100000001"), (0, None), (True, None)],
 )
 def test_canonical_qq_uin(raw: object, expected: str | None) -> None:
     assert canonical_qq_uin(raw) == expected

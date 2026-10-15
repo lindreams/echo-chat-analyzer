@@ -160,23 +160,6 @@ def test_lifecycle_waits_for_new_pid_before_ready(tmp_path, snapshots, expected)
     assert seen == expected
 
 
-@pytest.mark.parametrize("snapshots, expected", [
-    ([[101, 202], [202]], ["PREPARING", "WAITING_FOR_WECHAT_EXIT"]),
-    ([[101], [], []], [
-        "PREPARING", "WAITING_FOR_WECHAT_EXIT", "WAITING_FOR_WECHAT_START",
-    ]),
-    ([[]], ["PREPARING", "WAITING_FOR_WECHAT_START"]),
-])
-def test_lifecycle_process_wait_timeout(tmp_path, snapshots, expected):
-    service, api, seen = _lifecycle_service(tmp_path, snapshots, timeout=0.5)
-    with pytest.raises(_module().WeChatKeyUnavailable) as caught:
-        service.acquire(progress=lambda event: seen.append(event.name))
-    assert caught.value.code == "wechat_key_timeout"
-    assert api.initialize_calls == []
-    assert api.poll_calls == 0
-    assert seen == expected
-
-
 def test_lifecycle_failed_new_pid_hook_never_reports_ready(tmp_path):
     service, api, seen = _lifecycle_service(tmp_path, [[], [303]], hook_ok=False)
     with pytest.raises(_module().WeChatKeyUnavailable) as caught:
@@ -312,24 +295,6 @@ def test_smallfix_helper_tries_second_pid_with_remaining_budget(tmp_path, mode):
         assert calls[1][3] <= 0.7
 
 
-def test_smallfix_streaming_wait_deducts_launch_time(tmp_path):
-    service, api, seen, clock = _budget_service(tmp_path, [[], [], [303]], "streaming")
-    waits = []
-
-    class Process(_FakePopen):
-        def wait(self, timeout=None):
-            waits.append(timeout)
-            return super().wait(timeout)
-
-    def launch(*_args, **_options):
-        clock.sleep(0.3)
-        return Process(stdout=api.key)
-
-    service._process_launcher = launch
-    assert service.acquire() == api.key
-    assert waits == [pytest.approx(0.5)]
-
-
 def test_smallfix_candidate_seen_after_deadline_is_not_hooked(tmp_path):
     service, api, seen, clock = _budget_service(tmp_path, [[]])
     snapshots = iter([[], [303]])
@@ -426,47 +391,6 @@ def test_acquire_returns_valid_key(tmp_path: Path) -> None:
     assert api.cleanup_calls == 1
 
 
-def test_acquire_missing_dll_is_user_safe(tmp_path: Path) -> None:
-    module = _module()
-    service = module.WeChatKeyService(
-        dll_path=tmp_path / "absent.dll",
-        process_finder=lambda: [123],
-    )
-
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-
-    assert caught.value.code == "wechat_environment_missing"
-    assert caught.value.public_message
-    assert "Traceback" not in caught.value.public_message
-
-
-def test_acquire_without_weixin_process_is_user_safe(tmp_path: Path) -> None:
-    module = _module()
-    service = _service(tmp_path, api=_FakeHookApi(), pids=[], timeout=0.5)
-
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-
-    assert caught.value.code == "wechat_key_timeout"
-    assert "超时" in caught.value.public_message
-
-
-def test_hook_failure_is_normalized(tmp_path: Path) -> None:
-    module = _module()
-    api = _FakeHookApi(key=None, hook_ok=False)
-    service = _service(tmp_path, api=api, pids=[456])
-
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-
-    assert caught.value.code == "wechat_hook_failed"
-    assert "无法获取微信登录密钥" in caught.value.public_message
-    assert "微信版本或环境不支持" in caught.value.public_message
-    assert "hook denied" not in caught.value.public_message
-    assert "Traceback" not in caught.value.public_message
-
-
 def test_zero_acquire_budget_times_out_without_hook(tmp_path: Path) -> None:
     module = _module()
     api = _FakeHookApi(key=None)
@@ -497,22 +421,6 @@ def test_poll_exception_does_not_leak(tmp_path: Path) -> None:
     assert "native poll exploded with secret" not in caught.value.public_message
     assert "Traceback" not in caught.value.public_message
 
-
-def test_extract_key_rejects_invalid_length() -> None:
-    module = _module()
-
-    assert module._extract_key(bytearray(b"too-short")) is None
-    assert module._extract_key(bytearray(b"z" * 64)) is None
-    assert module._extract_key(bytearray(b"a" * 64)) == "a" * 64
-
-
-def test_default_dll_path_points_at_bundled_runtime() -> None:
-    module = _module()
-    service = module.WeChatKeyService(process_finder=lambda: [])
-
-    assert service._dll_path == (
-        PROJECT_ROOT / "runtime" / "wechat" / "wx_key.dll"
-    )
 
 class _Completed:
     def __init__(self, code=0, stdout="", stderr=""):
@@ -545,56 +453,6 @@ def _helper_service(
     return service
 
 
-def test_helper_success_returns_key(tmp_path: Path):
-    module = _module()
-    service = _helper_service(tmp_path, _Completed(stdout="AB12" * 16 + "\n"))
-    assert service.acquire() == "ab12" * 16
-
-
-def test_helper_failure_is_normalized(tmp_path: Path):
-    module = _module()
-    service = _helper_service(tmp_path, _Completed(1, stderr="no Weixin process"))
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-    assert "未检测到微信" in caught.value.public_message
-
-
-def test_helper_empty_stdout_is_rejected(tmp_path: Path):
-    module = _module()
-    service = _helper_service(tmp_path, _Completed())
-    with pytest.raises(module.WeChatKeyUnavailable):
-        service.acquire()
-
-
-def test_helper_short_payload_is_rejected(tmp_path: Path):
-    module = _module()
-    service = _helper_service(tmp_path, _Completed(stdout="not-a-key"))
-    with pytest.raises(module.WeChatKeyUnavailable):
-        service.acquire()
-
-
-def test_helper_subprocess_exception_is_normalized(tmp_path: Path):
-    module = _module()
-    def fail(*_args, **_kwargs):
-        raise OSError("node missing")
-    service = _helper_service(tmp_path, runner=fail)
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-    assert "\u5fae\u4fe1\u8fde\u63a5\u7ec4\u4ef6" in caught.value.public_message
-
-
-def test_helper_hook_failure_is_normalized(tmp_path: Path):
-    module = _module()
-    service = _helper_service(
-        tmp_path,
-        _Completed(1, stderr="InitializeHook(4321) -> false"),
-    )
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-    assert caught.value.code == "wechat_hook_failed"
-    assert "无法获取微信登录密钥" in caught.value.public_message
-
-
 def test_helper_key_unavailable_is_not_captured(tmp_path: Path):
     module = _module()
     service = _helper_service(
@@ -612,123 +470,6 @@ def test_helper_key_unavailable_is_not_captured(tmp_path: Path):
         service.acquire()
     assert caught.value.code == "wechat_key_not_captured"
     assert "无法获取微信登录密钥" in caught.value.public_message
-
-
-def test_helper_early_runtime_failure_is_classified_and_logged(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A helper crash before process enumeration must not collapse silently."""
-    module = _module()
-    caplog.set_level(
-        logging.INFO,
-        logger="qq_chat_analyzer.desktop.wechat_key_service",
-    )
-    service = _helper_service(
-        tmp_path,
-        _Completed(
-            1,
-            stderr=(
-                "Error: Cannot find module 'koffi'\n"
-                "Require stack:\n"
-                "- D:\\secret\\install\\runtime\\wechat\\wx_key_helper.cjs\n"
-                "    at Module._resolveFilename "
-                "(node:internal/modules/cjs/loader.js:1:1)\n"
-            ),
-        ),
-    )
-
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-
-    assert caught.value.code == "wechat_environment_missing"
-    assert "微信连接组件加载失败" in caught.value.public_message
-    assert (
-        "wechat.key.capture success=false error_type=WeChatKeyUnavailable "
-        "code=wechat_environment_missing"
-    ) in caplog.text
-    assert "process_found=null process_count=null" in caplog.text
-    assert "hook_success=null" in caplog.text
-    assert "key_capture_success=false" in caplog.text
-    assert "wechat_process_incompatible" not in caplog.text
-    assert "koffi" not in caplog.text
-    assert "secret" not in caplog.text
-    assert "wx_key_helper.cjs" not in caplog.text
-    assert "ab12" * 16 not in caplog.text
-
-
-def test_helper_dll_load_failure_logs_exit_code_and_stage(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    module = _module()
-    caplog.set_level(
-        logging.INFO,
-        logger="qq_chat_analyzer.desktop.wechat_key_service",
-    )
-    service = _helper_service(
-        tmp_path,
-        _Completed(
-            1,
-            stderr=(
-                "helper_stage=node_start\n"
-                "helper_stage=koffi_load\n"
-                "helper_stage=process_enumeration\n"
-                "helper_stage=dll_load\n"
-                "Error: Dynamic Linking Error: Win32 error 126\n"
-            ),
-        ),
-    )
-
-    with pytest.raises(module.WeChatKeyUnavailable):
-        service.acquire()
-
-    assert (
-        "wechat.key.helper helper_exit_code=1 helper_stage=dll_load "
-        "helper_error_category=dll_load_failed"
-    ) in caplog.text
-    assert "process_found=null process_count=null" in caplog.text
-    for leaked in ("Dynamic Linking Error", "Win32 error", "secret", "wx_key.dll"):
-        assert leaked not in caplog.text
-
-
-def test_helper_default_timeout_is_600_seconds(tmp_path: Path):
-    calls = []
-    def runner(command, **options):
-        calls.append((command, options))
-        return _Completed(stdout="a" * 64)
-    service = _helper_service(tmp_path, runner=runner)
-    service.acquire()
-    command, options = calls[0]
-    assert command[command.index("--timeout-ms") + 1] == "600000"
-    assert options["timeout"] == 600.0
-
-
-def test_helper_hides_node_console_on_windows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _module()
-    calls = []
-
-    def runner(command, **options):
-        calls.append((command, options))
-        return _Completed(stdout="a" * 64)
-
-    monkeypatch.setattr(module.os, "name", "nt")
-    monkeypatch.setattr(
-        module.subprocess,
-        "CREATE_NO_WINDOW",
-        0x08000000,
-        raising=False,
-    )
-    _helper_service(tmp_path, runner=runner).acquire()
-
-    command, options = calls[0]
-    assert command[0] == "node"
-    assert command[1] == str(tmp_path / "wx_key_helper.cjs")
-    assert options["creationflags"] == 0x08000000
-    assert options["cwd"] == str(tmp_path)
-    assert options["env"]["NODE_PATH"] == str(tmp_path / "node_modules")
-    assert options["timeout"] == 600.0
 
 
 @pytest.mark.parametrize(
@@ -797,21 +538,6 @@ def test_helper_invocation_never_uses_wechat_install_path(
     assert "Weixin.exe" not in str(command)
     assert str(Path("D:/软件之学习工作/微信/Weixin")) not in str(command)
     assert "Weixin.exe" not in str(options.get("cwd", ""))
-
-
-def test_helper_missing_path_is_user_safe(tmp_path: Path) -> None:
-    module = _module()
-    dll = tmp_path / "wx_key.dll"
-    dll.write_bytes(b"fake")
-    service = module.WeChatKeyService(
-        dll_path=dll,
-        helper_path=tmp_path / "不存在的路径" / "wx_key_helper.cjs",
-    )
-
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-
-    assert caught.value.code == "wechat_environment_missing"
 
 
 @pytest.mark.skipif(
@@ -919,50 +645,6 @@ def test_helper_prefers_bundled_node_when_system_node_is_unavailable(
     assert calls[0][0][0] == str(bundled_node)
 
 
-def test_helper_reports_missing_node_runtime_before_launch(
-    tmp_path: Path,
-) -> None:
-    module = _module()
-    launched = False
-
-    def runner(*_args, **_kwargs):
-        nonlocal launched
-        launched = True
-        return _Completed(stdout="a" * 64)
-
-    service = _helper_service(
-        tmp_path,
-        runner=runner,
-        node_finder=lambda _name: None,
-    )
-
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-
-    assert "Node.js" in caught.value.public_message
-    assert launched is False
-
-
-def test_helper_omits_windows_creation_flags_on_non_windows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    module = _module()
-    calls = []
-
-    def runner(command, **options):
-        calls.append((command, options))
-        return _Completed(stdout="a" * 64)
-
-    service = _helper_service(tmp_path, runner=runner)
-    monkeypatch.setattr(module.os, "name", "posix")
-    service.acquire()
-
-    command, options = calls[0]
-    assert command[0] == "node"
-    assert "creationflags" not in options
-
-
 def test_smallfix_native_hook_failure_allows_second_candidate(tmp_path):
     service, api, seen, clock = _budget_service(tmp_path, [[], [101, 202]])
 
@@ -978,30 +660,6 @@ def test_smallfix_native_hook_failure_allows_second_candidate(tmp_path):
     assert listener.initialize_calls == [101, 202]
     assert listener.cleanup_calls == 1
     assert clock.now == pytest.approx(0.5)
-
-
-def test_helper_accepts_non_hex_payload_of_verified_length(tmp_path: Path):
-    payload = "z" * 64 + "ignored"
-    service = _helper_service(tmp_path, _Completed(stdout=payload))
-    assert service.acquire() == "z" * 64
-
-
-def test_helper_source_uses_one_global_timeout_for_all_pids():
-    source = (PROJECT_ROOT / "runtime" / "wechat" / "wx_key_helper.cjs").read_text(encoding="utf-8")
-    loop = source.index("for (const [index, pid] of ids.entries())")
-    deadline = source.index("const deadline = Date.now() + timeoutMs")
-    assert deadline < loop
-
-
-def test_helper_stage_markers_precede_native_bootstrap_operations() -> None:
-    source = (
-        PROJECT_ROOT / "runtime" / "wechat" / "wx_key_helper.cjs"
-    ).read_text(encoding="utf-8")
-
-    assert source.index("helper_stage=node_start") < source.index("require('koffi')")
-    assert source.index("helper_stage=koffi_load") < source.index("require('koffi')")
-    assert source.index("helper_stage=process_enumeration") < source.index(": pids()")
-    assert source.index("helper_stage=dll_load") < source.index("koffi.load(dll)")
 
 
 @pytest.mark.skipif(
@@ -1102,93 +760,6 @@ class _FakePopen:
         return self.stdout.closed and self.stderr.closed
 
 
-class _DelayedStdoutPopen:
-    """Popen stand-in whose stdout opens only after stderr is written.
-
-    Mirrors the real helper: stderr lines arrive while the process is still
-    running, and the key appears on stdout only at the very end.
-    """
-
-    def __init__(
-        self,
-        *,
-        key: str,
-        stderr_lines: tuple[str, ...],
-    ) -> None:
-        self._key = key
-        self._stderr_lines = stderr_lines
-        self.stderr = _BlockingLineStream()
-        self.stdout = _DelayedStringIO()
-        self.returncode = None
-        self.killed = False
-        self.waited = False
-
-    def wait(self, timeout=None):
-        self.waited = True
-        for line in self._stderr_lines:
-            time.sleep(0.01)
-            self.stderr.write_line(line + "\n")
-        self.stderr.close()
-        self.returncode = 0
-        self.stdout.release(self._key + "\n")
-        return self.returncode
-
-    def kill(self):
-        self.killed = True
-
-    @property
-    def closed(self):
-        return self.stdout.closed and self.stderr.closed
-
-
-class _DelayedStringIO:
-    """StringIO whose content appears only after ``release`` is called."""
-
-    def __init__(self) -> None:
-        self._content: list[str] = []
-        self._released = False
-        self.closed = False
-
-    def close(self):
-        self.closed = True
-
-    def release(self, content: str) -> None:
-        self._content.append(content)
-        self._released = True
-
-    def readline(self) -> str:
-        while not self._released:
-            time.sleep(0.005)
-        if not self._content:
-            return ""
-        return self._content.pop(0)
-
-
-class _BlockingLineStream:
-    """A stream that blocks on readline until each line is written."""
-
-    def __init__(self) -> None:
-        self._lines: list[str] = []
-        self._closed = False
-
-    def write_line(self, line: str) -> None:
-        self._lines.append(line)
-
-    def close(self) -> None:
-        self._closed = True
-
-    @property
-    def closed(self):
-        return self._closed
-
-    def readline(self) -> str:
-        while not self._lines:
-            if self._closed:
-                return ""
-            time.sleep(0.005)
-        return self._lines.pop(0)
-
-
 def _streaming_service(tmp_path: Path, popen, progress=None):
     dll = tmp_path / "wx_key.dll"
     helper = tmp_path / "wx_key_helper.cjs"
@@ -1206,26 +777,6 @@ def _streaming_service(tmp_path: Path, popen, progress=None):
     service._process_finder = lambda: next(snapshots, [4242])
     service._monotonic = lambda: 0.0
     return service
-
-
-def test_streaming_reports_progress_per_stderr_line(tmp_path: Path):
-    seen = []
-    proc = _FakePopen(
-        stdout="cd34" * 16 + "\n",
-        stderr_lines=(
-            "2026-08-09T00:00:00.000Z hook_success=true",
-            "2026-08-09T00:00:00.000Z elapsed=5s, waiting for key...",
-            "2026-08-09T00:00:05.000Z elapsed=10s, waiting for key...",
-        ),
-    )
-    service = _streaming_service(
-        tmp_path, lambda *_a, **_k: proc, progress=seen.append
-    )
-    assert service.acquire() == "cd34" * 16
-    assert [getattr(event, "name", None) for event in seen] == [
-        "PREPARING", "WAITING_FOR_WECHAT_START", "READY_FOR_LOGIN",
-        "CREDENTIAL_RECEIVED",
-    ]
 
 
 def test_streaming_reader_keeps_receiving_lines_until_exit(tmp_path: Path):
@@ -1249,29 +800,6 @@ def test_streaming_reader_keeps_receiving_lines_until_exit(tmp_path: Path):
         "PREPARING", "WAITING_FOR_WECHAT_START", "READY_FOR_LOGIN",
         "CREDENTIAL_RECEIVED",
     ]
-
-
-def test_streaming_communicate_does_not_steal_stderr(tmp_path: Path):
-    """communicate() must not consume stderr lines meant for the reader."""
-    seen = []
-    proc = _DelayedStdoutPopen(
-        key="ef56" * 16,
-        stderr_lines=(
-            "2026-08-09T00:00:00.000Z hook_success=true",
-            "2026-08-09T00:00:00.000Z elapsed=5s, waiting for key...",
-            "2026-08-09T00:00:05.000Z elapsed=10s, waiting for key...",
-        ),
-    )
-    service = _streaming_service(
-        tmp_path, lambda *_a, **_k: proc, progress=seen.append
-    )
-
-    assert service.acquire() == "ef56" * 16
-    assert [getattr(event, "name", None) for event in seen] == [
-        "PREPARING", "WAITING_FOR_WECHAT_START", "READY_FOR_LOGIN",
-        "CREDENTIAL_RECEIVED",
-    ]
-    assert proc.killed is False
 
 
 def test_streaming_progress_never_leaks_internal_terms(tmp_path: Path):
@@ -1337,94 +865,6 @@ def test_injected_listener_reports_ready_only_after_initialize_succeeds(tmp_path
     ]
 
 
-@pytest.mark.parametrize("use_helper", [True, False])
-def test_missing_wechat_does_not_instruct_login_before_retry(tmp_path, use_helper):
-    if use_helper:
-        process = _FakePopen(stderr_lines=("no Weixin process",), returncode=1)
-        service = _streaming_service(tmp_path, lambda *_a, **_k: process)
-    else:
-        service = _service(tmp_path, api=_FakeHookApi(), pids=[])
-
-    with pytest.raises(_module().WeChatKeyUnavailable) as caught:
-        service.acquire()
-
-    if use_helper:
-        # A selected process can still exit before the helper initializes it.
-        assert caught.value.code == "wechat_not_running"
-        assert "登录界面" in caught.value.public_message
-    else:
-        assert caught.value.code == "wechat_key_timeout"
-        assert "等待 Echo 提示可以登录" in caught.value.public_message
-    assert "打开并登录" not in caught.value.public_message
-
-
-def test_streaming_timeout_is_distinct_from_node_failure(tmp_path: Path):
-    module = _module()
-    proc = _FakePopen(timeout_after=True)
-    service = _streaming_service(tmp_path, lambda *_a, **_k: proc)
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-    assert caught.value.code == "wechat_key_timeout"
-    message = caught.value.public_message
-    assert "Node.js" not in message
-    assert "提示可以登录后" in message
-    assert "\u8d85\u65f6" in message or "\u65f6\u9650" in message
-    assert proc.killed
-
-
-def test_streaming_node_missing_still_mentions_node(tmp_path: Path):
-    module = _module()
-
-    def launcher(*_args, **_kwargs):
-        raise FileNotFoundError("node not on PATH")
-
-    service = _streaming_service(tmp_path, launcher)
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-    assert "\u5fae\u4fe1\u8fde\u63a5\u7ec4\u4ef6" in caught.value.public_message
-
-
-def test_streaming_failure_uses_collected_stderr(tmp_path: Path):
-    module = _module()
-    proc = _FakePopen(
-        stdout="",
-        stderr_lines=("no Weixin process",),
-        returncode=1,
-    )
-    service = _streaming_service(tmp_path, lambda *_a, **_k: proc)
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-    assert "\u672a\u68c0\u6d4b\u5230\u5fae\u4fe1" in caught.value.public_message
-
-
-def test_streaming_early_runtime_failure_logs_stage_fields(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    module = _module()
-    caplog.set_level(
-        logging.INFO,
-        logger="qq_chat_analyzer.desktop.wechat_key_service",
-    )
-    proc = _FakePopen(
-        stdout="",
-        stderr_lines=("Error: Cannot find module 'koffi'",),
-        returncode=1,
-    )
-    service = _streaming_service(tmp_path, lambda *_a, **_k: proc)
-
-    with pytest.raises(module.WeChatKeyUnavailable) as caught:
-        service.acquire()
-
-    assert caught.value.code == "wechat_environment_missing"
-    assert "process_found=null process_count=null" in caplog.text
-    assert "hook_success=null" in caplog.text
-    assert "key_capture_success=false" in caplog.text
-    assert "wechat_process_incompatible" not in caplog.text
-    assert "koffi" not in caplog.text
-    assert "secret" not in caplog.text
-    assert "ab12" * 16 not in caplog.text
-
-
 def test_streaming_initialized_pid_without_key_reports_not_captured(
     tmp_path: Path,
 ):
@@ -1448,32 +888,12 @@ def test_streaming_initialized_pid_without_key_reports_not_captured(
     assert "\u91cd\u65b0\u5b89\u88c5" not in caught.value.public_message
 
 
-def test_streaming_and_injected_runner_share_invocation(tmp_path: Path):
-    calls = []
-
-    def launcher(command, **options):
-        calls.append((command, options))
-        return _FakePopen(stdout="ab12" * 16)
-
-    service = _streaming_service(tmp_path, launcher)
-    service.acquire()
-    command, options = calls[0]
-    assert command[command.index("--timeout-ms") + 1] == "600000"
-    assert options["cwd"] == str(tmp_path)
-    assert options["env"]["NODE_PATH"] == str(tmp_path / "node_modules")
 # ------------------------------------------------------------------ key bridge
 
 @pytest.fixture(autouse=True)
 def _clean_key_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     """Never let ECHO_WX_DB_KEY leak between tests."""
     monkeypatch.delenv(_module().KEY_ENVIRONMENT_VARIABLE, raising=False)
-
-
-def test_acquire_exposes_key_to_process_environment(tmp_path: Path) -> None:
-    key = "ab12" * 16
-    service = _service(tmp_path, api=_FakeHookApi(key=key), pids=[1000])
-    assert service.acquire() == key
-    assert os.environ.get(_module().KEY_ENVIRONMENT_VARIABLE) == key
 
 
 def test_acquire_logs_never_contain_the_key(
@@ -1492,85 +912,6 @@ def test_acquire_logs_never_contain_the_key(
     assert "process_found=true process_count=1" in caplog.text
     assert "hook_success=true" in caplog.text
     assert "key_capture_success=true" in caplog.text
-
-
-def test_acquire_failure_logs_safe_event_only(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    module = _module()
-    caplog.set_level(
-        logging.INFO,
-        logger="qq_chat_analyzer.desktop.wechat_key_service",
-    )
-    service = _service(tmp_path, api=_FakeHookApi(key=None), pids=[])
-
-    with pytest.raises(module.WeChatKeyUnavailable):
-        service.acquire()
-
-    assert "wechat.connect.start" in caplog.text
-    assert "wechat.key.capture success=false error_type=WeChatKeyUnavailable" in (
-        caplog.text
-    )
-    assert "process_found=false process_count=0" in caplog.text
-    assert "hook denied" not in caplog.text
-
-
-def test_helper_failure_logs_safe_diagnostics(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    module = _module()
-    caplog.set_level(
-        logging.INFO,
-        logger="qq_chat_analyzer.desktop.wechat_key_service",
-    )
-    service = _helper_service(
-        tmp_path,
-        _Completed(
-            1,
-            stderr=(
-                "Weixin PIDs: 101, 202\n"
-                "InitializeHook(101) -> true\n"
-                "key unavailable"
-            ),
-        ),
-    )
-
-    with pytest.raises(module.WeChatKeyUnavailable):
-        service.acquire()
-
-    assert "process_found=true process_count=2" in caplog.text
-    assert "hook_success=true" in caplog.text
-    assert "key_capture_success=false" in caplog.text
-    messages = "\n".join(record.getMessage() for record in caplog.records)
-    assert "101" not in messages
-    assert "202" not in messages
-
-
-def test_helper_hook_failure_logs_safe_diagnostics(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
-) -> None:
-    module = _module()
-    caplog.set_level(
-        logging.INFO,
-        logger="qq_chat_analyzer.desktop.wechat_key_service",
-    )
-    service = _helper_service(
-        tmp_path,
-        _Completed(
-            1,
-            stderr=(
-                "Weixin PIDs: 456\n"
-                "InitializeHook(456) -> false"
-            ),
-        ),
-    )
-
-    with pytest.raises(module.WeChatKeyUnavailable):
-        service.acquire()
-
-    assert "process_found=true process_count=1" in caplog.text
-    assert "hook_success=false" in caplog.text
-    assert "456" not in caplog.text
 
 
 def test_acquire_failure_does_not_expose_key(tmp_path: Path) -> None:

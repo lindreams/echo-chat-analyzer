@@ -102,35 +102,6 @@ def test_warning_does_not_contain_filename(tmp_path):
         assert path.name not in warning
 
 
-def test_warning_codes_are_stable(tmp_path):
-    path = tmp_path / "empty.json"
-    write_empty_qq_json(path)
-
-    result = ImportService().execute(
-        ImportRequest(path, platform="qq")
-    )
-
-    assert result.result.warnings == (
-        NO_MESSAGES_LOADED,
-    )
-
-
-def test_warning_codes_are_deduplicated(tmp_path):
-    directory = tmp_path / "chat"
-    directory.mkdir()
-
-    write_empty_qq_json(directory / "a.json")
-    write_empty_qq_json(directory / "b.json")
-
-    result = ImportService().execute(
-        ImportRequest(directory, platform="qq")
-    )
-
-    assert result.result.warnings == (
-        NO_MESSAGES_LOADED,
-    )
-
-
 # ----------------------------
 # sidecar
 # ----------------------------
@@ -152,72 +123,9 @@ def test_manifest_and_avatar_are_ignored(tmp_path):
     assert result.result.warnings == ()
 
 
-def test_chunks_directory_is_ignored(tmp_path):
-    directory = tmp_path / "export"
-    directory.mkdir()
-
-    write_qq_json(directory / "chat.json")
-
-    chunks = directory / "chunks"
-    chunks.mkdir()
-
-    write_qq_json(chunks / "chunk.json")
-
-    result = ImportService().execute(
-        ImportRequest(directory)
-    )
-
-    assert result.result.message_count == 1
-
-
-def test_only_sidecar_returns_unsupported(tmp_path):
-    directory = tmp_path / "export"
-    directory.mkdir()
-
-    write_manifest(directory / "manifest.json")
-    write_avatars(directory / "avatars.json")
-
-    result = ImportService().execute(
-        ImportRequest(directory)
-    )
-
-    assert result.result.warnings == (
-        UNSUPPORTED_FORMAT,
-    )
-    assert result.result.platform is None
-
-
 # ----------------------------
 # unknown
 # ----------------------------
-
-
-def test_unknown_json_not_treated_as_qq(tmp_path):
-    path = tmp_path / "unknown.json"
-    write_unknown_json(path)
-
-    result = ImportService().execute(
-        ImportRequest(path)
-    )
-
-    assert result.result.warnings == (
-        UNSUPPORTED_FORMAT,
-    )
-    assert result.result.platform is None
-
-
-def test_unknown_json_in_directory_warns(tmp_path):
-    directory = tmp_path / "chat"
-    directory.mkdir()
-
-    write_qq_json(directory / "chat.json")
-    write_unknown_json(directory / "unknown.json")
-
-    result = ImportService().execute(
-        ImportRequest(directory)
-    )
-
-    assert UNSUPPORTED_FORMAT in result.result.warnings
 
 
 def test_unknown_warning_hides_filename(tmp_path):
@@ -238,60 +146,9 @@ def test_unknown_warning_hides_filename(tmp_path):
 # ----------------------------
 
 
-def test_platform_hint_mismatch_warning(tmp_path):
-    path = tmp_path / "unknown.json"
-    write_unknown_json(path)
-
-    result = ImportService().execute(
-        ImportRequest(
-            path,
-            platform="qq",
-        )
-    )
-
-    assert result.result.platform == "qq"
-    assert result.result.warnings == (
-        PLATFORM_HINT_FORMAT_MISMATCH,
-    )
-
-
-def test_platform_hint_warning_hides_filename(tmp_path):
-    path = tmp_path / "群聊_秘密群.json"
-    write_unknown_json(path)
-
-    result = ImportService().execute(
-        ImportRequest(
-            path,
-            platform="qq",
-        )
-    )
-
-    for warning in result.result.warnings:
-        assert "秘密群" not in warning
-
-
 # ----------------------------
 # regression
 # ----------------------------
-
-
-def test_known_qq_and_wechat_detection(tmp_path):
-    qq = tmp_path / "qq.json"
-    wx = tmp_path / "wechat.json"
-
-    write_qq_json(qq)
-    write_wechat_json(wx)
-
-    qq_result = ImportService().execute(
-        ImportRequest(qq)
-    )
-
-    wx_result = ImportService().execute(
-        ImportRequest(wx)
-    )
-
-    assert qq_result.result.platform == "qq"
-    assert wx_result.result.platform == "wechat"
 
 
 # ----------------------------

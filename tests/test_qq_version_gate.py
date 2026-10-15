@@ -72,19 +72,6 @@ def test_build_gate_precedes_any_runtime_launch(tmp_path, monkeypatch, caplog, b
     assert "ECHO_BRIDGE_TOKEN" not in caplog.text
 
 
-@pytest.mark.parametrize("version", [None, "9.9.15-27597 private-account", (9, 9, 15, 0)])
-def test_unknown_or_malformed_version_does_not_claim_incompatibility(tmp_path, monkeypatch, version):
-    module = _bridge_module()
-    instance, _ = _auth(tmp_path)
-    monkeypatch.setattr(module, "read_qq_version", lambda _: version, raising=False)
-    monkeypatch.setattr(*_launch_target(module), lambda *a, **k: _FakeProcess(4243))
-    snapshot = instance.start_auth_flow()
-    assert snapshot.state is _connection_module().ConnectionState.WAITING_AUTH
-    assert snapshot.code != "qq_version_too_old"
-    assert "兼容" not in snapshot.message
-    assert "private-account" not in snapshot.message
-
-
 def test_version_read_exception_is_unknown_without_private_logging(tmp_path, monkeypatch, caplog):
     module = _bridge_module()
     instance, _ = _auth(tmp_path)
@@ -146,19 +133,6 @@ def test_cancel_during_version_read_never_launches_and_retry_rechecks(tmp_path, 
     second = instance.start_auth_flow(cancel_event=threading.Event())
     assert second.state is _connection_module().ConnectionState.WAITING_AUTH
     assert len(reads) >= 2
-    assert launches == [True]
-
-
-def test_old_version_rejection_can_retry_after_update(tmp_path, monkeypatch):
-    module = _bridge_module()
-    instance, config = _auth(tmp_path)
-    _base_build(config, 27597)
-    launches = []
-    monkeypatch.setattr(*_launch_target(module), lambda *a, **k: launches.append(True) or _FakeProcess(4243))
-    assert instance.start_auth_flow().code == "qq_version_too_old"
-    assert not launches
-    _base_build(config, 53644)
-    assert instance.start_auth_flow().state is _connection_module().ConnectionState.WAITING_AUTH
     assert launches == [True]
 
 

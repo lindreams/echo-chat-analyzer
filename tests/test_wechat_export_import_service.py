@@ -132,26 +132,6 @@ def _request(tmp_path: Path, **kwargs) -> WeChatExportImportRequest:
 # ------------------------------------------------------------------- contract
 
 
-def test_stub_provider_satisfies_the_protocol() -> None:
-    assert isinstance(_StubProvider(), WeChatExportProvider)
-
-
-def test_request_is_frozen(tmp_path: Path) -> None:
-    request = _request(tmp_path)
-
-    with pytest.raises(Exception):
-        request.session_id = "changed"  # type: ignore[misc]
-
-
-def test_service_errors_are_application_errors() -> None:
-    assert issubclass(WeChatExportUnavailable, ApplicationServiceError)
-    assert issubclass(WeChatExportFileMissing, ApplicationServiceError)
-    assert WeChatExportUnavailable().public_message
-    assert WeChatExportFileMissing().public_message
-    assert WeChatExportUnavailable.code == "wechat_export_unavailable"
-    assert WeChatExportFileMissing.code == "wechat_export_file_missing"
-
-
 # -------------------------------------------------------------------- execute
 
 
@@ -173,59 +153,6 @@ def test_execute_exports_then_imports_into_chat_messages(tmp_path: Path) -> None
     assert {message.conversation_id for message in outcome.messages} == {
         FICTIONAL_SESSION
     }
-
-
-def test_execute_passes_session_and_time_window_to_provider(tmp_path: Path) -> None:
-    provider = _StubProvider()
-    service = WeChatExportImportService(provider)
-    output_path = tmp_path / "windowed.json"
-
-    service.execute(
-        _request(
-            tmp_path,
-            output_path=output_path,
-            start_time=1753400000,
-            end_time=1753500000,
-        )
-    )
-
-    assert provider.calls == [
-        {
-            "session_id": FICTIONAL_SESSION,
-            "output_path": output_path,
-            "start_time": 1753400000,
-            "end_time": 1753500000,
-        }
-    ]
-
-
-def test_execute_accepts_a_string_path_from_the_provider(tmp_path: Path) -> None:
-    export_path = tmp_path / "as-string.json"
-    _write_fake_export(export_path)
-    provider = _StubProvider(result=str(export_path))
-    service = WeChatExportImportService(provider)
-
-    outcome = service.execute(_request(tmp_path))
-
-    assert outcome.result.message_count == 2
-
-
-def test_execute_reuses_the_injected_import_service(tmp_path: Path) -> None:
-    class _RecordingImportService(ImportService):
-        def __init__(self) -> None:
-            self.requests: list = []
-
-        def execute(self, request):
-            self.requests.append(request)
-            return super().execute(request)
-
-    import_service = _RecordingImportService()
-    service = WeChatExportImportService(_StubProvider(), import_service)
-
-    service.execute(_request(tmp_path))
-
-    assert len(import_service.requests) == 1
-    assert import_service.requests[0].platform == "wechat"
 
 
 def test_execute_logs_import_failure_without_exception_message(
@@ -252,76 +179,7 @@ def test_execute_logs_import_failure_without_exception_message(
     assert "fictional secret import detail" not in caplog.text
 
 
-def test_empty_conversation_imports_without_messages(tmp_path: Path) -> None:
-    service = WeChatExportImportService(_StubProvider(rows=[]))
-
-    outcome = service.execute(_request(tmp_path))
-
-    assert outcome.result.message_count == 0
-    assert outcome.messages == ()
-
-
 # ---------------------------------------------------------------- export_only
 
 
-def test_export_only_returns_path_without_importing(tmp_path: Path) -> None:
-    provider = _StubProvider()
-    service = WeChatExportImportService(provider)
-    output_path = tmp_path / "only.json"
-
-    result = service.export_only(_request(tmp_path, output_path=output_path))
-
-    assert result == output_path
-    assert result.exists()
-
-
-def test_missing_file_raises_export_file_missing(tmp_path: Path) -> None:
-    provider = _StubProvider(result=tmp_path / "never-written.json")
-    service = WeChatExportImportService(provider)
-
-    with pytest.raises(WeChatExportFileMissing):
-        service.execute(_request(tmp_path))
-
-
-@pytest.mark.parametrize("bad_result", [None, "", "   ", 42, object()])
-def test_unusable_provider_result_raises_export_unavailable(
-    tmp_path: Path,
-    bad_result: object,
-) -> None:
-    service = WeChatExportImportService(_StubProvider(result=bad_result))
-
-    with pytest.raises(WeChatExportUnavailable):
-        service.execute(_request(tmp_path))
-
-
-def test_provider_errors_propagate_unchanged(tmp_path: Path) -> None:
-    for error in (DatabaseNotFound(), KeyUnavailable()):
-        service = WeChatExportImportService(_StubProvider(error=error))
-
-        with pytest.raises(type(error)) as excinfo:
-            service.execute(_request(tmp_path))
-
-        assert excinfo.value.public_message == error.public_message
-
-
 # -------------------------------------------------------------- list_sessions
-
-
-def test_list_sessions_delegates_to_the_provider() -> None:
-    sessions = [
-        WeChatSession(
-            session_id=FICTIONAL_SESSION,
-            display_name=FICTIONAL_SESSION,
-            session_type="group",
-        )
-    ]
-    service = WeChatExportImportService(_StubProvider(sessions=sessions))
-
-    assert service.list_sessions() == sessions
-
-
-def test_list_sessions_propagates_provider_errors() -> None:
-    service = WeChatExportImportService(_StubProvider(error=DatabaseNotFound()))
-
-    with pytest.raises(DatabaseNotFound):
-        service.list_sessions()

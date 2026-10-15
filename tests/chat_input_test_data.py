@@ -19,20 +19,6 @@ def detailed_payload(messages):
     }
 
 
-def chatlab_lines(messages):
-    rows = [{"_type": "header", "meta": {
-        "platform": "wechat", "type": "group", "groupId": "fictional-room",
-    }}]
-    rows.extend({
-        "_type": "message", "timestamp": row["timestamp"],
-        "sender": row["sender"].get("uin", row["sender"].get("nickname")),
-        "accountName": row["sender"].get("nickname", "Fictional Sender"),
-        "type": 0 if row.get("type") in {"text", "reply"} else 1,
-        "content": row.get("content", {}).get("text", ""),
-    } for row in messages)
-    return rows
-
-
 FICTIONAL_DETAILED_EXPORT = {'exportInfo': {'format': 'detailed-json'},
  'session': {'wxid': 'fictional-room', 'platform': 'wechat', 'isGroup': True},
  'messages': [{'localId': 1,

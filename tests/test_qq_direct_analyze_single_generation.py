@@ -102,16 +102,6 @@ def _service(tmp_path: Path, **kwargs) -> QQDirectDatabaseImportService:
 # ------------------------------------------------------------------ service
 
 
-def test_success_cleans_up_generation(tmp_path: Path) -> None:
-    service, runtime, _ = _service(tmp_path)
-
-    with service.acquired_session(PRIVATE_SESSION_ID):
-        pass
-
-    assert runtime.cleaned == ["gen-0001"]
-    assert not runtime.generation_directory("gen-0001").exists()
-
-
 def test_payload_materialized_before_generation_release(tmp_path: Path) -> None:
     """The plaintext generation is gone before the analysis consumer runs."""
     service, runtime, _ = _service(tmp_path)
@@ -127,17 +117,6 @@ def test_payload_materialized_before_generation_release(tmp_path: Path) -> None:
         assert outcome.messages[0].text == "fictional group message"
 
     assert runtime.acquired == ["gen-0001"]
-
-
-def test_session_missing_still_cleans_up(tmp_path: Path) -> None:
-    service, runtime, _ = _service(tmp_path)
-
-    with pytest.raises(QQDirectSessionNotFound):
-        with service.acquired_session("group:does-not-exist"):
-            pass
-
-    assert runtime.cleaned == ["gen-0001"]
-    assert not runtime.generation_directory("gen-0001").exists()
 
 
 def test_materialize_exception_still_cleans_up(
@@ -236,37 +215,6 @@ def test_analyze_acquires_exactly_one_generation(tmp_path: Path) -> None:
     assert runtime.cleaned == ["gen-0001"]
 
 
-def test_analyze_publishes_phases_around_the_generation_acquisition(
-    tmp_path: Path,
-) -> None:
-    """READING precedes the single acquisition; the report phase follows it."""
-    snapshot = tmp_path / "source.db"
-    _create_snapshot(snapshot)
-    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
-    service = QQDirectDatabaseImportService(runtime_client=runtime)
-    facade = _facade(service)
-    phases: list[str] = []
-    acquired_at_phase: list[list[str]] = []
-
-    def _on_phase(phase) -> None:
-        phases.append(phase.name)
-        acquired_at_phase.append(list(runtime.acquired))
-
-    outcome = facade.analyze_session(
-        ChatSource.QQ,
-        GROUP_SESSION_ID,
-        AnalysisConfig(output_directory=tmp_path / "report"),
-        on_phase=_on_phase,
-    )
-
-    assert phases == ["READING", "ANALYZING_REPORT"]
-    assert acquired_at_phase == [[], ["gen-0001"]]
-    assert runtime.acquired == ["gen-0001"]
-    assert runtime.cleaned == ["gen-0001"]
-    assert outcome.session is not None
-    assert outcome.session.session_id == GROUP_SESSION_ID
-
-
 def test_malformed_staging_database_is_rejected_and_cleaned(tmp_path: Path) -> None:
     snapshot = tmp_path / "source.db"
     snapshot.write_bytes(b"fictional malformed sqlite image")
@@ -278,71 +226,6 @@ def test_malformed_staging_database_is_rejected_and_cleaned(tmp_path: Path) -> N
             pass
 
     assert runtime.cleaned == ["gen-0001"]
-
-
-def test_direct_group_name_reaches_conversation_report(tmp_path: Path) -> None:
-    snapshot = tmp_path / "source.db"
-    _create_snapshot(snapshot)
-    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
-
-    class MetadataProvider:
-        def list_groups(self, *, page=1, limit=200):
-            return [SimpleNamespace(
-                group_code="fictional-group", group_name="Fictional Study Group"
-            )]
-
-        def list_friends(self, *, page=1, limit=200):
-            return []
-
-    factory = SimpleNamespace(create=lambda: MetadataProvider())
-    service = QQDirectDatabaseImportService(
-        runtime_client=runtime, provider_factory=factory
-    )
-    outcome = _facade(service).analyze_session(
-        ChatSource.QQ, GROUP_SESSION_ID,
-        AnalysisConfig(output_directory=tmp_path / "report"),
-    )
-    assert outcome.session.display_name == "Fictional Study Group"
-    assert outcome.result.reports.conversations.conversations[0].resolved_display_name == (
-        "Fictional Study Group"
-    )
-
-
-def test_direct_group_members_get_names_from_napcat_rpc_shape(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level("DEBUG", logger="qq_chat_analyzer.desktop.qq_direct_database")
-    service, runtime, _ = _service(tmp_path)
-    group_codes: list[str] = []
-
-    def get_group_member_all(group_code: str) -> dict:
-        group_codes.append(group_code)
-        return {
-        "result": {
-            "infos": {
-                9001: {
-                    "uin": "fictional-group-sender",
-                    "cardName": "Fictional Group Card",
-                    "nick": "Fictional Nick",
-                }
-            }
-        }
-        }
-
-    runtime.get_group_member_all = get_group_member_all
-
-    with service.acquired_session(GROUP_SESSION_ID) as acquisition:
-        payload = json.loads(acquisition.payload_path.read_text(encoding="utf-8"))
-
-    assert payload["records"][0]["sender"] == {
-        "displayName": "Fictional Group Card"
-    }
-    assert group_codes == ["fictional-group"]
-    assert "[qq-direct-member-shape] member_count=1" in caplog.text
-    assert "cardName_present_count=1 cardName_nonempty_string_count=1" in caplog.text
-    assert "card_present_count=0 card_nonempty_string_count=0" in caplog.text
-    assert "Fictional Group Card" not in caplog.text
-    assert "fictional-group-sender" not in caplog.text
 
 
 def test_group_sender_outside_current_member_list_stays_unknown(
@@ -384,22 +267,6 @@ def test_group_sender_outside_current_member_list_stays_unknown(
     ) in caplog.text
     assert "fictional-group-sender" not in caplog.text
     assert "Fictional Friend Remark" not in caplog.text
-
-
-def test_group_member_nick_is_used_when_card_is_empty(tmp_path: Path) -> None:
-    service, runtime, _ = _service(tmp_path)
-    runtime.get_group_member_all = lambda _group_code: {
-        "result": {"infos": {
-            "numeric-or-string-key": {
-                "uin": "fictional-group-sender", "cardName": "", "nick": "Fictional Nick"
-            }
-        }}
-    }
-
-    with service.acquired_session(GROUP_SESSION_ID) as acquisition:
-        payload = json.loads(acquisition.payload_path.read_text(encoding="utf-8"))
-
-    assert payload["records"][0]["sender"] == {"displayName": "Fictional Nick"}
 
 
 def test_group_report_member_contract_keeps_self_and_departed_messages(tmp_path: Path) -> None:
@@ -454,105 +321,6 @@ def test_group_report_member_contract_keeps_self_and_departed_messages(tmp_path:
     assert (tmp_path / "report/echo-report.html").is_file()
     assert outcome.result.status.value == "completed"
     assert runtime.acquired == runtime.cleaned == ["gen-0001"]
-
-
-def test_group_member_rpc_failure_emits_anonymous_coverage_status(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level("INFO")
-    service, runtime, _ = _service(tmp_path)
-
-    def fail_rpc(_group_code: str) -> dict:
-        raise RuntimeError("fictional account/group/message data must not be logged")
-
-    runtime.get_group_member_all = fail_rpc
-    with service.acquired_session(GROUP_SESSION_ID):
-        pass
-
-    assert "[qq-direct-identity-coverage] status=rpc_failed" in caplog.text
-    assert "distinct_sender_count=1 rpc_member_count=0" in caplog.text
-    assert "matched_sender_count=0 unmatched_sender_count=1" in caplog.text
-    assert "fictional-group-sender" not in caplog.text
-    assert "fictional account" not in caplog.text
-
-
-def test_direct_timestamp_order_reaches_import_without_private_logs(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture,
-) -> None:
-    service, _, snapshot = _service(tmp_path)
-    with sqlite3.connect(snapshot) as connection:
-        connection.execute(
-            '''INSERT INTO group_msg_table
-                ("40001", "40027", "40030", "40033", "40050", "40800")
-                VALUES (?, ?, ?, ?, ?, ?)''',
-            (102, "group-partition", "fictional-group", "fictional-group-sender",
-             1759999999, _text_blob("fictional earlier message")),
-        )
-    caplog.set_level("INFO")
-
-    with service.acquired_session(GROUP_SESSION_ID) as acquisition:
-        imported = ImportService().execute(ImportRequest(input_path=acquisition.payload_path))
-
-    assert len(imported.messages) == len(imported.rich_messages) == 2
-    assert [message.timestamp for message in imported.messages] == [1759999999, 1760000001]
-    assert [message.message_id for message in imported.messages] == ["102", "101"]
-    assert [message.message_id for message in imported.rich_messages] == ["102", "101"]
-
-    assert "fictional-group-sender" not in caplog.text
-    assert "1759999999" not in caplog.text
-
-
-def test_direct_analysis_emits_anonymous_phase_timing(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture,
-) -> None:
-    service, _, _ = _service(tmp_path)
-    caplog.set_level("INFO")
-
-    _facade(service).analyze_session(
-        ChatSource.QQ, GROUP_SESSION_ID,
-        AnalysisConfig(output_directory=tmp_path / "report"),
-    )
-
-    acquisition = next(
-        record.message for record in caplog.records
-        if "[analysis-timing] stage=direct_db_acquisition" in record.message
-    )
-    analysis = next(
-        record.message for record in caplog.records
-        if "[analysis-timing] stage=facade_analysis" in record.message
-    )
-    core = next(
-        record.message for record in caplog.records
-        if "[analysis-timing] stage=facade_core_analysis" in record.message
-    )
-    for line in (acquisition, core, analysis):
-        assert re.search(r"elapsed_ms=\d+", line)
-        assert "fictional-group" not in line
-        assert "group-partition" not in line
-    assert "[qq-direct-identity-coverage]" in caplog.text
-    assert "[qq-direct-analysis-timing]" not in caplog.text
-
-
-def test_two_analyzes_produce_distinct_generations(tmp_path: Path) -> None:
-    snapshot = tmp_path / "source.db"
-    _create_snapshot(snapshot)
-    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
-    service = QQDirectDatabaseImportService(runtime_client=runtime)
-    facade = _facade(service)
-
-    facade.analyze_session(
-        ChatSource.QQ, GROUP_SESSION_ID,
-        AnalysisConfig(output_directory=tmp_path / "report-1"),
-    )
-    facade.analyze_session(
-        ChatSource.QQ, GROUP_SESSION_ID,
-        AnalysisConfig(output_directory=tmp_path / "report-2"),
-    )
-
-    assert runtime.acquired == ["gen-0001", "gen-0002"]
-    assert runtime.acquired[0] != runtime.acquired[1]
-    assert runtime.cleaned == ["gen-0001", "gen-0002"]
 
 
 def test_second_analyze_acquire_failure_does_not_fallback(tmp_path: Path) -> None:

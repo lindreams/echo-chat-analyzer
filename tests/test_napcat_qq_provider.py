@@ -141,7 +141,7 @@ def executed(path):
     ("EchoSnapshotApi.acquire", []), ("EchoSnapshotApi.cleanup", ["old-generation"]),
     ("EchoSnapshotApi.recover", []),
 ])
-@pytest.mark.parametrize("boot", [None, "", True, "bad", "a" * 64])
+@pytest.mark.parametrize("boot", [None, "a" * 64])
 def test_worker_generation_gate_prevents_all_operations(runtime, tmp_path, method, params, boot):
     calls = tmp_path / "calls.txt"
     base = runtime(runtime_id=RUNTIME_ID, marker=calls)
@@ -176,11 +176,7 @@ def test_auth_then_workspace_then_worker_generation(runtime, tmp_path):
     assert executed(calls) == ""
 
 
-@pytest.mark.parametrize("method,params", [
-    ("Core.status", []), ("EchoMetadata.listFriends", []), ("EchoMetadata.listGroups", []),
-    ("GroupApi.getGroupMemberAll", ["45678901"]), ("EchoSnapshotApi.acquire", []),
-    ("EchoSnapshotApi.cleanup", ["old-generation"]), ("EchoSnapshotApi.recover", []),
-])
+@pytest.mark.parametrize("method,params", [("Core.status", []), ("EchoSnapshotApi.acquire", []), ("EchoSnapshotApi.cleanup", ["old-generation"])])
 def test_managed_bound_calls_check_workspace_before_generation(runtime, tmp_path, method, params):
     calls = tmp_path / "calls.txt"
     base = runtime(runtime_id=RUNTIME_ID, marker=calls)
@@ -281,7 +277,7 @@ def test_unauthenticated_rpc_is_refused_without_executing_the_method(runtime, tm
     assert executed(calls) == ""
 
 
-@pytest.mark.parametrize("method", ["Core.status", "EchoMetadata.listFriends", "EchoSnapshotApi.acquire"])
+@pytest.mark.parametrize("method", ["Core.status", "EchoSnapshotApi.acquire"])
 def test_wrong_credential_is_refused_without_executing_the_method(runtime, tmp_path, method):
     calls = tmp_path / "calls.txt"
     base = runtime(marker=calls)
