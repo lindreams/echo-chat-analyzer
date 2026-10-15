@@ -59,11 +59,14 @@ virtual environment:
 python -m venv .venv
 ```
 
-Install the complete development environment from `pyproject.toml`:
+Install the recommended complete Windows development environment from `pyproject.toml`:
 
 ``` powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[dev,gui]"
+.\.venv\Scripts\python.exe -m pip install -e ".[dev,gui,build]"
 ```
+
+The `build` extra is for developers running build-contract tests and producing
+Windows releases; ordinary application users do not need these tools.
 
 All project commands after creation should use the explicit `.venv` interpreter;
 shell activation is not required.
@@ -184,11 +187,24 @@ subprocesses that override import paths also use the target worktree.
 The `.venv` commands in sections 4 and 5 are local-environment examples; when
 reusing an environment, use `& $EchoPython` with the same explicit source path.
 
-Stop only when no usable Echo environment exists, dependencies do not match, or
-target-source isolation cannot be guaranteed. Do not automatically install or
-upgrade dependencies, create a virtual environment, fall back to system Python,
+For the authorized Windows development environment, repair a missing build
+toolchain before rerunning build-contract tests or reporting the same failure:
+verify the selected interpreter and source path, inspect the installation plan,
+then install the existing pinned extra without upgrading satisfied dependencies:
+
+``` powershell
+& $EchoPython -m pip install --dry-run --upgrade-strategy only-if-needed -e ".[build]"
+& $EchoPython -m pip install --upgrade-strategy only-if-needed -e ".[build]"
+& $EchoPython -c "from importlib.metadata import version; print(version('pyinstaller')); print(version('pyinstaller-hooks-contrib'))"
+& $EchoPython -m pip check
+```
+
+Compare the actual versions with `pyproject.toml`; keep its pins and unrelated
+installed versions unchanged. This authorization covers missing build dependencies,
+not general dependency upgrades. Stop only when no usable environment exists,
+authorized repair cannot satisfy the requirements, or source isolation cannot be
+guaranteed. Do not create an unnecessary environment, fall back to system Python,
 or alter another worktree's virtual environment (including editable reinstallation).
-Report missing or incompatible requirements for human resolution.
 
 For a Windows release build, `scripts/build_windows_exe.ps1` requires the target
 project's `.venv\Scripts\pyinstaller.exe`. After verifying reuse is safe, a local

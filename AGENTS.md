@@ -140,7 +140,7 @@ GUI 通过 ChatAnalyzerFacade 接入（见 GUI原则）。
    开始新任务或阶段前运行 `git worktree list --porcelain` 和 `git branch -vv`，
    检查候选工作树的状态与使用情况，优先复用干净且合适的工作区；
 3. 优先检查 `Test-Path .\.venv\Scripts\python.exe`；当前 worktree 缺少 `.venv` 是正常现象，按 `DEVELOPMENT.md` 的 AI Existing Workspace 流程，从 `git worktree list --porcelain` 和已知 Echo 项目环境中寻找已有且验证通过的虚拟环境；
-4. 用选定环境的显式 Python 路径验证解释器、当前 `pyproject.toml` 要求的依赖和测试工具；显式将源码导入路径设为目标 worktree 的 `src`，核验 `qq_chat_analyzer.__file__` 实际位于该目录，不能导入环境所属的旧工作树。仅在没有可用环境、依赖不符或无法保证源码隔离时停止；
+4. 用选定环境的显式 Python 路径验证解释器、当前 `pyproject.toml` 要求的依赖和测试工具；显式将源码导入路径设为目标 worktree 的 `src`，核验 `qq_chat_analyzer.__file__` 实际位于该目录，不能导入环境所属的旧工作树。已授权的依赖补齐应先完成并重新核验；仅在没有可用环境、补齐后依赖仍不符或无法保证源码隔离时停止；
 5. 明确当前任务允许修改的文件范围；
 6. 阅读与任务直接相关的事实来源；
 7. 先运行与当前任务直接相关的 focused tests，不要无条件先跑 full suite。
@@ -298,7 +298,13 @@ python -m pytest
 py -m pytest
 ```
 
-当前 `.venv` 缺失时先查找可复用环境；只有不存在可用环境、依赖不符或源码隔离无法保证时，才停止并报告环境问题。
+当前 `.venv` 缺失时先查找可复用环境；只有不存在可用环境、授权补齐后依赖仍不符或源码隔离无法保证时，才停止并报告环境问题。
+
+Windows 主开发环境推荐安装 `.[dev,gui,build]`，普通应用用户不需要构建工具。
+已授权的主开发环境缺少 PyInstaller / hooks-contrib 时，按 `DEVELOPMENT.md` 的
+AI Existing Workspace 流程检查并补齐 `pyproject.toml` 已固定的 `build` extra，
+核验实际版本与 `pip check` 后重跑失败节点，不重复仅记录同一缺失。
+补齐前检查安装计划，不修改版本固定值、不升级其他已有依赖；此授权不包含修改其他工作树的环境。
 
 未经明确要求，不要：
 
