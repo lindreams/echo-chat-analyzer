@@ -8,6 +8,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -81,7 +82,6 @@ def test_activity_analyzer_counts_epoch_in_beijing_local_hour() -> None:
     hourly = {entry.hour: entry.count for entry in report.hourly_counts}
     assert hourly[20] == 1
     assert hourly[12] == 0
-    assert report.busiest_hour == 20
 
 
 def test_activity_analyzer_active_days_multiple_days_and_density() -> None:
@@ -100,25 +100,31 @@ def test_activity_analyzer_active_days_multiple_days_and_density() -> None:
     assert report.average_messages_per_active_day == 2.0
 
 
-def test_message_length_analyzer_reports_global_and_speaker_stats() -> None:
-    messages = (
-        _message(sender="Fictional-Alice", text="12345"),
-        _message(sender="Fictional-Alice", text="123"),
-        _message(sender="Fictional-Bob", text="1234567890"),
+@pytest.mark.parametrize(
+    "timestamps, dated, days, density, hours, weekdays",
+    [
+        ((), 0, 0, 0.0, [], []),
+        ((0, "invalid"), 0, 0, 0.0, [], []),
+        ((_epoch(day=1, hour=8), _epoch(day=1, hour=8),
+          _epoch(day=2, hour=20), "invalid"),
+         3, 2, 2.0, [(8, 2), (20, 1)], [(0, 2), (1, 1)]),
+    ],
+    ids=["empty", "undated", "mixed-dates-density-includes-undated"],
+)
+def test_activity_counts_and_density_preserve_undated_messages(
+    timestamps, dated, days, density, hours, weekdays,
+) -> None:
+    report = _analyzers().ActivityAnalyzer().analyze(
+        [_message(timestamp=value) for value in timestamps]
     )
-
-    report = _analyzers().MessageLengthAnalyzer().analyze(messages)
-
-    assert report.message_count == 3
-    assert report.average_length == 6.0
-    assert report.max_length == 10
-    by_speaker = {
-        entry.speaker: entry for entry in report.speaker_lengths
-    }
-    assert by_speaker["Fictional-Alice"].average_length == 4.0
-    assert by_speaker["Fictional-Alice"].max_length == 5
-    assert by_speaker["Fictional-Bob"].average_length == 10.0
-    assert sum(bucket.count for bucket in report.buckets) == 3
+    assert report.total_message_count == len(timestamps)
+    assert report.dated_message_count == dated
+    assert report.active_days == days
+    assert report.average_messages_per_active_day == density
+    assert len(report.hourly_counts) == 24
+    assert len(report.weekday_counts) == 7
+    assert [(p.hour, p.count) for p in report.hourly_counts if p.count] == hours
+    assert [(p.weekday, p.count) for p in report.weekday_counts if p.count] == weekdays
 
 
 def test_user_profile_analyzer_reports_shares_for_multiple_users() -> None:

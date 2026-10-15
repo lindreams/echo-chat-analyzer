@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import importlib.abc
 import runpy
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,6 +14,27 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.slow_integration
+def test_desktop_import_does_not_require_share_or_chart_modules():
+    result = subprocess.run(
+        [sys.executable, "-c", """
+import importlib.abc
+import sys
+
+class BlockUnusedFeatures(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith(('qq_chat_analyzer.presentation.share',
+                                'matplotlib', 'wordcloud')):
+            raise AssertionError('desktop imported unused feature: ' + fullname)
+
+sys.meta_path.insert(0, BlockUnusedFeatures())
+import qq_chat_analyzer.gui.app
+"""],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("entry", ["desktop", "frozen", "module"])

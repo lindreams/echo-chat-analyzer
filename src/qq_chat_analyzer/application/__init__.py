@@ -4,7 +4,6 @@ from ..analysis.models import (
     ActivityReport,
     AnalysisReports,
     ConversationReport,
-    MessageLengthReport,
     UserProfileReport,
 )
 from ..analysis.conversation_sessions import ConversationSessionReport
@@ -132,7 +131,6 @@ __all__ = [
     "InputPathNotFound",
     "InvalidAnalysisRequest",
     "InvalidAnalysisScope",
-    "MessageLengthReport",
     "NoSupportedInput",
     "NoMessagesInScope",
     "QQRuntimeManager",

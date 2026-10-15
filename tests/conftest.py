@@ -150,7 +150,6 @@ DOMAIN_MODULES = {
         "test_identity_semantics",
         "test_import_service",
         "test_import_service_boundaries",
-        "test_message_composition_analyzer",
         "test_message_quality_filter",
         "test_private_language_analyzer",
         "test_rich_filtering_association",
@@ -252,7 +251,6 @@ DOMAIN_MODULES = {
         "test_report_package_catalog",
         "test_report_staging_recovery",
         "test_session_analysis_ownership",
-        "test_share_renderer",
     },
     "system": {
         "test_app_version",

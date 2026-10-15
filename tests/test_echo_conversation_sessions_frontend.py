@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import html
 import re
+import shutil
 
 import pytest
 import os
@@ -210,9 +211,7 @@ def test_session_chapter_never_displays_stable_ids_or_technical_ratio() -> None:
 @pytest.mark.parametrize("width", [1280, 390])
 def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, width: int) -> None:
     from qq_chat_analyzer.presentation import EchoExpressionCulture, EchoExpressionItem
-    from qq_chat_analyzer.presentation.share import renderer
-
-    chromium = renderer.find_chromium()
+    chromium = _find_chromium()
     if chromium is None:
         pytest.skip("no local Chromium available")
     injected_name = '</script><script> window.echoInjected = true </script>'
@@ -258,12 +257,14 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
     </script>"""
     output.write_text(source.replace("</body>", probe + "</body>"), encoding="utf-8")
     screenshot = tmp_path / "echo-layout.png"
-    result = renderer._run_chromium([
-        chromium, *renderer._chromium_flags(tmp_path / "browser-profile"),
+    result = _run_browser([
+        chromium, "--headless=new", "--disable-gpu", "--no-sandbox",
+        "--no-first-run", "--no-default-browser-check", "--hide-scrollbars",
+        f"--user-data-dir={tmp_path / 'browser-profile'}",
         "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND",
         "--virtual-time-budget=4000", f"--window-size={width},3000",
         f"--screenshot={screenshot}", "--dump-dom", output.as_uri(),
-    ], capture_stdout=True)
+    ])
     assert result.returncode == 0, result.stderr
     dom = result.stdout.decode("utf-8")
     match = re.search(r'<pre id="echo-browser-probe">(.*?)</pre>', dom, re.S)
@@ -276,3 +277,68 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
         "brokenImageHidden": True,
     }
     assert screenshot.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def _find_chromium() -> str | None:
+    configured = os.environ.get("ECHO_CHROMIUM_PATH", "").strip()
+    if configured:
+        return configured
+    candidates = (
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    ) if os.name == "nt" else (
+        "chromium", "chromium-browser", "google-chrome", "microsoft-edge",
+    )
+    return next(
+        (path for path in candidates if Path(path).is_file() or shutil.which(path)),
+        None,
+    )
+
+
+def _run_browser(command: list[str]) -> subprocess.CompletedProcess:
+    """Bound the report probe and reap only its own browser on timeout."""
+    flags = (
+        subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+        if os.name == "nt" else 0
+    )
+    process = subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=flags,
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=60)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                capture_output=True, timeout=10, check=False,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+        else:
+            process.kill()
+        process.communicate()
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def test_browser_probe_timeout_terminates_owned_process_tree(monkeypatch):
+    calls = []
+
+    class Process:
+        pid = 4242
+
+        def communicate(self, timeout=None):
+            if timeout is not None:
+                raise subprocess.TimeoutExpired("browser", timeout)
+            return b"", b""
+
+        def kill(self):
+            calls.append("kill")
+
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: Process())
+    monkeypatch.setattr(subprocess, "run", lambda command, **kw: calls.append(command))
+    with pytest.raises(subprocess.TimeoutExpired):
+        _run_browser(["browser", "--dump-dom"])
+    expected = [["taskkill", "/T", "/F", "/PID", "4242"]] if os.name == "nt" else ["kill"]
+    assert calls == expected

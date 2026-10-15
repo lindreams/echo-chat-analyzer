@@ -17,8 +17,6 @@ from ..analysis.analyzers import (
     ConversationAnalyzer,
     DistinctiveWordAnalyzer,
     ExpressionAnalyzer,
-    MessageCompositionAnalyzer,
-    MessageLengthAnalyzer,
     PrivateLanguageAnalyzer,
     UserProfileAnalyzer,
 )
@@ -232,7 +230,7 @@ class AnalysisApplicationService:
                     expression_report=expression_report,
                     expression_source=outcome.result.platform,
                 )
-            if ranked_words:
+            if ranked_words and self._legacy_word_artifacts is not None:
                 with timed_stage("word_speaker_analysis"):
                     speaker_display_names = _speaker_display_names(reports)
                     word_sender_counts = count_word_speakers(
@@ -258,7 +256,7 @@ class AnalysisApplicationService:
             try:
                 with timed_stage("artifact_export"):
                     legacy_artifacts = ()
-                    if ranked_words:
+                    if ranked_words and self._legacy_word_artifacts is not None:
                         legacy_artifacts = self._write_legacy_artifacts(
                             request,
                             ranked_words,
@@ -379,8 +377,6 @@ def _build_reports(
     text_sender_tokens = _text_sender_tokens(sender_tokens)
     with timed_stage("ActivityAnalyzer"):
         activity = ActivityAnalyzer().analyze(messages)
-    with timed_stage("MessageLengthAnalyzer"):
-        message_length = MessageLengthAnalyzer().analyze(messages)
     with timed_stage("UserProfileAnalyzer"):
         user_profiles = UserProfileAnalyzer().analyze(
             messages,
@@ -392,8 +388,6 @@ def _build_reports(
             messages,
             conversation_names=conversation_names,
         )
-    with timed_stage("MessageCompositionAnalyzer"):
-        message_composition = MessageCompositionAnalyzer().analyze(messages)
     with timed_stage("conversation_sessions"):
         conversation_sessions = analyze_conversation_sessions(messages)
     with timed_stage("DistinctiveWordAnalyzer"):
@@ -415,10 +409,8 @@ def _build_reports(
             )
     return AnalysisReports(
         activity=activity,
-        message_length=message_length,
         user_profiles=user_profiles,
         conversations=conversations,
-        message_composition=message_composition,
         conversation_sessions=conversation_sessions,
         distinctive_words=distinctive_words,
         private_language=private_language,

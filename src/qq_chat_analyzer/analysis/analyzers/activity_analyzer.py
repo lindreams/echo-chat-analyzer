@@ -5,12 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from ..models import ActivityReport, HourlyActivity, WeekdayActivity
-from ..peaks import (
-    DAYS_PER_WEEK,
-    HOURS_PER_DAY,
-    WEEKDAY_KEYS,
-    busiest_index,
-)
+from ..peaks import DAYS_PER_WEEK, HOURS_PER_DAY
 from ..timestamps import to_chat_datetime
 from ...message import ChatMessage
 
@@ -34,8 +29,6 @@ class ActivityAnalyzer:
             hourly_counts[moment.hour] += 1
             weekday_counts[moment.weekday()] += 1
 
-        peak_hour = busiest_index(hourly_counts)
-        peak_weekday_index = busiest_index(weekday_counts)
         active_days = len(active_dates)
 
         return ActivityReport(
@@ -48,21 +41,6 @@ class ActivityAnalyzer:
             weekday_counts=tuple(
                 WeekdayActivity(weekday=weekday, count=count)
                 for weekday, count in enumerate(weekday_counts)
-            ),
-            busiest_hour=peak_hour,
-            busiest_weekday=peak_weekday_index,
-            hour_distribution={
-                hour: count for hour, count in enumerate(hourly_counts)
-            },
-            weekday_distribution={
-                WEEKDAY_KEYS[weekday]: count
-                for weekday, count in enumerate(weekday_counts)
-            },
-            peak_hour=peak_hour,
-            peak_weekday=(
-                None
-                if peak_weekday_index is None
-                else WEEKDAY_KEYS[peak_weekday_index]
             ),
             active_days=active_days,
             average_messages_per_active_day=(

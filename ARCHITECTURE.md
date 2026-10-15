@@ -68,7 +68,7 @@ flowchart TD
     subgraph CORE["Analysis Core 分析核心"]
         CLEAN["cleaner / tokenizer"]
         LEGACY["analyzer<br/>词频 · 说话者统计"]
-        V2["analysis/analyzers<br/>activity · length · profile · conversation"]
+        V2["analysis/analyzers<br/>activity · profile · conversation"]
         REPORTS["AnalysisReports"]
     end
 
@@ -551,7 +551,7 @@ Analysis 仍不得出现平台分支。
 `EchoMemberCard`、会话与语言画像等展示模型；图表数据使用共享的 `ChartPoint`。
 
 `AnalysisApplicationService` 构建并导出 Echo JSON / HTML；Facade 返回报告位置与
-`echo_report_view`，桌面通过系统浏览器打开 HTML，分享图片复用 Echo 展示模型。
+`echo_report_view`，桌面通过系统浏览器打开 HTML；独立分享图片生成已退休，历史图片不迁移或删除。
 
 ### 4.7 Facade
 

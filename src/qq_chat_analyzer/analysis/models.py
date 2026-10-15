@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 from .conversation_sessions import ConversationSessionReport
@@ -60,12 +59,6 @@ class ActivityReport:
     dated_message_count: int
     hourly_counts: tuple[HourlyActivity, ...] = ()
     weekday_counts: tuple[WeekdayActivity, ...] = ()
-    busiest_hour: int | None = None
-    busiest_weekday: int | None = None
-    hour_distribution: Mapping[int, int] = field(default_factory=dict)
-    weekday_distribution: Mapping[str, int] = field(default_factory=dict)
-    peak_hour: int | None = None
-    peak_weekday: str | None = None
     active_days: int = 0
     average_messages_per_active_day: float = 0.0
 
@@ -79,36 +72,6 @@ class ConsecutiveRunStats:
     median_run_length: float
     single_message_run_count: int
     multi_message_run_count: int
-
-
-@dataclass(frozen=True, slots=True)
-class LengthBucket:
-    """Message count for one half-open message-length range."""
-
-    lower_bound: int
-    upper_bound: int | None
-    count: int
-
-
-@dataclass(frozen=True, slots=True)
-class SpeakerLength:
-    """Message length statistics for one speaker."""
-
-    speaker: str
-    message_count: int
-    average_length: float
-    max_length: int
-
-
-@dataclass(frozen=True, slots=True)
-class MessageLengthReport:
-    """Global and per-speaker message length statistics."""
-
-    message_count: int
-    average_length: float
-    max_length: int
-    buckets: tuple[LengthBucket, ...] = ()
-    speaker_lengths: tuple[SpeakerLength, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -265,30 +228,12 @@ class AnalysisReports:
     """Bundle of every extended report produced for one analysis run."""
 
     activity: ActivityReport | None = None
-    message_length: MessageLengthReport | None = None
     user_profiles: UserProfileReport | None = None
     conversations: ConversationReport | None = None
-    message_composition: MessageCompositionReport | None = None
     conversation_sessions: ConversationSessionReport | None = None
     distinctive_words: DistinctiveWordReport | None = None
     private_language: PrivateLanguageReport | None = None
     expression: ExpressionReport | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class MessageCompositionCategory:
-    """Message count for one display category."""
-
-    category: str
-    count: int
-
-
-@dataclass(frozen=True, slots=True)
-class MessageCompositionReport:
-    """Message counts grouped by display category, excluding system messages."""
-
-    total_count: int
-    categories: tuple[MessageCompositionCategory, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

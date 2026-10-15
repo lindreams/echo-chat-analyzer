@@ -41,17 +41,7 @@ from uuid import uuid4
 from ..resources import resources_dir, user_data_dir
 from .shutdown_models import ShutdownResult, ShutdownStatus, ShutdownStepResult
 from ..analysis.timestamps import to_epoch_seconds
-from ..presentation import (
-    EchoReportView,
-    build_echo_report_view,
-)
-from ..presentation.expression_assets import expression_asset_data_uri
-from ..presentation.share.builder import ShareCardData, build_share_card_data
-from ..presentation.share.renderer import (
-    ShareImageRenderError,
-    render_share_html_to_png,
-)
-from ..presentation.share.template import build_share_card_html
+from ..presentation import EchoReportView
 from .analysis_phase import AnalysisPhase, PhaseCallback
 from .dto import AnalysisRequestDTO, AnalysisResultDTO
 from .errors import ApplicationServiceError
@@ -1081,46 +1071,6 @@ class ChatAnalyzerFacade:
                         "ok" if completed else "failed",
                     )
 
-    def generate_share_image(
-        self,
-        outcome: AnalysisOutcome,
-        output_directory: Path | None = None,
-    ) -> Path:
-        """Render one shareable Echo overview card from a completed analysis."""
-        view = self._echo_view_for_outcome(outcome)
-        _LOGGER.info(
-            "[facade] generate_share_image called view=%s "
-            "report_directory=%s",
-            view is not None,
-            getattr(outcome, "report_directory", None),
-        )
-        if view is None:
-            raise FacadeError(
-                code="share_image_unavailable",
-                public_message="没有可生成分享图片的分析结果。",
-            )
-        data = build_share_card_data(view)
-        html = build_share_card_html(data, _share_assets(data))
-        target_directory = (
-            Path(output_directory)
-            if output_directory is not None
-            else (
-                outcome.report_directory
-                or outcome.artifact_directory
-                or (user_data_dir() / "reports")
-            )
-        )
-        target_directory.mkdir(parents=True, exist_ok=True)
-        image_path = target_directory / "echo-share.png"
-        try:
-            render_share_html_to_png(html, image_path)
-        except ShareImageRenderError as error:
-            raise FacadeError(
-                code="share_image_generation_failed",
-                public_message="分享图片生成失败，请稍后重试。",
-            ) from error
-        _LOGGER.info("[facade] share image written path=%s", image_path)
-        return image_path
 
     # ------------------------------------------------------------- internals
 
@@ -1519,24 +1469,6 @@ class ChatAnalyzerFacade:
             return getattr(bundle, "service", None)
         return None
 
-    @staticmethod
-    def _echo_view_for_outcome(outcome: AnalysisOutcome) -> EchoReportView | None:
-        """Reuse the view already built for Echo artifacts when available."""
-        view = getattr(outcome, "echo_report_view", None)
-        if view is not None:
-            return view
-        reports = getattr(getattr(outcome, "result", None), "reports", None)
-        if reports is None:
-            return None
-        session = getattr(outcome, "session", None)
-        conversation_kind = getattr(session, "session_type", None)
-        if conversation_kind not in ("private", "group"):
-            conversation_kind = "unknown"
-        return build_echo_report_view(
-            reports,
-            conversation_kind=conversation_kind,
-        )
-
     @contextmanager
     def _session_export_context(
         self,
@@ -1797,22 +1729,6 @@ def _generated_echo_report_path(
         except OSError:
             return None
     return None
-
-
-def _share_assets(data: ShareCardData) -> dict[str, str]:
-    """Inline only the expression images referenced by the share card."""
-    assets: dict[str, str] = {}
-    expressions = data.expressions
-    if expressions is None:
-        return assets
-    for combo in expressions.combos:
-        for key in (combo.primary_asset_key, combo.secondary_asset_key):
-            if not isinstance(key, str) or not key:
-                continue
-            data_uri = expression_asset_data_uri(key)
-            if data_uri:
-                assets[key] = data_uri
-    return assets
 
 
 @contextmanager

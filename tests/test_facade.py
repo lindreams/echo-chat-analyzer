@@ -283,8 +283,6 @@ def _reports(message_count: int = 2):
             weekday_counts=tuple(
                 models.WeekdayActivity(weekday=day, count=0) for day in range(7)
             ),
-            busiest_hour=9,
-            busiest_weekday=0,
         ),
         user_profiles=models.UserProfileReport(
             total_message_count=message_count,

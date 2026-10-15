@@ -85,6 +85,12 @@ def test_execute_returns_completed_privacy_safe_result_without_cli_output(
 
     generated_filenames: list[str] = []
 
+    def reject_cli_preparation(*args, **kwargs):
+        pytest.fail("desktop analysis must not prepare legacy CLI statistics")
+
+    monkeypatch.setattr(service_module, "count_word_speakers", reject_cli_preparation)
+    monkeypatch.setattr(service_module, "top_word_speaker_summary", reject_cli_preparation)
+
     def record_export(*args: object) -> None:
         generated_filenames.append(Path(str(args[-1])).name)
 

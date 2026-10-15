@@ -8,17 +8,6 @@ from collections.abc import Sequence
 HOURS_PER_DAY = 24
 DAYS_PER_WEEK = 7
 
-#: Stable, source-neutral weekday keys, Monday first.
-WEEKDAY_KEYS = (
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-    "Sunday",
-)
-
 
 def busiest_index(counts: Sequence[int]) -> int | None:
     """Return the index with the highest count, preferring the earliest.

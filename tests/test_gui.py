@@ -117,8 +117,6 @@ class StubFacade:
         report_usage_error=None,
         list_reports_error=None,
         clear_reports_error=None,
-        share_image_path=None,
-        share_image_error=None,
     ):
         self._sources = tuple(sources)
         self._sessions = list(sessions)
@@ -143,8 +141,6 @@ class StubFacade:
         self._report_usage_error = report_usage_error
         self._list_reports_error = list_reports_error
         self._clear_reports_error = clear_reports_error
-        self._share_image_path = share_image_path
-        self._share_image_error = share_image_error
         self.list_sessions_calls: list[object] = []
         self.get_connection_status_calls: list[object] = []
         self.get_wechat_setup_status_calls: list[object] = []
@@ -171,7 +167,6 @@ class StubFacade:
         self.list_report_packages_calls: list[object] = []
         self.get_report_storage_usage_calls: list[object] = []
         self.clear_report_packages_calls: list[object] = []
-        self.generate_share_image_calls: list[object] = []
 
     def list_report_packages(self):
         from qq_chat_analyzer.application.report_package_catalog import ReportPackageListing
@@ -201,12 +196,6 @@ class StubFacade:
         from qq_chat_analyzer.application.report_package_catalog import ReportPackageDeletionResult
         self._reports = [record for record in self._reports if record.package_name not in names]
         return ReportPackageDeletionResult(tuple(names))
-
-    def generate_share_image(self, outcome):
-        self.generate_share_image_calls.append(outcome)
-        if self._share_image_error is not None:
-            raise self._share_image_error
-        return self._share_image_path
 
     def list_sources(self):
         return self._sources
@@ -994,33 +983,6 @@ def test_successful_outcome_saves_report_and_opens_echo(
     assert window._open_echo_button.isVisibleTo(window)
     assert window._open_echo_button.isEnabled()
     assert opened == [report_path.resolve()]
-
-
-def test_generate_share_button_creates_and_opens_share_image(
-    qt_app,
-    sources,
-    tmp_path,
-) -> None:
-    report_path = tmp_path / "echo-report.html"
-    report_path.write_text("<html>fictional report</html>", encoding="utf-8")
-    share_path = tmp_path / "echo-share.png"
-    share_path.write_bytes(b"fictional-share-png")
-    opened: list[Path] = []
-    outcome = _StubOutcome(report_path=report_path)
-    facade = StubFacade(sources=sources, share_image_path=share_path)
-    window = _main_window(qt_app, facade)
-    window._report_opener = lambda path: True
-    window._image_opener = lambda path: opened.append(path) or True
-
-    window.show_outcome(outcome)
-
-    assert window._generate_share_button.isVisibleTo(window)
-    assert window._generate_share_button.isEnabled()
-    window._generate_share_button.click()
-
-    assert facade.generate_share_image_calls == [outcome]
-    assert window._status_label.text() == "分享图片已生成"
-    assert opened == [share_path.resolve()]
 
 
 # -------------------------------------------------------------------- errors
