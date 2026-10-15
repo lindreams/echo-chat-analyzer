@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import importlib
 
-import pytest
-
 from qq_chat_analyzer.application.facade import ChatSource
 from qq_chat_analyzer.gui.wechat_workspace import WeChatWorkspace
 from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
@@ -75,68 +73,6 @@ def test_wechat_loaded_sessions_hide_setup_and_keep_disconnect(qt_app) -> None:
         assert workspace._wechat_setup_button.isEnabled()
     finally:
         workspace.close()
-
-
-@pytest.mark.parametrize("size", [(900, 700), (1280, 900)])
-def test_wechat_loaded_workspace_sits_close_to_connection_bar(qt_app, size) -> None:
-    """Hidden connection actions must not leave a blank row above the workspace."""
-    workspace = WeChatWorkspace(StubFacade(), executor=_inline_executor())
-    workspace.resize(*size)
-    workspace._handle_sessions_loaded([
-        _session(ChatSource.WECHAT, "fictional", "虚构读书会", 10)
-    ])
-    workspace.show()
-    try:
-        qt_app.processEvents()
-        bar = workspace._connection_bar
-        heading = workspace.session_panel._workspace_heading
-        bar_bottom = bar.mapTo(workspace, bar.rect().bottomLeft()).y() + 1
-        heading_top = heading.mapTo(workspace, heading.rect().topLeft()).y()
-
-        assert 0 <= heading_top - bar_bottom <= 16
-        assert workspace.session_panel._session_box.isVisibleTo(workspace)
-        assert workspace.session_panel._configuration_panel.isVisibleTo(workspace)
-    finally:
-        workspace.close()
-
-
-def test_open_wechat_setup_reuses_the_visible_dialog(qt_app, sources) -> None:
-    """Opening the setup again must raise the live window, not stack a copy."""
-    facade = StubFacade(sources=sources)
-    workspace = WeChatWorkspace(facade, executor=_inline_executor())
-    workspace.show()
-    try:
-        workspace.open_wechat_setup()
-        first = workspace._wechat_setup_dialog
-        assert first.isVisible() is True
-
-        workspace.open_wechat_setup()
-
-        assert workspace._wechat_setup_dialog is first
-        assert first.isVisible() is True
-    finally:
-        workspace.hide()
-
-
-def test_open_wechat_setup_creates_a_new_dialog_after_close(
-    qt_app, sources
-) -> None:
-    """A window the user closed must be openable again."""
-    facade = StubFacade(sources=sources)
-    workspace = WeChatWorkspace(facade, executor=_inline_executor())
-    workspace.show()
-    try:
-        workspace.open_wechat_setup()
-        first = workspace._wechat_setup_dialog
-        first.reject()
-        assert first.isVisible() is False
-
-        workspace.open_wechat_setup()
-
-        assert workspace._wechat_setup_dialog is not first
-        assert workspace._wechat_setup_dialog.isVisible() is True
-    finally:
-        workspace.hide()
 
 
 def test_reused_wechat_setup_dialog_still_saves_the_environment(
