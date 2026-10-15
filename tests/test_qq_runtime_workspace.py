@@ -412,18 +412,68 @@ def test_plugin_damage_with_runtime_state_requires_inspection_not_repair(bundle,
     assert inventory(result.work_root) == before
 
 
-@pytest.mark.parametrize("name,is_directory", [("unknown.txt", False), ("unknown", True), ("plugins/napcat-plugin-echo/extra.mjs", False)])
-def test_unknown_members_with_runtime_state_are_retained_and_refused(bundle, name, is_directory):
+@pytest.mark.parametrize("name,is_directory", [
+    ("unknown.txt", False),
+    ("unknown", True),
+    ("plugins/unknown", False),
+    ("plugins/napcat-plugin-echo/extra.mjs", False),
+    ("loadNapCat.js", True),
+    ("plugins/napcat-plugin-echo/index.mjs", True),
+])
+def test_unknown_members_with_runtime_state_are_retained_and_refused(bundle, monkeypatch, name, is_directory):
     result = prepare(bundle)
     add_running_state(result.work_root)
     unknown = result.work_root / name
+    if unknown.is_file():
+        unknown.unlink()  # Only the fictional pinned file replaced by a directory.
     if is_directory:
         unknown.mkdir()
+        (unknown / "private-canary").write_bytes(b'fictional private content')
     else:
         unknown.write_bytes(b'unknown fictional member')
     before = inventory(result.work_root)
-    with pytest.raises(workspace.QQWorkspaceError):
-        prepare(bundle)
+    real_iterdir = Path.iterdir
+
+    def refuse_unknown_traversal(path):
+        assert path != unknown, "Unknown directories must not be enumerated"
+        return real_iterdir(path)
+
+    with monkeypatch.context() as guard:
+        guard.setattr(Path, "iterdir", refuse_unknown_traversal)
+        with pytest.raises(workspace.QQWorkspaceError):
+            prepare(bundle)
+    assert inventory(result.work_root) == before
+
+
+@pytest.mark.parametrize("fault", ["special-file", "metadata-denied"])
+def test_runtime_metadata_failure_is_refused_without_disclosing_or_changing_state(bundle, monkeypatch, fault):
+    import stat
+    from types import SimpleNamespace
+
+    result = prepare(bundle)
+    add_running_state(result.work_root)
+    state = result.work_root / "cache/fictional/nested/blob"
+    before = inventory(result.work_root)
+    real_lstat = Path.lstat
+
+    def faulty_metadata(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if path != state:
+            return info
+        if fault == "metadata-denied":
+            raise PermissionError("fictional-private-account token-super-secret")
+        attributes = {field: getattr(info, field) for field in dir(info)
+                      if field.startswith("st_")}
+        attributes["st_mode"] = stat.S_IFIFO
+        return SimpleNamespace(**attributes)
+
+    with monkeypatch.context() as guard:
+        guard.setattr(Path, "lstat", faulty_metadata)
+        with pytest.raises(workspace.QQWorkspaceError) as failure:
+            prepare(bundle)
+    assert "fictional-private-account" not in str(failure.value)
+    assert "token-super-secret" not in str(failure.value)
+    assert str(result.work_root) not in str(failure.value)
     assert inventory(result.work_root) == before
 
 

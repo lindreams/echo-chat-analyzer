@@ -209,7 +209,6 @@ DOMAIN_MODULES = {
         "test_qq_version",
         "test_qq_version_gate",
         "test_qq_worker_generation",
-        "test_qq_workspace_metadata_diagnostic",
     },
     "wechat": {
         "test_facade_wechat_setup",
