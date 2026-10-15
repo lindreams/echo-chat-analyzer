@@ -595,12 +595,6 @@ class ChatAnalyzerFacade:
         with _translated_errors(ChatSource.QQ):
             return service.get_runtime_status()
 
-    def start_qq_runtime(self) -> Any:
-        """Start the configured QQ runtime and wait until ready."""
-        service = self._require_qq_setup_service()
-        with _translated_errors(ChatSource.QQ):
-            return service.start_runtime()
-
     def get_qq_connection_snapshot(self) -> ConnectionSnapshot:
         """Report the QQ connection lifecycle without starting anything.
 
@@ -609,14 +603,6 @@ class ChatAnalyzerFacade:
         error the page has to interpret.
         """
         return self._require_qq_connection_manager().get_snapshot()
-
-    def connect_qq(self) -> ConnectionSnapshot:
-        """Connect QQ through the single authorization runtime path.
-
-        Redirected to :meth:`start_qq_auth_flow` so the Echo NapCat launcher
-        owns login and its process tree.
-        """
-        return self.start_qq_auth_flow()
 
     def start_qq_auth_flow(
         self,

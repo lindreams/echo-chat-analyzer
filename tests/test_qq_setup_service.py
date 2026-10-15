@@ -1,4 +1,4 @@
-"""Behavior tests for the QQ setup service one-click connect flow.
+"""Behavior tests for QQ configuration persistence and passive auth reuse.
 
 Everything here uses fictional temp paths and stub runtime/connection
 collaborators. No real QQ process, authorization, or chat data is ever touched.
@@ -173,7 +173,7 @@ def _stored_config(tmp_path: Path):
 # ------------------------------------------------------------------ connect
 
 
-def test_connect_persists_detected_default_when_no_config_exists(
+def test_save_environment_persists_default_without_starting_runtime(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -203,18 +203,18 @@ def test_connect_persists_detected_default_when_no_config_exists(
         provider_factory=factory,
     )
 
-    result = service.connect()
+    result = service.save_environment(config)
 
-    assert manager.start_calls == 1
+    assert manager.start_calls == 0
     assert factory.invalidate_calls == 1
     assert result.available is False
-    assert result.runtime_running is True
+    assert result.runtime_running is False
     assert result.qq_online is False
     stored = _stored_config(tmp_path)
     assert stored.runtime_directory == config.runtime_directory
 
 
-def test_connect_keeps_an_existing_user_config(tmp_path: Path) -> None:
+def test_auth_flow_keeps_an_existing_user_config(tmp_path: Path) -> None:
     module = _module()
     writer = module.QQEnvironmentConfigWriter(
         config_path=tmp_path / "qq.json"
@@ -233,8 +233,21 @@ def test_connect_keeps_an_existing_user_config(tmp_path: Path) -> None:
         provider_factory=factory,
     )
 
-    service.connect()
+    before = (tmp_path / "qq.json").read_bytes()
+    from qq_chat_analyzer.application.qq.qq_auth_bridge import QQAuthBridge
 
+    def unexpected_launch():
+        raise AssertionError("a connected source must not launch again")
+
+    result = QQAuthBridge(
+        setup_service=service,
+        connection_service=service._connection_service,
+        window_launcher=unexpected_launch,
+    ).start_auth_flow()
+
+    assert result.connected
+    assert manager.start_calls == 0
     assert factory.invalidate_calls == 0
+    assert (tmp_path / "qq.json").read_bytes() == before
     stored = _stored_config(tmp_path)
     assert stored.napcat_bridge_url == "http://127.0.0.1:40999"

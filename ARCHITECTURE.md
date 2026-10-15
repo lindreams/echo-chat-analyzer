@@ -891,10 +891,13 @@ GUI 只装配控件、转发事件、展示状态。
   只负责展示状态、触发连接动作、展示错误。
 - **Facade 提供连接状态。**
   GUI 仍然只认识 `ChatAnalyzerFacade` 一个入口，
-  通过 `get_qq_connection_snapshot()` 和 `connect_qq()` 获取结果。
-- **Connection Manager 管理连接流程。**
-  位于 `application/qq/qq_connection_manager.py`，负责编排准备、启动与授权检查，
-  并把底层结果解释成用户可理解的状态。
+  通过 `get_qq_connection_snapshot()` 被动查询状态，通过 `start_qq_auth_flow()`
+  发起授权连接；`cancel_qq_auth_flow()` 和 `disconnect_qq()` 处理取消与断开。
+- **Auth Bridge 拥有连接动作，Connection Manager 映射状态。**
+  `QQAuthBridge` 负责工作区准备、实例身份检查、授权启动与取消清理；
+  `application/qq/qq_connection_manager.py` 负责被动探测和授权等待状态映射，
+  不再提供另一套 connect 动作。`QQSetupService` 保留配置读写和被动 runtime 查询，
+  不再提供 connect、start、stop 或等待就绪动作。
 - **ConnectionSnapshot 是只读状态模型。**
   定义位于 `application/connection_models.py`。
   不可变，跨层传递，GUI 只读取不重新推导。
@@ -915,10 +918,13 @@ GUI
  ↓
 Facade
  ↓
-Connection Manager
+Auth Bridge（授权动作 / 资源所有权）
  ↓
-QQ Connection Service / Runtime
+Connection Manager（被动状态 / 授权等待） / QQ Connection Service
 ```
+
+`QQRuntimeManager` 与 `BundledQQRuntime` 仍由 setup 的被动状态查询工厂构造，
+其底层生命周期及所有权测试继续保留；正式 GUI 的启动由 Auth Bridge 发起。
 
 ### 10.1 GUI 连接体验状态
 
@@ -957,7 +963,7 @@ QQ 与微信的页面状态互相隔离。切换来源或返回数据源选择�
   “停止接受新的 Direct DB acquisition → bounded drain / recover plaintext →
   终止 Echo 自有的 QQ runtime 进程树”执行。每一步都有独立时间窗，
   某一步失败或超时仍尝试后续步骤；持续持有 GIL 的原生阻塞受下述 fallback 能力边界限制。
-- **Windows 托管进程在创建时获得所有权。** 两条 QQ 启动入口通过
+- **Windows 托管进程在创建时获得所有权。** 正式 Auth Bridge 启动和保留的底层 runtime launcher 通过
   `runtime/windows_job.py` 的 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 原子创建到
   不可继承、未命名的 kill-on-close Job 中。`QQProcessRegistry` 持有会话资源，
   launcher 或日志线程结束不释放 Job；正常 shutdown 关闭 Job，Echo 异常退出
