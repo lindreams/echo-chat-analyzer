@@ -178,6 +178,7 @@ GUI 通过 ChatAnalyzerFacade 接入（见 GUI原则）。
 
 ### Git 安全规则
 
+- Echo 阶段成果经人工审核后，默认直接合入 main 并正常推送；除非用户明确要求，否则不创建 PR。
 - 禁止使用 `git add .`；
 - 提交时显式列出文件；
 - 不覆盖未知来源的 working tree 修改；
