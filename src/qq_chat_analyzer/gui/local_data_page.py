@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..application.facade import FacadeError
 from .theme import LOCAL_DATA_QSS, ARCHIVE_CONFIRMATION_QSS, COLOR_PAPER, STATUS_STYLE_BASE
 from .workers import submit
 
@@ -234,14 +233,7 @@ class LocalDataPage(QWidget):
 
     def _load_archive(self) -> tuple[Any, Any, str]:
         listing = self._facade.list_report_packages()
-        try:
-            usage = self._facade.get_report_storage_usage()
-        except FacadeError as error:
-            return listing, None, error.public_message
-        except Exception:
-            _LOGGER.exception("Local report storage summary failed")
-            return listing, None, "无法统计 Echo 本地报告占用空间，请稍后重试。"
-        return listing, usage, ""
+        return listing, listing.storage_usage, ""
 
     def _render_data(
         self, listing: Any, usage: Any, usage_error: str, error_message: str = "",

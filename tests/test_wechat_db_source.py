@@ -231,6 +231,41 @@ def test_session_counts_sum_shards_include_all_types_and_reach_facade(tmp_path):
     assert len([sql for _, sql in queries if "COUNT(*)" in sql]) == 2
 
 
+@pytest.mark.parametrize("rows, expected", [
+    ([[(1, 1_700_000_100), (3, 1)], [(47, 1_700_000_000_000), (1, 1_700_000_200)]],
+     (1_700_000_000, 1_700_000_200)),
+    ([[(1, 0), (1, -1), (47, None)], []], None),
+    ([[], []], None),
+    ([[(1, "1700000000"), (1, "invalid"), (1, float("inf"))],
+      [(0x100000001, "2023-11-15T00:00:00+08:00"), (47, 0.5)]],
+     (0, 1_700_000_000)),
+    ([[(0x100000001, 1_700_000_000_000), (3, 1)],
+      [(0x10000002F, "2023-11-16T00:00:00+08:00"), (1, -1)]],
+     (1_700_000_000, 1_700_064_000)),
+])
+def test_session_time_range_aggregates_all_shards_without_message_bodies(tmp_path, rows, expected):
+    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade, ChatSource
+    from qq_chat_analyzer.application.wechat.wechat_export_import_service import WeChatExportImportService
+
+    provider, queries = _counting_session_provider(
+        tmp_path, [{FICTIONAL_SESSION: 0} for _ in rows], [FICTIONAL_SESSION],
+    )
+    directory = tmp_path / "xwechat_files" / "wxid_owner" / "db_storage" / "message"
+    table = message_table_name(FICTIONAL_SESSION)
+    for index, shard_rows in enumerate(rows):
+        with closing(sqlite3.connect(directory / f"message_{index}.db")) as connection, connection:
+            connection.execute(f'ALTER TABLE "{table}" ADD COLUMN create_time')
+            connection.executemany(f'INSERT INTO "{table}" VALUES (?, ?)', shard_rows)
+    facade = ChatAnalyzerFacade(wechat_service=WeChatExportImportService(provider=provider))
+
+    assert facade.get_session_message_range(ChatSource.WECHAT, FICTIONAL_SESSION) == expected
+    assert facade.get_session_message_range(ChatSource.WECHAT, "") is None
+    assert facade.get_session_message_range(ChatSource.WECHAT, "wxid_missing") is None
+    range_queries = [sql for _, sql in queries if "MIN(" in sql]
+    assert len(range_queries) == len(rows)
+    assert all("Name2Id" not in sql for _, sql in queries)
+
+
 @pytest.mark.parametrize("fault", ["inventory", "count", "duplicate"])
 def test_session_counts_never_publish_partial_or_invalid_totals(tmp_path, fault):
     provider, _ = _counting_session_provider(

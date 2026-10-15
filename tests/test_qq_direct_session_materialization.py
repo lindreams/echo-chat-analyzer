@@ -344,6 +344,32 @@ def test_materialize_with_time_range(tmp_path: Path) -> None:
 # Test: unrelated session not mixed in
 # ---------------------------------------------------------------------------
 
+def test_group_selector_merges_external_identity_but_typed_session_isolates_partition(tmp_path: Path) -> None:
+    """The legacy selector cannot be replaced by one typed partition read."""
+    database = tmp_path / "fictional-shared-external-id.db"
+    _create_materialize_db(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            'UPDATE group_msg_table SET "40030" = ? WHERE "40027" = ?',
+            ("ext-group-100", "group-key-b"),
+        )
+    before = database.read_bytes()
+    provider = QQDatabaseProvider(database)
+    legacy_path = tmp_path / "legacy.json"
+    typed_path = tmp_path / "typed.json"
+    provider.materialize_group_payload("ext-group-100", legacy_path)
+    provider.materialize_session_payload(
+        QQSession("group-key-a", "ext-group-100", "Fictional Group", "group"), typed_path,
+    )
+    assert [record["record_id"] for record in _load_payload(legacy_path)["records"]] == [
+        "1001", "1002", "1003", "2001", "2002",
+    ]
+    assert [record["record_id"] for record in _load_payload(typed_path)["records"]] == [
+        "1001", "1002", "1003",
+    ]
+    assert database.read_bytes() == before
+
+
 def test_unrelated_session_not_mixed(tmp_path: Path) -> None:
     """Materializing session A must not return records from session B."""
     db_path = tmp_path / "test.db"

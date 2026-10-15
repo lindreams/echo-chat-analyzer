@@ -173,7 +173,7 @@ class StubFacade:
         self.list_report_packages_calls.append(1)
         if self._list_reports_error is not None:
             raise self._list_reports_error
-        return ReportPackageListing(tuple(self._reports), self._report_issues)
+        return ReportPackageListing(tuple(self._reports), self._report_issues, self.get_report_storage_usage())
 
     def get_report_storage_usage(self):
         from qq_chat_analyzer.application.report_package_catalog import ReportStorageUsage

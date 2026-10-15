@@ -72,6 +72,9 @@ def test_desktop_checked_delete_changes_disk_and_preserves_unlisted_packages(
     app = QApplication.instance() or QApplication([])
     facade = build_facade()
     assert facade._report_package_catalog._root() == root.resolve()
+    def separate_usage_scan():
+        pytest.fail("Archive refresh must reuse the listing's storage observation")
+    monkeypatch.setattr(facade._report_package_catalog, "storage_usage", separate_usage_scan)
     pending = set()
     def submit(operation, *, on_success, on_error):
         # Track this page's real workers, independently of relay objects left

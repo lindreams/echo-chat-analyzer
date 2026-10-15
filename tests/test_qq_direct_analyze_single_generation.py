@@ -131,6 +131,25 @@ def test_materialize_exception_still_cleans_up(
     assert not runtime.generation_directory("gen-0001").exists()
 
 
+def test_payload_enrichment_reads_once_after_generation_cleanup(tmp_path, monkeypatch):
+    service, runtime, _ = _service(tmp_path)
+    original_read = Path.read_text
+    payload_reads = []
+
+    def read(path, *args, **kwargs):
+        if path.name == "qq-db-session.json":
+            assert runtime.cleaned == ["gen-0001"]
+            payload_reads.append(path)
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read)
+    with service.acquired_session(GROUP_SESSION_ID) as acquisition:
+        assert len(payload_reads) == 1
+        payload = json.loads(original_read(acquisition.payload_path, encoding="utf-8"))
+        assert len(payload["records"]) == 1
+    assert not payload_reads[0].exists()
+
+
 def test_invalid_manifest_still_cleans_up(tmp_path: Path) -> None:
     snapshot = tmp_path / "source.db"
     _create_snapshot(snapshot)
@@ -143,6 +162,26 @@ def test_invalid_manifest_still_cleans_up(tmp_path: Path) -> None:
             pass
 
     assert runtime.cleaned == ["gen-0001"]
+
+
+def test_unreadable_payload_releases_scratch_and_generation(tmp_path, monkeypatch):
+    service, runtime, _ = _service(tmp_path)
+    materialize = QQDatabaseProvider.materialize_session_payload
+    paths = []
+
+    def corrupt(provider, *args, **kwargs):
+        path = materialize(provider, *args, **kwargs)
+        path.write_text("{invalid fictional payload", encoding="utf-8")
+        paths.append(path)
+        return path
+
+    monkeypatch.setattr(QQDatabaseProvider, "materialize_session_payload", corrupt)
+    with pytest.raises(json.JSONDecodeError):
+        with service.acquired_session(GROUP_SESSION_ID):
+            pytest.fail("Invalid JSON must not reach a consumer")
+    assert runtime.cleaned == ["gen-0001"]
+    assert not runtime.generation_directory("gen-0001").exists()
+    assert not paths[0].parent.exists()
 
 
 def test_cleanup_failure_returns_stable_privacy_safe_error(tmp_path: Path) -> None:

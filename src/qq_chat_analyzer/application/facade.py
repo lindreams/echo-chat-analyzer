@@ -819,22 +819,9 @@ class ChatAnalyzerFacade:
                         ) or None,
                     )
                 return range_method(session_id)
-            provider_factory = getattr(service, "provider", None)
-            if provider_factory is None:
-                return None
-            rows = provider_factory().read_session_rows(session_id)
+            return service.get_session_message_range(session_id)
         except Exception:
             return None
-        epochs = [
-            value
-            for row in rows
-            if isinstance(row, Mapping)
-            for value in (to_epoch_seconds(row.get("create_time")),)
-            if value is not None
-        ]
-        if not epochs:
-            return None
-        return min(epochs), max(epochs)
 
     def list_report_packages(self) -> ReportPackageListing:
         """List published package summaries and unreadable package issues."""

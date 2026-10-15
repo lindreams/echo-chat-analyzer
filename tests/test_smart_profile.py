@@ -13,7 +13,6 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
 from qq_chat_analyzer import smart_profile
-from qq_chat_analyzer.candidates import Candidate
 from qq_chat_analyzer.message import ChatMessage
 from qq_chat_analyzer.smart_profile import run_smart_profile
 
@@ -84,19 +83,14 @@ def test_repeated_template_review_does_not_filter_ordinary_messages() -> None:
     assert result.applied_decisions == []
 
 
-def test_interactive_bot_without_calibration_metrics_is_not_filtered(
+def test_interactive_detection_is_explicit_and_does_not_run_during_default_filtering(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured_candidates = _capture_decision_candidates(monkeypatch)
+    from qq_chat_analyzer.detectors import detect_interactive_bot_candidates
+    from qq_chat_analyzer.decision_engine import create_filter_decisions
+
     messages = _interactive_messages(mention_count=20)
-
-    result = run_smart_profile(messages)
-
-    interactive_candidates = [
-        candidate
-        for candidate in captured_candidates
-        if candidate.candidate_type == "automation_source"
-    ]
+    interactive_candidates = detect_interactive_bot_candidates(messages)
     assert len(interactive_candidates) == 1
     assert interactive_candidates[0].target == "虚构交互助手"
     assert interactive_candidates[0].metadata == {
@@ -109,27 +103,18 @@ def test_interactive_bot_without_calibration_metrics_is_not_filtered(
             "response_template_score": 0.05,
         },
     }
+    assert create_filter_decisions(interactive_candidates)[0].action == "review"
+
+    def unexpected_detection(*args):
+        pytest.fail("review-only interactive detection must stay off the default hot path")
+
+    from qq_chat_analyzer import detectors
+    monkeypatch.setattr(detectors, "detect_interactive_bot_candidates", unexpected_detection)
+    monkeypatch.setattr(smart_profile, "detect_interactive_bot_candidates", unexpected_detection, raising=False)
+    result = run_smart_profile(messages)
     assert result.applied_decisions == []
     assert result.filtered_messages == []
     assert result.kept_messages == messages
-
-
-def _capture_decision_candidates(
-    monkeypatch: pytest.MonkeyPatch,
-) -> list[Candidate]:
-    captured_candidates: list[Candidate] = []
-    original_create_decisions = smart_profile.create_filter_decisions
-
-    def capture(candidates: list[Candidate]):
-        captured_candidates.extend(candidates)
-        return original_create_decisions(candidates)
-
-    monkeypatch.setattr(
-        smart_profile,
-        "create_filter_decisions",
-        capture,
-    )
-    return captured_candidates
 
 
 def _interactive_messages(

@@ -127,7 +127,7 @@ def test_analysis_logs_each_timing_stage_without_private_content(
         "ConversationAnalyzer",
         "conversation_sessions", "DistinctiveWordAnalyzer",
         "PrivateLanguageAnalyzer", "ExpressionAnalyzer.report",
-        "robot_detector", "template_detector", "interactive_bot_detector",
+        "robot_detector", "template_detector",
         "decision_engine", "filter_pipeline",
     }
     if legacy_outputs:

@@ -74,7 +74,7 @@ def test_group_member_names_use_info_uin_not_serialized_map_key(tmp_path) -> Non
     payload_path.write_text(json.dumps({
         "records": [{"fields": {"40033": "123456789"}}]
     }), encoding="utf-8")
-    _attach_sender_names(payload_path, result["names"], "fictional-self")
+    _attach_sender_names(payload_path, json.loads(payload_path.read_text(encoding="utf-8")), result["names"], "fictional-self")
     payload = json.loads(payload_path.read_text(encoding="utf-8"))
     assert payload["records"][0]["sender"] == {"displayName": "Fictional Card"}
 

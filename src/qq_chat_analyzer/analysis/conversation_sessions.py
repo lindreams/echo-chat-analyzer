@@ -142,6 +142,7 @@ def analyze_conversation_sessions(
     )
     durations = tuple(session.duration_seconds for session in sessions)
     session_count = len(sessions)
+    start_hours = _session_start_hour_analysis(sessions) if is_group else None
 
     return ConversationSessionReport(
         conversation_type=conversation_type,
@@ -172,13 +173,13 @@ def analyze_conversation_sessions(
         ),
         group_stats=(_group_stats(sessions) if is_group else None),
         start_hour_counts=(
-            _session_start_hour_analysis(sessions).start_hour_counts
-            if is_group
+            start_hours.start_hour_counts
+            if start_hours is not None
             else ()
         ),
         peak_start_hour=(
-            _session_start_hour_analysis(sessions).peak_start_hour
-            if is_group
+            start_hours.peak_start_hour
+            if start_hours is not None
             else None
         ),
         session_character=(
@@ -438,31 +439,6 @@ def _group_stats(
     )
 
 
-def _session_start_hour_analysis(
-    sessions: tuple[ConversationSession, ...],
-) -> HourlyActivity:
-    """Count session start hours for the 24-hour window.
-
-    Only sessions with a valid start_timestamp contribute.
-    """
-    hour_counts: dict[int, int] = {}
-    for session in sessions:
-        if session.start_timestamp is None:
-            continue
-        dt = to_chat_datetime(session.start_timestamp)
-        if dt is None:
-            continue
-        hour = dt.hour
-        hour_counts[hour] = hour_counts.get(hour, 0) + 1
-
-    if not hour_counts:
-        return HourlyActivity(hour=0, count=0)
-
-    counts = tuple(
-        HourlyActivity(hour=h, count=hour_counts.get(h, 0))
-        for h in range(24)
-    )
-    return HourlyActivity(hour=0, count=0)  # placeholder
 
 @dataclass(frozen=True, slots=True)
 class _StartHourResult:

@@ -64,6 +64,7 @@ class ReportPackageIssue:
 class ReportPackageListing:
     reports: tuple[ReportPackageSummary, ...] = ()
     issues: tuple[ReportPackageIssue, ...] = ()
+    storage_usage: ReportStorageUsage | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,8 +172,17 @@ class ReportPackageCatalog:
         recover_report_staging(root)
         reports, issues = [], []
         candidates = _candidates(root)
+        measured_bytes, unmeasured = 0, []
         _LOGGER.info("Report catalog scan root=%s candidates=%d", root, len(candidates))
         for package in candidates:
+            # Ownership, not readable metadata, determines storage accounting.
+            try:
+                size_bytes = _package_bytes(root, package)
+                measured_bytes += size_bytes
+            except Exception:
+                size_bytes = None
+                unmeasured.append(package.name)
+                _LOGGER.warning("Report summary size unknown package=%s", package, exc_info=True)
             try:
                 _check_package(root, package)
                 for name in ("echo-report.html", "echo-report.json", "metadata.json", "README.txt"):
@@ -187,18 +197,14 @@ class ReportPackageCatalog:
                 _LOGGER.warning("Unreadable report package: %s", package, exc_info=True)
                 issues.append(ReportPackageIssue(package.name, "metadata_unreadable"))
                 continue
-            try:
-                size_bytes = _package_bytes(root, package)
-            except Exception:
-                size_bytes = None
-                _LOGGER.warning("Report summary size unknown package=%s", package, exc_info=True)
             reports.append(replace(summary, size_bytes=size_bytes))
         # Newest generated time first; equal times use ascending package name.
         reports.sort(key=lambda report: report.package_name)
         reports.sort(key=lambda report: report.generated_at, reverse=True)
         _LOGGER.info("Report catalog scan finished root=%s reports=%d issues=%d",
                      root, len(reports), len(issues))
-        return ReportPackageListing(tuple(reports), tuple(issues))
+        usage = ReportStorageUsage(len(candidates), measured_bytes, tuple(unmeasured))
+        return ReportPackageListing(tuple(reports), tuple(issues), usage)
 
     def delete_package(self, package_name: str) -> None:
         """Delete one complete owned package, without following reparse points."""

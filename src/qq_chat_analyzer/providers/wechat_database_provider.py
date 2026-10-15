@@ -536,6 +536,33 @@ class WeChatDatabaseProvider:
 
         return all_rows
 
+    def read_session_time_bounds(self, session_id: str) -> list[Any]:
+        """Aggregate time columns across every shard, without reading bodies.
+
+        Seconds and milliseconds need separate extrema: normalizing a mixed
+        pair of raw MIN/MAX values could lose the actual earliest timestamp.
+        Non-numeric values are returned distinctly for the application's
+        tolerant timestamp parser, rather than SQLite's lossy numeric casts.
+        """
+        cleaned_session = (session_id or "").strip()
+        if not cleaned_session:
+            raise SessionNotFound()
+        table = message_table_name(cleaned_session)
+        sql = (
+            "WITH times AS (SELECT create_time FROM "
+            f"{table} WHERE (local_type & 0xFFFFFFFF) IN (1, 47)) "
+            "SELECT MIN(create_time) AS min_time, MAX(create_time) AS max_time "
+            "FROM times WHERE typeof(create_time) IN ('integer', 'real') "
+            "AND create_time > 0 AND create_time < 1e999 "
+            "GROUP BY create_time >= 100000000000 "
+            "UNION ALL SELECT create_time, create_time FROM times "
+            "WHERE typeof(create_time) = 'text' GROUP BY create_time"
+        )
+        bounds: list[Any] = []
+        for message_db in self._find_all_message_dbs(table):
+            bounds.extend(self._query(message_db, sql, limit=0, query_stage="message_range"))
+        return bounds
+
     # --------------------------------------------------------------- internals
 
     def _query(
@@ -745,17 +772,6 @@ class WeChatDatabaseProvider:
                 return session_db
         _LOGGER.warning("wechat.database.discovery success=false")
         raise DatabaseNotFound()
-
-    def _find_message_db(self, table: str) -> Path:
-        """Return the first message shard containing ``table``.
-
-        Kept for backward compatibility (e.g. ``export_session_json``).
-        For multi-shard aware queries use ``_find_all_message_dbs``.
-        """
-        result = self._find_all_message_dbs(table)
-        if result:
-            return result[0]
-        raise SessionNotFound()
 
     def _find_all_message_dbs(self, table: str) -> list[Path]:
         """Return every message shard that contains the named table."""
