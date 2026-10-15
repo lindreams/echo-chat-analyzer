@@ -3,6 +3,7 @@
 > **基线导航（2026-10-07）**：本文保留历史概念设计，不作为当前实现合同。
 > QCE resources 等来源描述属于已退休的审计基线；现役统一模型与 QQ Direct DB / WeChat
 > 边界见 [ARCHITECTURE](../ARCHITECTURE.md)，不据此恢复旧文件兼容。
+> 下文 Dashboard 为历史设计用语；旧 Qt 页面及专属数据构建链已退休，现役展示使用 Echo Report。
 
 ## 1. 目的与范围
 

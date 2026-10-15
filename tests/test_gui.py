@@ -37,10 +37,6 @@ def _facade_module():
     return importlib.import_module("qq_chat_analyzer.application.facade")
 
 
-def _presentation():
-    return importlib.import_module("qq_chat_analyzer.presentation")
-
-
 @pytest.fixture(scope="session")
 def qt_app():
     """One QApplication for the whole session; Qt forbids more than one."""
@@ -466,76 +462,14 @@ def _session(
     )
 
 
-def _dashboard_view(*, has_data: bool = True):
-    presentation = _presentation()
-    if not has_data:
-        return presentation.DashboardView(
-            title="\u865a\u6784\u62a5\u544a",
-            has_data=False,
-            empty_description="\u6ca1\u6709\u6570\u636e\u3002",
-        )
-
-    return presentation.DashboardView(
-        title="\u865a\u6784\u62a5\u544a",
-        has_data=True,
-        summary_metrics=(
-            presentation.MetricCard(
-                key="total_messages",
-                title="\u6d88\u606f\u6570\u91cf",
-                value="42",
-                description="\u603b\u6570",
-            ),
-        ),
-        charts=(
-            presentation.ChartData(
-                key="top_words",
-                kind=presentation.ChartKind.RANKING,
-                title="\u9ad8\u9891\u8bcd",
-                series=(
-                    presentation.ChartSeries(
-                        name="\u8bcd\u9891",
-                        points=(
-                            presentation.ChartPoint(label="deck", value=5.0),
-                            presentation.ChartPoint(label="trade", value=2.0),
-                        ),
-                    ),
-                ),
-            ),
-        ),
-        user_cards=(
-            presentation.UserCard(
-                rank=1,
-                sender="Fictional-Alice",
-                message_count=30,
-                percentage=75.0,
-                average_length=4.0,
-                percentage_display="75.0%",
-                average_length_display="4.0 \u5b57",
-                active_period="\u5468\u4e00 09:00-09:59",
-                top_words=("deck",),
-            ),
-        ),
-        conversation_cards=(
-            presentation.ConversationCard(
-                conversation_id="fictional-room-1",
-                message_count=42,
-                participant_count=2,
-                time_span="2 \u5c0f\u65f6 0 \u5206\u949f",
-            ),
-        ),
-    )
-
-
 class _StubOutcome:
     def __init__(
         self,
-        view,
         *,
         data_acquired_at=None,
         report_path=None,
         report_directory=None,
     ):
-        self.view = view
         self.data_acquired_at = data_acquired_at
         self.report_path = report_path
         self.report_directory = report_directory
@@ -1037,7 +971,7 @@ def _wechat_available_sources():
 # ------------------------------------------------------------------ analysis
 
 
-# ----------------------------------------------------------------- dashboard
+# -------------------------------------------------------------- Echo report
 
 
 def test_successful_outcome_saves_report_and_opens_echo(
@@ -1053,7 +987,7 @@ def test_successful_outcome_saves_report_and_opens_echo(
     window._report_opener = lambda path: opened.append(path) or True
 
     window.show_outcome(
-        _StubOutcome(_dashboard_view(), report_path=report_path)
+        _StubOutcome(report_path=report_path)
     )
 
     assert window._current_report_path == report_path.resolve()
@@ -1072,7 +1006,7 @@ def test_generate_share_button_creates_and_opens_share_image(
     share_path = tmp_path / "echo-share.png"
     share_path.write_bytes(b"fictional-share-png")
     opened: list[Path] = []
-    outcome = _StubOutcome(_dashboard_view(), report_path=report_path)
+    outcome = _StubOutcome(report_path=report_path)
     facade = StubFacade(sources=sources, share_image_path=share_path)
     window = _main_window(qt_app, facade)
     window._report_opener = lambda path: True
@@ -1453,7 +1387,6 @@ def test_qq_workspace_full_chain_connect_sessions_analyze(
 ) -> None:
     """QQ workspace keeps the GUI-2 connect -> sessions -> analyze chain."""
     from qq_chat_analyzer.gui.main_window import (
-        DASHBOARD_PAGE_INDEX,
         PROCESSING_PAGE_INDEX,
         QQ_WORKSPACE_INDEX,
     )
@@ -1474,7 +1407,7 @@ def test_qq_workspace_full_chain_connect_sessions_analyze(
     facade = StubFacade(
         sources=sources,
         sessions=[_session(module.ChatSource.QQ, "q1", "QQ群1", 100)],
-        outcome=_StubOutcome(_dashboard_view(), report_path=report_path),
+        outcome=_StubOutcome(report_path=report_path),
         connection_status=disconnected,
         connection_status_after_connect=connected,
     )
@@ -1507,7 +1440,7 @@ def test_qq_workspace_full_chain_connect_sessions_analyze(
     assert window.qq_workspace.session_panel._sessions_ready is True
     assert window.qq_workspace.session_panel._session_list.count() == 1
 
-    # select session + custom scope -> analyze_session -> processing -> dashboard
+    # select session + custom scope -> analyze_session -> processing -> workspace + Echo report
     window.qq_workspace.session_panel._session_list.setCurrentRow(0)
     window.qq_workspace.session_panel._scope_custom.setChecked(True)
     window.qq_workspace.session_panel._start_date.setDate(QDate(2024, 1, 1))
@@ -1524,9 +1457,8 @@ def test_qq_workspace_full_chain_connect_sessions_analyze(
     assert config.scope_mode is module.AnalysisScopeMode.CUSTOM
     assert config.start_time == "2024-01-01"
     assert config.end_time == "2024-12-31"
-    executor.succeed(_StubOutcome(_dashboard_view(), report_path=report_path))
+    executor.succeed(_StubOutcome(report_path=report_path))
     assert window.stack.currentIndex() == QQ_WORKSPACE_INDEX
-    assert window.stack.currentIndex() != DASHBOARD_PAGE_INDEX
     assert opened == [report_path.resolve()]
     assert window._open_echo_button.isVisibleTo(window)
 
@@ -1536,7 +1468,6 @@ def test_wechat_workspace_full_chain_connect_sessions_analyze(
 ) -> None:
     """WeChat workspace keeps the GUI-2 connect -> sessions -> analyze chain."""
     from qq_chat_analyzer.gui.main_window import (
-        DASHBOARD_PAGE_INDEX,
         PROCESSING_PAGE_INDEX,
         WECHAT_WORKSPACE_INDEX,
     )
@@ -1555,7 +1486,7 @@ def test_wechat_workspace_full_chain_connect_sessions_analyze(
     facade = StubFacade(
         sources=sources,
         sessions=[_session(module.ChatSource.WECHAT, "wx1", "测试会话1", 10)],
-        outcome=_StubOutcome(_dashboard_view(), report_path=report_path),
+        outcome=_StubOutcome(report_path=report_path),
         connection_status=disconnected,
         connection_status_after_connect=connected,
         data_roots=["D:/fictional_wechat"],
@@ -1590,7 +1521,7 @@ def test_wechat_workspace_full_chain_connect_sessions_analyze(
     assert window.wechat_workspace.session_panel._sessions_ready is True
     assert window.wechat_workspace.session_panel._session_list.count() == 1
 
-    # select session + analyze -> processing -> dashboard
+    # select session + analyze -> processing -> workspace + Echo report
     window.wechat_workspace.session_panel._session_list.setCurrentRow(0)
     window.wechat_workspace.session_panel.start_analysis()
     _drain(window.wechat_workspace.session_panel)
@@ -1602,9 +1533,8 @@ def test_wechat_workspace_full_chain_connect_sessions_analyze(
     assert source == module.ChatSource.WECHAT
     assert session_id == "wx1"
     assert config.scope_mode is module.AnalysisScopeMode.ALL
-    executor.succeed(_StubOutcome(_dashboard_view(), report_path=report_path))
+    executor.succeed(_StubOutcome(report_path=report_path))
     assert window.stack.currentIndex() == WECHAT_WORKSPACE_INDEX
-    assert window.stack.currentIndex() != DASHBOARD_PAGE_INDEX
     assert opened == [report_path.resolve()]
     assert window._open_echo_button.isVisibleTo(window)
 
@@ -1654,7 +1584,7 @@ def test_processing_cancel_returns_while_real_worker_is_still_blocked(qt_app, so
         release.wait(5)
         returned.set()
         on_phase(AnalysisPhase.ANALYZING_REPORT)
-        return _StubOutcome(_dashboard_view())
+        return _StubOutcome()
     facade.analyze_session = analyze_session
     panel._executor = submit
     opened = []
@@ -1697,7 +1627,7 @@ def test_processing_cancel_retry_rejects_old_phase_and_terminal_callbacks(qt_app
     old.progress("旧任务进度")
     report = tmp_path / "fictional-report.html"
     report.write_text("<html>Fiction</html>", encoding="utf-8")
-    old.succeed(_StubOutcome(_dashboard_view(), report_path=report))
+    old.succeed(_StubOutcome(report_path=report))
     old.fail("fiction", "旧任务错误")
     old.finish()
     assert window.processing_page.phase is AnalysisPhase.READING
@@ -1717,7 +1647,7 @@ def test_processing_close_invalidates_task_before_shutdown(qt_app, monkeypatch):
     assert not window.processing_page.animation.model.active
     assert not window.processing_page.animation._timer.isActive()
     assert task.cancelled
-    task.succeed(_StubOutcome(_dashboard_view()))
+    task.succeed(_StubOutcome())
     task.finish()
     assert called == []
     assert window._shutdown_protocol.wait(1)
@@ -1739,7 +1669,7 @@ def test_processing_real_worker_delivers_typed_phases_on_gui_thread(qt_app, sour
         on_phase(AnalysisPhase.READING)
         progress("旧字符串仍可传递")
         on_phase(AnalysisPhase.ANALYZING_REPORT)
-        return _StubOutcome(_dashboard_view())
+        return _StubOutcome()
     facade.analyze_session = analyze_session
     panel._executor = submit
     panel.analysis_phase_changed.connect(lambda phase: received.append((phase, threading.get_ident())))

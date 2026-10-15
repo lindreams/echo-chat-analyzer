@@ -12,7 +12,7 @@ Deliberate boundaries:
   presentation builder owns formatting. This layer only decides *which*
   collaborator runs and in *what* order.
 * No statistics are recomputed. Numbers travel from the analysis reports into
-  the dashboard view untouched.
+  the Echo report view untouched.
 * Intermediate export files are an implementation detail. Generated Echo HTML
   is the exception: its exact local path is retained for the desktop caller.
 
@@ -42,9 +42,7 @@ from ..resources import resources_dir, user_data_dir
 from .shutdown_models import ShutdownResult, ShutdownStatus, ShutdownStepResult
 from ..analysis.timestamps import to_epoch_seconds
 from ..presentation import (
-    DashboardView,
     EchoReportView,
-    build_dashboard_view,
     build_echo_report_view,
 )
 from ..presentation.expression_assets import expression_asset_data_uri
@@ -331,12 +329,11 @@ class SessionListingService(Protocol):
 class AnalysisOutcome:
     """What one finished analysis hands back to a caller.
 
-    ``view`` is what a GUI renders. ``result`` stays available for callers
-    that need the privacy-safe DTO, and ``session`` records which
-    conversation produced the view.
+    ``result`` is the privacy-safe analysis DTO. ``echo_report_view`` supports
+    report sharing, and ``session`` identifies the analyzed conversation.
+    The desktop opens the generated HTML at ``report_path``.
     """
 
-    view: DashboardView
     result: AnalysisResultDTO
     source: ChatSource
     session: SessionInfo | None = None
@@ -376,7 +373,6 @@ class ChatAnalyzerFacade:
             dict[ChatSource, Callable[[], Any]] | None
         ) = None,
         analysis_service: Any = None,
-        presentation_builder: Any = None,
         report_package_catalog: Any = None,
         update_check_service: UpdateChecker | None = None,
         installable_update_service: InstallableUpdater | None = None,
@@ -399,7 +395,6 @@ class ChatAnalyzerFacade:
         self._source_builders = dict(source_builders or {})
         self._built_sources: dict[ChatSource, Any] = {}
         self._analysis_service = analysis_service
-        self._presentation_builder = presentation_builder
         self._report_package_catalog = report_package_catalog or ReportPackageCatalog()
         self._update_check_service = (
             update_check_service if update_check_service is not None else UpdateCheckService()
@@ -1207,7 +1202,6 @@ class ChatAnalyzerFacade:
                         )
 
             _report_progress(progress, "正在生成报告...")
-            view = self._build_view(result)
             report_generated_at = datetime.now(timezone.utc)
             report_path = _generated_echo_report_path(result, output_directory)
             echo_report_view = getattr(result, "echo_report_view", None)
@@ -1245,7 +1239,6 @@ class ChatAnalyzerFacade:
                 temporary_output = None
 
             outcome = AnalysisOutcome(
-                view=view,
                 result=result,
                 source=source,
                 session=session,
@@ -1550,18 +1543,6 @@ class ChatAnalyzerFacade:
         if bundle is not None:
             return getattr(bundle, "service", None)
         return None
-
-    def _build_view(self, result: AnalysisResultDTO) -> DashboardView:
-        """Hand the reports to the presentation layer without touching them."""
-        reports = getattr(result, "reports", None)
-        top_words = getattr(result, "top_words", ()) or ()
-
-        if self._presentation_builder is not None:
-            return self._presentation_builder.build(
-                reports,
-                top_words=top_words,
-            )
-        return build_dashboard_view(reports, top_words=top_words)
 
     @staticmethod
     def _echo_view_for_outcome(outcome: AnalysisOutcome) -> EchoReportView | None:

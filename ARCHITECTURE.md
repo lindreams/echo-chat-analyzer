@@ -74,8 +74,9 @@ flowchart TD
     end
 
     subgraph PRES["Presentation 展示层"]
-        BUILD["DashboardBuilder"]
-        VIEW["DashboardView"]
+        BUILD["EchoReportBuilder"]
+        VIEW["EchoReportView"]
+        HTML["Echo JSON / HTML"]
     end
 
     subgraph UI["交互与输出"]
@@ -108,12 +109,13 @@ flowchart TD
 
     FACADE --> ORCH
     FACADE --> SVC
-    FACADE --> BUILD
     FACADE --> PACKAGER
     FACADE --> CATALOG
     GUI --> FACADE
     CLI --> SVC
-    VIEW --> GUI
+    SVC --> BUILD
+    VIEW --> HTML
+    HTML --> PACKAGER
 ```
 
 ---
@@ -544,10 +546,11 @@ Analysis 仍不得出现平台分支。
 | 禁止依赖 | `gui/`、Qt、任何 GUI 框架、`providers/`、adapters |
 
 展示层是纯函数式的转换层。它拿到的数字必须已由 analyzer 算好，
-自己只做"怎么说给人听"。产出 `DashboardView`，其中包含
-`MetricCard`、`UserCard`、`ConversationCard`、`ChartData`。
+自己只做"怎么说给人听"。产出 `EchoReportView`，其中包含
+`EchoMemberCard`、会话与语言画像等展示模型；图表数据使用共享的 `ChartPoint`。
 
-`DashboardView` 不暴露 `AnalysisReports` 内部结构，GUI 只面对视图模型。
+`AnalysisApplicationService` 构建并导出 Echo JSON / HTML；Facade 返回报告位置与
+`echo_report_view`，桌面通过系统浏览器打开 HTML，分享图片复用 Echo 展示模型。
 
 ### 4.7 Facade
 
@@ -583,7 +586,8 @@ Analysis 仍不得出现平台分支。
    但这属于实现细节，不出现在返回值与 API 语义里。
 
 依赖注入构造（`qq_service`、`wechat_service`、`analysis_service`、
-`presentation_builder`、`report_package_catalog`），测试可传入 stub 或临时 reports root。
+`report_package_catalog`），测试可传入 stub 或临时 reports root。
+`AnalysisOutcome` 保留分析 DTO、会话、Echo 展示模型和报告位置，不再构建旧 Dashboard 数据。
 
 ### 4.8 GUI
 
@@ -594,8 +598,7 @@ Analysis 仍不得出现平台分支。
 | 可依赖 | `application/facade.py`、`presentation/` 的视图模型、PySide6 |
 | 禁止依赖 | `providers/`、parsers、adapters、`analyzer.py`、`tokenizer.py`、`cleaner.py`、`sqlite3` |
 
-GUI 层零业务逻辑。所有报告展示控件为只读
-（`setEditTriggers(NoEditTriggers)`），但保留选中与复制能力。
+GUI 层零业务逻辑。Echo 报告在系统浏览器中展示。
 分析成功后在现有状态栏展示报告保存状态。
 Local Data 通过 Facade 读取真实 package catalog，支持刷新、删除选中报告、删除全部报告、轻量搜索与 reopen。
 搜索仅对已加载的 summaries 做 `query.strip().casefold()` substring 匹配：会话名、来源、
@@ -605,10 +608,10 @@ Local Data 通过 Facade 读取真实 package catalog，支持刷新、删除选
 选中行的 `Qt.UserRole` 保存 `package_name`，打开按钮和双击共用 reopen 流程：
 Facade → Catalog 安全定位 `echo-report.html` → 注入的系统 opener。
 GUI 不拼接任意用户路径，metadata 不存绝对路径；定位或打开失败显示安全错误并保留记录。
-Reopen 使用系统默认浏览器查看已有 HTML，不重建 Dashboard 或重新分析。
+Reopen 使用系统默认浏览器查看已有 HTML，不重新生成报告或重新分析。
 
 当前 GUI 结构由 `MainWindow` 承载 `HomePage`、`QQWorkspace`、
-`WeChatWorkspace`、处理页、`DashboardPage`、`LocalDataPage`。
+`WeChatWorkspace`、处理页、`LocalDataPage`。
 QQ 与微信来源分别由 `QQWorkspace` / `WeChatWorkspace` 负责连接与生命周期，
 会话列表、搜索、排序、时间范围与分析按钮由两者共享的
 `SessionAnalysisPanel` 承担。
@@ -788,7 +791,7 @@ GUI 只装配控件、转发事件、展示状态。
 | `analysis/peaks.py` / `timestamps.py` | 分析辅助 |
 | `presentation/models.py` | 视图模型 |
 | `presentation/builders.py` / `formatters.py` | 视图构建与格式化 |
-| `gui/main_window.py` / `dashboard_page.py` | GUI 界面 |
+| `gui/main_window.py` | GUI 页面装配与导航 |
 | `gui/app.py` / `__main__.py` / `workers.py` | GUI 启动与执行 |
 | `cli.py` | 交互适配（CLI） |
 | `exporters.py` | 输出适配 |

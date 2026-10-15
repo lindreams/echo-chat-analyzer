@@ -9,7 +9,6 @@ from __future__ import annotations
 
 
 __all__ = [
-    "DashboardPage",
     "MainWindow",
     "build_facade",
     "main",
@@ -26,8 +25,4 @@ def __getattr__(name: str):
         from .main_window import MainWindow
 
         return MainWindow
-    if name == "DashboardPage":
-        from .dashboard_page import DashboardPage
-
-        return DashboardPage
     raise AttributeError(name)

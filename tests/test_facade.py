@@ -786,24 +786,52 @@ def test_recovery_deletes_only_strict_owned_direct_children_and_continues(tmp_pa
     assert "fictional cleanup failure" in caplog.text
 
 
-@pytest.mark.parametrize("failure", ["analysis", "presentation", "descriptor", "outcome"])
+@pytest.mark.parametrize(
+    "failure", ["analysis", "echo_view", "echo_html", "descriptor", "outcome"]
+)
 def test_exception_before_scratch_transfer_leaves_no_orphan(tmp_path, monkeypatch, failure):
     module = _facade_module()
     monkeypatch.setattr(module, "user_data_dir", lambda: tmp_path)
     facade = module.ChatAnalyzerFacade(analysis_service=_StubAnalysisService(result=_result()))
     def fail(*args, **kwargs):
         raise RuntimeError("fictional generation failure")
+    input_path = Path("fictional.json")
     if failure == "analysis":
         monkeypatch.setattr(facade._analysis_service, "execute", fail)
-    elif failure == "presentation":
-        monkeypatch.setattr(facade, "_build_view", fail)
+    elif failure in {"echo_view", "echo_html"}:
+        service = importlib.import_module("qq_chat_analyzer.application.analysis_service")
+        facade = module.ChatAnalyzerFacade(
+            analysis_service=service.AnalysisApplicationService()
+        )
+        input_path = tmp_path / "fictional-qq.json"
+        input_path.write_text(
+            json.dumps(qq_db_payload([
+                qq_db_record("fictional python project discussion"),
+            ])),
+            encoding="utf-8",
+        )
+
+        def fail_echo(*args, **kwargs):
+            if failure == "echo_html":
+                # JSON was already written: cleanup must also remove partial artifacts.
+                assert Path(args[1]).with_suffix(".json").is_file()
+            raise ValueError("fictional Echo generation failure")
+
+        target = (
+            "build_echo_report_view" if failure == "echo_view"
+            else "export_echo_report_html"
+        )
+        monkeypatch.setattr(service, target, fail_echo)
     elif failure == "outcome":
         monkeypatch.setattr(module, "AnalysisOutcome", fail)
     else:
         monkeypatch.setattr(module, "_generated_echo_report_path", fail)
-    with pytest.raises(Exception):
-        facade._analyze_path(Path("fictional.json"), module.AnalysisConfig(),
+    with pytest.raises(Exception) as captured:
+        facade._analyze_path(input_path, module.AnalysisConfig(),
                              source=module.ChatSource.QQ, session=None, scope=module.AnalysisScope.all())
+    if failure in {"echo_view", "echo_html"}:
+        assert isinstance(captured.value, module.FacadeError)
+        assert captured.value.code == "artifact_generation_failed"
     assert not list(tmp_path.rglob("chat-analyzer-output-*"))
 
 

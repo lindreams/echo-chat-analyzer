@@ -40,7 +40,6 @@ FONT_SIZE_BODY = "13px"
 FONT_SIZE_SMALL = "12px"
 FONT_SIZE_TITLE = "18px"
 FONT_SIZE_HOME_TITLE = "24px"
-FONT_SIZE_DASHBOARD_TITLE = "16px"
 
 
 # ---- shared widget styles ---------------------------------------------------
@@ -294,11 +293,7 @@ WINDOW_CLIENT_SEPARATOR_STYLE = (
     f"QFrame#echoClientSeparator {{ background: {COLOR_RULE_SOFT}; border: none; }}"
 )
 WINDOW_TITLE_STYLE = f"font-size: {FONT_SIZE_TITLE}; font-weight: 600;"
-DASHBOARD_TITLE_STYLE = (
-    f"font-size: {FONT_SIZE_DASHBOARD_TITLE}; font-weight: 600;"
-)
 EMPTY_TEXT_STYLE = f"color: {COLOR_MUTED};"
-METRIC_CARD_STYLE = f"border: 1px solid {COLOR_RULE_SOFT}; padding: 8px;"
 
 LOCAL_DATA_QSS = f"""
 QWidget#localDataPage {{ background: {COLOR_PAPER}; }}
@@ -632,11 +627,9 @@ __all__ = [
     "CONNECTION_TRACK_LABEL_CURRENT",
     "CONNECTION_TRACK_LINE",
     "CONNECTION_TRACK_PENDING",
-    "DASHBOARD_TITLE_STYLE",
     "EMPTY_TEXT_STYLE",
     "FONT_FAMILY",
     "FONT_SIZE_BODY",
-    "FONT_SIZE_DASHBOARD_TITLE",
     "FONT_SIZE_HOME_TITLE",
     "FONT_SIZE_SMALL",
     "FONT_SIZE_TITLE",
@@ -651,7 +644,6 @@ __all__ = [
     "HOME_COLOR_TEXT",
     "HOME_QSS",
     "LOCAL_DATA_QSS",
-    "METRIC_CARD_STYLE",
     "QQ_GUIDE_STYLE",
     "QQ_SESSION_LOADING_STYLE",
     "QQ_SETUP_QSS",

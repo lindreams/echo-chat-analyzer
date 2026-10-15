@@ -1,4 +1,4 @@
-﻿"""Main window hosting the home, workspace, processing, dashboard, and local data pages."""
+﻿"""Main window hosting the home, workspace, processing, and local data pages."""
 
 from __future__ import annotations
 
@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
 )
 
 from ..resources import default_echo_icon_path
-from .dashboard_page import DashboardPage
 from .home_page import HomePage
 from .update_dialog import UpdatePage
 from .local_data_page import LocalDataPage
@@ -83,8 +82,7 @@ HOME_PAGE_INDEX = 0
 QQ_WORKSPACE_INDEX = 1
 WECHAT_WORKSPACE_INDEX = 2
 PROCESSING_PAGE_INDEX = 3
-DASHBOARD_PAGE_INDEX = 4
-LOCAL_DATA_PAGE_INDEX = 5
+LOCAL_DATA_PAGE_INDEX = 4
 
 
 class MainWindow(QMainWindow):
@@ -135,7 +133,6 @@ class MainWindow(QMainWindow):
         self.processing_status_label = self.processing_page.status_label
         self._cancel_analysis_button = self.processing_page.cancel_button
         self.processing_page.cancel_requested.connect(self.cancel_analysis)
-        self.dashboard_page = DashboardPage()
         self.local_data_page = LocalDataPage(
             facade, executor=executor,
             report_opener=lambda path: self._report_opener(path),
@@ -164,8 +161,7 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.qq_workspace)        # 1
         self.stack.addWidget(self.wechat_workspace)    # 2
         self.stack.addWidget(self.processing_page)     # 3
-        self.stack.addWidget(self.dashboard_page)      # 4
-        self.stack.addWidget(self.local_data_page)     # 5
+        self.stack.addWidget(self.local_data_page)     # 4
         layout.addWidget(self.stack, stretch=1)
 
         self._open_echo_button = QPushButton(_OPEN_ECHO_LABEL)
