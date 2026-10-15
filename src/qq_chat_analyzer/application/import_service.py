@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,25 +11,26 @@ from ..message import ChatMessage
 from ..rich_message import RichMessage
 from ..qq_db_adapter import (
     QQ_DB_JSON_FORMAT,
-    is_qq_db_export,
+    is_qq_db_payload,
     load_qq_db_json,
     parse_qq_db_rich_messages,
 )
 from ..wechat_cli_adapter import (
-    is_cli_export as is_wechat_cli_export,
-    load_messages as load_wechat_cli_messages,
+    is_cli_payload,
     parse_messages as parse_wechat_cli_messages,
 )
 from ..wechat_db_adapter import (
     DB_JSON_FORMAT as WECHAT_DB_FORMAT,
-    is_wechat_db_export,
-    load_messages as load_wechat_db_messages,
+    is_wechat_db_payload,
+    messages_from_payload as wechat_db_rows,
     parse_rich_messages as parse_wechat_db_rich_messages,
 )
 from ..wechat_parser import (
-    is_wechat_export,
-    load_conversation_context as load_wechat_conversation_context,
-    load_messages as load_wechat_messages,
+    is_detailed_payload,
+    detailed_conversation_context,
+    is_chatlab_records,
+    load_chatlab_records,
+    chatlab_conversation_context,
     parse_messages as parse_wechat_messages,
 )
 from .errors import InputPathNotFound, NoSupportedInput
@@ -38,7 +40,6 @@ from .import_result import ImportResult
 
 
 _SUPPORTED_INPUT_SUFFIXES = frozenset({".json", ".jsonl"})
-_SUPPORTED_PLATFORMS = frozenset({"qq", "wechat"})
 
 WECHAT_CLI_FORMAT = "cli-json"
 
@@ -175,23 +176,75 @@ def _import_file(
     input_file: Path,
     platform_hint: str | None,
 ) -> _ImportedFile:
-    if platform_hint is not None and not _matches_platform_shape(
-        input_file, platform_hint
-    ):
+    if platform_hint not in (None, "qq", "wechat"):
         return _unsupported_file(WARNING_PLATFORM_HINT_FORMAT_MISMATCH)
-    if platform_hint == "wechat":
-        return _import_wechat_file(input_file)
-    if platform_hint == "qq":
-        return _import_qq_db_file(input_file)
-    if is_qq_db_export(input_file):
-        return _import_qq_db_file(input_file)
-    if is_wechat_db_export(input_file):
-        return _import_wechat_db_file(input_file)
-    if is_wechat_export(input_file):
-        return _import_wechat_file(input_file)
-    if is_wechat_cli_export(input_file):
-        return _import_wechat_cli_file(input_file)
-    return _unsupported_file(WARNING_UNSUPPORTED_FORMAT)
+    # Retain only this file's decoded payload; no cross-import cache or copies
+    # of the source text are needed for detection and parsing.
+    is_jsonl = input_file.suffix.lower() == ".jsonl"
+    records = load_chatlab_records(input_file) if is_jsonl else []
+    if is_jsonl:
+        payload = records[0] if len(records) == 1 else None
+        chatlab = is_chatlab_records(records)
+        if is_qq_db_payload(payload) or not chatlab:
+            # QQ DB documents historically also accepted a .jsonl suffix,
+            # including pretty-printed JSON. Keep that uncommon path.
+            payload = load_qq_db_json(input_file)
+    else:
+        chatlab = False
+        try:
+            with input_file.open("r", encoding="utf-8") as file:
+                payload = json.load(file)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+
+    qq = is_qq_db_payload(payload)
+    if platform_hint == "qq" or (platform_hint is None and qq):
+        return (
+            _import_qq_db_payload(payload) if qq
+            else _unsupported_file(WARNING_PLATFORM_HINT_FORMAT_MISMATCH)
+        )
+    # A WeChat hint historically checks the detailed shape before the DB
+    # shape. Automatic detection gives the DB marker priority instead.
+    detailed = (
+        not is_jsonl and isinstance(payload, dict) and is_detailed_payload(payload)
+        if platform_hint == "wechat" else None
+    )
+    if not is_jsonl and isinstance(payload, dict) and is_wechat_db_payload(payload):
+        return _import_wechat_db_rows(wechat_db_rows(payload))
+    if detailed is None:
+        detailed = (
+            not is_jsonl and isinstance(payload, dict) and is_detailed_payload(payload)
+        )
+    if detailed or chatlab:
+        raw_messages = (
+            [record for record in records if record.get("_type") == "message"]
+            if chatlab else payload.get("messages", [])
+        )
+        if not isinstance(raw_messages, list):
+            raw_messages = []
+        conversation_id, conversation_type = (
+            chatlab_conversation_context(records) if chatlab
+            else detailed_conversation_context(payload)
+        )
+        parsed_messages = tuple(parse_wechat_messages(
+            raw_messages,
+            conversation_id=conversation_id,
+            conversation_type=conversation_type,
+        ))
+        return _ImportedFile(
+            platform="wechat",
+            messages=parsed_messages,
+            rich_messages=(),
+            format="chatlab-jsonl" if is_jsonl else "detailed-json",
+            warnings=_empty_input_warning(raw_messages),
+            raw_count=len(raw_messages),
+        )
+    if not is_jsonl and isinstance(payload, list) and is_cli_payload(payload):
+        return _import_wechat_cli_rows(payload)
+    return _unsupported_file(
+        WARNING_PLATFORM_HINT_FORMAT_MISMATCH if platform_hint is not None
+        else WARNING_UNSUPPORTED_FORMAT
+    )
 
 
 def _unsupported_file(warning: str) -> _ImportedFile:
@@ -205,16 +258,13 @@ def _unsupported_file(warning: str) -> _ImportedFile:
     )
 
 
-def _import_qq_db_file(
-    input_file: Path,
-) -> _ImportedFile:
-    payload = load_qq_db_json(input_file)
-    raw_records = payload.get("records", []) if payload is not None else []
+def _import_qq_db_payload(payload: dict) -> _ImportedFile:
+    raw_records = payload["records"]
     rich_messages, parse_warnings = parse_qq_db_rich_messages(payload)
     parsed_messages = tuple(project_legacy_messages(rich_messages))
     warnings = (
         *parse_warnings,
-        *_import_warnings(input_file, "qq", raw_records, parsed_messages),
+        *_empty_input_warning(raw_records),
     )
     return _ImportedFile(
         platform="qq",
@@ -226,110 +276,33 @@ def _import_qq_db_file(
     )
 
 
-def _import_wechat_file(
-    input_file: Path,
-) -> _ImportedFile:
-    if is_wechat_db_export(input_file):
-        return _import_wechat_db_file(input_file)
-
-    raw_messages = load_wechat_messages(input_file)
-    conversation_id, conversation_type = load_wechat_conversation_context(
-        input_file
-    )
-    parsed_messages = tuple(
-        parse_wechat_messages(
-            raw_messages,
-            conversation_id=conversation_id,
-            conversation_type=conversation_type,
-        )
-    )
-    if not raw_messages and not parsed_messages:
-        cli_rows = load_wechat_cli_messages(input_file)
-        if cli_rows:
-            return _import_wechat_cli_file(input_file)
-    warnings = _import_warnings(
-        input_file,
-        "wechat",
-        raw_messages,
-        parsed_messages,
-    )
-    file_format = (
-        "chatlab-jsonl"
-        if input_file.suffix.lower() == ".jsonl"
-        else "detailed-json"
-    )
-    return _ImportedFile(
-        platform="wechat",
-        messages=parsed_messages,
-        rich_messages=(),
-        format=file_format,
-        warnings=warnings,
-        raw_count=len(raw_messages),
-    )
-
-
-def _import_wechat_cli_file(
-    input_file: Path,
-) -> _ImportedFile:
-    raw_messages = load_wechat_cli_messages(input_file)
+def _import_wechat_cli_rows(raw_messages: list) -> _ImportedFile:
     parsed_messages = tuple(parse_wechat_cli_messages(raw_messages))
-    warnings: tuple[str, ...] = ()
-    if not parsed_messages and not raw_messages:
-        warnings = (WARNING_NO_MESSAGES_LOADED,)
     return _ImportedFile(
         platform="wechat",
         messages=parsed_messages,
         rich_messages=(),
         format=WECHAT_CLI_FORMAT,
-        warnings=warnings,
+        warnings=_empty_input_warning(raw_messages),
         raw_count=len(raw_messages),
     )
 
 
-def _import_wechat_db_file(
-    input_file: Path,
-) -> _ImportedFile:
-    raw_messages = load_wechat_db_messages(input_file)
+def _import_wechat_db_rows(raw_messages: list) -> _ImportedFile:
     rich_messages = tuple(parse_wechat_db_rich_messages(raw_messages))
     parsed_messages = tuple(project_legacy_messages(rich_messages))
-    warnings: tuple[str, ...] = ()
-    if not raw_messages:
-        warnings = (WARNING_NO_MESSAGES_LOADED,)
     return _ImportedFile(
         platform="wechat",
         messages=parsed_messages,
         rich_messages=rich_messages,
         format=WECHAT_DB_FORMAT,
-        warnings=warnings,
+        warnings=_empty_input_warning(raw_messages),
         raw_count=len(raw_messages),
     )
 
 
-def _import_warnings(
-    input_file: Path,
-    platform: str,
-    raw_messages: list,
-    parsed_messages: tuple[ChatMessage, ...],
-) -> tuple[str, ...]:
-    if parsed_messages:
-        return ()
-    if not _matches_platform_shape(input_file, platform):
-        return (WARNING_PLATFORM_HINT_FORMAT_MISMATCH,)
-    if not raw_messages:
-        return (WARNING_NO_MESSAGES_LOADED,)
-    return ()
-
-
-def _matches_platform_shape(input_file: Path, platform: str) -> bool:
-    if platform == "wechat":
-        return (
-            is_wechat_export(input_file)
-            or is_wechat_db_export(input_file)
-            or is_wechat_cli_export(input_file)
-        )
-    if platform == "qq":
-        return is_qq_db_export(input_file)
-    return False
+def _empty_input_warning(raw_messages: list) -> tuple[str, ...]:
+    return () if raw_messages else (WARNING_NO_MESSAGES_LOADED,)
 
 
 def _resolve_platform(

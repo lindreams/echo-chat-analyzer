@@ -39,7 +39,7 @@ WARNING_QQ_DB_RECORD_SKIPPED = "qq_db_record_skipped"
 
 def is_qq_db_export(path: str | Path) -> bool:
     """Return whether a file is a v0 QQ DB JSON payload."""
-    return _is_qq_db_payload(load_qq_db_json(path))
+    return is_qq_db_payload(load_qq_db_json(path))
 
 
 def load_qq_db_json(path: str | Path) -> dict[str, Any] | None:
@@ -65,7 +65,7 @@ def parse_qq_db_rich_messages(
     payload: Mapping[str, Any] | None,
 ) -> tuple[list[RichMessage], tuple[str, ...]]:
     """Interpret supported group/private content into source-neutral facts."""
-    if not _is_qq_db_payload(payload):
+    if not is_qq_db_payload(payload):
         return [], ()
 
     parsed_messages: list[RichMessage] = []
@@ -102,7 +102,7 @@ def parse_qq_db_rich_messages(
     return parsed_messages, warnings
 
 
-def _is_qq_db_payload(payload: Mapping[str, Any] | None) -> bool:
+def is_qq_db_payload(payload: Mapping[str, Any] | None) -> bool:
     return (
         isinstance(payload, Mapping)
         and payload.get("format") == QQ_DB_JSON_FORMAT

@@ -78,94 +78,6 @@ _EXPRESSION_REPORT_MEMBER_PREFIX_LIMIT = 3
 _EXPRESSION_REPORT_COMBINATION_PREFIX_LIMIT = 3
 
 
-class EchoReportBuilder:
-    """Reshape finished reports into the Phase A Echo presentation model."""
-
-    def build(
-        self,
-        reports: AnalysisReports | None,
-        *,
-        viewer_speaker_key: str | None = None,
-        conversation_kind: str = "unknown",
-        title: str = ECHO_REPORT_TITLE,
-        expression_source: str | None = None,
-    ) -> EchoReportView:
-        reports = reports or AnalysisReports()
-        activity = reports.activity
-        profiles = reports.user_profiles
-        conversation = (
-            reports.conversations.conversations[0]
-            if reports.conversations
-            and reports.conversations.conversations
-            else None
-        )
-
-        hourly_activity = tuple(
-            ChartPoint(label=format_hour(entry.hour), value=float(entry.count))
-            for entry in (activity.hourly_counts if activity else ())
-        )
-        weekday_activity = tuple(
-            ChartPoint(
-                label=format_weekday(entry.weekday),
-                value=float(entry.count),
-            )
-            for entry in (activity.weekday_counts if activity else ())
-        )
-        members = tuple(
-            _build_echo_member(profile, viewer_speaker_key, conversation_kind)
-            for profile in (profiles.profiles if profiles else ())
-        )
-        total_message_count = activity.total_message_count if activity else 0
-        participant_count = profiles.speaker_count if profiles else 0
-        has_data = (
-            activity is not None
-            or profiles is not None
-            or conversation is not None
-        )
-
-        return EchoReportView(
-            title=title,
-            has_data=has_data,
-            conversation_kind=conversation_kind,
-            conversation_name=(
-                conversation.resolved_display_name if conversation else ""
-            ),
-            time_span=(
-                format_duration(conversation.duration_seconds)
-                if conversation
-                else ""
-            ),
-            total_message_count=total_message_count,
-            participant_count=participant_count,
-            hourly_activity=hourly_activity,
-            weekday_activity=weekday_activity,
-            members=members,
-            conversation_sessions=_build_echo_sessions(
-                reports.conversation_sessions,
-                members=members,
-            ),
-            language_profile=_build_echo_language_profile(
-                reports,
-                members=members,
-                conversation_kind=conversation_kind,
-                viewer_speaker_key=viewer_speaker_key,
-            ),
-            expression_culture=_build_echo_expression_culture(
-                reports.expression,
-                members=members,
-                expression_source=expression_source,
-            ),
-            expression_source=expression_source,
-            empty_description="" if has_data else EMPTY_DESCRIPTION,
-            active_days=(reports.activity.active_days if reports.activity else 0),
-            average_messages_per_active_day=(
-                reports.activity.average_messages_per_active_day
-                if reports.activity
-                else 0.0
-            ),
-        )
-
-
 def _build_echo_language_profile(
     reports: AnalysisReports,
     *,
@@ -406,20 +318,7 @@ def _build_echo_sessions(
         median_duration_seconds=report.median_duration_seconds,
         longest_duration_seconds=report.longest_duration_seconds,
         average_message_count=report.average_message_count,
-        items=tuple(
-            EchoConversationSession(
-                start_timestamp=session.start_timestamp,
-                end_timestamp=session.end_timestamp,
-                duration_seconds=session.duration_seconds,
-                message_count=session.message_count,
-                participant_count=session.participant_count,
-                initiator=session.initiator,
-                initiator_sender_key=session.initiator_sender_key,
-                self_message_count=session.self_message_count,
-                peer_message_count=session.peer_message_count,
-            )
-            for session in report.sessions
-        ),
+        items=tuple(_session_to_echo(session) for session in report.sessions),
         private_self_count=(private.self_initiated_count if private else None),
         private_peer_count=(private.peer_initiated_count if private else None),
         private_unknown_count=(
@@ -761,12 +660,79 @@ def build_echo_report_view(
     expression_source: str | None = None,
 ) -> EchoReportView:
     """Build an Echo report, highlighting only an explicitly supplied key."""
-    return EchoReportBuilder().build(
-        reports,
-        viewer_speaker_key=viewer_speaker_key,
-        conversation_kind=conversation_kind,
+    reports = reports or AnalysisReports()
+    activity = reports.activity
+    profiles = reports.user_profiles
+    conversation = (
+        reports.conversations.conversations[0]
+        if reports.conversations
+        and reports.conversations.conversations
+        else None
+    )
+
+    hourly_activity = tuple(
+        ChartPoint(label=format_hour(entry.hour), value=float(entry.count))
+        for entry in (activity.hourly_counts if activity else ())
+    )
+    weekday_activity = tuple(
+        ChartPoint(
+            label=format_weekday(entry.weekday),
+            value=float(entry.count),
+        )
+        for entry in (activity.weekday_counts if activity else ())
+    )
+    members = tuple(
+        _build_echo_member(profile, viewer_speaker_key, conversation_kind)
+        for profile in (profiles.profiles if profiles else ())
+    )
+    total_message_count = activity.total_message_count if activity else 0
+    participant_count = profiles.speaker_count if profiles else 0
+    has_data = (
+        activity is not None
+        or profiles is not None
+        or conversation is not None
+    )
+
+    return EchoReportView(
         title=title,
+        has_data=has_data,
+        conversation_kind=conversation_kind,
+        conversation_name=(
+            conversation.resolved_display_name if conversation else ""
+        ),
+        time_span=(
+            format_duration(conversation.duration_seconds)
+            if conversation
+            else ""
+        ),
+        total_message_count=total_message_count,
+        participant_count=participant_count,
+        hourly_activity=hourly_activity,
+        weekday_activity=weekday_activity,
+        members=members,
+        conversation_sessions=_build_echo_sessions(
+            reports.conversation_sessions,
+            members=members,
+        ),
+        language_profile=_build_echo_language_profile(
+            reports,
+            members=members,
+            conversation_kind=conversation_kind,
+            viewer_speaker_key=viewer_speaker_key,
+        ),
+        expression_culture=_build_echo_expression_culture(
+            reports.expression,
+            members=members,
+            expression_source=expression_source,
+        ),
         expression_source=expression_source,
+        empty_description="" if has_data else EMPTY_DESCRIPTION,
+        active_days=(reports.activity.active_days if reports.activity else 0),
+        average_messages_per_active_day=(
+            reports.activity.average_messages_per_active_day
+            if reports.activity
+            else 0.0
+        ),
     )
 
 

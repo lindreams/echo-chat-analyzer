@@ -61,13 +61,13 @@ def is_cli_export(path: str | Path) -> bool:
     payload = _load_json_array(path)
     if payload is None:
         return False
-    return _looks_like_cli_rows(payload)
+    return is_cli_payload(payload)
 
 
 def load_messages(path: str | Path) -> list[Any]:
     """Load raw CLI rows from a ``miyu export`` JSON file."""
     payload = _load_json_array(path)
-    if payload is None or not _looks_like_cli_rows(payload):
+    if payload is None or not is_cli_payload(payload):
         return []
     return payload
 
@@ -228,7 +228,7 @@ def _load_json_array(path: str | Path) -> list[Any] | None:
     return payload if isinstance(payload, list) else None
 
 
-def _looks_like_cli_rows(payload: list[Any]) -> bool:
+def is_cli_payload(payload: list[Any]) -> bool:
     if not payload:
         return False
 

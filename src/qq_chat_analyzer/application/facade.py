@@ -35,7 +35,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Iterator, Protocol, runtime_checkable
+from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 from ..resources import resources_dir, user_data_dir
@@ -315,14 +315,6 @@ _SOURCE_DISPLAY_NAMES = {
     ChatSource.QQ: "QQ",
     ChatSource.WECHAT: "\u5fae\u4fe1",
 }
-
-
-@runtime_checkable
-class SessionListingService(Protocol):
-    """Shared shape of the two export services used for listing."""
-
-    def list_sessions(self) -> list[Any]:  # pragma: no cover - contract only
-        ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -970,38 +962,29 @@ class ChatAnalyzerFacade:
                 progress=progress,
                 on_phase=on_phase,
             )
-        if chat_source in (ChatSource.QQ, ChatSource.WECHAT):
-            raw_session = next(
-                (
-                    candidate for candidate in (service.list_sessions() or ())
-                    if getattr(candidate, "session_id", None) == session_id
-                    or getattr(candidate, "group_code", None) == session_id
-                ),
-                None,
-            )
-            session = (
-                _to_session_info(chat_source, raw_session)
-                if raw_session is not None
-                else SessionInfo(
-                    source=chat_source,
-                    session_id=session_id,
-                    display_name=session_id,
-                )
-            )
-            conversation_names = {session_id: session.display_name}
-            conversation_kind = (
-                session.session_type
-                if session.session_type in ("private", "group")
-                else "unknown"
-            )
-        else:
-            session = SessionInfo(
+        raw_session = next(
+            (
+                candidate for candidate in (service.list_sessions() or ())
+                if getattr(candidate, "session_id", None) == session_id
+                or getattr(candidate, "group_code", None) == session_id
+            ),
+            None,
+        )
+        session = (
+            _to_session_info(chat_source, raw_session)
+            if raw_session is not None
+            else SessionInfo(
                 source=chat_source,
                 session_id=session_id,
                 display_name=session_id,
             )
-            conversation_names = None
-            conversation_kind = "unknown"
+        )
+        conversation_names = {session_id: session.display_name}
+        conversation_kind = (
+            session.session_type
+            if session.session_type in ("private", "group")
+            else "unknown"
+        )
 
         with TemporaryDirectory(prefix="chat-analyzer-export-") as scratch:
             scratch_directory = Path(scratch)
@@ -1009,13 +992,8 @@ class ChatAnalyzerFacade:
                 chat_source,
                 service,
                 session_id,
-                resolved_config,
                 scratch_directory,
-                raw_session=(
-                    raw_session if chat_source is ChatSource.QQ else None
-                ),
                 scope=resolved_scope,
-                progress=progress,
                 on_phase=on_phase,
             ) as session_export:
                 return self._analyze_path(
@@ -1056,11 +1034,8 @@ class ChatAnalyzerFacade:
                 ChatSource.QQ,
                 service,
                 session_id,
-                config,
                 scratch_directory,
-                raw_session=None,
                 scope=scope,
-                progress=progress,
                 on_phase=on_phase,
             ) as session_export:
                 acquired_at = _perf_counter()
@@ -1568,12 +1543,9 @@ class ChatAnalyzerFacade:
         source: ChatSource,
         service: Any,
         session_id: str,
-        config: AnalysisConfig,
         scratch_directory: Path,
         *,
-        raw_session: Any = None,
         scope: AnalysisScope | None = None,
-        progress: Callable[[str], None] | None = None,
         on_phase: PhaseCallback | None = None,
     ) -> Iterator[_SessionExport]:
         """Yield an export while preserving source-specific ownership.
@@ -1588,8 +1560,8 @@ class ChatAnalyzerFacade:
         ``export_only`` has returned a payload. A failed acquisition therefore
         never publishes it.
         """
+        start_seconds, end_seconds = _scope_export_window_seconds(scope)
         if source is ChatSource.QQ:
-            start_seconds, end_seconds = _scope_export_window_seconds(scope)
             with ExitStack() as ownership:
                 with _translated_errors(source):
                     acquisition = ownership.enter_context(
@@ -1620,8 +1592,8 @@ class ChatAnalyzerFacade:
                         output_path=(
                             scratch_directory / "wechat_export.json"
                         ),
-                        start_time=_scope_export_window_seconds(scope)[0],
-                        end_time=_scope_export_window_seconds(scope)[1],
+                        start_time=start_seconds,
+                        end_time=end_seconds,
                     )
                 )
             )

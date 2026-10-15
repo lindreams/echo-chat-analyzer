@@ -36,7 +36,7 @@ class _FakeConfigLoader:
         self._config = config
         self._error = error
 
-    def load(self):
+    def load_or_default(self):
         if self._error is not None:
             raise self._error
         return self._config
@@ -172,8 +172,10 @@ def test_connection_service_builds_provider_from_config() -> None:
     provider = _FakeProvider()
     factory = _RecordingProviderFactory(provider)
     service = module.WeChatConnectionService(
-        config_loader=_FakeConfigLoader(config=config),
-        provider_factory=factory,
+        provider_factory=module.WeChatProviderFactory(
+            config_loader=_FakeConfigLoader(config=config),
+            provider_builder=factory,
+        ),
     )
 
     status = service.check_status()
@@ -186,10 +188,10 @@ def test_connection_service_builds_provider_from_config() -> None:
 def test_config_loader_error_never_leaks() -> None:
     module = _module()
     service = module.WeChatConnectionService(
-        config_loader=_FakeConfigLoader(
-            error=RuntimeError("raw config boom")
+        provider_factory=module.WeChatProviderFactory(
+            config_loader=_FakeConfigLoader(error=RuntimeError("raw config boom")),
+            provider_builder=_RecordingProviderFactory(_FakeProvider()),
         ),
-        provider_factory=_RecordingProviderFactory(_FakeProvider()),
     )
 
     status = service.check_status()
@@ -200,3 +202,23 @@ def test_config_loader_error_never_leaks() -> None:
 
 
 # ------------------------------------------------------------------- model
+
+
+def test_status_refreshes_provider_after_factory_invalidation() -> None:
+    module = _module()
+    loader = _FakeConfigLoader(config=_FakeProvider())
+    factory = module.WeChatProviderFactory(
+        config_loader=loader, provider_builder=lambda provider: provider,
+    )
+    service = module.WeChatConnectionService(provider_factory=factory)
+    assert service.check_status().available is True
+
+    loader._config = _FakeProvider(key=None)
+    factory.invalidate()
+    status = service.check_status()
+    assert status.available is False
+    assert status.data_found is True
+    assert status.db_key_available is False
+    assert status.runtime_available is True
+    assert service.provider() is loader._config
+    assert loader._config.data_calls == 1

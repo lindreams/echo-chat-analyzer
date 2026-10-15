@@ -44,7 +44,7 @@ def is_wechat_export(path: str | Path) -> bool:
     payload = _load_json_payload(path)
     if payload is None:
         return False
-    return _looks_like_wechat_export(payload)
+    return is_detailed_payload(payload)
 
 
 def load_messages(path: str | Path) -> list[Any]:
@@ -53,7 +53,7 @@ def load_messages(path: str | Path) -> list[Any]:
         return _load_chatlab_messages(path)
 
     payload = _load_json_payload(path)
-    if payload is None or not _looks_like_wechat_export(payload):
+    if payload is None or not is_detailed_payload(payload):
         return []
 
     messages = payload.get("messages")
@@ -65,12 +65,12 @@ def load_conversation_context(
 ) -> tuple[str | None, str]:
     """Return reliable (conversation_id, conversation_type) from a file."""
     if _is_jsonl_path(path):
-        return _chatlab_conversation_context(_iter_chatlab_lines(path))
+        return chatlab_conversation_context(load_chatlab_records(path))
 
     payload = _load_json_payload(path)
     if payload is None:
         return None, "unknown"
-    return _detailed_conversation_context(payload)
+    return detailed_conversation_context(payload)
 
 
 def parse_messages(
@@ -105,7 +105,7 @@ def _is_jsonl_path(path: str | Path) -> bool:
         return False
 
 
-def _iter_chatlab_lines(path: str | Path) -> list[Mapping[str, Any]]:
+def load_chatlab_records(path: str | Path) -> list[Mapping[str, Any]]:
     try:
         input_path = Path(path)
     except TypeError:
@@ -130,7 +130,12 @@ def _iter_chatlab_lines(path: str | Path) -> list[Mapping[str, Any]]:
 
 
 def _looks_like_chatlab_export(path: str | Path) -> bool:
-    for record in _iter_chatlab_lines(path):
+    return is_chatlab_records(load_chatlab_records(path))
+
+
+def is_chatlab_records(records: Iterable[Mapping[str, Any]]) -> bool:
+    """Recognize loaded chatlab records without reopening the file."""
+    for record in records:
         line_type = record.get("_type")
         if line_type == _CHATLAB_HEADER_LINE:
             meta = record.get("meta")
@@ -145,12 +150,13 @@ def _looks_like_chatlab_export(path: str | Path) -> bool:
 
 
 def _load_chatlab_messages(path: str | Path) -> list[Any]:
-    if not _looks_like_chatlab_export(path):
+    records = load_chatlab_records(path)
+    if not is_chatlab_records(records):
         return []
 
     return [
         record
-        for record in _iter_chatlab_lines(path)
+        for record in records
         if record.get("_type") == _CHATLAB_MESSAGE_LINE
     ]
 
@@ -173,7 +179,7 @@ def _load_json_payload(path: str | Path) -> Mapping[str, Any] | None:
     return payload if isinstance(payload, Mapping) else None
 
 
-def _looks_like_wechat_export(payload: Mapping[str, Any]) -> bool:
+def is_detailed_payload(payload: Mapping[str, Any]) -> bool:
     session = payload.get("session")
     if isinstance(session, Mapping) and session.get("platform") == WECHAT_PLATFORM:
         return True
@@ -295,7 +301,7 @@ def _parse_chatlab_message(
     )
 
 
-def _detailed_conversation_context(
+def detailed_conversation_context(
     payload: Mapping[str, Any],
 ) -> tuple[str | None, str]:
     session = payload.get("session")
@@ -316,7 +322,7 @@ def _detailed_conversation_context(
     return conversation_id, _normalize_conversation_type(session_type)
 
 
-def _chatlab_conversation_context(
+def chatlab_conversation_context(
     records: list[Mapping[str, Any]],
 ) -> tuple[str | None, str]:
     for record in records:

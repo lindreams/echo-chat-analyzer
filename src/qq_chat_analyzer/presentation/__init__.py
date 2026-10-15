@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from .builders import (
-    EchoReportBuilder,
     build_echo_report_view,
 )
 from .formatters import (
@@ -55,7 +54,6 @@ __all__ = [
     "EchoLanguageMember",
     "EchoLanguageProfile",
     "EchoMemberExpression",
-    "EchoReportBuilder",
     "EchoReportView",
     "EchoSharedWord",
     "ECHO_REPORT_SCHEMA_VERSION",

@@ -298,7 +298,7 @@ def test_composition_root_shares_factory_with_setup(
 
     setup = facade._wechat_setup_service
     connection = facade._wechat_connection_service
-    assert setup._provider_factory is connection._shared_factory
+    assert setup._provider_factory is connection._provider_factory
 
 
 def test_composition_root_injects_lazy_report_package_catalog_manager(

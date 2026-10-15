@@ -220,73 +220,78 @@ class AnalysisApplicationService:
             kept_messages,
             request.conversation_kind,
         )
-        if not ranked_words:
-            return _generate_content_report_or_fallback(
-                request=request,
-                kept_messages=kept_messages,
-                analyzed=analyzed,
-                diagnostic_counts=diagnostic_counts,
-                processed_message_count=processed_message_count,
-                rich_by_instance=rich_by_instance,
-                conversation_type=conversation_type,
-                expression_source=outcome.result.platform,
-                success_status=status,
-            )
-
-        with timed_stage("report_build"):
-            reports = _build_reports(
-                kept_messages,
-                analyzed.sender_tokens,
-                speaker_names=request.speaker_names,
-                conversation_names=request.conversation_names,
-                conversation_type=conversation_type,
-                rich_by_instance=rich_by_instance,
-                expression_report=expression_report,
-                expression_source=outcome.result.platform,
-            )
-        with timed_stage("word_speaker_analysis"):
-            speaker_display_names = _speaker_display_names(reports)
-            word_sender_counts = count_word_speakers(
-                _text_sender_tokens(analyzed.sender_tokens)
-            )
-            speaker_summaries = _display_speaker_summaries(
-                top_word_speaker_summary(word_sender_counts),
-                speaker_display_names,
-            )
-            speaker_frequency_rows = [
-                (
-                    summary.word,
-                    speaker_display_names.get(sender, sender),
-                    count,
-                )
-                for summary in speaker_summaries
-                for sender, count in sorted(
-                    word_sender_counts[summary.word].items(),
-                    key=lambda item: -item[1],
-                )
-            ]
-            viewer_speaker_key = _viewer_speaker_key(
-                kept_messages,
-                request.viewer_speaker_key,
-            )
-
         try:
-            with timed_stage("artifact_export"):
-                legacy_artifacts = self._write_legacy_artifacts(
-                    request,
-                    ranked_words,
-                    speaker_summaries,
-                    speaker_frequency_rows,
-                )
-                echo_report_view = _export_echo_artifacts(
-                    request,
-                    reports,
-                    viewer_speaker_key=viewer_speaker_key,
-                    conversation_kind=conversation_type,
+            with timed_stage("report_build"):
+                reports = _build_reports(
+                    kept_messages,
+                    analyzed.sender_tokens,
+                    speaker_names=request.speaker_names,
+                    conversation_names=request.conversation_names,
+                    conversation_type=conversation_type,
+                    rich_by_instance=rich_by_instance,
+                    expression_report=expression_report,
                     expression_source=outcome.result.platform,
                 )
-        except (OSError, ValueError):
-            raise ArtifactGenerationFailed() from None
+            if ranked_words:
+                with timed_stage("word_speaker_analysis"):
+                    speaker_display_names = _speaker_display_names(reports)
+                    word_sender_counts = count_word_speakers(
+                        _text_sender_tokens(analyzed.sender_tokens)
+                    )
+                    speaker_summaries = _display_speaker_summaries(
+                        top_word_speaker_summary(word_sender_counts),
+                        speaker_display_names,
+                    )
+                    speaker_frequency_rows = [
+                        (
+                            summary.word,
+                            speaker_display_names.get(sender, sender),
+                            count,
+                        )
+                        for summary in speaker_summaries
+                        for sender, count in sorted(
+                            word_sender_counts[summary.word].items(),
+                            key=lambda item: -item[1],
+                        )
+                    ]
+
+            try:
+                with timed_stage("artifact_export"):
+                    legacy_artifacts = ()
+                    if ranked_words:
+                        legacy_artifacts = self._write_legacy_artifacts(
+                            request,
+                            ranked_words,
+                            speaker_summaries,
+                            speaker_frequency_rows,
+                        )
+                    echo_report_view = _export_echo_artifacts(
+                        request,
+                        reports,
+                        viewer_speaker_key=_viewer_speaker_key(
+                            kept_messages, request.viewer_speaker_key,
+                        ),
+                        conversation_kind=conversation_type,
+                        expression_source=outcome.result.platform,
+                    )
+            except (OSError, ValueError):
+                raise ArtifactGenerationFailed() from None
+        except Exception:
+            if ranked_words:
+                raise
+            _LOGGER.warning(
+                "content-only report generation failed",
+                exc_info=True,
+            )
+            for filename in (
+                _ECHO_ARTIFACT_FILENAMES["echo_report_json"],
+                _ECHO_ARTIFACT_FILENAMES["echo_report_html"],
+            ):
+                try:
+                    (request.output_directory / filename).unlink(missing_ok=True)
+                except OSError:
+                    pass
+            raise
 
         _LOGGER.info(
             "[analysis] echo artifacts exported echo_view=%s "
@@ -295,7 +300,7 @@ class AnalysisApplicationService:
             conversation_type,
         )
         return AnalysisResultDTO(
-            status=AnalysisStatus.COMPLETED,
+            status=status,
             processed_message_count=processed_message_count,
             valid_text_count=analyzed.valid_text_count,
             diagnostic_counts=diagnostic_counts,
@@ -425,69 +430,6 @@ def _build_reports(
                 else (messages[0].platform if messages else None)
             ),
         ),
-    )
-
-
-def _generate_content_report_or_fallback(
-    *,
-    request: AnalysisRequestDTO,
-    kept_messages: list[ChatMessage],
-    analyzed: _AnalyzedMessages,
-    diagnostic_counts: AnalysisDiagnosticCounts,
-    processed_message_count: int,
-    rich_by_instance: Mapping[int, RichMessage],
-    conversation_type: str,
-    expression_source: str | None,
-    success_status: AnalysisStatus = AnalysisStatus.EXPRESSION_ONLY,
-) -> AnalysisResultDTO:
-    """Export a content report, removing partial artifacts before propagating errors."""
-    try:
-        with timed_stage("report_build"):
-            reports = _build_reports(
-                kept_messages,
-                analyzed.sender_tokens,
-                speaker_names=request.speaker_names,
-                conversation_names=request.conversation_names,
-                conversation_type=conversation_type,
-                rich_by_instance=rich_by_instance,
-                expression_source=expression_source,
-            )
-        try:
-            with timed_stage("artifact_export"):
-                echo_report_view = _export_echo_artifacts(
-                    request,
-                    reports,
-                    viewer_speaker_key=_viewer_speaker_key(
-                        kept_messages,
-                        request.viewer_speaker_key,
-                    ),
-                    conversation_kind=conversation_type,
-                    expression_source=expression_source,
-                )
-        except (OSError, ValueError):
-            raise ArtifactGenerationFailed() from None
-    except Exception:
-        _LOGGER.warning(
-            "content-only report generation failed",
-            exc_info=True,
-        )
-        for filename in (
-            _ECHO_ARTIFACT_FILENAMES["echo_report_json"],
-            _ECHO_ARTIFACT_FILENAMES["echo_report_html"],
-        ):
-            try:
-                (request.output_directory / filename).unlink(missing_ok=True)
-            except OSError:
-                pass
-        raise
-    return AnalysisResultDTO(
-        status=success_status,
-        processed_message_count=processed_message_count,
-        valid_text_count=analyzed.valid_text_count,
-        diagnostic_counts=diagnostic_counts,
-        artifacts=_ECHO_ARTIFACTS,
-        reports=reports,
-        echo_report_view=echo_report_view,
     )
 
 

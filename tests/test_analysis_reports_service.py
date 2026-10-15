@@ -304,8 +304,18 @@ def test_report_boundary_does_not_retain_full_expression_candidates() -> None:
 
 
 def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from qq_chat_analyzer.analysis.analyzers import ExpressionAnalyzer
+    original_analyze = ExpressionAnalyzer.analyze
+    analyzed_reports = []
+
+    def record_analysis(self, *args, **kwargs):
+        report = original_analyze(self, *args, **kwargs)
+        analyzed_reports.append(report)
+        return report
+
+    monkeypatch.setattr(ExpressionAnalyzer, "analyze", record_analysis)
     application = _application_module()
     input_path = tmp_path / "sticker-only.json"
     output_directory = tmp_path / "private-output"
@@ -316,6 +326,7 @@ def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
         _request(application, tmp_path, input_path)
     )
 
+    assert len(analyzed_reports) == 1
     assert result.status is application.AnalysisStatus.EXPRESSION_ONLY
     assert result.valid_text_count == 0
     assert result.reports.expression is not None

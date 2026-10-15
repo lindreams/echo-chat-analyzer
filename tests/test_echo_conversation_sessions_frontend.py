@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import html
+import re
+
+import pytest
 import os
 import subprocess
 import sys
@@ -21,7 +25,7 @@ from qq_chat_analyzer.presentation import (  # noqa: E402
 )
 
 
-APP_PATH = PROJECT_ROOT / "frontend" / "echo_report" / "app.js"
+from qq_chat_analyzer.presentation.echo_report_template import ECHO_REPORT_APP_JS
 SESSION_NODE_IDS = (
     "session-toc",
     "conversation-sessions",
@@ -83,7 +87,7 @@ global.document = {
   createElement: function () { return new FakeNode(""); }
 };
 
-eval(fs.readFileSync(process.env.ECHO_APP_PATH, "utf8"));
+eval(fs.readFileSync(0, "utf8"));
 
 const result = {};
 ids.forEach(function (id) {
@@ -156,7 +160,6 @@ def _render_frontend(
     environment = os.environ.copy()
     environment.update(
         {
-            "ECHO_APP_PATH": str(APP_PATH),
             "ECHO_NODE_IDS": json.dumps(SESSION_NODE_IDS),
             "ECHO_PAYLOAD": json.dumps(payload),
         }
@@ -165,6 +168,7 @@ def _render_frontend(
         ["node", "-e", NODE_RUNNER],
         check=True,
         capture_output=True,
+        input=ECHO_REPORT_APP_JS,
         encoding="utf-8",
         env=environment,
     )
@@ -200,3 +204,75 @@ def test_session_chapter_never_displays_stable_ids_or_technical_ratio() -> None:
     assert "raw-stable-fictional-id" not in visible_text
     assert "999.123" not in visible_text
     assert "self-to-peer" not in visible_text.lower()
+
+
+@pytest.mark.slow_integration
+@pytest.mark.parametrize("width", [1280, 390])
+def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, width: int) -> None:
+    from qq_chat_analyzer.presentation import EchoExpressionCulture, EchoExpressionItem
+    from qq_chat_analyzer.presentation.share import renderer
+
+    chromium = renderer.find_chromium()
+    if chromium is None:
+        pytest.skip("no local Chromium available")
+    injected_name = '</script><script> window.echoInjected = true </script>'
+    view = EchoReportView(
+        title="Fictional Echo", has_data=True, conversation_kind="group",
+        time_span=injected_name, total_message_count=4, participant_count=2,
+        expression_culture=EchoExpressionCulture(
+            available=True, expression_message_count=4,
+            top_expressions=(
+                EchoExpressionItem("14", "Fictional smile", 2, "platform_face", asset_key="qq:14"),
+                EchoExpressionItem("missing", "Fictional missing image", 2, "platform_face", asset_key="qq:fictional-missing"),
+            ),
+        ),
+    )
+    output = export_echo_report_html(view, tmp_path / "echo-report.html")
+    source = output.read_text(encoding="utf-8")
+    assert 'src="app.js"' not in source and 'href="style.css"' not in source
+    probe = r"""<script>
+    window.addEventListener("load", function () {
+      const image = document.querySelector("#expression-top-list img");
+      image.loading = "eager";
+      setTimeout(function () {
+        const result = {
+          injected: Boolean(window.echoInjected),
+          name: document.getElementById("cover-range").textContent,
+          offline: Array.from(document.images).every(x => x.src.startsWith("data:")),
+          imageLoaded: image.complete && image.naturalWidth > 0,
+          fallback: document.querySelector("#expression-top-list .expression-fallback").textContent,
+          overflow: document.documentElement.scrollWidth > window.innerWidth,
+          overviewVisible: getComputedStyle(document.getElementById("overview")).display !== "none",
+          expressionVisible: !document.getElementById("expression").hidden
+        };
+        image.src = "data:image/png;base64,broken";
+        setTimeout(function () {
+          result.brokenImageHidden = image.style.display === "none";
+          const output = document.createElement("pre");
+          output.id = "echo-browser-probe";
+          output.textContent = JSON.stringify(result);
+          document.body.appendChild(output);
+        }, 500);
+      }, 1000);
+    });
+    </script>"""
+    output.write_text(source.replace("</body>", probe + "</body>"), encoding="utf-8")
+    screenshot = tmp_path / "echo-layout.png"
+    result = renderer._run_chromium([
+        chromium, *renderer._chromium_flags(tmp_path / "browser-profile"),
+        "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND",
+        "--virtual-time-budget=4000", f"--window-size={width},3000",
+        f"--screenshot={screenshot}", "--dump-dom", output.as_uri(),
+    ], capture_stdout=True)
+    assert result.returncode == 0, result.stderr
+    dom = result.stdout.decode("utf-8")
+    match = re.search(r'<pre id="echo-browser-probe">(.*?)</pre>', dom, re.S)
+    assert match is not None, dom[-1000:]
+    rendered = json.loads(html.unescape(match.group(1)))
+    assert rendered == {
+        "injected": False, "name": injected_name, "offline": True,
+        "imageLoaded": True, "fallback": "Fictional missing image",
+        "overflow": False, "overviewVisible": True, "expressionVisible": True,
+        "brokenImageHidden": True,
+    }
+    assert screenshot.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")

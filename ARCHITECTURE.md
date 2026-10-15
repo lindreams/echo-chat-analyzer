@@ -73,7 +73,7 @@ flowchart TD
     end
 
     subgraph PRES["Presentation 展示层"]
-        BUILD["EchoReportBuilder"]
+        BUILD["build_echo_report_view"]
         VIEW["EchoReportView"]
         HTML["Echo JSON / HTML"]
     end
