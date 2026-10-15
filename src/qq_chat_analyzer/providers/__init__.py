@@ -7,12 +7,6 @@ the matching adapter module.
 
 from __future__ import annotations
 
-from .wechat_cli_provider import (
-    CliSession,
-    CliStatus,
-    WeChatCliError,
-    WeChatCliProvider,
-)
 from .wechat_database_provider import (
     DatabaseUnreadable,
     QueryFailed,
@@ -25,14 +19,10 @@ from .wechat_database_provider import (
 )
 
 __all__ = [
-    "CliSession",
-    "CliStatus",
     "DatabaseUnreadable",
     "QueryFailed",
     "WcdbHelperNotFound",
     "WcdbLibraryNotFound",
-    "WeChatCliError",
-    "WeChatCliProvider",
     "WeChatDatabaseError",
     "WeChatDatabaseProvider",
     "WeChatSession",

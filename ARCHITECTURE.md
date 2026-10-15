@@ -44,7 +44,6 @@ flowchart TD
     subgraph ACQ["Provider 数据获取"]
         PQQDB["qq_database_provider"]
         PWXDB["wechat_database_provider"]
-        PWXCLI["wechat_cli_provider"]
     end
 
     subgraph ADP["Adapter / Parser 格式转换"]
@@ -87,11 +86,10 @@ flowchart TD
 
     NAPCAT --> QQDB --> PQQDB --> AQQDB --> MSG
     WXAPP --> PWXDB --> AWXDB --> MSG
-    WXAPP --> PWXCLI --> AWXCLI --> MSG
     FILE --> PARSER --> MSG
     FILE --> AQQDB
     FILE --> AWXDB
-    FILE --> AWXCLI
+    FILE --> AWXCLI --> MSG
 
     ORCH --> PQQDB
     ORCH --> PWXDB
@@ -119,6 +117,9 @@ flowchart TD
 ```
 
 ---
+
+微信实时获取仅使用正式数据库 Provider；外部 `miyu` 实时获取链路已退役。
+`wechat_cli_adapter` 继续支持已导出 JSON 文件的本地导入。
 
 ## 3. 依赖方向
 
@@ -747,7 +748,6 @@ GUI 只装配控件、转发事件、展示状态。
 | --- | --- |
 | `providers/qq_database_provider.py` / `providers/napcat_qq_provider.py` | QQ Direct DB 获取 / NapCat readiness 与 metadata |
 | `providers/wechat_database_provider.py` | Provider |
-| `providers/wechat_cli_provider.py` | Provider |
 | `qq_db_adapter.py` | QQ Direct DB Adapter |
 | `wechat_db_adapter.py` | Adapter |
 | `wechat_cli_adapter.py` | Adapter |
@@ -762,8 +762,6 @@ GUI 只装配控件、转发事件、展示状态。
 | `application/qq/qq_provider_factory.py` | QQ Provider 装配与缓存 |
 | `application/qq/qq_runtime_manager.py` / `application/qq/qq_process_registry.py` | QQ runtime 管理与自有进程记录 |
 | `application/connection_models.py` | 来源无关的连接状态契约 |
-| `application/qq_connection_service.py` | 保留的公共旧模块路径，仅重导出连接服务实现对象 |
-| `application/connection/__init__.py` / `application/runtime/__init__.py` / `application/runtime/qq_runtime_manager.py` | 保留的连接与 runtime 公共兼容出口，无业务实现 |
 | `application/wechat/wechat_export_import_service.py` | 来源编排（微信） |
 | `application/wechat/wechat_connection_service.py` | 微信连接状态 |
 | `application/wechat/wechat_connection_progress.py` | 微信连接进度 |
@@ -772,7 +770,6 @@ GUI 只装配控件、转发事件、展示状态。
 | `application/wechat/wechat_provider_factory.py` | 微信 Provider 装配与缓存 |
 | `application/wechat/wechat_data_detector.py` | 微信数据位置检测 |
 | `application/wechat/wechat_key_service.py` | 微信读取授权 |
-| `application/wechat_connection_service.py` / `application/wechat_environment_config.py` | 保留的公共旧模块路径，仅重导出微信实现对象 |
 | `application/analysis_service.py` | 应用服务 |
 | `application/update_check_service.py` | 正式 Release 更新检查、来源无关结果契约与最小本地去重 |
 | `application/scope_filter.py` | 单次分析时间范围过滤 |
@@ -780,7 +777,7 @@ GUI 只装配控件、转发事件、展示状态。
 | `application/report_staging.py` | Report staging ownership、发布锁与安全恢复清理 |
 | `application/report_package_metadata.py` | Report Package metadata 构建 |
 | `application/report_package_catalog.py` | metadata catalog、安全定位、完整 package 删除与报告存储统计 |
-| `application/dto.py` / `errors.py` / `task.py` / `export_config.py` | 应用契约 |
+| `application/dto.py` / `errors.py` | 应用契约 |
 | `application/facade.py` | Facade |
 | `runtime/` | 外部运行时契约（ChatRuntime）与捆绑运行时实现（BundledQQRuntime） |
 | `cleaner.py` / `tokenizer.py` / `analyzer.py` | Analysis Core v1 |
