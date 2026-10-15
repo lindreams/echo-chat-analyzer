@@ -239,6 +239,7 @@ DOMAIN_MODULES = {
         "test_echo_report_serializer",
         "test_facade",
         "test_gui",
+        "test_processing_animation",
         "test_gui_history_bulk",
         "test_gui_qq_deqce_wiring",
         "test_gui_qq_qr_waiting",

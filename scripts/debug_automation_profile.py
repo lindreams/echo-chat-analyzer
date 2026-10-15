@@ -27,7 +27,7 @@ from qq_chat_analyzer.application import (
     ImportService,
 )
 from qq_chat_analyzer.message import ChatMessage
-from qq_chat_analyzer.smart_profile import run_smart_profile
+from qq_chat_analyzer.filter_pipeline import FilterPipeline
 
 
 METRIC_LABELS = (
@@ -81,7 +81,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         automation_decisions = create_filter_decisions(
             interactive_candidates
         )
-        filtering_result = run_smart_profile(parsed_messages)
+        decisions = create_filter_decisions([*robot_candidates, *template_candidates])
+        filtering_result = FilterPipeline().apply_filter_decisions(parsed_messages, decisions)
 
         _print_report(
             raw_message_count=raw_message_count,
