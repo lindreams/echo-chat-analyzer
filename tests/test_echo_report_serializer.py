@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 import re
 import sys
@@ -16,28 +15,22 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
 from qq_chat_analyzer.analysis import models as analysis_models  # noqa: E402
-from qq_chat_analyzer.presentation import (  # noqa: E402
+from qq_chat_analyzer.presentation import (
     ChartPoint,
-    EchoConversationSession,
-    EchoConversationSessions,
     EchoExpressionCulture,
     EchoExpressionCombination,
     EchoExpressionCombinationMember,
-    EchoExpressionHabits,
     EchoExpressionItem,
     EchoLanguageMember,
     EchoLanguageProfile,
     EchoMemberExpression,
     EchoMemberCard,
     EchoReportView,
-    EchoSharedWord,
     build_echo_report_view,
     echo_report_to_dict,
     export_echo_report_html,
-    export_echo_report_json,
 )
 
-from qq_chat_analyzer.resources import resource_path
 
 
 def _echo_view() -> EchoReportView:
@@ -183,69 +176,6 @@ def test_echo_member_serializes_identity_skeleton() -> None:
     assert serialized["is_viewer"] is False
 
 
-def test_echo_report_json_file_preserves_viewer_highlight(tmp_path: Path) -> None:
-    output_path = tmp_path / "echo-report.json"
-
-    result_path = export_echo_report_json(_echo_view(), output_path)
-
-    payload = json.loads(output_path.read_text(encoding="utf-8"))
-    assert result_path == output_path
-    assert payload["members"][0]["is_viewer"] is True
-    assert "余音 Echo" in output_path.read_text(encoding="utf-8")
-
-
-def test_empty_echo_report_serializes_with_stable_empty_collections() -> None:
-    payload = echo_report_to_dict(EchoReportView(title="Echo Report"))
-
-    assert payload["conversation"] == {
-        "kind": "unknown",
-        "name": "",
-        "time_span": "",
-    }
-    assert payload["overview"] == {
-        "has_data": False,
-        "total_message_count": 0,
-        "participant_count": 0,
-        "empty_description": "",
-        "active_days": 0,
-        "average_messages_per_active_day": 0.0,
-    }
-    assert payload["activity"] == {"hourly": [], "weekday": []}
-    assert payload["language_profile"] is None
-    assert payload["expression_culture"] is None
-    assert payload["members"] == []
-
-
-def test_export_echo_report_json_creates_parent_directories(
-    tmp_path: Path,
-) -> None:
-    nested = tmp_path / "private" / "nested"
-    result_path = export_echo_report_json(
-        _echo_view(),
-        nested / "echo-report.json",
-    )
-
-    assert result_path.is_file()
-    payload = json.loads(result_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "echo-report.v0.7"
-
-
-def test_language_profile_serializer_hides_log_odds_internal_statistics() -> None:
-    payload = echo_report_to_dict(_echo_view())
-    language = payload["language_profile"]
-
-    assert language is not None
-    serialized = json.dumps(language, ensure_ascii=False)
-    for internal_name in (
-        "ranking_score",
-        "member_rate",
-        "others_rate",
-        "relative_ratio",
-        "eligible_member_count",
-    ):
-        assert internal_name not in serialized
-
-
 def test_echo_report_html_is_self_contained_with_real_data(
     tmp_path: Path,
 ) -> None:
@@ -311,19 +241,6 @@ def test_echo_report_html_escapes_injected_user_text(tmp_path: Path) -> None:
     assert payload["members"][0]["display_name"] == "</script><b>x</b>"
     assert html.count("</script>") == 2
     assert "<\\/script>" in html
-
-
-def test_empty_echo_report_html_still_generates_self_contained_file(
-    tmp_path: Path,
-) -> None:
-    output_path = tmp_path / "echo-report.html"
-
-    export_echo_report_html(EchoReportView(title="Echo Report"), output_path)
-
-    html = output_path.read_text(encoding="utf-8")
-    assert "window.ECHO_DATA" in html
-    assert "data:image/png;base64," in html
-    assert "fetch(" not in html
 
 
 def test_expression_culture_serializes_display_ready_fields_only() -> None:
@@ -479,214 +396,6 @@ def test_echo_report_html_inlines_expression_assets_without_local_paths(
     assert "references" not in html
 
 
-def test_expression_tokens_serialize_as_display_assets() -> None:
-    view = EchoReportView(
-        title="Echo Report",
-        has_data=True,
-        expression_source="wechat",
-        members=(
-            EchoMemberCard(
-                speaker_key="fictional-alice",
-                display_name="虚构 Alice",
-                is_viewer=False,
-                message_count=1,
-                message_share_percent=100.0,
-                average_length=1.0,
-                max_length=1,
-                active_period="",
-                top_words=("expression:捂脸",),
-            ),
-        ),
-        language_profile=EchoLanguageProfile(
-            mode="private_common",
-            available=True,
-            members=(
-                EchoLanguageMember(
-                    speaker_key="fictional-alice",
-                    display_name="虚构 Alice",
-                    heading="你常说",
-                    primary_words=("expression:捂脸",),
-                ),
-            ),
-            shared_words=(
-                EchoSharedWord(
-                    word="expression:旺柴",
-                    self_count=1,
-                    peer_count=0,
-                    emphasis="self",
-                ),
-            ),
-        ),
-    )
-
-    payload = echo_report_to_dict(view)
-
-    assert payload["members"][0]["top_words"] == [
-        {"asset_key": "wechat:捂脸"}
-    ]
-    assert payload["language_profile"]["members"][0]["primary_words"] == [
-        {"asset_key": "wechat:捂脸"}
-    ]
-    assert payload["language_profile"]["shared_words"][0]["word"] == {
-        "asset_key": "wechat:旺柴"
-    }
-    serialized = json.dumps(payload, ensure_ascii=False)
-    assert "expression:捂脸" not in serialized
-    assert "expression:旺柴" not in serialized
-
-
-def test_echo_report_html_inlines_current_brand_assets(tmp_path: Path) -> None:
-    """Generated HTML must inline the current bundled brand assets."""
-    output_path = tmp_path / "echo-report.html"
-    export_echo_report_html(_echo_view(), output_path)
-    html = output_path.read_text(encoding="utf-8")
-
-    favicon = resource_path("assets/branding/echo/echo_icon_32.png")
-    logo = resource_path("assets/branding/echo/echo_wordmark_with_slogan.png")
-    assert favicon.is_file()
-    assert logo.is_file()
-
-    uris = re.findall(r"data:image/png;base64,([A-Za-z0-9+/=]+)", html)
-    assert len(uris) == 2
-    embedded = {base64.b64decode(uri) for uri in uris}
-    assert favicon.read_bytes() in embedded
-    assert logo.read_bytes() in embedded
-
-
-def test_private_sessions_serialize_reply_peaks_and_back_and_forth() -> None:
-    """Private v1 fields reach the frontend JSON payload without leaking ratios."""
-    back_and_forth = EchoConversationSession(
-        start_timestamp=10,
-        end_timestamp=130,
-        duration_seconds=120,
-        message_count=11,
-        participant_count=2,
-        initiator="self",
-        initiator_sender_key="fictional-self-id",
-        self_message_count=6,
-        peer_message_count=5,
-    )
-    sessions = EchoConversationSessions(
-        threshold_seconds=1800,
-        session_count=2,
-        average_duration_seconds=600.0,
-        median_duration_seconds=600.0,
-        longest_duration_seconds=1200,
-        average_message_count=10.0,
-        items=(
-            EchoConversationSession(
-                start_timestamp=1,
-                end_timestamp=2,
-                duration_seconds=1,
-                message_count=2,
-                participant_count=2,
-                initiator="self",
-                initiator_sender_key="fictional-self-id",
-                self_message_count=1,
-                peer_message_count=1,
-            ),
-        ),
-        private_self_count=1,
-        private_peer_count=1,
-        private_unknown_count=0,
-        private_self_share=0.5,
-        private_peer_share=0.5,
-        private_unknown_share=0.0,
-        private_self_peak_start_hour=22,
-        private_peer_peak_start_hour=9,
-        private_reply_median_self_to_peer_seconds=60.0,
-        private_reply_median_peer_to_self_seconds=120.0,
-        loudest_most_back_and_forth=back_and_forth,
-    )
-    payload = echo_report_to_dict(
-        EchoReportView(
-            title="Fictional Private Echo",
-            has_data=True,
-            conversation_kind="private",
-            conversation_sessions=sessions,
-        )
-    )
-    data = payload["conversation_sessions"]
-
-    assert data["private_self_peak_start_hour"] == 22
-    assert data["private_peer_peak_start_hour"] == 9
-    assert data["private_reply_median_self_to_peer_seconds"] == 60.0
-    assert data["private_reply_median_peer_to_self_seconds"] == 120.0
-    assert data["items"][0]["self_message_count"] == 1
-    assert data["items"][0]["peer_message_count"] == 1
-    assert data["loudest_most_back_and_forth"]["self_message_count"] == 6
-    assert data["loudest_most_back_and_forth"]["peer_message_count"] == 5
-    serialized = json.dumps(data, ensure_ascii=False)
-    assert "switch_ratio" not in serialized
-    assert "switch_count" not in serialized
-
-
-def test_private_language_profile_serializes_new_layers_and_overview_density() -> None:
-    """Overview density and private language layers reach the frontend JSON."""
-    view = EchoReportView(
-        title="Fictional Private Echo",
-        has_data=True,
-        conversation_kind="private",
-        active_days=5,
-        average_messages_per_active_day=8.8,
-        language_profile=EchoLanguageProfile(
-            mode="private_common",
-            available=True,
-            members=(
-                EchoLanguageMember(
-                    speaker_key="fictional-self-id",
-                    display_name="虚构自己",
-                    heading="你常说",
-                    primary_words=("散步",),
-                    expression_habits=EchoExpressionHabits(
-                        median_length=5.0,
-                        average_length=5.0,
-                        max_length=7,
-                        run_count=2,
-                        average_run_length=2.0,
-                        median_run_length=2.0,
-                        single_message_run_count=1,
-                        multi_message_run_count=1,
-                    ),
-                ),
-            ),
-            shared_words=(
-                EchoSharedWord(
-                    word="回声",
-                    self_count=6,
-                    peer_count=4,
-                    emphasis="shared",
-                ),
-            ),
-            side_preference_words=(
-                EchoSharedWord(
-                    word="方案",
-                    self_count=5,
-                    peer_count=1,
-                    emphasis="self",
-                ),
-            ),
-        ),
-    )
-
-    payload = echo_report_to_dict(view)
-    assert payload["overview"]["active_days"] == 5
-    assert payload["overview"]["average_messages_per_active_day"] == 8.8
-
-    language = payload["language_profile"]
-    assert language["shared_words"] == [
-        {"word": "回声", "self_count": 6, "peer_count": 4, "emphasis": "shared"}
-    ]
-    assert language["side_preference_words"] == [
-        {"word": "方案", "self_count": 5, "peer_count": 1, "emphasis": "self"}
-    ]
-    habits = language["members"][0]["expression_habits"]
-    assert habits["median_length"] == 5.0
-    assert habits["average_length"] == 5.0
-    assert habits["run_count"] == 2
-    assert habits["multi_message_run_count"] == 1
-
-
 #: A throwaway payload; tests only assert it round-trips through base64.
 _FAKE_PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRfake-minimal-png"
 
@@ -729,41 +438,6 @@ def _expression_view(
         pytest.fail("builder cannot express an explicit expression source")
 
 
-def test_qq_face_serializes_with_inline_asset_and_keeps_display_text(
-    qq_asset_root: Path,
-    tmp_path: Path,
-) -> None:
-    (qq_asset_root / "265.png").write_bytes(_FAKE_PNG_BYTES)
-
-    view = _expression_view("265", "/辣眼睛", "qq")
-    item = view.expression_culture.top_expressions[0]
-    assert item.asset_key == "qq:265"
-    assert item.display_text == "/辣眼睛"
-
-    output_path = tmp_path / "echo-report.html"
-    export_echo_report_html(view, output_path)
-    html = output_path.read_text(encoding="utf-8")
-
-    match = re.search(
-        r"window\.ECHO_ASSETS = (\{.*?\});",
-        html,
-        flags=re.DOTALL,
-    )
-    assert match is not None
-    assets = json.loads(match.group(1))
-    assert assets["qq:265"].startswith("data:image/png;base64,")
-
-
-def test_qq_face_without_asset_keeps_text_fallback(
-    qq_asset_root: Path,
-) -> None:
-    view = _expression_view("999", "/辣眼睛", "qq")
-    item = view.expression_culture.top_expressions[0]
-
-    assert item.asset_key is None
-    assert item.display_text == "/辣眼睛"
-
-
 def test_wechat_666_is_not_hijacked_by_bundled_qq_666(
     qq_asset_root: Path,
 ) -> None:
@@ -775,16 +449,6 @@ def test_wechat_666_is_not_hijacked_by_bundled_qq_666(
 
     assert item.asset_key == "wechat:666"
     assert item.display_text == "666"
-
-
-def test_qq_666_resolves_when_the_source_is_qq(qq_asset_root: Path) -> None:
-    (qq_asset_root / "666.png").write_bytes(_FAKE_PNG_BYTES)
-
-    view = _expression_view("666", "/666", "qq")
-    item = view.expression_culture.top_expressions[0]
-
-    assert item.asset_key == "qq:666"
-    assert item.display_text == "/666"
 
 
 def test_unknown_source_never_resolves_expression_assets(

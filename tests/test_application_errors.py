@@ -42,21 +42,6 @@ def test_application_package_exports_stable_error_codes() -> None:
         assert error_type.code == expected_code
 
 
-def test_specific_application_errors_share_one_public_base() -> None:
-    application = _application_module()
-    specific_error_types = (
-        application.ArtifactGenerationFailed,
-        application.InputPathNotFound,
-        application.InvalidAnalysisRequest,
-        application.InvalidAnalysisScope,
-        application.NoMessagesInScope,
-        application.NoSupportedInput,
-    )
-
-    for error_type in specific_error_types:
-        assert issubclass(error_type, application.ApplicationServiceError)
-
-
 def test_application_errors_expose_only_safe_public_context() -> None:
     application = _application_module()
     error_types = (

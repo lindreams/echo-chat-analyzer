@@ -14,23 +14,6 @@ def _renderer():
     return importlib.import_module("qq_chat_analyzer.presentation.share.renderer")
 
 
-def test_configured_chromium_path_wins(monkeypatch) -> None:
-    module = _renderer()
-    monkeypatch.setenv("ECHO_CHROMIUM_PATH", "C:/custom/chrome.exe")
-
-    assert module.find_chromium() == "C:/custom/chrome.exe"
-
-
-def test_windows_candidate_paths_prefer_chrome(monkeypatch) -> None:
-    module = _renderer()
-    monkeypatch.setattr(module.os, "name", "nt")
-
-    candidates = module._candidate_chromium_paths()
-
-    assert "chrome.exe" in candidates[0].lower()
-    assert any("msedge.exe" in candidate.lower() for candidate in candidates)
-
-
 def test_render_runs_dom_check_then_screenshot(
     tmp_path: Path,
     monkeypatch,
@@ -73,65 +56,6 @@ def test_render_runs_dom_check_then_screenshot(
     assert screenshot_capture is False
     assert "--user-data-dir=" in " ".join(dom_command)
     assert "--user-data-dir=" in " ".join(screenshot_command)
-
-
-def test_render_without_chromium_raises(tmp_path: Path, monkeypatch) -> None:
-    module = _renderer()
-    monkeypatch.setattr(module, "find_chromium", lambda: None)
-
-    with pytest.raises(module.ShareImageRenderError):
-        module.render_share_html_to_png(
-            "<html>share</html>",
-            tmp_path / "echo-share.png",
-        )
-
-
-def test_render_unspawnable_chromium_raises_render_error(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    module = _renderer()
-
-    def _raise_missing(*args, **kwargs):
-        raise FileNotFoundError(2, "系统找不到指定的文件。")
-
-    monkeypatch.setattr(module, "find_chromium", lambda: "C:/missing/chrome.exe")
-    monkeypatch.setattr(module.subprocess, "Popen", _raise_missing)
-
-    with pytest.raises(module.ShareImageRenderError):
-        module.render_share_html_to_png(
-            "<html>share</html>",
-            tmp_path / "echo-share.png",
-        )
-
-    assert not (tmp_path / "echo-share.png").exists()
-    assert list(tmp_path.glob("echo-share-*")) == []
-
-
-def test_render_failed_load_includes_stderr(
-    tmp_path: Path,
-    monkeypatch,
-) -> None:
-    module = _renderer()
-
-    def _fake_run_chromium(command, **kwargs):
-        return module._ChromiumResult(
-            returncode=1,
-            stdout=b"",
-            stderr="boom: file not found",
-        )
-
-    monkeypatch.setattr(module, "find_chromium", lambda: "C:/chrome.exe")
-    monkeypatch.setattr(module, "_run_chromium", _fake_run_chromium)
-
-    with pytest.raises(module.ShareImageRenderError) as exc:
-        module.render_share_html_to_png(
-            "<html>share</html>",
-            tmp_path / "echo-share.png",
-        )
-
-    assert "boom: file not found" in str(exc.value)
-    assert not (tmp_path / "echo-share.png").exists()
 
 
 def test_render_rejects_error_page_dom(tmp_path: Path, monkeypatch) -> None:

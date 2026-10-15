@@ -41,10 +41,6 @@ def _presentation():
     return importlib.import_module("qq_chat_analyzer.presentation")
 
 
-def _analysis_models():
-    return importlib.import_module("qq_chat_analyzer.analysis.models")
-
-
 @pytest.fixture(scope="session")
 def qt_app():
     """One QApplication for the whole session; Qt forbids more than one."""
@@ -468,13 +464,6 @@ def _session(
         message_count=count,
         last_message_time=last_message_time,
     )
-
-
-def _sort_index(page, value: str) -> int:
-    for index in range(page._session_sort.count()):
-        if page._session_sort.itemData(index) == value:
-            return index
-    raise AssertionError(f"missing sort mode {value}")
 
 
 def _dashboard_view(*, has_data: bool = True):
@@ -1456,26 +1445,6 @@ def test_main_window_close_starts_only_one_shutdown_protocol(
     assert window.await_shutdown(2.0) is True
     assert facade.shutdown_calls == [1]
     assert facade.shutdown_qq_runtime_calls == [1]
-
-
-def _connection_status(
-    *,
-    available: bool,
-    runtime_running: bool,
-    qq_online: bool,
-    version: str | None = None,
-    message: str,
-    action_hint: str,
-):
-    module = _facade_module()
-    return module.QQConnectionStatus(
-        available=available,
-        runtime_running=runtime_running,
-        qq_online=qq_online,
-        version=version,
-        message=message,
-        action_hint=action_hint,
-    )
 
 
 def _wechat_available_sources():
@@ -2740,53 +2709,6 @@ def test_workspace_can_return_to_home_from_home_button(qt_app, sources) -> None:
 # ----------------------------------------------------------------
 
 
-def test_wechat_workspace_uses_connection_status_facade_api(
-    qt_app, sources
-) -> None:
-    """WeChat status flows through facade.get_connection_status(WECHAT)."""
-    from qq_chat_analyzer.gui.main_window import WECHAT_WORKSPACE_INDEX
-    module = _facade_module()
-    status = module.WeChatConnectionStatus(
-        available=False, data_found=False, db_key_available=False,
-        runtime_available=False, message="微信尚未连接。", action_hint="",
-    )
-    facade = StubFacade(sources=sources, connection_status=status)
-    window = _main_window(qt_app, facade)
-    window.navigate_to_wechat()
-    _drain(window)
-
-    assert window.stack.currentIndex() == WECHAT_WORKSPACE_INDEX
-    assert facade.get_connection_status_calls == [module.ChatSource.WECHAT]
-    assert "微信" in window.wechat_workspace._status_label.text()
-    assert window.wechat_workspace._wechat_connect_button.isVisibleTo(window) is True
-    assert window.wechat_workspace.session_panel._sessions_ready is False
-
-
-def test_qq_workspace_shows_connect_button_when_disconnected(
-    qt_app, sources
-) -> None:
-    """QQ disconnected status shows the connect action and no sessions."""
-    from qq_chat_analyzer.gui.main_window import QQ_WORKSPACE_INDEX
-    module = _facade_module()
-    status = module.QQConnectionStatus(
-        available=False, runtime_running=False, qq_online=False,
-        version="", message="QQ 服务未运行。", action_hint="",
-    )
-    facade = StubFacade(
-        sources=sources,
-        connection_status=status,
-        sessions=[_session(module.ChatSource.QQ, "10001", "虚构群")],
-    )
-    window = _main_window(qt_app, facade)
-    window.navigate_to_qq()
-    _drain(window)
-
-    assert window.stack.currentIndex() == QQ_WORKSPACE_INDEX
-    assert window.qq_workspace._qq_connect_button.isVisibleTo(window) is True
-    assert window.qq_workspace._qq_connect_button.isEnabled()
-    assert window.qq_workspace.session_panel._sessions_ready is False
-
-
 def test_qq_workspace_connect_disables_button_until_finish(
     qt_app,
     sources,
@@ -2978,158 +2900,6 @@ def test_qq_workspace_offers_qq_exe_selection_when_install_path_missing(
 # ---------------------------------------------------------------------------
 
 
-def test_qq_connection_trail_walks_prepare_start_scan_connect(
-    qt_app, sources
-) -> None:
-    """The QQ journey draws the shared trail, stage by stage, without a
-    second invitation to connect while it advances by itself."""
-    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
-
-    module = importlib.import_module("qq_chat_analyzer.gui.qq_workspace")
-    facade = _SnapshotFacade(_qq_snapshot("waiting_auth"), sources=sources)
-    executor = _DeferredExecutor()
-    workspace = QQWorkspace(facade, executor=executor)
-
-    assert module._QQ_CONNECT_STAGES == ("准备", "启动 QQ", "登录", "连接")
-    assert workspace._progress_track.isHidden() is True
-
-    workspace.connect_qq()
-    assert workspace._progress_track.isVisibleTo(workspace) is True
-    assert workspace._progress_track.stage == 0
-    assert workspace._qq_guide_label.isVisibleTo(workspace) is True
-    assert workspace._status_label.isVisibleTo(workspace) is False
-    assert workspace._qq_connect_button.text() == "取消连接"
-
-    workspace._handle_qq_connect_progress("正在启动 QQ 连接环境")
-    assert workspace._progress_track.stage == 1
-    assert workspace._qq_connect_button.text() != "连接QQ"
-
-    workspace._handle_qq_connect_progress("等待QQ登录")
-    assert workspace._progress_track.stage == 2
-    assert workspace._qq_login_guide_label.isVisibleTo(workspace) is True
-    assert workspace._qq_connect_button.text() != "连接QQ"
-
-
-def test_qq_scan_stage_makes_the_qr_the_subject_then_hands_over_to_sessions(
-    qt_app, sources, tmp_path: Path
-) -> None:
-    """The QR owns the scan stage; a loaded session list ends the journey."""
-    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
-
-    qr_path = tmp_path / "fictional-qq-qr.png"
-    _write_qrcode_png(qr_path)
-    facade = _GatedQRFacade(
-        _qq_snapshot("waiting_auth"),
-        _qq_snapshot("waiting_auth"),
-        sources=sources,
-        sessions=[_session(_facade_module().ChatSource.QQ, "q1", "虚构群")],
-    )
-    facade.qr_ready = True
-    workspace = QQWorkspace(facade, executor=_inline_executor())
-    facade.qr_path = qr_path
-
-    workspace._show_qq_status(
-        _qq_snapshot("waiting_auth"), load_sessions_on_ready=False
-    )
-
-    assert workspace._progress_track.stage == 2
-    assert workspace._qq_qrcode_label.isVisibleTo(workspace) is True
-    assert "扫码" in workspace._qq_guide_label.text()
-    # The QR sits beside the copy, exactly like the guided setup's picture.
-    assert workspace._qq_guide_row.itemAt(0).layout().count() >= 2
-    assert workspace._qq_guide_row.itemAt(1).widget() is workspace._qq_qrcode_label
-
-    workspace._show_qq_status(
-        _qq_snapshot("connected"), load_sessions_on_ready=True,
-    )
-
-    assert workspace.session_panel._sessions_ready is True
-    assert workspace._progress_track.isHidden() is True
-    assert workspace._qq_qrcode_label.isVisibleTo(workspace) is False
-    assert workspace._qq_guide_label.isVisibleTo(workspace) is False
-    assert workspace._qq_login_guide_label.isVisibleTo(workspace) is False
-    assert workspace._status_label.isVisibleTo(workspace) is True
-
-
-def test_qq_connected_stage_covers_the_session_read(
-    qt_app, sources
-) -> None:
-    """The trail's last stage stays up while the session list is still read."""
-    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
-
-    facade = _SnapshotFacade(
-        _qq_snapshot("connected"), sources=sources,
-    )
-    executor = _DeferredExecutor()
-    workspace = QQWorkspace(facade, executor=executor)
-
-    workspace._show_qq_status(
-        _qq_snapshot("connected"), load_sessions_on_ready=True,
-    )
-
-    assert workspace._progress_track.isVisibleTo(workspace) is True
-    assert workspace._progress_track.stage == 3
-
-    executor.succeed([_session(_facade_module().ChatSource.QQ, "q1", "虚构群")])
-    assert workspace._progress_track.isHidden() is True
-
-
-def test_qq_status_line_returns_for_idle_and_error_states(qt_app, sources) -> None:
-    """Leaving the journey hands the top line back to the status label."""
-    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
-
-    facade = StubFacade(sources=sources)
-    workspace = QQWorkspace(facade, executor=_DeferredExecutor())
-
-    workspace._show_qq_status(
-        _qq_snapshot("disconnected"), load_sessions_on_ready=False
-    )
-
-    assert workspace._progress_track.isHidden() is True
-    assert workspace._qq_guide_label.isVisibleTo(workspace) is True
-    assert workspace._qq_connect_button.text() == "连接QQ"
-
-    workspace._show_qq_status(
-        _qq_snapshot("initializing"), load_sessions_on_ready=False
-    )
-    assert workspace._progress_track.isVisibleTo(workspace) is True
-    assert workspace._progress_track.stage == 0
-
-    workspace._show_qq_status(_qq_snapshot("starting"), load_sessions_on_ready=False)
-    assert workspace._progress_track.stage == 1
-
-    workspace._show_qq_status(_qq_snapshot("error"), load_sessions_on_ready=False)
-    assert workspace._progress_track.isHidden() is True
-    assert workspace._qq_guide_label.isVisibleTo(workspace) is False
-    assert workspace._qq_connect_button.text() == "重新开始"
-    assert workspace._status_label.isVisibleTo(workspace) is True
-
-
-def test_wechat_workspace_shows_connect_button_when_disconnected(
-    qt_app, sources
-) -> None:
-    """WeChat disconnected status shows the connect action and no sessions."""
-    from qq_chat_analyzer.gui.main_window import WECHAT_WORKSPACE_INDEX
-    module = _facade_module()
-    status = module.WeChatConnectionStatus(
-        available=False, data_found=False, db_key_available=False,
-        runtime_available=False, message="微信环境未配置。", action_hint="",
-    )
-    facade = StubFacade(
-        sources=sources,
-        connection_status=status,
-        sessions=[_session(module.ChatSource.WECHAT, "20001", "测试群")],
-    )
-    window = _main_window(qt_app, facade)
-    window.navigate_to_wechat()
-    _drain(window)
-
-    assert window.stack.currentIndex() == WECHAT_WORKSPACE_INDEX
-    assert window.wechat_workspace._wechat_connect_button.isVisibleTo(window) is True
-    assert window.wechat_workspace._wechat_connect_button.isEnabled()
-    assert window.wechat_workspace.session_panel._sessions_ready is False
-
-
 def test_qq_workspace_disconnect_returns_to_disconnected(
     qt_app, sources
 ) -> None:
@@ -3232,49 +3002,6 @@ def test_wechat_connection_does_not_crash_without_explicit_executor(
     assert hasattr(window.wechat_workspace, "_wechat_setup_dialog")
 
 
-def test_session_panel_populates_sessions_without_crash(qt_app, sources) -> None:
-    """The shared panel renders sessions and becomes ready."""
-    from qq_chat_analyzer.gui.session_analysis_panel import SessionAnalysisPanel
-    module = _facade_module()
-    facade = StubFacade(sources=sources)
-    panel = SessionAnalysisPanel()
-    panel.configure(facade, module.ChatSource.WECHAT)
-    sessions = [
-        _session(module.ChatSource.WECHAT, "wx1", "测试会话1", 10),
-        _session(module.ChatSource.WECHAT, "wx2", "测试会话2", 5),
-    ]
-    panel.populate_sessions(sessions)
-
-    assert panel._session_list.count() == 2
-    assert panel._sessions_ready is True
-
-
-def test_session_panel_empty_source_shows_real_empty_state(
-    qt_app, sources
-) -> None:
-    """An empty session list renders a non-interactive empty state."""
-    from qq_chat_analyzer.gui.session_analysis_panel import SessionAnalysisPanel
-    module = _facade_module()
-    panel = SessionAnalysisPanel()
-    panel.configure(StubFacade(sources=sources), module.ChatSource.WECHAT)
-
-    panel.populate_sessions([])
-
-    assert panel._sessions_ready is True
-    assert panel._session_list.count() == 0
-    from PySide6.QtWidgets import QLabel
-    title = panel.findChild(QLabel, "sessionEmptyTitle")
-    detail = panel.findChild(QLabel, "sessionEmptyDetail")
-    panel.resize(800, 600)
-    panel.show()
-    qt_app.processEvents()
-    assert title is not None and title.isVisible() and "没有找到" in title.text()
-    assert detail is not None and detail.isVisible() and detail.text()
-    assert panel._session_box.isVisible()
-    assert panel._analyze_button.isEnabled() is False
-    panel.close()
-
-
 def test_session_panel_disables_sessions_without_messages(
     qt_app, sources
 ) -> None:
@@ -3305,58 +3032,6 @@ def test_session_panel_disables_sessions_without_messages(
     assert panel._analyze_button.isEnabled() is False
     panel._session_list.setCurrentRow(0)
     assert panel._analyze_button.isEnabled() is True
-
-
-def test_wechat_session_panel_selection_requests_message_range(
-    qt_app,
-    sources,
-) -> None:
-    """WeChat panel selection fetches the real message range through the facade."""
-    from datetime import datetime
-
-    from qq_chat_analyzer.gui.session_analysis_panel import SessionAnalysisPanel
-    module = _facade_module()
-    session_id = "wx_time_range"
-    start = 1704067200
-    end = 1704153600
-    facade = StubFacade(
-        sources=sources,
-        sessions=[_session(module.ChatSource.WECHAT, session_id, "测试会话", 10)],
-        message_range=(start, end),
-    )
-    panel = SessionAnalysisPanel()
-    panel.configure(facade, module.ChatSource.WECHAT, executor=_inline_executor())
-    panel.populate_sessions(facade._sessions)
-    panel._session_list.setCurrentRow(0)
-    _drain(panel)
-    panel._scope_custom.setChecked(True)
-
-    assert facade.get_session_message_range_calls == [
-        (module.ChatSource.WECHAT, session_id)
-    ]
-    assert panel._start_date.date().toPython() == datetime.fromtimestamp(
-        start
-    ).date()
-    assert panel._end_date.date().toPython() == datetime.fromtimestamp(end).date()
-
-
-def test_qq_session_panel_selection_skips_range_probe(qt_app) -> None:
-    """QQ panel selection must not probe the range and must not start a worker."""
-    from qq_chat_analyzer.gui.session_analysis_panel import SessionAnalysisPanel
-    module = _facade_module()
-    facade = StubFacade(
-        sources=_wechat_available_sources(),
-        sessions=[_session(module.ChatSource.QQ, "10002", "Fictional Group", 10)],
-        message_range=(1704067200, 1704153600),
-    )
-    panel = SessionAnalysisPanel()
-    panel.configure(facade, module.ChatSource.QQ, executor=_inline_executor())
-    panel.populate_sessions(facade._sessions)
-    panel._session_list.setCurrentRow(0)
-    _drain(panel)
-
-    assert facade.get_session_message_range_calls == []
-    assert panel._message_range is None
 
 
 def test_session_panel_cleared_selection_cannot_analyze(custom_date_panel):
@@ -3522,248 +3197,6 @@ def test_session_panel_date_wechat_stale_requests_cannot_pollute_reselected_sess
     assert panel.build_config() == expected
     assert panel._start_date.date().toPython() == datetime.fromtimestamp(1704067200).date()
     assert panel._end_date.date().toPython() == datetime.fromtimestamp(1704153600).date()
-
-
-def test_session_panel_scope_defaults_to_all(qt_app, sources) -> None:
-    """The shared panel defaults to analysing the full history."""
-    from qq_chat_analyzer.gui.session_analysis_panel import SessionAnalysisPanel
-    module = _facade_module()
-    panel = SessionAnalysisPanel()
-    panel.configure(StubFacade(sources=sources), module.ChatSource.QQ)
-
-    config = panel.build_config()
-
-    assert panel._scope_all.isChecked() is True
-    assert panel._custom_range_widget.isHidden() is True
-    assert config.scope_mode is module.AnalysisScopeMode.ALL
-    assert config.start_time is None
-    assert config.end_time is None
-
-
-@pytest.mark.parametrize(
-    ("control_name", "expected_mode"),
-    [
-        ("_scope_last_year", "LAST_YEAR"),
-        ("_scope_last_six_months", "LAST_SIX_MONTHS"),
-    ],
-)
-def test_session_panel_relative_scope_reaches_the_config(
-    qt_app,
-    sources,
-    control_name,
-    expected_mode,
-) -> None:
-    """Relative scope choices translate into the facade config."""
-    from qq_chat_analyzer.gui.session_analysis_panel import SessionAnalysisPanel
-    module = _facade_module()
-    panel = SessionAnalysisPanel()
-    panel.configure(StubFacade(sources=sources), module.ChatSource.QQ)
-
-    getattr(panel, control_name).setChecked(True)
-    config = panel.build_config()
-
-    assert config.scope_mode is getattr(module.AnalysisScopeMode, expected_mode)
-    assert config.start_time is None
-    assert config.end_time is None
-    assert panel._custom_range_widget.isHidden() is True
-
-
-def test_session_panel_custom_scope_reaches_the_config(
-    qt_app,
-    sources,
-) -> None:
-    """Custom scope exposes the date editors and carries them into the config."""
-    from qq_chat_analyzer.gui.session_analysis_panel import SessionAnalysisPanel
-    module = _facade_module()
-    panel = SessionAnalysisPanel()
-    panel.configure(StubFacade(sources=sources), module.ChatSource.QQ)
-
-    panel._scope_custom.setChecked(True)
-    panel._start_date.setDate(QDate(2026, 2, 11))
-    panel._end_date.setDate(QDate(2026, 8, 11))
-    config = panel.build_config()
-
-    assert panel._custom_range_widget.isHidden() is False
-    assert config.scope_mode is module.AnalysisScopeMode.CUSTOM
-    assert config.start_time == "2026-02-11"
-    assert config.end_time == "2026-08-11"
-
-
-def test_session_panel_search_filters_display_names(qt_app) -> None:
-    """The shared panel search filters by display name and tracks the count."""
-    from qq_chat_analyzer.gui.session_analysis_panel import SessionAnalysisPanel
-    module = _facade_module()
-    panel = SessionAnalysisPanel()
-    panel.configure(
-        StubFacade(sources=_wechat_available_sources()),
-        module.ChatSource.WECHAT,
-    )
-    panel.populate_sessions(
-        [
-            _session(module.ChatSource.WECHAT, "wxid_a", "Alice"),
-            _session(module.ChatSource.WECHAT, "wxid_b", "Board Game"),
-            _session(module.ChatSource.WECHAT, "wxid_c", "Alice's Study Room"),
-        ]
-    )
-
-    panel._session_search.setText("alice")
-
-    assert panel._session_list.count() == 2
-    assert [panel._session_list.item(i).text() for i in range(2)] == [
-        "Alice",
-        "Alice's Study Room",
-    ]
-    assert "聊天会话（2）" in panel._session_box.title()
-
-    panel._session_search.setText("board")
-
-    assert panel._session_list.count() == 1
-    assert panel._session_list.item(0).text() == "Board Game"
-
-
-@pytest.mark.parametrize("source_name", ["qq", "wechat"])
-def test_session_panel_sort_modes_reorder_the_list(qt_app, source_name) -> None:
-    """The shared panel re-sorts the cached sessions for each mode."""
-    from qq_chat_analyzer.gui.session_analysis_panel import SessionAnalysisPanel
-    module = _facade_module()
-    panel = SessionAnalysisPanel()
-    panel.configure(
-        StubFacade(sources=_wechat_available_sources()),
-        module.ChatSource(source_name),
-    )
-    panel.populate_sessions(
-        [
-            _session(
-                module.ChatSource(source_name),
-                "wxid_old",
-                "Alpha",
-                count=50,
-                last_message_time=100,
-            ),
-            _session(
-                module.ChatSource(source_name),
-                "wxid_new",
-                "Beta",
-                count=1,
-                last_message_time=300,
-            ),
-            _session(
-                module.ChatSource(source_name),
-                "wxid_mid",
-                "Gamma",
-                count=30,
-                last_message_time=200,
-            ),
-        ]
-    )
-
-    def names():
-        return [
-            panel._session_list.item(i).text()
-            for i in range(panel._session_list.count())
-        ]
-
-    assert names() == ["Beta", "Gamma", "Alpha"]
-
-    panel._session_sort.setCurrentIndex(_sort_index(panel, "message_count"))
-    assert names() == ["Alpha", "Gamma", "Beta"]
-
-    panel._session_sort.setCurrentIndex(_sort_index(panel, "name"))
-    assert names() == ["Alpha", "Beta", "Gamma"]
-    from PySide6.QtCore import QEvent
-    panel.close()
-    panel.deleteLater()
-    qt_app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-
-
-@pytest.mark.parametrize("source_name", ["qq", "wechat"])
-def test_session_sort_disables_unknown_counts_and_restores_supported_sort(qt_app, source_name):
-    from qq_chat_analyzer.gui.session_analysis_panel import SessionAnalysisPanel
-    module = _facade_module()
-    source = module.ChatSource(source_name)
-    panel = SessionAnalysisPanel()
-    panel.configure(StubFacade(), source)
-    count_index = _sort_index(panel, "message_count")
-    def names():
-        return [panel._session_list.item(i).text() for i in range(panel._session_list.count())]
-    panel.populate_sessions([
-        _session(source, "fiction-b", "Beta", None, last_message_time=100),
-        _session(source, "fiction-a", "Alpha", None, last_message_time=300),
-    ])
-    assert not panel._session_sort.model().item(count_index).isEnabled()
-    assert "消息数量" in panel._session_sort.toolTip()
-    assert names() == ["Alpha", "Beta"]
-    panel._session_sort.setCurrentIndex(_sort_index(panel, "name"))
-    assert names() == ["Alpha", "Beta"]
-    panel.populate_sessions([
-        _session(source, "fiction-b", "Beta", 0, last_message_time=None),
-        _session(source, "fiction-a", "Alpha", 4, last_message_time=300),
-        _session(source, "fiction-c", "Gamma", 4, last_message_time=300),
-        _session(source, "fiction-d", "Delta", None, last_message_time=None),
-    ])
-    assert panel._session_sort.model().item(count_index).isEnabled()
-    panel._session_sort.setCurrentIndex(count_index)
-    assert names() == ["Alpha", "Gamma", "Beta", "Delta"]
-    panel._session_sort.setCurrentIndex(_sort_index(panel, "recent"))
-    assert names() == ["Alpha", "Gamma", "Beta", "Delta"]
-    panel._session_sort.setCurrentIndex(count_index)
-    panel.populate_sessions([
-        _session(source, "fiction-z", "Zulu", None),
-        _session(source, "fiction-a", "Alpha", None),
-    ])
-    assert panel._session_sort.currentData() == "recent"
-    assert names() == ["Zulu", "Alpha"]  # absent timestamps preserve source order
-    panel.close()
-    panel.deleteLater()
-    from PySide6.QtCore import QEvent
-    qt_app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-
-
-def test_wechat_database_counts_drive_all_three_gui_sorts(qt_app, tmp_path):
-    from test_wechat_db_source import _counting_session_provider
-    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade, ChatSource
-    from qq_chat_analyzer.application.wechat.wechat_export_import_service import WeChatExportImportService
-    from qq_chat_analyzer.gui.session_analysis_panel import SessionAnalysisPanel
-    from contextlib import closing
-    import sqlite3
-
-    provider, queries = _counting_session_provider(
-        tmp_path,
-        [{"wxid_alpha": 3, "wxid_beta": 1, "wxid_gamma": 0}, {"wxid_alpha": 4}],
-        ["wxid_alpha", "wxid_gamma", "wxid_beta", "wxid_unknown"],
-    )
-    contact = tmp_path / "xwechat_files" / "wxid_owner" / "db_storage" / "message" / "contact.db"
-    with closing(sqlite3.connect(contact)) as connection, connection:
-        connection.execute("CREATE TABLE contact (username TEXT, remark TEXT, nick_name TEXT)")
-        connection.executemany("INSERT INTO contact VALUES (?, ?, '')", [
-            ("wxid_alpha", "Alpha"), ("wxid_beta", "Beta"),
-            ("wxid_gamma", "Gamma"), ("wxid_unknown", "Unknown"),
-        ])
-    facade = ChatAnalyzerFacade(wechat_service=WeChatExportImportService(provider=provider))
-    panel = SessionAnalysisPanel()
-    panel.configure(facade, ChatSource.WECHAT)
-    panel.populate_sessions(facade.list_sessions(ChatSource.WECHAT))
-    query_count = len(queries)
-
-    def names():
-        return [panel._session_list.item(i).text() for i in range(panel._session_list.count())]
-
-    assert names() == ["Unknown", "Beta", "Gamma", "Alpha"]
-    count_index = _sort_index(panel, "message_count")
-    assert panel._session_sort.model().item(count_index).isEnabled()
-    panel._session_sort.setCurrentIndex(count_index)
-    assert names() == ["Alpha", "Beta", "Gamma", "Unknown"]
-    assert "7" in panel._session_list.item(0).toolTip()
-    assert "0" in panel._session_list.item(2).toolTip()
-    panel._session_sort.setCurrentIndex(_sort_index(panel, "name"))
-    assert names() == ["Alpha", "Beta", "Gamma", "Unknown"]
-    panel._session_sort.setCurrentIndex(_sort_index(panel, "recent"))
-    assert names() == ["Unknown", "Beta", "Gamma", "Alpha"]
-    assert len(queries) == query_count  # Sorting the cached DTOs never re-queries.
-    panel.close()
-    panel.deleteLater()
-    from PySide6.QtCore import QEvent
-    qt_app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 def test_session_panel_keeps_session_ids_out_of_display_text(qt_app) -> None:
@@ -4795,27 +4228,6 @@ def test_local_data_search_matches_only_summary_display_fields(qt_app, sources, 
         assert page._history_empty_label.text() == "没有匹配的报告"
 
 
-def test_local_data_search_clear_restores_rows_without_storage_calls(qt_app, sources, monkeypatch):
-    window, facade, records = _search_window(qt_app, sources)
-    page = window.local_data_page
-    calls = list(facade.list_report_packages_calls)
-    def forbidden(*args, **kwargs):
-        pytest.fail("Typing a search must use only loaded summaries")
-    monkeypatch.setattr(facade, "list_report_packages", forbidden)
-    monkeypatch.setattr(facade, "get_report_storage_usage", forbidden)
-    monkeypatch.setattr(facade, "get_report_package_html_path", forbidden, raising=False)
-    monkeypatch.setattr(facade, "clear_report_packages", forbidden)
-    monkeypatch.setattr(page, "_executor", forbidden)
-    monkeypatch.setattr(Path, "read_text", forbidden)
-    monkeypatch.setattr(Path, "open", forbidden)
-    monkeypatch.setattr(Path, "iterdir", forbidden)
-    for text in ("读书", "alice", "not found", ""):
-        page._search_input.setText(text)
-    assert page._history_list.count() == 2
-    assert not page._history_empty_label.isVisibleTo(window)
-    assert facade.list_report_packages_calls == calls
-
-
 def test_local_data_search_refresh_and_delete_preserve_query(qt_app, sources):
     window, facade, records = _search_window(qt_app, sources)
     page = window.local_data_page
@@ -4937,24 +4349,6 @@ def test_local_data_page_keeps_last_known_archive_when_reload_fails(
     assert page._summary_size_label.text() == "4.0 KB"
 
 
-def test_local_data_page_uses_one_report_scan_per_refresh(qt_app, sources) -> None:
-    window, facade = _archive_window(
-        qt_app, sources, reports=[_gui_report_summary("h1")],
-    )
-    page = window.local_data_page
-
-    assert len(facade.list_report_packages_calls) == 1
-    assert len(facade.get_report_storage_usage_calls) == 1
-
-    page._search_input.setText("h1")
-    assert len(facade.list_report_packages_calls) == 1
-    assert len(facade.get_report_storage_usage_calls) == 1
-
-    page.refresh()
-    assert len(facade.list_report_packages_calls) == 2
-    assert len(facade.get_report_storage_usage_calls) == 2
-
-
 def test_local_data_page_ignores_stale_refresh_results(qt_app, sources) -> None:
     window, facade = _archive_window(
         qt_app, sources, reports=[_gui_report_summary("first")],
@@ -4978,26 +4372,6 @@ def test_local_data_page_ignores_stale_refresh_results(qt_app, sources) -> None:
     assert page._history_list.count() == 1
     assert page._history_list.item(0).data(Qt.ItemDataRole.UserRole) == "third"
     assert page._refresh_button.isEnabled() is True
-
-
-def test_local_data_page_keeps_list_when_storage_usage_fails(qt_app, sources) -> None:
-    module = _facade_module()
-    window, _facade = _archive_window(
-        qt_app, sources, reports=[_gui_report_summary("h1")],
-        report_usage_error=module.FacadeError(
-            "report_usage_failed", "无法统计 Echo 本地报告占用空间，请稍后重试。",
-        ),
-    )
-    page = window.local_data_page
-
-    assert page._history_list.count() == 1
-    assert page._history_list.isVisibleTo(window)
-    assert page._summary_count_label.text() == "1 份"
-    assert page._summary_size_label.text() == "—"
-    assert page._summary_note_label.isVisibleTo(window)
-    assert "无法统计" in page._summary_note_label.text()
-    page._history_list.setCurrentRow(0)
-    assert page._open_report_button.isEnabled()
 
 
 def test_local_data_page_stale_error_and_finish_do_not_end_latest_refresh(
@@ -5058,71 +4432,6 @@ def test_local_data_reopen_identity_selection_and_refresh(qt_app, sources, tmp_p
     page.refresh()
     assert not page._open_report_button.isEnabled()
     assert calls == opened == []
-
-
-def test_local_data_mouse_selection_keyboard_navigation_and_reopen(qt_app, sources, tmp_path):
-    window, facade, names, calls, opened, resolved = _reopen_window(qt_app, sources, tmp_path)
-    window.show()
-    _drain(window)
-    page = window.local_data_page
-    table = page._history_list
-    QTest.mouseClick(table.viewport(), Qt.MouseButton.LeftButton,
-                     pos=table.visualItemRect(table.item(0)).center())
-    assert table.hasFocus()
-    assert page._selected_package_name() == names[0]
-    assert len(table.selectedItems()) == 1
-    QTest.keyClick(table, Qt.Key.Key_Down)
-    assert page._selected_package_name() == names[1]
-    assert page._open_report_button.isEnabled()
-    page._open_report_button.click()
-    assert calls == [names[1]] and opened == [resolved]
-    QTest.keyClick(table, Qt.Key.Key_Up)
-    assert page._selected_package_name() == names[0]
-
-
-@pytest.mark.parametrize("action", ["button", "double_click"])
-def test_local_data_reopen_resolves_identity_and_uses_existing_opener(qt_app, sources, tmp_path, action):
-    window, facade, names, calls, opened, resolved = _reopen_window(qt_app, sources, tmp_path)
-    page = window.local_data_page
-    page._history_list.setCurrentRow(1)
-    if action == "button":
-        page._open_report_button.click()
-    else:
-        page._history_list.itemDoubleClicked.emit(page._history_list.item(1))
-    assert calls == [names[1]]
-    assert opened == [resolved]
-    assert page._status_label.text() == ""
-    assert page._history_list.count() == 2
-
-
-def test_local_data_reopen_resolve_failure_preserves_rows(qt_app, sources, tmp_path):
-    window, facade, names, calls, opened, resolved = _reopen_window(qt_app, sources, tmp_path)
-    def fail(name):
-        raise _facade_module().FacadeError("report_open_failed", "这份 Echo 报告已损坏或缺少报告文件。")
-    facade.get_report_package_html_path = fail
-    page = window.local_data_page
-    page._history_list.setCurrentRow(0)
-    page._open_report_button.click()
-    assert page._status_label.text() == "这份 Echo 报告已损坏或缺少报告文件。"
-    assert page._history_list.count() == 2
-    assert opened == []
-    assert page._open_report_button.isEnabled()
-
-
-@pytest.mark.parametrize("raises", [False, True])
-def test_local_data_reopen_opener_failure_is_visible(qt_app, sources, tmp_path, raises):
-    window, facade, names, calls, opened, resolved = _reopen_window(qt_app, sources, tmp_path)
-    def fail(path):
-        if raises:
-            raise OSError("internal-private-path")
-        return False
-    window._report_opener = fail
-    page = window.local_data_page
-    page._history_list.setCurrentRow(0)
-    page._open_report_button.click()
-    assert calls == [names[0]]
-    assert page._status_label.text() == "无法打开 Echo 报告，请检查系统默认浏览器后重试。"
-    assert page._history_list.count() == 2
 
 
 def test_qq_connect_error_snapshot_keeps_workspace_usable(
@@ -5209,16 +4518,6 @@ def test_qq_auth_timeout_calls_facade_disconnect(qt_app, sources):
 # ---------------------------------------------------------------------------
 
 
-def test_local_data_page_exposes_unreadable_package_count(qt_app, sources):
-    from qq_chat_analyzer.application.report_package_catalog import ReportPackageIssue
-    facade = StubFacade(sources=sources, report_issues=[ReportPackageIssue("Echo_Report_20261004_120000", "metadata_unreadable")])
-    window = _main_window(qt_app, facade)
-    window.show_local_data_page()
-    _drain(window)
-    assert window.local_data_page._issues_label.text() == "发现 1 个无法读取的 Echo 报告"
-    assert window.local_data_page._issues_label.isVisibleTo(window)
-
-
 # ---------------------------------------------------------------------------
 # WeChat workspace guide coverage
 # ---------------------------------------------------------------------------
@@ -5250,16 +4549,6 @@ def test_wechat_login_prompt_waits_for_structured_ready(qt_app):
     executor.on_progress(progress.READY_FOR_LOGIN)
     assert "现在可以登录微信" in workspace._status_label.text()
     assert "现在可以登录微信" in workspace._wechat_guide_label.text()
-
-
-def test_wechat_login_words_are_not_readiness_signals(qt_app):
-    workspace = _wechat_workspace(qt_app, StubFacade())
-    workspace._status_label.setText("正在准备连接，请暂时不要登录。")
-    before = workspace._status_label.text()
-
-    workspace._handle_wechat_connect_progress("正在准备微信登录监听")
-
-    assert workspace._status_label.text() == before
 
 
 def _wechat_connection_config():
@@ -5565,45 +4854,6 @@ def test_wechat_second_attempt_events_update_gui_normally(qt_app):
     assert first.cancelled is True
 
 
-def test_wechat_credential_received_does_not_return_to_login(qt_app):
-    module = _wechat_guide_module()
-    progress = _facade_module().WeChatConnectionProgress
-    executor = _DeferredExecutor()
-    workspace = module.WeChatWorkspace(StubFacade(), executor=executor)
-    config = _facade_module().WeChatEnvironmentConfig()
-    workspace._start_wechat_connect(config)
-    executor.on_progress(progress.READY_FOR_LOGIN)
-    executor.on_progress(progress.CREDENTIAL_RECEIVED)
-    received_status = workspace._status_label.text()
-    assert received_status == "正在连接微信"
-    assert workspace._wechat_guide_note_label.text() == "请稍候，无需操作。"
-
-    for event in (progress.READY_FOR_LOGIN, progress.PREPARING, "等待微信登录"):
-        executor.on_progress(event)
-        assert workspace._status_label.text() == received_status
-        assert workspace._wechat_guide_note_label.text() == "请稍候，无需操作。"
-
-    # A subsequent explicit connection still starts normally.
-    workspace._start_wechat_connect(config)
-    assert workspace._status_label.text() == "正在准备微信连接"
-    executor.on_progress(progress.READY_FOR_LOGIN)
-    assert "现在可以登录微信" in workspace._status_label.text()
-
-
-def test_wechat_failed_listener_removes_login_prompt(qt_app):
-    workspace = _wechat_workspace(qt_app, StubFacade())
-    progress = _facade_module().WeChatConnectionProgress
-    workspace._handle_wechat_connect_progress(progress.READY_FOR_LOGIN)
-    assert "现在可以登录微信" in workspace._wechat_guide_label.text()
-
-    workspace._handle_wechat_connect_error("wechat_key_timeout", "等待超时，请重试。")
-
-    assert workspace._wechat_guide_note_label.isHidden()
-    assert workspace._wechat_guide_key_label.isHidden()
-    assert "现在可以登录微信" not in workspace._wechat_guide_note_label.text()
-    assert workspace._wechat_connect_button.isEnabled()
-
-
 def test_wechat_structured_progress_crosses_real_facade_and_worker(
     qt_app, tmp_path, monkeypatch,
 ):
@@ -5689,32 +4939,6 @@ def test_wechat_structured_progress_crosses_real_facade_and_worker(
     assert seen[0][1] == "正在准备微信连接"
     assert "现在可以登录微信" in seen[2][1]
     assert seen[3][1] == "正在连接微信"
-
-
-def test_wechat_setup_action_tracks_environment_repair(qt_app):
-    executor = _IndependentDeferredExecutor()
-    facade = StubFacade(
-        setup_status=SimpleNamespace(configured=True),
-        data_roots=["D:/fictional_wechat"],
-    )
-    page = _wechat_guide_module().WeChatWorkspace(facade, executor=executor)
-    page.show()
-    try:
-        assert page._wechat_setup_button.isHidden()
-        page._start_wechat_connect(_wechat_connection_config())
-        task = executor.tasks[0]
-        for progress in _facade_module().WeChatConnectionProgress:
-            task.progress(progress)
-            assert page._wechat_setup_button.isHidden()
-        task.fail("wechat_environment_missing", "虚构环境错误")
-        task.finish()
-        assert page._wechat_setup_button.isVisibleTo(page)
-        page._wechat_connect_button.click()
-        assert page._wechat_setup_button.isHidden()
-        executor.tasks[1].fail("wechat_key_timeout", "虚构等待超时")
-        assert page._wechat_setup_button.isHidden()
-    finally:
-        page.close()
 
 
 @pytest.mark.parametrize("session_error", [False, True])

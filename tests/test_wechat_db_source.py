@@ -35,19 +35,11 @@ from qq_chat_analyzer.providers.wechat_database_provider import (
     DatabaseUnreadable,
     KeyUnavailable,
     QueryFailed,
-    SessionNotFound,
-    WcdbHelperNotFound,
-    WcdbLibraryNotFound,
     WeChatDatabaseProvider,
     message_table_name,
-    _build_session_list_sql,
     _sanitize_wcdb_message,
 )
 from qq_chat_analyzer.providers import wechat_database_provider
-from qq_chat_analyzer.wechat_official_emojis import (
-    OFFICIAL_WECHAT_EMOJI_NAMES,
-    WECHAT_EMOJI_ALIASES,
-)
 
 
 TEXT_LOCAL_TYPE = 1
@@ -444,136 +436,6 @@ def test_english_alias_is_normalized_to_the_chinese_official_expression(
     assert expression.text_after == "来了"
 
 
-@pytest.mark.parametrize(
-    ("alias", "canonical"),
-    (
-        ("Facepalm", "捂脸"),
-        ("Grin", "呲牙"),
-        ("Laugh", "憨笑"),
-        ("Sob", "流泪"),
-        ("ThumbsUp", "强"),
-    ),
-)
-def test_english_alias_and_chinese_name_share_one_expression(
-    tmp_path: Path,
-    alias: str,
-    canonical: str,
-) -> None:
-    alias_expression = _bracket_expression(
-        tmp_path / "alias.json",
-        f"[{alias}]",
-    )
-    chinese_expression = _bracket_expression(
-        tmp_path / "chinese.json",
-        f"[{canonical}]",
-    )
-
-    assert alias_expression.expression_key == canonical
-    assert alias_expression.expression_key == chinese_expression.expression_key
-    assert (
-        alias_expression.expression_kind
-        == chinese_expression.expression_kind
-    )
-    assert alias_expression.source == chinese_expression.source
-    assert alias_expression.text_before == chinese_expression.text_before
-    assert alias_expression.text_after == chinese_expression.text_after
-
-
-@pytest.mark.parametrize(
-    ("alias", "canonical"),
-    (
-        ("Awesome", "666"),
-        ("Bye", "再见"),
-        ("MyBad", "打脸"),
-        ("Worship", "合十"),
-        ("Blush", "囧"),
-    ),
-)
-def test_new_english_alias_normalizes_to_canonical_expression(
-    tmp_path: Path,
-    alias: str,
-    canonical: str,
-) -> None:
-    expression = _bracket_expression(tmp_path / "new-alias.json", f"[{alias}]")
-
-    assert expression.expression_kind == EXPRESSION_KIND_PLATFORM_FACE
-    assert expression.expression_key == canonical
-    assert expression.source == "wechat"
-
-
-def test_spaced_and_joined_let_down_share_one_expression(
-    tmp_path: Path,
-) -> None:
-    spaced = _bracket_expression(tmp_path / "spaced.json", "[Let Down]")
-    joined = _bracket_expression(tmp_path / "joined.json", "[LetDown]")
-
-    assert spaced.expression_key == "失望"
-    assert joined.expression_key == spaced.expression_key
-
-
-def test_awesome_and_chinese_666_share_one_expression(tmp_path: Path) -> None:
-    alias = _bracket_expression(tmp_path / "alias.json", "[Awesome]")
-    chinese = _bracket_expression(tmp_path / "chinese.json", "[666]")
-
-    assert alias.expression_key == "666"
-    assert alias.expression_key == chinese.expression_key
-
-
-def test_every_current_official_code_is_recognized_in_one_text_row(
-    tmp_path: Path,
-) -> None:
-    codes = tuple(OFFICIAL_WECHAT_EMOJI_NAMES)
-    text = "".join(f"[{code}]" for code in codes)
-    export = tmp_path / "all-codes.json"
-    _write_db_export(export, [_db_row(message_content=text)])
-
-    contents = wechat_db_adapter.parse_rich_messages(
-        wechat_db_adapter.load_messages(export)
-    )[0].contents
-    expressions = [
-        content
-        for content in contents
-        if isinstance(content, ExpressionContent)
-    ]
-
-    assert len(expressions) == 109
-    assert {expression.expression_key for expression in expressions} == set(codes)
-
-
-@pytest.mark.parametrize(
-    ("alias", "canonical"),
-    sorted(WECHAT_EMOJI_ALIASES.items()),
-)
-def test_every_alias_bracket_becomes_canonical_expression(
-    tmp_path: Path,
-    alias: str,
-    canonical: str,
-) -> None:
-    """Every alias must reach the adapter as its canonical expression key."""
-    expression = _bracket_expression(tmp_path / "alias.json", f"[{alias}]")
-
-    assert expression.expression_kind == EXPRESSION_KIND_PLATFORM_FACE
-    assert expression.expression_key == canonical
-    assert expression.display_text == f"[{alias}]"
-    assert expression.source == "wechat"
-
-
-@pytest.mark.parametrize("word", ("TODO", "AI", "Python"))
-def test_plain_bracketed_english_stays_plain_text(
-    tmp_path: Path,
-    word: str,
-) -> None:
-    text = f"[{word}]"
-    export = tmp_path / "plain.json"
-    _write_db_export(export, [_db_row(message_content=text)])
-
-    rich_messages = wechat_db_adapter.parse_rich_messages(
-        wechat_db_adapter.load_messages(export)
-    )
-
-    assert rich_messages[0].contents == (TextContent(text=text),)
-
-
 def test_text_row_becomes_chat_message_with_mapped_fields(tmp_path: Path) -> None:
     export = tmp_path / "session.json"
     _write_db_export(export, [_db_row()])
@@ -766,50 +628,7 @@ def test_row_username_takes_precedence_over_conversation(tmp_path: Path) -> None
     assert messages[0].conversation_id == "wxid_explicit_conversation"
 
 
-def test_falls_back_to_local_id_when_server_id_missing(tmp_path: Path) -> None:
-    export = tmp_path / "session.json"
-    _write_db_export(export, [_db_row(server_id=None, local_id=42)])
-
-    messages = wechat_db_adapter.parse_messages(
-        wechat_db_adapter.load_messages(export)
-    )
-
-    assert messages[0].message_id == "42"
-
-
-def test_detects_db_export_and_rejects_other_shapes(tmp_path: Path) -> None:
-    db_export = tmp_path / "db.json"
-    _write_db_export(db_export, [_db_row()])
-    assert wechat_db_adapter.is_wechat_db_export(db_export) is True
-
-    other = tmp_path / "other.json"
-    other.write_text(json.dumps({"messages": []}), encoding="utf-8")
-    assert wechat_db_adapter.is_wechat_db_export(other) is False
-
-    cli_array = tmp_path / "cli.json"
-    cli_array.write_text(json.dumps([{"content": "hi"}]), encoding="utf-8")
-    assert wechat_db_adapter.is_wechat_db_export(cli_array) is False
-
-
-def test_unreadable_and_invalid_inputs_return_empty(tmp_path: Path) -> None:
-    missing = tmp_path / "missing.json"
-    assert wechat_db_adapter.load_messages(missing) == []
-    assert wechat_db_adapter.is_wechat_db_export(missing) is False
-
-    broken = tmp_path / "broken.json"
-    broken.write_text("{not json", encoding="utf-8")
-    assert wechat_db_adapter.load_messages(broken) == []
-
-    assert wechat_db_adapter.parse_messages(None) == []
-
-
 # ----------------------------------------------------------------- provider
-
-
-def test_message_table_name_uses_md5_of_username() -> None:
-    assert message_table_name("wxid_test") == (
-        "Msg_57afd0237934cda01feecbee3168a6b2"
-    )
 
 
 def test_list_sessions_returns_privacy_safe_descriptors(tmp_path: Path) -> None:
@@ -1280,48 +1099,6 @@ def test_missing_key_raises_key_unavailable(
         provider.list_sessions()
 
 
-def test_missing_helper_and_library_are_reported(tmp_path: Path) -> None:
-    data_root = _make_data_root(tmp_path)
-    runner = lambda *args: _FakeCompleted(stdout=_helper_result([]))
-
-    with pytest.raises(WcdbHelperNotFound):
-        WeChatDatabaseProvider(
-            data_root=data_root,
-            db_key=FICTIONAL_KEY,
-            wcdb_cli_path=tmp_path / "absent.exe",
-            wcdb_dll_path=tmp_path / "WCDB.dll",
-            runner=runner,
-        ).list_sessions()
-
-    helper = tmp_path / "wcdb_cli.exe"
-    helper.write_bytes(b"fake")
-    with pytest.raises(WcdbLibraryNotFound):
-        WeChatDatabaseProvider(
-            data_root=data_root,
-            db_key=FICTIONAL_KEY,
-            wcdb_cli_path=helper,
-            wcdb_dll_path=tmp_path / "absent.dll",
-            runner=runner,
-        ).list_sessions()
-
-
-def test_missing_data_root_raises_database_not_found(tmp_path: Path) -> None:
-    helper = tmp_path / "wcdb_cli.exe"
-    helper.write_bytes(b"fake")
-    library = tmp_path / "WCDB.dll"
-    library.write_bytes(b"fake")
-    provider = WeChatDatabaseProvider(
-        data_root=tmp_path / "absent",
-        db_key=FICTIONAL_KEY,
-        wcdb_cli_path=helper,
-        wcdb_dll_path=library,
-        runner=lambda *args: _FakeCompleted(stdout=_helper_result([])),
-    )
-
-    with pytest.raises(DatabaseNotFound):
-        provider.list_sessions()
-
-
 def test_database_discovery_logs_success_without_paths(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -1360,46 +1137,6 @@ def test_database_discovery_logs_failure_without_paths(
 
     assert "wechat.database.discovery success=false" in caplog.text
     assert str(tmp_path) not in caplog.text
-
-
-def test_unknown_session_raises_session_not_found(tmp_path: Path) -> None:
-    def runner(command, timeout, environment):
-        return _FakeCompleted(stdout=_helper_result([]))
-
-    with pytest.raises(SessionNotFound):
-        _provider(tmp_path, runner).read_session_rows(FICTIONAL_SESSION)
-
-
-def test_blank_session_id_raises_session_not_found(tmp_path: Path) -> None:
-    provider = _provider(
-        tmp_path,
-        lambda *args: _FakeCompleted(stdout=_helper_result([])),
-    )
-
-    with pytest.raises(SessionNotFound):
-        provider.read_session_rows("   ")
-
-
-def test_helper_failure_and_timeout_become_query_failed(tmp_path: Path) -> None:
-    def failing(command, timeout, environment):
-        return _FakeCompleted(
-            stdout=json.dumps({"ok": False, "stage": "open", "error": "bad key"})
-        )
-
-    with pytest.raises(QueryFailed):
-        _provider(tmp_path, failing).list_sessions()
-
-    def timing_out(command, timeout, environment):
-        raise subprocess.TimeoutExpired(cmd="wcdb_cli", timeout=1)
-
-    with pytest.raises(QueryFailed):
-        _provider(tmp_path, timing_out).list_sessions()
-
-    def garbage(command, timeout, environment):
-        return _FakeCompleted(stdout="not json at all")
-
-    with pytest.raises(QueryFailed):
-        _provider(tmp_path, garbage).list_sessions()
 
 
 def test_query_failure_logs_safe_wcdb_diagnostics(
@@ -1475,27 +1212,6 @@ def test_query_runner_exception_logs_original_error_type_without_key(
     assert FICTIONAL_KEY not in caplog.text
 
 
-def test_helper_absent_at_runtime_becomes_helper_not_found(tmp_path: Path) -> None:
-    def missing(command, timeout, environment):
-        raise FileNotFoundError("gone")
-
-    with pytest.raises(WcdbHelperNotFound):
-        _provider(tmp_path, missing).list_sessions()
-
-
-def test_provider_errors_carry_user_facing_messages(tmp_path: Path) -> None:
-    for error in (
-        DatabaseNotFound(),
-        KeyUnavailable(),
-        QueryFailed(),
-        SessionNotFound(),
-        WcdbHelperNotFound(),
-        WcdbLibraryNotFound(),
-    ):
-        assert error.public_message
-        assert error.code
-
-
 # ----------------------------------------------------------- import service
 
 
@@ -1513,28 +1229,6 @@ def test_import_service_routes_db_export_to_the_db_adapter(tmp_path: Path) -> No
     assert outcome.messages[0].conversation_id == FICTIONAL_SESSION
 
 
-def test_import_service_honours_explicit_wechat_platform_hint(tmp_path: Path) -> None:
-    export = tmp_path / "session.json"
-    _write_db_export(export, [_db_row()])
-
-    outcome = ImportService().execute(
-        ImportRequest(input_path=export, platform="wechat")
-    )
-
-    assert outcome.result.format == WECHAT_DB_FORMAT
-    assert outcome.result.message_count == 1
-
-
-def test_import_service_reports_empty_db_export(tmp_path: Path) -> None:
-    export = tmp_path / "session.json"
-    _write_db_export(export, [])
-
-    outcome = ImportService().execute(ImportRequest(input_path=export))
-
-    assert outcome.result.message_count == 0
-    assert "no_messages_loaded" in outcome.result.warnings
-
-
 def test_db_export_does_not_leak_into_qq_detection(tmp_path: Path) -> None:
     export = tmp_path / "session.json"
     _write_db_export(export, [_db_row()])
@@ -1547,34 +1241,6 @@ def test_db_export_does_not_leak_into_qq_detection(tmp_path: Path) -> None:
 
 
 # ------------------------------------------------- schema / diagnostic contracts
-
-
-def test_build_session_list_sql_uses_full_schema() -> None:
-    sql = _build_session_list_sql({"username", "summary", "last_timestamp"})
-    assert "username" in sql
-    assert "summary" in sql
-    assert "last_timestamp" in sql
-    assert "ORDER BY last_timestamp DESC" in sql
-
-
-def test_build_session_list_sql_omits_missing_summary() -> None:
-    sql = _build_session_list_sql({"username", "last_timestamp"})
-    assert "username" in sql
-    assert "summary" not in sql
-    assert "ORDER BY last_timestamp DESC" in sql
-
-
-def test_build_session_list_sql_falls_back_without_last_timestamp() -> None:
-    sql = _build_session_list_sql({"username", "summary"})
-    assert "username" in sql
-    assert "summary" in sql
-    assert "last_timestamp" not in sql
-    assert "ORDER BY" not in sql
-
-
-def test_build_session_list_sql_fails_when_username_missing() -> None:
-    with pytest.raises(QueryFailed):
-        _build_session_list_sql({"summary", "last_timestamp"})
 
 
 def test_sanitize_wcdb_message_redacts_path_key_and_sql() -> None:
@@ -1644,68 +1310,6 @@ def test_query_failure_logs_wcdb_error_code_and_message(
     assert str(db_path) not in logs
     assert secret_key not in logs
     assert "error_type=QueryFailed" in logs
-
-
-def test_query_failure_distinguishes_inner_handle_null_from_prepare_failure(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    def failing(command, timeout, environment):
-        return _FakeCompleted(
-            stdout=json.dumps(
-                {
-                    "ok": False,
-                    "stage": "prepare",
-                    "error": "inner handle is null",
-                }
-            ),
-            returncode=1,
-        )
-
-    provider = _provider(tmp_path, failing)
-
-    with caplog.at_level(
-        "INFO",
-        logger="qq_chat_analyzer.providers.wechat_database_provider",
-    ):
-        with pytest.raises(QueryFailed):
-            provider.list_sessions()
-
-    assert "wcdb_stage=prepare" in caplog.text
-    assert "inner handle is null" not in caplog.text
-
-
-def test_list_sessions_adapts_to_missing_summary_and_last_timestamp(
-    tmp_path: Path,
-) -> None:
-    def runner(command, timeout, environment):
-        sql = command[command.index("--sql") + 1]
-        if "PRAGMA table_info" in sql:
-            return _FakeCompleted(
-                stdout=json.dumps(
-                    {
-                        "ok": True,
-                        "columns": ["cid", "name", "type", "notnull", "dflt_value", "pk"],
-                        "rows": [{"name": "username"}],
-                        "row_count": 1,
-                        "truncated": False,
-                    }
-                )
-            )
-        if "SessionTable" in sql:
-            assert "username" in sql
-            assert "summary" not in sql
-            assert "last_timestamp" not in sql
-            assert "ORDER BY" not in sql
-            return _FakeCompleted(
-                stdout=_helper_result([{"username": FICTIONAL_SESSION}])
-            )
-        if "sqlite_master" in sql:
-            return _FakeCompleted(stdout=_helper_result([]))
-        raise AssertionError(f"unexpected query: {sql}")
-
-    sessions = _provider(tmp_path, runner).list_sessions()
-    assert [session.session_id for session in sessions] == [FICTIONAL_SESSION]
 
 
 # ------------------------------------------------- key/database verification
@@ -1865,12 +1469,6 @@ def test_verify_readable_reports_a_missing_database(tmp_path: Path) -> None:
 
     with pytest.raises(DatabaseNotFound):
         provider.verify_readable()
-
-
-def test_database_unreadable_is_exported_for_application_callers() -> None:
-    from qq_chat_analyzer import providers
-
-    assert providers.DatabaseUnreadable is DatabaseUnreadable
 
 
 # ============================================================

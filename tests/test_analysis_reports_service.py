@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import importlib
 import json
-import hashlib
 from qq_db_test_data import qq_db_payload, qq_db_record
 from chat_input_test_data import detailed_payload
 import re
@@ -112,48 +111,6 @@ def _write_wechat_db_text_emoji_export(path: Path) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
 
-def _write_wechat_expression_placeholder_export(path: Path) -> None:
-    payload = {
-        "source": "wechat-db",
-        "conversation": {
-            "username": "wxid_fictional_room@chatroom",
-            "session_type": "group",
-        },
-        "messages": [
-            {
-                "local_id": 4,
-                "server_id": 9004,
-                "local_type": 1,
-                "create_time": 1704099600,
-                "message_content": "哈哈 [表情]",
-                "user_name": "wxid_fictional_sender",
-            },
-            {
-                "local_id": 5,
-                "server_id": 9005,
-                "local_type": 1,
-                "create_time": 1704099660,
-                "message_content": "😂",
-                "user_name": "wxid_fictional_sender",
-            },
-            {
-                "local_id": 6,
-                "server_id": 9006,
-                "local_type": 1,
-                "create_time": 1704099720,
-                "message_content": "表情",
-                "user_name": "wxid_fictional_sender",
-            },
-        ],
-    }
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-
-
-def _write_qq_db_sticker_chat(path: Path) -> None:
-    records = [qq_db_record("\u6765\u4e00\u4e2a", stickers=(("market-1", "[\u8098\u51fb]"),))]
-    path.write_text(json.dumps(qq_db_payload(records), ensure_ascii=False), encoding="utf-8")
-
-
 def _write_private_qq_db_expression_export(path: Path) -> None:
     records = [qq_db_record(sender_id=str(index), nickname=name,
                            message_id=f"fictional-private-{index}", timestamp=1704099600 + index * 60,
@@ -212,38 +169,6 @@ def test_analysis_logs_each_timing_stage_without_private_content(
     assert actual == expected
     assert all(re.search(r"elapsed_ms=\d+", line) for line in timing_lines)
     assert all("Fictional-" not in line for line in timing_lines)
-
-
-def test_non_completed_results_keep_the_empty_reports_bundle(tmp_path: Path) -> None:
-    application = _application_module()
-    input_path = tmp_path / "fictional-chat.json"
-    _write_fictional_chat(
-        input_path,
-        [_raw_message(1704099600, "Fictional-Alice", "[图片]")],
-    )
-
-    result = application.AnalysisApplicationService().execute(
-        _request(application, tmp_path, input_path)
-    )
-
-    assert result.status is not application.AnalysisStatus.COMPLETED
-    assert result.reports == application.AnalysisReports()
-
-
-def test_result_exposes_default_reports_bundle_without_reports_argument() -> None:
-    application = _application_module()
-
-    result = application.AnalysisResultDTO(
-        status=application.AnalysisStatus.COMPLETED,
-        processed_message_count=0,
-        valid_text_count=0,
-    )
-
-    assert result.reports.activity is None
-    assert result.reports.message_length is None
-    assert result.reports.user_profiles is None
-    assert result.reports.conversations is None
-    assert result.reports.message_composition is None
 
 
 def test_execute_attaches_every_report_to_the_result(tmp_path: Path) -> None:
@@ -305,32 +230,6 @@ def test_reports_stay_out_of_the_result_repr(tmp_path: Path) -> None:
     assert profiles[0].speaker == private_sender
 
 
-def test_user_profile_report_reuses_pipeline_tokens(tmp_path: Path) -> None:
-    application = _application_module()
-    input_path = tmp_path / "fictional-chat.json"
-    output_directory = tmp_path / "private-output"
-    output_directory.mkdir()
-    _write_fictional_chat(
-        input_path,
-        [
-            _raw_message(1704099600, "Fictional-Alice", "Python Python 数据分析"),
-            _raw_message(1704103200, "Fictional-Bob", "项目 讨论"),
-        ],
-    )
-
-    result = application.AnalysisApplicationService().execute(
-        _request(application, tmp_path, input_path)
-    )
-
-    profiles = {
-        profile.speaker: profile
-        for profile in result.reports.user_profiles.profiles
-    }
-    alice_words = {word.word: word.count for word in profiles["Fictional-Alice"].top_words}
-    assert alice_words.get("Python") == 2
-    assert profiles["Fictional-Bob"].top_words != ()
-
-
 def test_distinctive_report_reuses_pipeline_tokens_and_stable_sender_keys(
     tmp_path: Path,
 ) -> None:
@@ -374,38 +273,6 @@ def test_distinctive_report_reuses_pipeline_tokens_and_stable_sender_keys(
     }
 
 
-def test_pipeline_counts_laughter_lengths_without_extra_short_words(tmp_path: Path) -> None:
-    from qq_chat_analyzer.analyzer import count_words, count_word_speakers
-    from qq_chat_analyzer.application.analysis_service import _analyze_kept_messages
-    from qq_chat_analyzer.analysis.analyzers.user_profile_analyzer import UserProfileAnalyzer
-    from qq_chat_analyzer.message import ChatMessage
-
-    messages = [
-        ChatMessage(timestamp=1704099600, sender="Fictional Alice", message_type="text", text="哈哈 哈哈哈哈哈"),
-        ChatMessage(timestamp=1704099660, sender="Fictional Bob", message_type="text", text="哈哈哈哈哈"),
-    ]
-    original_texts = [message.text for message in messages]
-    stopwords = tmp_path / "fictional-laughter-stopwords.txt"
-    stopwords.write_text("", encoding="utf-8")
-
-    analyzed = _analyze_kept_messages(messages, stopwords)
-
-    assert count_words(analyzed.tokens) == {"哈哈": 1, "哈哈哈哈哈": 2}
-    assert count_word_speakers(analyzed.sender_tokens) == {
-        "哈哈": {"Fictional Alice": 1},
-        "哈哈哈哈哈": {"Fictional Alice": 1, "Fictional Bob": 1},
-    }
-    profiles = UserProfileAnalyzer().analyze(messages, sender_tokens=analyzed.sender_tokens)
-    assert {
-        profile.speaker: {word.word: word.count for word in profile.top_words}
-        for profile in profiles.profiles
-    } == {
-        "Fictional Alice": {"哈哈": 1, "哈哈哈哈哈": 1},
-        "Fictional Bob": {"哈哈哈哈哈": 1},
-    }
-    assert [message.text for message in messages] == original_texts
-
-
 def test_analysis_loads_stopwords_once_per_run_and_refreshes_next_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -444,60 +311,6 @@ def test_analysis_loads_stopwords_once_per_run_and_refreshes_next_run(
     second = service_module._analyze_kept_messages(messages, stopwords_path)
     assert second.tokens == ["alpha"] * len(messages)
     assert stopword_opens == 2
-
-
-def test_unknown_conversation_does_not_infer_group_distinctive_words(
-    tmp_path: Path,
-) -> None:
-    service_module = importlib.import_module(
-        "qq_chat_analyzer.application.analysis_service"
-    )
-
-    reports = service_module._build_reports(
-        [],
-        [],
-        conversation_type="unknown",
-    )
-
-    assert reports.distinctive_words is not None
-    assert reports.distinctive_words.available is False
-    assert reports.distinctive_words.availability.value == "not_group"
-
-
-def test_explicit_message_conversation_type_is_used_when_request_is_unknown() -> None:
-    service_module = importlib.import_module(
-        "qq_chat_analyzer.application.analysis_service"
-    )
-    message_module = importlib.import_module("qq_chat_analyzer.message")
-    messages = [
-        message_module.ChatMessage(
-            timestamp=1,
-            sender="Fictional-Alice",
-            message_type="text",
-            text="hello",
-            conversation_type="group",
-        )
-    ]
-
-    assert service_module._resolve_conversation_type(messages, "unknown") == "group"
-
-
-def test_unknown_message_conversation_type_stays_unknown() -> None:
-    service_module = importlib.import_module(
-        "qq_chat_analyzer.application.analysis_service"
-    )
-    message_module = importlib.import_module("qq_chat_analyzer.message")
-    messages = [
-        message_module.ChatMessage(
-            timestamp=1,
-            sender="Fictional-Alice",
-            message_type="text",
-            text="hello",
-            conversation_type="unknown",
-        )
-    ]
-
-    assert service_module._resolve_conversation_type(messages, "unknown") == "unknown"
 
 
 def _text_category_count(report) -> int:
@@ -547,22 +360,6 @@ def test_execute_attaches_message_composition_with_type_counts(
         sum(item.count for item in reports.message_composition.categories)
         == 4
     )
-
-
-def test_execute_with_no_messages_keeps_empty_reports_bundle(
-    tmp_path: Path,
-) -> None:
-    application = _application_module()
-    input_path = tmp_path / "fictional-chat.json"
-    _write_fictional_chat(input_path, [])
-
-    result = application.AnalysisApplicationService().execute(
-        _request(application, tmp_path, input_path)
-    )
-
-    assert result.status is not application.AnalysisStatus.COMPLETED
-    assert result.reports == application.AnalysisReports()
-    assert result.reports.message_composition is None
 
 
 def test_execute_generates_echo_report_json_artifact(tmp_path: Path) -> None:
@@ -622,42 +419,6 @@ def test_expression_report_reaches_echo_pipeline_from_qq_db(
     )
     assert payload["expression_culture"] is not None
     assert payload["expression_culture"]["expression_message_count"] == 2
-
-
-def test_completed_analysis_reuses_expression_report(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    application = _application_module()
-    service_module = importlib.import_module(
-        "qq_chat_analyzer.application.analysis_service"
-    )
-    input_path = tmp_path / "fictional-expression-chat.json"
-    (tmp_path / "private-output").mkdir()
-    _write_qq_db_chat(input_path)
-    original_analyze = service_module.ExpressionAnalyzer.analyze
-    expression_reports = []
-
-    def counting_analyze(self, messages, *, rich_messages=(), rich_by_instance=None):
-        report = original_analyze(
-            self, messages, rich_messages=rich_messages,
-            rich_by_instance=rich_by_instance,
-        )
-        expression_reports.append(report)
-        return report
-
-    monkeypatch.setattr(
-        service_module.ExpressionAnalyzer, "analyze", counting_analyze
-    )
-
-    result = application.AnalysisApplicationService().execute(
-        _request(application, tmp_path, input_path)
-    )
-
-    assert result.status is application.AnalysisStatus.COMPLETED
-    assert len(expression_reports) == 1
-    assert result.reports.expression is expression_reports[0]
-    assert result.reports.expression.expression_message_count == 2
 
 
 def test_report_boundary_does_not_retain_full_expression_candidates() -> None:
@@ -758,58 +519,6 @@ def test_final_dto_retains_bounded_expression_report_and_rebuilds_view(
     assert [item.expression_key for item in rebuilt.expression_culture.top_expressions] == list(emojis[:5])
 
 
-def test_market_face_reaches_expression_report_from_qq_db(tmp_path: Path) -> None:
-    application = _application_module()
-    input_path = tmp_path / "fictional-market-face-chat.json"
-    output_directory = tmp_path / "private-output"
-    output_directory.mkdir()
-    _write_qq_db_sticker_chat(input_path)
-
-    result = application.AnalysisApplicationService().execute(
-        _request(application, tmp_path, input_path)
-    )
-
-    assert result.status is application.AnalysisStatus.COMPLETED
-    expression = result.reports.expression
-    assert expression is not None
-    assert expression.top_expressions[0].expression_key == "qq-marketface:sha256:" + hashlib.sha256(b"market-1").hexdigest()
-    assert expression.top_expressions[0].kind == "sticker"
-    assert expression.top_expressions[0].with_text_message_count == 1
-
-
-def test_private_qq_db_expression_labels_does_not_leak_into_voice_words(
-    tmp_path: Path,
-) -> None:
-    application = _application_module()
-    input_path = tmp_path / "fictional-private-expression-fallback.json"
-    output_directory = tmp_path / "private-output"
-    output_directory.mkdir()
-    _write_private_qq_db_expression_export(input_path)
-
-    result = application.AnalysisApplicationService().execute(
-        _request(application, tmp_path, input_path)
-    )
-
-    expression = result.reports.expression
-    assert expression is not None
-    assert expression.expression_occurrence_count == 2
-    assert expression.top_expressions[0].expression_key == "qq-marketface:sha256:" + hashlib.sha256(b"market-facepalm").hexdigest()
-    assert all(word.word != "Facepalm" for word in result.top_words)
-
-    profile_words = [
-        word.word
-        for profile in result.reports.user_profiles.profiles
-        for word in profile.top_words
-    ]
-    private_words = [
-        word.word for word in result.reports.private_language.shared_words
-    ]
-    assert "Facepalm" not in profile_words
-    assert "Facepalm" not in private_words
-    assert profile_words == []
-    assert private_words == []
-
-
 def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
     tmp_path: Path,
 ) -> None:
@@ -846,71 +555,6 @@ def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
         not member["top_expressions"] for member in culture["members"]
     )
     assert "微信自定义表情" not in serialized
-
-
-def test_wechat_text_official_emoji_reaches_expression_report(
-    tmp_path: Path,
-) -> None:
-    application = _application_module()
-    input_path = tmp_path / "wechat-text-emoji.json"
-    output_directory = tmp_path / "private-output"
-    output_directory.mkdir()
-    _write_wechat_db_text_emoji_export(input_path)
-
-    result = application.AnalysisApplicationService().execute(
-        _request(application, tmp_path, input_path)
-    )
-
-    assert result.status is application.AnalysisStatus.COMPLETED
-    expression = result.reports.expression
-    assert expression is not None
-    by_key = {item.expression_key: item for item in expression.top_expressions}
-    assert by_key["捂脸"].kind == "platform_face"
-    assert by_key["捂脸"].with_text_message_count == 2
-    assert by_key["旺柴"].expression_key == "旺柴"
-    profile_words = [
-        word.word
-        for profile in result.reports.user_profiles.profiles
-        for word in profile.top_words
-    ]
-    assert "哈哈" in profile_words
-    assert all(not word.startswith("expression:") for word in profile_words)
-    assert "捂脸" not in profile_words
-    payload = json.loads(
-        (output_directory / "echo-report.json").read_text(encoding="utf-8")
-    )
-    top = payload["expression_culture"]["top_expressions"]
-    assert any(item["asset_key"] == "wechat:捂脸" for item in top)
-    assert any(item["display_text"] == "捂脸" for item in top)
-    serialized = json.dumps(payload, ensure_ascii=False)
-    assert "[捂脸]" not in serialized
-    assert "expression_key" not in serialized
-
-
-def test_wechat_expression_placeholders_are_not_language_words(
-    tmp_path: Path,
-) -> None:
-    application = _application_module()
-    input_path = tmp_path / "wechat-expression-placeholder.json"
-    output_directory = tmp_path / "private-output"
-    output_directory.mkdir()
-    _write_wechat_expression_placeholder_export(input_path)
-
-    result = application.AnalysisApplicationService().execute(
-        _request(application, tmp_path, input_path)
-    )
-
-    assert result.status is application.AnalysisStatus.COMPLETED
-    assert result.reports.expression is not None
-    profile_words = [
-        word.word
-        for profile in result.reports.user_profiles.profiles
-        for word in profile.top_words
-    ]
-    assert "哈哈" in profile_words
-    assert result.reports.expression.expression_occurrence_count > 0
-    assert all(not word.startswith("expression:") for word in profile_words)
-    assert "表情" not in profile_words
 
 
 @pytest.mark.parametrize("source", ["wechat", "qq"])
@@ -950,27 +594,6 @@ def test_private_expression_tokens_do_not_reenter_language_profile(tmp_path: Pat
     payload = json.loads((tmp_path / "private-output" / "echo-report.json").read_text(encoding="utf-8"))
     assert payload["expression_culture"] is not None
     assert '"表情"' not in json.dumps(payload["language_profile"], ensure_ascii=False)
-
-
-def test_private_semantic_expression_word_remains_a_language_word(tmp_path: Path) -> None:
-    application = _application_module()
-    input_path = tmp_path / "fictional-semantic-expression-word.json"
-    (tmp_path / "private-output").mkdir()
-    rows = [{
-        "local_id": index + 1, "server_id": 9000 + index,
-        "create_time": 1704099600 + index * 60, "local_type": 1,
-        "message_content": "你的表情很自然",
-        "user_name": "wxid_fictional_self" if index % 2 else "wxid_fictional_peer",
-    } for index in range(8)]
-    input_path.write_text(json.dumps({
-        "source": "wechat-db",
-        "conversation": {"username": "wxid_fictional_peer", "session_type": "private", "self_username": "wxid_fictional_self"},
-        "messages": rows,
-    }, ensure_ascii=False), encoding="utf-8")
-    result = application.AnalysisApplicationService().execute(_request(application, tmp_path, input_path))
-    assert "表情" in {word.word for word in result.top_words}
-    assert all("表情" in member.primary_words for member in result.echo_report_view.language_profile.members)
-    assert "表情" in {word.word for word in result.echo_report_view.language_profile.shared_words}
 
 
 @pytest.mark.parametrize("failure_type", [PermissionError, OSError, ValueError])

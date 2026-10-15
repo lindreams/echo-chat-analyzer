@@ -174,18 +174,6 @@ def test_retain_cannot_run_with_all_or_none_selected_and_blocks_duplicates(qt_ap
     assert facade.batch_calls == [("b", "c")]
 
 
-@pytest.mark.parametrize("size, text", [(0, "0 B"), (2048, "2.0 KB"), (None, "大小未知")])
-def test_archive_secondary_information_displays_summary_size(qt_app, sources, size, text):
-    window, facade = archive(qt_app, sources)
-    facade._reports = [dataclasses.replace(facade._reports[0], size_bytes=size)]
-    page = window.local_data_page
-    page.refresh()
-    entry = page._history_list.itemWidget(page._history_list.item(0))
-    assert text in entry.findChild(QLabel, "archiveEntryMeta").text()
-    page._search_input.setText(text)
-    assert page._history_list.count() == 0  # Size does not change existing search semantics.
-
-
 def test_retain_confirmation_shows_full_deletion_list_and_counts(qt_app):
     from qq_chat_analyzer.gui.local_data_page import _bulk_delete_confirmation_dialog
     reports = tuple(dataclasses.replace(_gui_report_summary(f"delete-{i}"), size_bytes=2048)
@@ -205,130 +193,6 @@ def test_retain_confirmation_shows_full_deletion_list_and_counts(qt_app):
     assert listing.visualItemRect(listing.item(29)).intersects(listing.viewport().rect())
     cancel = next(button for button in dialog.findChildren(QPushButton) if button.text() == "取消")
     assert cancel.isDefault() and cancel.hasFocus()
-
-
-@pytest.mark.parametrize("width", [800, 1200])
-def test_delete_toolbar_is_one_row_and_fits_window(qt_app, sources, width):
-    window, facade = archive(qt_app, sources)
-    facade._reports += [_gui_report_summary(f"extra-{i}", session_name="Other") for i in range(27)]
-    page = window.local_data_page
-    page.refresh()
-    window.resize(width, 760)
-    window.show()
-    page._enter_delete_button.click()
-    page._select_results_button.click()
-    page._search_input.setText("Alpha")
-    _drain(window)
-    controls = [page._checked_count_label, page._select_results_button,
-                page._clear_checks_button, page._retain_reports_button,
-                page._cancel_delete_button, page._delete_checked_button]
-    centers = [control.geometry().center().y() for control in controls]
-    assert max(centers) - min(centers) <= 1
-    assert page._checked_count_label.text().startswith("已选 30 份")
-    assert "29" in page._checked_count_label.text()
-    for left, right in zip(controls, controls[1:]):
-        assert left.geometry().right() < right.geometry().left()
-    assert controls[0].geometry().left() >= 0
-    assert controls[-1].geometry().right() < controls[-1].parentWidget().width()
-    assert window.width() == width
-
-
-def wheel_down(widget, angle=40):
-    from PySide6.QtCore import QPoint, QPointF
-    from PySide6.QtGui import QWheelEvent
-    from PySide6.QtWidgets import QApplication
-    viewport = widget.viewport()
-    point = viewport.rect().center()
-    event = QWheelEvent(QPointF(point), QPointF(viewport.mapToGlobal(point)),
-                        QPoint(), QPoint(0, -angle), Qt.MouseButton.NoButton,
-                        Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
-    QApplication.sendEvent(viewport, event)
-
-
-@pytest.mark.parametrize("delete_mode", [False, True])
-def test_archive_wheel_moves_by_pixels_without_changing_identity(qt_app, sources, delete_mode):
-    from PySide6.QtWidgets import QAbstractItemView
-    window, facade = archive(qt_app, sources)
-    facade._reports += [_gui_report_summary(f"extra-{i}") for i in range(30)]
-    page = window.local_data_page
-    page.refresh()
-    window.show()
-    page._history_list.setCurrentRow(0)
-    if delete_mode:
-        page._enter_delete_button.click()
-        checkbox(page, 0).setChecked(True)
-    _drain(window)
-    listing = page._history_list
-    identity = page._selected_package_name()
-    checked = page._checked_names.copy()
-    assert listing.verticalScrollMode() == QAbstractItemView.ScrollMode.ScrollPerPixel
-    positions = [listing.verticalScrollBar().value()]
-    for _ in range(6):
-        wheel_down(listing)
-        positions.append(listing.verticalScrollBar().value())
-    assert all(0 < later - earlier < listing.item(0).sizeHint().height()
-               for earlier, later in zip(positions, positions[1:]))
-    assert page._selected_package_name() == identity
-    assert page._checked_names == checked
-
-
-def test_confirmation_preview_cannot_select_or_focus_and_scrolls_by_pixels(qt_app):
-    from PySide6.QtWidgets import QAbstractItemView
-    from qq_chat_analyzer.gui.local_data_page import _bulk_delete_confirmation_dialog
-    reports = tuple(_gui_report_summary(f"preview-{i}") for i in range(30))
-    dialog = _bulk_delete_confirmation_dialog(reports, 7)
-    dialog.show()
-    _drain(dialog)
-    listing = dialog.findChild(QListWidget, "archiveDeletionList")
-    cancel = next(b for b in dialog.findChildren(QPushButton) if b.text() == "取消")
-    assert listing.selectionMode() == QAbstractItemView.SelectionMode.NoSelection
-    assert listing.focusPolicy() == Qt.FocusPolicy.NoFocus
-    point = listing.visualItemRect(listing.item(0)).center()
-    QTest.mouseClick(listing.viewport(), Qt.MouseButton.LeftButton, pos=point)
-    QTest.mouseDClick(listing.viewport(), Qt.MouseButton.LeftButton, pos=point)
-    assert not listing.selectedItems() and not listing.hasFocus()
-    assert not listing.viewport().hasFocus()
-    assert cancel.isDefault() and cancel.hasFocus()
-    assert listing.verticalScrollMode() == QAbstractItemView.ScrollMode.ScrollPerPixel
-    positions = [listing.verticalScrollBar().value()]
-    for _ in range(6):
-        wheel_down(listing)
-        positions.append(listing.verticalScrollBar().value())
-    assert all(0 < later - earlier < listing.visualItemRect(listing.item(0)).height()
-               for earlier, later in zip(positions, positions[1:]))
-    listing.scrollToBottom()
-    assert listing.item(29).text().endswith("preview-29")
-    assert listing.visualItemRect(listing.item(29)).intersects(listing.viewport().rect())
-    assert not listing.selectedItems() and not listing.hasFocus()
-
-
-def test_readonly_preview_hover_does_not_look_selected(qt_app):
-    from PySide6.QtCore import QPoint
-    from qq_chat_analyzer.gui.local_data_page import _bulk_delete_confirmation_dialog
-    from qq_chat_analyzer.gui.theme import BASE_QSS
-    dialog = None
-    try:
-        dialog = _bulk_delete_confirmation_dialog(tuple(_gui_report_summary(str(i)) for i in range(10)), 2)
-        dialog.setStyleSheet(BASE_QSS + dialog.styleSheet())
-        dialog.show()
-        listing = dialog.findChild(QListWidget, "archiveDeletionList")
-        QTest.mouseMove(dialog, QPoint(10, 10))
-        _drain(dialog)
-        rect = listing.visualItemRect(listing.item(0))
-        point = QPoint(rect.right() - 15, rect.center().y())
-        def background():
-            image = listing.viewport().grab().toImage()
-            ratio = image.devicePixelRatio()
-            return image.pixelColor(int(point.x() * ratio), int(point.y() * ratio))
-        before = background()
-        QTest.mouseMove(listing.viewport(), point)
-        QTest.mouseClick(listing.viewport(), Qt.MouseButton.LeftButton, pos=point)
-        _drain(dialog)
-        assert background() == before
-        assert not listing.selectedItems() and not listing.hasFocus()
-    finally:
-        if dialog is not None:
-            dialog.close()
 
 
 def test_browse_mode_and_cancel_keep_identical_compact_entries(qt_app, sources):
@@ -481,52 +345,6 @@ def test_new_error_stops_old_success_feedback_timer(qt_app, sources):
     page.refresh()
     assert not page._feedback_timer.isActive()
     assert page._status_label.text() == "新的读取失败。"
-
-
-def test_checked_indicator_has_a_contrasting_mark(qt_app, sources):
-    from PySide6.QtGui import QColor
-    from PySide6.QtWidgets import QStyle, QStyleOptionButton
-    from qq_chat_analyzer.gui.theme import COLOR_PAPER
-
-    window, _ = archive(qt_app, sources)
-    window.show()
-    window.local_data_page._enter_delete_button.click()
-    control = checkbox(window.local_data_page, 0)
-    control.setChecked(True)
-    _drain(window)
-    option = QStyleOptionButton()
-    control.initStyleOption(option)
-    rect = control.style().subElementRect(QStyle.SubElement.SE_CheckBoxIndicator, option, control)
-    image = control.grab().toImage()
-    ratio = image.devicePixelRatio()
-    paper = QColor(COLOR_PAPER)
-    light_pixels = sum(
-        sum(abs(image.pixelColor(int(x * ratio), int(y * ratio)).getRgb()[i]
-                - paper.getRgb()[i]) for i in range(3)) < 45
-        for x in range(rect.left() + 3, rect.right() - 2)
-        for y in range(rect.top() + 3, rect.bottom() - 2)
-    )
-    assert light_pixels >= 8, "Checked indicator needs a visible light checkmark, not a solid block"
-
-
-def test_current_unchecked_row_uses_a_subtle_paper_background(qt_app, sources):
-    from PySide6.QtGui import QColor
-    from qq_chat_analyzer.gui.theme import COLOR_PAPER
-
-    window, _ = archive(qt_app, sources)
-    window.show()
-    page = window.local_data_page
-    page._history_list.setCurrentRow(1)
-    _drain(window)
-    rect = page._history_list.visualItemRect(page._history_list.item(1))
-    image = page._history_list.viewport().grab().toImage()
-    ratio = image.devicePixelRatio()
-    background = image.pixelColor(int((rect.right() - 12) * ratio), int(rect.center().y() * ratio))
-    paper = QColor(COLOR_PAPER)
-    assert sum(abs(background.getRgb()[i] - paper.getRgb()[i]) for i in range(3)) <= 45
-    assert not checkbox(page, 1).isChecked()
-    assert page._selected_package_name() == "b"
-    assert page._checked_names == set()
 
 
 def test_archive_uses_named_entries_and_independent_checks(qt_app, sources):

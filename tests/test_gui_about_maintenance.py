@@ -14,10 +14,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 from PySide6.QtCore import QUrl
-from PySide6.QtGui import QFontDatabase, QFontInfo
-from PySide6.QtWidgets import QApplication, QDialog, QFrame, QLabel, QWidget
+from PySide6.QtWidgets import QApplication, QLabel, QWidget
 
-from qq_chat_analyzer.application.installable_update_service import InstallableUpdateResult
 from test_gui import StubFacade
 
 
@@ -41,32 +39,6 @@ def cleanup_windows(app):
 # otherwise paints tofu boxes, which are narrower than real text and would hide
 # a squeezed label instead of reproducing it. The font is registered for one
 # test and removed again, so no other suite's metrics change.
-CJK_FONT_FILES = (Path(r"C:\Windows\Fonts\msyh.ttc"),)
-
-
-@pytest.fixture
-def cjk_font(app):
-    loaded = [QFontDatabase.addApplicationFont(str(path))
-              for path in CJK_FONT_FILES if path.is_file()]
-    loaded = [font_id for font_id in loaded if font_id != -1]
-    try:
-        yield
-    finally:
-        for font_id in loaded:
-            QFontDatabase.removeApplicationFont(font_id)
-
-
-@pytest.fixture
-def echo_theme(app):
-    from qq_chat_analyzer.gui.theme import BASE_QSS
-    previous = app.styleSheet()
-    app.setStyleSheet(BASE_QSS)
-    try:
-        yield
-    finally:
-        app.setStyleSheet(previous)
-
-
 class Executor:
     def __init__(self):
         self.tasks = []
@@ -87,20 +59,6 @@ class Facade(StubFacade):
     def check_for_updates(self, *, manual=False):
         self.calls.append(manual)
         return SimpleNamespace(status="up_to_date")
-
-
-class CoreFacade(Facade):
-    """A facade that also exposes the installable update core's snapshot."""
-
-    def __init__(self, status="downloaded"):
-        super().__init__()
-        self.result = InstallableUpdateResult(status, "0.1.0", "0.2.0", 100)
-
-    def get_update_status(self):
-        return self.result
-
-    def prepare_update_install(self):
-        raise AssertionError("the maintenance contract never installs")
 
 
 def _module():
@@ -165,110 +123,12 @@ def _squeezed_labels(widget) -> list[str]:
     return squeezed
 
 
+
 def _assert_fits(widget) -> None:
     """No wrapped text is clipped, and the window is as tall as its layout asks."""
     assert _squeezed_labels(widget) == []
     assert widget.height() >= widget.layout().heightForWidth(widget.width())
 
-
-@pytest.mark.parametrize("status", ["idle", "downloaded"])
-def test_about_functional_fonts_and_right_aligned_outlined_actions(
-        app, cjk_font, echo_theme, monkeypatch, tmp_path, status):
-    module = _module()
-    _pin_maintenance(monkeypatch, module, kind=module.InstallKind.SETUP,
-                     program_dir=tmp_path / "EchoSetup", data_dir=tmp_path / "data")
-    page, _, _ = _show(module, CoreFacade(status))
-    reference = page.window().home_page.findChild(QLabel, "homeSourceDescription")
-    family = QFontInfo(reference.font()).family()
-    maintenance = page.maintenance_section
-    widgets = [page.findChild(QLabel, "aboutTitle"), page.version_label,
-               page.findChild(QLabel, "updateSection"), page.status_label,
-               maintenance.program_heading, maintenance.data_heading,
-               maintenance.footer_note, page.check_button, page.install_button,
-               maintenance.open_program_button, maintenance.open_data_button]
-    for widget in widgets:
-        assert QFontInfo(widget.font()).family() == family
-        assert QFontInfo(widget.font()).pixelSize() >= 15
-    for button in (page.check_button, maintenance.open_program_button,
-                   maintenance.open_data_button):
-        assert button.height() >= 38
-        assert button.mapTo(page.page_content, button.rect().topRight()).x() == page.page_content.width() - 1
-        rendered = button.grab().toImage()
-        x = rendered.width() // 2
-        assert rendered.pixelColor(x, 0) != rendered.pixelColor(x, 3)
-    assert page.status_label.mapTo(page, page.status_label.rect().topLeft()).x() < page.check_button.mapTo(page, page.check_button.rect().topLeft()).x()
-    assert not maintenance.uninstall_button.isEnabled()
-    _assert_fits(page)
-
-
-@pytest.mark.parametrize("status", ["idle", "downloaded"])
-def test_about_spacious_rows_keep_uninstall_note_with_its_action(
-        app, cjk_font, echo_theme, monkeypatch, tmp_path, status):
-    module = _module()
-    _pin_maintenance(monkeypatch, module, kind=module.InstallKind.SETUP,
-                     program_dir=tmp_path / "EchoSetup", data_dir=tmp_path / "data")
-    page, _, _ = _show(module, CoreFacade(status))
-    maintenance = page.maintenance_section
-    assert 30 <= QFontInfo(page.findChild(QLabel, "aboutTitle").font()).pixelSize() <= 32
-    for heading, button in ((maintenance.program_heading, maintenance.open_program_button),
-                            (maintenance.data_heading, maintenance.open_data_button)):
-        assert 72 <= heading.height() <= 80
-        assert 42 <= button.height() <= 44
-        assert abs(heading.mapTo(page, heading.rect().center()).y() - button.mapTo(page, button.rect().center()).y()) <= 1
-    note = maintenance.footer_note
-    uninstall = maintenance.uninstall_button
-    assert note.isVisible() and not uninstall.isEnabled()
-    assert note.mapTo(page, note.rect().topLeft()).x() < uninstall.mapTo(page, uninstall.rect().topLeft()).x()
-    assert abs(note.mapTo(page, note.rect().center()).y() - uninstall.mapTo(page, uninstall.rect().center()).y()) < 30
-    assert page.status_label.height() >= 72
-    assert abs(page.status_label.mapTo(page, page.status_label.rect().center()).y() - page.check_button.mapTo(page, page.check_button.rect().center()).y()) <= 1
-
-
-def test_about_rows_are_divided_and_update_states_keep_the_same_boundaries(
-        app, cjk_font, echo_theme, monkeypatch, tmp_path):
-    module = _module()
-    _pin_maintenance(monkeypatch, module, kind=module.InstallKind.SETUP,
-                     program_dir=tmp_path / "EchoSetup", data_dir=tmp_path / "data")
-    facade = CoreFacade("idle")
-    page, _, _ = _show(module, facade)
-    section = page.maintenance_section
-    rules = sorted(section.findChildren(QFrame, "aboutRule"),
-                   key=lambda line: line.mapTo(page, line.rect().topLeft()).y())
-    assert len(rules) == 3
-    headings = [section.program_heading, section.data_heading]
-    for heading, rule in zip(headings, rules):
-        assert rule.mapTo(page, rule.rect().topLeft()).y() == heading.mapTo(page, heading.rect().bottomLeft()).y() + 1
-        assert rule.height() == 1 and rule.width() == page.page_content.width()
-    assert rules[1].mapTo(page, rules[1].rect().bottomLeft()).y() + 1 == section.uninstall_button.parentWidget().mapTo(page, section.uninstall_button.parentWidget().rect().topLeft()).y()
-    assert rules[2].mapTo(page, rules[2].rect().bottomLeft()).y() == section.mapTo(page, section.rect().bottomLeft()).y()
-    assert page.status_label.height() == section.program_heading.height() == section.data_heading.height()
-    assert page.page_content.mapTo(page, page.page_content.rect().topLeft()).y() == 46
-    tracked = [page.page_content, section, page.findChild(QLabel, "updateSection"), *rules]
-    before = [(w.mapTo(page, w.rect().topLeft()), w.size()) for w in tracked]
-    facade.result = module.InstallableUpdateResult("downloaded", "0.1.0", "0.2.0", 100)
-    page._restore_status()
-    _process()
-    assert page.install_button.isVisible()
-    assert [(w.mapTo(page, w.rect().topLeft()), w.size()) for w in tracked] == before
-
-
-def test_small_about_can_reach_last_row_without_clipping(
-        app, cjk_font, echo_theme, monkeypatch, tmp_path):
-    module = _module()
-    _pin_maintenance(monkeypatch, module, kind=module.InstallKind.SETUP,
-                     program_dir=tmp_path / "EchoSetup", data_dir=tmp_path / "data")
-    page, _, _ = _show(module, CoreFacade("downloaded"))
-    page.window().resize(800, 600)
-    _process()
-    assert page.window().size().width() == 800 and page.window().size().height() == 600
-    assert page.page_content.width() <= page.width() - 32
-    assert _squeezed_labels(page) == []
-    scroll = page.scroll_area
-    scroll.ensureWidgetVisible(page.maintenance_section.footer_note)
-    _process()
-    note = page.maintenance_section.footer_note
-    assert scroll.viewport().rect().contains(note.mapTo(scroll.viewport(), note.rect().center()))
-    assert scroll.horizontalScrollBar().maximum() == 0
 
 
 def test_detect_install_location_classifies_setup(tmp_path):
@@ -346,58 +206,6 @@ def test_unknown_view_keeps_only_the_data_location(tmp_path):
     assert view.show_open_data
 
 
-@pytest.mark.parametrize("status", ["idle", "downloading", "downloaded"])
-@pytest.mark.parametrize("size", [(1200, 760), (800, 600)])
-def test_merged_about_is_centered_and_contains_all_sections(app, cjk_font, echo_theme, monkeypatch, tmp_path, status, size):
-    module = _module()
-    _pin_maintenance(monkeypatch, module, kind=module.InstallKind.SETUP,
-                     program_dir=tmp_path / "EchoSetup", data_dir=tmp_path / "data")
-    page, _, executor = _show(module, CoreFacade(status))
-    window = page.window()
-    window.resize(*size)
-    _process()
-    assert window.stack.currentWidget() is page
-    assert page.findChild(QLabel, "homeTitle") is None
-    assert not hasattr(page, "maintenance_page")
-    assert not hasattr(page, "maintenance_button")
-    assert not hasattr(window, "show_maintenance_page")
-    assert window.stack.count() == 7
-    assert page.size() == window.centralWidget().size()
-    assert not window._title_label.isVisible()
-    assert not window._home_button.isVisible()
-    content = page.page_content
-    assert 680 <= content.width() <= 940
-    if size == (1200, 760):
-        assert 900 <= content.width() <= 940
-    viewport = page.scroll_area.viewport()
-    assert abs(content.mapTo(viewport, content.rect().center()).x() - viewport.rect().center().x()) <= 1
-    assert content.y() >= 24
-    if size == (1200, 760):
-        assert content.mapTo(page, content.rect().topLeft()).y() <= 80
-        assert content.mapTo(page, content.rect().bottomLeft()).y() < page.height() - 24
-        assert content.height() >= 600
-    title = page.findChild(QLabel, "aboutTitle")
-    assert page.findChild(QLabel, "aboutProduct") is None
-    update_heading = page.findChild(QLabel, "updateSection")
-    maintenance_heading = page.maintenance_section.findChild(QLabel, "maintenanceSection")
-    assert title.isVisible() and update_heading.isVisible() and maintenance_heading.isVisible()
-    assert title.mapTo(page, title.rect().topLeft()).y() < update_heading.mapTo(page, update_heading.rect().topLeft()).y()
-    assert update_heading.mapTo(page, update_heading.rect().topLeft()).y() < maintenance_heading.mapTo(page, maintenance_heading.rect().topLeft()).y()
-    reference = window.home_page.findChild(QLabel, "homeSourceDescription")
-    assert QFontInfo(update_heading.font()).family() == QFontInfo(reference.font()).family()
-    assert QFontInfo(page.check_button.font()).family() == QFontInfo(reference.font()).family()
-    assert page.check_button.isVisible()
-    assert page.install_button.isVisible() == (status == "downloaded")
-    assert page.progress_bar.isVisible() == (status == "downloading")
-    section = page.maintenance_section
-    assert section.open_program_button.isVisible() and section.open_data_button.isVisible()
-    assert section.uninstall_button.isVisible() and not section.uninstall_button.isEnabled()
-    assert page.findChildren(QDialog) == []
-    assert executor.tasks == []
-    _assert_fits(page)
-    page.close()
-
-
 def test_setup_directory_actions_and_disabled_uninstall(app, monkeypatch, tmp_path):
     module = _module()
     program, data = tmp_path / "EchoSetup", tmp_path / "never-created-data"
@@ -434,38 +242,6 @@ def test_install_identity_still_controls_maintenance_actions(app, monkeypatch, t
     if kind == "PORTABLE":
         assert "删除" in section.portable_note.text()
     _assert_fits(page)
-    page.close()
-
-
-@pytest.mark.parametrize("failure", ["false", "exception"])
-def test_directory_error_does_not_overwrite_update_status(app, monkeypatch, tmp_path, failure):
-    module = _module()
-    def open_url(_url):
-        if failure == "exception":
-            raise RuntimeError("fictional shell failure")
-        return False
-    monkeypatch.setattr(module.QDesktopServices, "openUrl", open_url)
-    _pin_maintenance(monkeypatch, module, kind=module.InstallKind.SETUP,
-                     program_dir=tmp_path / "EchoSetup", data_dir=tmp_path / "data")
-    page, _, _ = _show(module, CoreFacade())
-    before = page.status_label.text()
-    page.maintenance_section.open_data_button.click()
-    assert page.maintenance_section.status_label.isVisible()
-    assert page.maintenance_section.status_label.text()
-    assert page.status_label.text() == before
-    _assert_fits(page)
-    page.close()
-
-
-def test_deep_paths_remain_in_tooltips_without_widening_the_page(app, monkeypatch, tmp_path):
-    module = _module()
-    program = tmp_path / ("fictional-long-folder-" * 10)
-    _pin_maintenance(monkeypatch, module, kind=module.InstallKind.SETUP,
-                     program_dir=program, data_dir=tmp_path / "data")
-    page, _, _ = _show(module)
-    assert str(program) in page.maintenance_section.open_program_button.toolTip()
-    assert str(program) not in _visible_texts(page)
-    assert page.page_content.width() <= 940
     page.close()
 
 

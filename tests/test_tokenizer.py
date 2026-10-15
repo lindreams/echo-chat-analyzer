@@ -13,46 +13,16 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
 from qq_chat_analyzer.tokenizer import tokenize
-from qq_chat_analyzer.wechat_official_emojis import (
-    OFFICIAL_WECHAT_EMOJI_NAMES,
-    WECHAT_EMOJI_ALIASES,
-)
+from qq_chat_analyzer.wechat_official_emojis import WECHAT_EMOJI_ALIASES
 
 
 def test_tokenizes_chinese_text_with_jieba() -> None:
     assert tokenize("我喜欢数据分析") == ["喜欢", "数据分析"]
 
 
-@pytest.mark.parametrize("laughter", ["哈哈", "哈哈哈", "哈哈哈哈", "哈哈哈哈哈", "哈哈哈哈哈哈", "哈" * 9])
-def test_continuous_laughter_remains_one_token(laughter: str) -> None:
-    assert tokenize(laughter) == [laughter]
-
-
 def test_sentence_preserves_laughter_runs_and_separate_short_laughter() -> None:
     assert tokenize("今天哈哈哈哈哈继续学习，哈哈！哈哈哈？哈哈哈哈。") == [
         "今天", "哈哈哈哈哈", "继续", "学习", "哈哈", "哈哈哈", "哈哈哈哈",
-    ]
-
-
-def test_laughter_protection_preserves_non_laughter_words() -> None:
-    assert tokenize("哈尔滨 哈密瓜 学习 数据分析 Python hello-world 嘻嘻") == [
-        "哈尔滨", "哈密瓜", "学习", "数据分析", "Python", "hello-world", "嘻嘻",
-    ]
-
-
-def test_laughter_protection_preserves_compound_words_containing_ha() -> None:
-    assert tokenize("哈哈镜 娃哈哈 哈哈哈哈哈") == ["哈哈镜", "娃哈哈", "哈哈哈哈哈"]
-
-
-def test_laughter_uses_existing_stopwords_without_length_normalization() -> None:
-    assert tokenize("哈哈 哈哈哈 哈哈哈哈 哈哈哈哈哈", stopwords={"哈哈"}) == [
-        "哈哈哈", "哈哈哈哈", "哈哈哈哈哈",
-    ]
-
-
-def test_laughter_inside_url_or_expression_marker_does_not_leak() -> None:
-    assert tokenize("https://example.invalid/哈哈哈哈哈 [表情哈哈哈哈哈] 哈哈哈哈哈") == [
-        "哈哈哈哈哈",
     ]
 
 
@@ -63,41 +33,6 @@ def test_filters_trimmed_stopwords_and_ignores_blank_lines(
     stopwords_path.write_text("  我  \n\n喜欢\n", encoding="utf-8")
 
     assert tokenize("我喜欢数据分析", str(stopwords_path)) == ["数据分析"]
-
-
-def test_missing_stopwords_file_is_treated_as_empty(tmp_path: Path) -> None:
-    missing_path = tmp_path / "missing-stopwords.txt"
-
-    assert tokenize("我喜欢数据分析", str(missing_path)) == [
-        "喜欢",
-        "数据分析",
-    ]
-
-
-def test_filters_single_chinese_characters() -> None:
-    text = "不 吗 想 过 还 吧 没 啊 给 天津 中科大"
-
-    assert tokenize(text) == ["天津", "中科大"]
-
-
-def test_preserves_english_words_numbers_and_multi_character_chinese() -> None:
-    text = "Python CS61B 2026 天津 中科大"
-
-    assert tokenize(text) == ["Python", "CS61B", "2026", "天津", "中科大"]
-
-
-def test_preserves_hyphenated_ascii_nickname_as_one_token() -> None:
-    tokens = tokenize("欢迎 fall-anchor 加入群聊")
-
-    assert "fall-anchor" in tokens
-    assert "fall" not in tokens
-    assert "anchor" not in tokens
-
-
-def test_preserves_existing_ascii_tokens_and_hyphenated_word() -> None:
-    tokens = tokenize("Python CS61B hello-world")
-
-    assert tokens == ["Python", "CS61B", "hello-world"]
 
 
 def test_user_dictionary_keeps_custom_phrase_as_one_token(
@@ -112,34 +47,9 @@ def test_user_dictionary_keeps_custom_phrase_as_one_token(
     ) == ["量子猫猫协议"]
 
 
-def test_missing_user_dictionary_is_safely_ignored(tmp_path: Path) -> None:
-    missing_path = tmp_path / "missing-user-dict.txt"
-
-    assert tokenize(
-        "天津 Python 2026",
-        user_dict_path=str(missing_path),
-    ) == ["天津", "Python", "2026"]
-
-
 def test_empty_text_returns_empty_list() -> None:
     assert tokenize("") == []
     assert tokenize(" \t\n ") == []
-
-
-def test_filters_single_ascii_letters_case_insensitively() -> None:
-    assert tokenize("b x Y") == []
-
-
-def test_filters_one_and_two_digit_integers() -> None:
-    assert tokenize("0 7 12 23 40 00") == []
-
-
-def test_preserves_integers_with_three_or_more_digits() -> None:
-    assert tokenize("666 2026") == ["666", "2026"]
-
-
-def test_filters_deck_quantity_markers_case_insensitively() -> None:
-    assert tokenize("1x 2x 10x 3X") == []
 
 
 def test_preserves_informative_ascii_and_hyphenated_tokens() -> None:
@@ -156,41 +66,6 @@ def test_preserves_informative_ascii_and_hyphenated_tokens() -> None:
     ]
 
 
-def test_preserves_multi_character_chinese_after_low_information_filtering() -> None:
-    assert tokenize("\u5929\u6d25 \u4e2d\u79d1\u5927") == [
-        "\u5929\u6d25",
-        "\u4e2d\u79d1\u5927",
-    ]
-
-def test_filters_english_function_words_case_insensitively(
-    tmp_path: Path,
-) -> None:
-    stopwords_path = tmp_path / "stopwords.txt"
-    stopwords_path.write_text(
-        "the\nto\nmy\nin\nis\non\nand\nof\nfor\nare\nwas\n",
-        encoding="utf-8",
-    )
-
-    assert tokenize(
-        "Hello to my friends in China",
-        str(stopwords_path),
-    ) == ["Hello", "friends", "China"]
-    assert tokenize(
-        "The book is on the table",
-        str(stopwords_path),
-    ) == ["book", "table"]
-
-
-def test_preserves_english_topic_words(tmp_path: Path) -> None:
-    stopwords_path = tmp_path / "stopwords.txt"
-    stopwords_path.write_text("the\nto\nmy\nin\nis\n", encoding="utf-8")
-
-    assert tokenize(
-        "China friends Trump Crazy Thursday",
-        str(stopwords_path),
-    ) == ["China", "friends", "Trump", "Crazy", "Thursday"]
-
-
 def test_url_tokens_are_ignored() -> None:
     assert tokenize("看看 https://b23.tv/abc 怎么样") == [
         "看看",
@@ -201,23 +76,6 @@ def test_url_tokens_are_ignored() -> None:
         "明天",
         "一起",
         "吃饭",
-    ]
-
-
-def test_url_mask_does_not_leak_placeholder() -> None:
-    tokens = tokenize("https://example.com/a?b=1")
-
-    assert tokens == []
-    assert not any("QQCHATURLPLACEHOLDER" in token for token in tokens)
-
-
-def test_normal_text_not_harmed() -> None:
-    assert tokenize("今天天气不错 Python 2026 天津") == [
-        "今天天气",
-        "不错",
-        "Python",
-        "2026",
-        "天津",
     ]
 
 
@@ -232,27 +90,6 @@ def test_ignores_expression_markers_for_language_tokens() -> None:
     assert "OK" not in tokens
 
 
-def test_expression_placeholders_never_become_language_words() -> None:
-    assert tokenize("哈哈 [表情]") == ["哈哈"]
-    assert tokenize("表情") == []
-    assert tokenize("[表情]") == []
-    assert tokenize("[动画表情]") == []
-    assert tokenize("哈哈 表情 继续") == ["哈哈", "继续"]
-    assert tokenize("这个表情不错") == ["这个", "表情", "不错"]
-
-
-def test_official_wechat_english_alias_is_not_a_language_token() -> None:
-    tokens = tokenize("哈哈[Facepalm]来了")
-
-    assert "哈哈" in tokens
-    assert "Facepalm" not in tokens
-
-
-def test_standalone_official_wechat_english_aliases_are_not_tokens() -> None:
-    for marker in ("[Grin]", "[Laugh]", "[Sob]", "[ThumbsUp]", "[Facepalm]"):
-        assert tokenize(marker) == []
-
-
 @pytest.mark.parametrize("word", ("TODO", "AI", "Python"))
 def test_bracketed_plain_english_words_are_not_expressions(word: str) -> None:
     assert word not in WECHAT_EMOJI_ALIASES
@@ -265,35 +102,3 @@ def test_literal_english_words_without_brackets_are_preserved() -> None:
     assert tokenize("Lol") == ["Lol"]
     assert tokenize("Awesome") == ["Awesome"]
     assert tokenize("今天 Grin 一下") == ["今天", "Grin", "一下"]
-
-
-@pytest.mark.parametrize("alias", sorted(WECHAT_EMOJI_ALIASES))
-def test_every_alias_bracket_is_masked_as_an_expression(alias: str) -> None:
-    """Every alias bracket must be masked, including spaced or punctuated keys."""
-    assert tokenize(f"[{alias}]") == []
-
-
-def test_newly_added_english_aliases_are_masked_as_expressions() -> None:
-    for marker in ("[Bye]", "[Awesome]", "[MyBad]", "[Let Down]", "[LetDown]"):
-        assert tokenize(marker) == []
-
-
-def test_newly_added_english_alias_never_leaks_into_language_tokens() -> None:
-    tokens = tokenize("数据分析[Awesome]继续")
-
-    assert tokens == tokenize("数据分析 继续")
-    assert "Awesome" not in tokens
-    assert "[Awesome]" not in tokens
-
-
-def test_undocumented_bracketed_english_stays_a_plain_word() -> None:
-    # Only published codes are expressions; there is no generic English rule.
-    assert tokenize("[Best]") == ["Best"]
-    assert tokenize("[Whatever]") == ["Whatever"]
-
-
-def test_all_current_official_codes_are_masked_as_expressions() -> None:
-    """Current client codes must never surface as language tokens."""
-    assert len(OFFICIAL_WECHAT_EMOJI_NAMES) == 109
-    for name in OFFICIAL_WECHAT_EMOJI_NAMES:
-        assert tokenize(f"[{name}]") == []

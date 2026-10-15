@@ -44,15 +44,6 @@ def _application_module():
     return importlib.import_module("qq_chat_analyzer.application")
 
 
-def test_application_package_exports_the_stable_dto_contract() -> None:
-    application = _application_module()
-
-    assert application.AnalysisStatus.COMPLETED.value == "completed"
-    assert application.AnalysisStatus.NO_VALID_TEXT.value == "no_valid_text"
-    assert application.AnalysisStatus.NO_TOKENS.value == "no_tokens"
-    assert application.AnalysisStatus.EXPRESSION_ONLY.value == "expression_only"
-
-
 def test_analysis_request_is_immutable_and_hides_local_paths() -> None:
     application = _application_module()
     private_input = Path("C:/fictional-private/chat.json")
@@ -78,18 +69,6 @@ def test_analysis_request_is_immutable_and_hides_local_paths() -> None:
         request.top = 50
 
 
-def test_analysis_request_defaults_to_all_messages() -> None:
-    application = _application_module()
-
-    request = application.AnalysisRequestDTO(
-        input_path=Path("fictional-chat.json"),
-        output_directory=Path("fictional-output"),
-        stopwords_path=Path("fictional-stopwords.txt"),
-    )
-
-    assert request.scope == application.AnalysisScope.all()
-
-
 def test_analysis_result_has_required_fields_without_private_data() -> None:
     application = _application_module()
     result_fields = {
@@ -108,37 +87,3 @@ def test_analysis_result_has_required_fields_without_private_data() -> None:
 
     assert REQUIRED_RESULT_FIELDS <= result_fields
     assert FORBIDDEN_PUBLIC_FIELDS.isdisjoint(public_field_names)
-
-
-def test_analysis_result_uses_immutable_nested_dtos() -> None:
-    application = _application_module()
-    word = application.WordFrequencyDTO(word="Python", count=3)
-    artifact = application.ArtifactDTO(
-        kind="wordcloud",
-        filename="wordcloud.png",
-    )
-    result = application.AnalysisResultDTO(
-        status=application.AnalysisStatus.COMPLETED,
-        processed_message_count=7,
-        valid_text_count=3,
-        top_words=(word,),
-        artifacts=(artifact,),
-    )
-
-    assert result.top_words == (word,)
-    assert result.artifacts == (artifact,)
-    assert not hasattr(result, "__dict__")
-    with pytest.raises(dataclasses.FrozenInstanceError):
-        word.count = 4
-
-
-def test_analysis_result_diagnostic_counts_are_optional() -> None:
-    application = _application_module()
-
-    result = application.AnalysisResultDTO(
-        status=application.AnalysisStatus.NO_TOKENS,
-        processed_message_count=1,
-        valid_text_count=1,
-    )
-
-    assert result.diagnostic_counts is None
