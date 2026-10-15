@@ -201,29 +201,42 @@ GUI 通过 ChatAnalyzerFacade 接入（见 GUI原则）。
 Bug 修复按以下顺序进行：
 
 现象/复现 → 调用链 → 竞争假设 → 最小诊断 → 根因 → regression RED →
-minimal GREEN → focused verification → Fast / 必要时 Full → real acceptance。
+minimal GREEN → Focused / Smoke / Domain → 按风险 Fast / Full → 必要的 real acceptance。
 
 - 看到异常后不得直接 patch，必须先完成最小诊断并确认根因；
 - 不得为了让测试变绿而修改测试预期；
 - 环境失败先分类和报告，不得顺手修改无关业务代码。
 
-### 测试分层与 slow integration 边界
+### 测试分组与 slow integration 边界
 
 - **Focused**：与当前修改直接相关的测试文件或测试节点；
-- **Fast**：日常开发回归，运行 `slow_integration` 和 `known_failure` 之外的测试；
-- **Full**：阶段完成或提交前的完整回归。
+- **Smoke**：`-m smoke`，少量稳定、快速的核心统计、主要流程与安全拒绝检查；
+- **Domain**：`core`、`qq`、`wechat`、`ui_report`、`system`，每例恰属一个领域，可叠加 Smoke；
+- **Fast**：排除 `slow_integration` 和 `known_failure` 的跨领域回归，定义不变；
+- **Full**：完整回归，根据影响范围和风险决定，不要求每次低风险修改或提交都运行。
+
+日常优先 Focused → Smoke → 受影响 Domain；跨领域契约、公共 fixture 或测试基础设施
+变更时扩大回归。归属和 Smoke 清单集中在 `tests/conftest.py`，跨领域按主要被验证契约
+归属；新增模块必须明确归类。命令与归属边界见 `DEVELOPMENT.md` 第 5 节。
+
+低风险修改（如文档、测试分组、等价机械调整）允许零新增测试，需说明理由并执行
+与风险匹配的验证；行为变化、Bug 修复与关键安全边界仍需有意义的回归证据。
+不能因缩小运行范围而删除或弱化隐私、路径所有权、认证、代际隔离与清理安全回归。
 
 Fast Suite 命令必须与 `pyproject.toml` 中的 marker 定义一致；先按下文 Python / pytest
 执行环境规则设置并验证 `$EchoPython` 和目标 worktree 的源码导入路径：
 
 ```powershell
+& $EchoPython -m pytest -m smoke -q
+& $EchoPython -m pytest -m "qq and not slow_integration and not known_failure" -q
 & $EchoPython -m pytest -m "not slow_integration and not known_failure" -q
 ```
 
 如果当前修改触及 `slow_integration` 覆盖的能力，必须显式运行相关的 focused
 integration tests。适用范围包括 packaging、Chromium renderer、CLI subprocess、
 PowerShell helper、Windows runtime integration 和特定 WeChat integration；Fast
-通过不能替代这些测试。不要把当前测试数量或耗时硬编码进文档。
+通过不能替代这些测试；Smoke / Domain 也不能替代必要的发行构建、Full 与真人验收。
+不要把当前测试数量或耗时硬编码进文档。
 
 ### 完成前检查
 
@@ -259,13 +272,13 @@ git status --short
 & $EchoPython -m pytest tests/test_facade.py -q
 ```
 
-日常开发 / RED-GREEN 使用 Fast Suite（排除 `slow_integration` 和 `known_failure`），普通测试默认属于 Fast：
+日常开发 / RED-GREEN 优先 Focused / Smoke / 受影响 Domain；需要跨领域回归时使用 Fast，普通测试默认属于 Fast：
 
 ```powershell
 & $EchoPython -m pytest -m "not slow_integration and not known_failure" -q
 ```
 
-阶段完成 / 提交前运行完整回归（命令不变）：
+根据影响范围和风险决定是否运行 Full；发行验收保留所需完整回归（命令不变）：
 
 ```powershell
 & $EchoPython -m pytest -q
@@ -309,7 +322,7 @@ py -m pytest
 
 新功能：
 
-设计 → RED测试 → 实现 → GREEN测试 → 完整测试 → 检查diff
+设计 → RED测试 → 实现 → GREEN测试 → 按影响范围和风险回归 → 检查diff
 
 ------------------------------------------------------------------------
 
