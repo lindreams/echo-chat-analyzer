@@ -470,8 +470,25 @@ def _quick_check(database_path: Path) -> str:
         uri = f"{database_path.resolve().as_uri()}?mode=ro"
         connection = sqlite3.connect(uri, uri=True)
         row = connection.execute("PRAGMA quick_check(1)").fetchone()
-        return "ok" if row and row[0] == "ok" else "failed"
-    except (OSError, sqlite3.DatabaseError):
+        if row and row[0] == "ok":
+            return "ok"
+        # SQLite's text may contain private table names or values. Never log it.
+        _LOGGER.warning("QQ snapshot quick_check result=failed category=integrity")
+        return "failed"
+    except (OSError, sqlite3.DatabaseError) as error:
+        code = getattr(error, "sqlite_errorcode", 0)
+        primary = code & 0xff
+        category = (
+            "corrupt" if primary in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB)
+            else "access" if primary in (sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_READONLY, sqlite3.SQLITE_PERM, sqlite3.SQLITE_AUTH)
+            else "busy" if primary in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+            else "io" if isinstance(error, OSError) or primary == sqlite3.SQLITE_IOERR
+            else "sqlite"
+        )
+        _LOGGER.warning(
+            "QQ snapshot quick_check result=error category=%s sqlite_errorcode=%d",
+            category, code,
+        )
         return "error"
     finally:
         if connection is not None:

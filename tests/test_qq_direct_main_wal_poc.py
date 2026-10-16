@@ -65,7 +65,7 @@ function appendFrame(committed, publish=true) {
   const wal=fs.readFileSync(walPath);
   const last=wal.subarray(wal.length-4120);
   const next=Buffer.from(last);
-  if(committed && next.readUInt32BE(0)!==1) {
+  if(next.readUInt32BE(0)!==1) {
     const salt=fs.readFileSync(mainPath).subarray(1024,1040);
     const key=pbkdf2Sync(process.env.ECHO_POC_PASSPHRASE,salt,4000,32,'sha512');
     const iv=next.subarray(24+4048,24+4064);
