@@ -645,12 +645,23 @@ class WeChatDatabaseProvider:
             raise QueryFailed(wcdb_error_code=wcdb_error_code)
 
         rows = payload.get("rows")
+        # An invalid result is not proof of an empty shard. Unbounded reads
+        # also require completeness; explicit limits may legitimately truncate.
+        if not isinstance(rows, list) or (limit <= 0 and payload.get("truncated") is True):
+            _log_query_failure(
+                database_type,
+                query_stage,
+                wcdb_stage="validate_result",
+                returncode=returncode,
+                error_type="QueryFailed",
+            )
+            raise QueryFailed()
         _LOGGER.info(
             "wechat.wcdb.success database_type=%s query_stage=%s",
             database_type,
             query_stage,
         )
-        return rows if isinstance(rows, list) else []
+        return rows
 
     def _session_db_candidates(
         self,
@@ -798,15 +809,14 @@ class WeChatDatabaseProvider:
             "SELECT name FROM sqlite_master "
             f"WHERE type = 'table' AND name = '{escaped}'"
         )
-        try:
-            rows = self._query(
-                db_path,
-                sql,
-                limit=1,
-                query_stage="message_table_lookup",
-            )
-        except WeChatDatabaseError:
-            return False
+        # Only a successful empty lookup proves absence. A broken shard must
+        # abort discovery rather than silently produce a partial report.
+        rows = self._query(
+            db_path,
+            sql,
+            limit=1,
+            query_stage="message_table_lookup",
+        )
         return bool(rows)
 
     def _message_table_names(self) -> set[str]:

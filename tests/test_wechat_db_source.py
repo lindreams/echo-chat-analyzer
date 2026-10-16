@@ -391,6 +391,37 @@ def test_row_username_takes_precedence_over_conversation(tmp_path: Path) -> None
 # ----------------------------------------------------------------- provider
 
 
+@pytest.mark.parametrize("payload, limit, expected", [
+    pytest.param({"ok": True}, 0, None, id="missing-rows"),
+    pytest.param({"ok": True, "rows": {}}, 0, None, id="wrong-rows-type"),
+    pytest.param({"ok": True, "rows": [], "truncated": True}, 0, None, id="unlimited-truncated"),
+    pytest.param({"ok": True, "rows": [], "truncated": True}, -1, None, id="negative-limit-truncated"),
+    pytest.param({"ok": True, "rows": []}, 0, [], id="empty-result"),
+    pytest.param({"ok": True, "rows": [{"name": "fictional-table"}]}, 0,
+                 [{"name": "fictional-table"}], id="nonempty-result"),
+    pytest.param({"ok": True, "rows": [{"name": "fictional-table"}], "truncated": True}, 1,
+                 [{"name": "fictional-table"}], id="limited-truncated"),
+])
+def test_query_validates_success_payload(tmp_path, payload, limit, expected):
+    commands = []
+
+    def runner(command, timeout, environment):
+        commands.append(command)
+        return _FakeCompleted(stdout=json.dumps(payload))
+
+    provider = _provider(tmp_path, runner)
+    database = tmp_path / "xwechat_files/wxid_owner/db_storage/message/message_0.db"
+    if expected is None:
+        with pytest.raises(QueryFailed):
+            provider._query(database, "SELECT name FROM sqlite_master", limit=limit)
+    else:
+        assert provider._query(database, "SELECT name FROM sqlite_master", limit=limit) == expected
+    if limit > 0:
+        assert commands[0][-2:] == ["--limit", str(limit)]
+    else:
+        assert "--limit" not in commands[0]
+
+
 def test_list_sessions_returns_privacy_safe_descriptors(tmp_path: Path) -> None:
     rows = [
         {"username": FICTIONAL_SESSION, "last_timestamp": 1753412900},
@@ -746,8 +777,84 @@ def test_verify_readable_fails_closed_when_no_row_is_returned(
 # Multi-shard / rollover test helpers
 # ============================================================
 
+
+@pytest.mark.parametrize("method", ["read_session_rows", "read_session_time_bounds"])
+@pytest.mark.parametrize("corrupt", [False, True], ids=["absent-table", "broken-shard"])
+def test_shard_lookup_distinguishes_absent_table_from_database_failure(tmp_path, method, corrupt):
+    def runner(command, timeout, environment):
+        database = command[command.index("--db") + 1]
+        sql = command[command.index("--sql") + 1]
+        try:
+            with closing(sqlite3.connect(database)) as connection:
+                connection.row_factory = sqlite3.Row
+                rows = [dict(row) for row in connection.execute(sql)]
+        except sqlite3.DatabaseError:
+            return _FakeCompleted(stdout=json.dumps({"ok": False}), returncode=1)
+        return _FakeCompleted(stdout=_helper_result(rows))
+
+    provider = _provider(tmp_path, runner)
+    directory = tmp_path / "xwechat_files/wxid_owner/db_storage/message"
+    healthy = directory / "message_0.db"
+    healthy.unlink()  # Replace only _provider's fictional placeholder.
+    table = message_table_name(FICTIONAL_SESSION)
+    with closing(sqlite3.connect(healthy)) as connection, connection:
+        connection.execute("CREATE TABLE Name2Id (user_name TEXT)")
+        connection.execute(f'CREATE TABLE "{table}" (local_id INTEGER, server_id INTEGER, '
+                           'local_type INTEGER, create_time INTEGER, message_content TEXT, '
+                           'WCDB_CT_message_content INTEGER, real_sender_id INTEGER)')
+        connection.execute(f'INSERT INTO "{table}" VALUES (1, 2, 1, 100, ?, 0, 1)',
+                           ("fictional message",))
+    other = directory / "message_1.db"
+    if corrupt:
+        other.write_bytes(b"fictional corrupt database")
+        with pytest.raises(QueryFailed):
+            getattr(provider, method)(FICTIONAL_SESSION)
+    else:
+        with closing(sqlite3.connect(other)) as connection, connection:
+            connection.execute("CREATE TABLE unrelated (value INTEGER)")
+        rows = getattr(provider, method)(FICTIONAL_SESSION)
+        if method == "read_session_rows":
+            assert [row["message_content"] for row in rows] == ["fictional message"]
+        else:
+            assert rows == [{"min_time": 100, "max_time": 100}]
+
 _ROLLOVER_TABLE = "Msg_0_fictional_rollover_session"
 FICTIONAL_SESSION_FOR_ROLLOVER = "fictional_rollover_session"
+
+
+@pytest.mark.parametrize("payload, stage", [
+    pytest.param({"ok": True}, "lookup", id="missing-lookup-rows"),
+    pytest.param({"ok": True, "rows": {}}, "messages", id="wrong-message-rows"),
+    pytest.param({"ok": True, "rows": [_db_row()], "truncated": True}, "messages", id="truncated-messages"),
+])
+@pytest.mark.parametrize("operation", ["export", "range"])
+def test_invalid_shard_payload_propagates_through_service(tmp_path, payload, stage, operation):
+    from qq_chat_analyzer.application import WeChatExportImportRequest, WeChatExportImportService
+
+    def runner(command, timeout, environment):
+        sql = command[command.index("--sql") + 1]
+        database = command[command.index("--db") + 1]
+        lookup = "sqlite_master" in sql
+        if "other_account" in database and lookup == (stage == "lookup"):
+            return _FakeCompleted(stdout=json.dumps(payload))
+        if lookup:
+            rows = [{"name": _ROLLOVER_TABLE}]
+        elif "WITH times" in sql:
+            rows = [{"min_time": 100, "max_time": 100}]
+        elif "FROM Msg_" in sql:
+            rows = [_db_row(create_time=100)]
+        else:
+            rows = []
+        return _FakeCompleted(stdout=_helper_result(rows))
+
+    service = WeChatExportImportService(provider=_multi_shard_provider(tmp_path, runner))
+    output = tmp_path / "fictional-export.json"
+    with pytest.raises(QueryFailed):
+        if operation == "export":
+            service.execute(WeChatExportImportRequest(FICTIONAL_SESSION_FOR_ROLLOVER, output))
+        else:
+            service.get_session_message_range(FICTIONAL_SESSION_FOR_ROLLOVER)
+    assert not output.exists()
 
 
 def _multi_shard_data_root(tmp_path):

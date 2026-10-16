@@ -248,7 +248,7 @@ Windows [windows_job.py](src/qq_chat_analyzer/runtime/windows_job.py) 以 PROC_T
 
 现有缺口必须保留：
 
-- WeChatDatabaseProvider._table_exists() 捕获 WeChatDatabaseError 后返回 False，可能将分片查询失败解释为目标表不存在，从而遗漏故障 shard。正常路径的多分片合并测试不能证明异常情况下的数据完整性；这是待修复风险，不代表已经确认发生实际数据丢失。
+- WeChatDatabaseProvider._table_exists() 只将成功查询的空结果视为目标表不存在；查询失败向上传递，使消息读取与时间范围查询中止，不返回部分 shard 结果。会话计数的 unknown 合同独立保留；这不等于全部异常读取场景已真人验收。
 - [UserProfile](src/qq_chat_analyzer/analysis/models.py) 的默认 dataclass repr 仍包含 speaker、speaker_key、昵称等敏感字段；“所有报告与 DTO 敏感字段均已隐藏”不成立。禁止记录这些对象是操作约束，全面 repr 防泄漏仍需实现／测试补齐。
 - 已使用来源的完整生命周期证明、微信 Node CleanupHook 完成证据仍不足，保持 UNKNOWN；不能删掉安全要求以使更新可用。
 - 旧请求隔离依赖当前协议与绑定检查，不代表已验证上游所有 Worker 重启路径、所有 QQ schema 或全部机器环境。
