@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -263,3 +264,44 @@ def test_decorations_do_not_change_expression_totals_or_expression_only_classifi
     assert report.expression_message_count == 1
     assert report.expression_only_message_count == 0
     assert [item.expression_key for item in report.top_expressions] == ["😀"]
+
+
+def test_member_expression_context_is_local_while_unknown_sender_stays_global():
+    messages = [
+        _chat("orchard orchard 😀😀", sender_id="fictional-a", message_id="a1"),
+        _chat("😀😀😀", sender_id="fictional-a", message_id="a2"),
+        _chat("telescope telescope 😀", sender_id="fictional-b", message_id="b1"),
+        _chat("telescope telescope 😀", sender_id="fictional-b", message_id="b2"),
+        _chat("😀", sender_id="fictional-b", message_id="b3"),
+        _chat("😀", sender_id="fictional-b", message_id="b4"),
+        _chat("meadow meadow 😀", sender_id=None, message_id="unknown"),
+    ]
+    messages[-1] = replace(messages[-1], sender="", conversation_type="private")
+    report = ExpressionAnalyzer().analyze(messages)
+    global_item = report.top_expressions[0]
+    assert (global_item.count, global_item.with_text_message_count,
+            global_item.text_only_message_count) == (10, 4, 3)
+    assert {word.word for word in global_item.nearby_words} == {
+        "orchard", "telescope", "meadow",
+    }
+    members = {member.speaker_key: member for member in report.members}
+    assert set(members) == {"fictional-a", "fictional-b"}
+    a, b = (members[key].top_expressions[0] for key in ("fictional-a", "fictional-b"))
+    assert (a.count, a.with_text_message_count, a.text_only_message_count) == (5, 1, 1)
+    assert (b.count, b.with_text_message_count, b.text_only_message_count) == (4, 2, 2)
+    # Nearby-word weighting remains per occurrence, within each member's messages.
+    assert [(word.word, word.count) for word in a.nearby_words] == [("orchard", 4)]
+    assert [(word.word, word.count) for word in b.nearby_words] == [("telescope", 4)]
+    from qq_chat_analyzer.application.analysis_service import _build_reports
+    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
+    view = build_echo_report_view(_build_reports(messages, [], expression_report=report))
+    serialized = echo_report_to_dict(view)["expression_culture"]
+    entries = {member["speaker_key"]: member["top_expressions"][0]
+               for member in serialized["members"]}
+    assert set(entries) == {"fictional-a", "fictional-b"}
+    assert entries["fictional-a"]["with_text_message_count"] == 1
+    assert entries["fictional-a"]["text_only_message_count"] == 1
+    assert entries["fictional-a"]["nearby_words"] == ["orchard"]
+    assert entries["fictional-b"]["with_text_message_count"] == 2
+    assert entries["fictional-b"]["text_only_message_count"] == 2
+    assert entries["fictional-b"]["nearby_words"] == ["telescope"]

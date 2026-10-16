@@ -19,4 +19,5 @@
 # candidates; full rankings remain transient during analysis and selection.
 # v6: Unicode 18.0 official emoji sequences, explicit presentation selectors,
 # and keycap-safe lexical masking replace broad Unicode block heuristics.
+# Member expression context counts and nearby words use that member's messages.
 ANALYSIS_REVISION = "echo-analysis.v6"

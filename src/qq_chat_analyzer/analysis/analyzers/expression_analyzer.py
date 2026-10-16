@@ -155,6 +155,9 @@ class ExpressionAnalyzer:
             Counter[str],
         ] = {}
         member_occurrences: dict[str, Counter[str]] = {}
+        member_with_text_counts: Counter[tuple[str, str]] = Counter()
+        member_text_only_counts: Counter[tuple[str, str]] = Counter()
+        member_nearby_word_counts: dict[tuple[str, str], Counter[str]] = {}
         member_message_counts: dict[str, int] = {}
         member_only_counts: dict[str, int] = {}
         expression_message_count = 0
@@ -237,6 +240,15 @@ class ExpressionAnalyzer:
             )
             for _, expression_key, _ in items:
                 speaker_counts[expression_key] += 1
+            for expression_key in {key for _, key, _ in items}:
+                if expression_only:
+                    member_text_only_counts[speaker_key, expression_key] += 1
+                else:
+                    member_with_text_counts[speaker_key, expression_key] += 1
+            for _, expression_key, _ in habit_items:
+                member_nearby_word_counts.setdefault(
+                    (speaker_key, expression_key), Counter(),
+                ).update(nearby_tokens)
             member_message_counts[speaker_key] = (
                 member_message_counts.get(speaker_key, 0) + 1
             )
@@ -281,10 +293,10 @@ class ExpressionAnalyzer:
                         display_text=display_by_key[key],
                         count=count,
                         kind=kind_by_key[key],
-                        with_text_message_count=with_text_counts.get(key, 0),
-                        text_only_message_count=text_only_counts.get(key, 0),
+                        with_text_message_count=member_with_text_counts[speaker_key, key],
+                        text_only_message_count=member_text_only_counts[speaker_key, key],
                         nearby_words=_nearby_words(
-                            nearby_word_counts.get(key, Counter()),
+                            member_nearby_word_counts.get((speaker_key, key), Counter()),
                         ),
                     )
                     for key, count in _sorted_counts(counts)
