@@ -52,7 +52,6 @@ from .qq.qq_connection_service import (
     QQConnectionStatus,
 )
 from .qq.qq_environment_config import QQEnvironmentConfig
-from .qq.qq_setup_service import QQSetupStatus
 from .echo_report_export import (
     ECHO_REPORT_HTML_NAME,
     _require_no_reparse_points,
@@ -546,28 +545,6 @@ class ChatAnalyzerFacade:
         with _translated_errors(chat_source):
             return service.check_status()
 
-    def get_qq_setup_status(self) -> QQSetupStatus:
-        """Report whether the QQ environment config is usable."""
-        service = self._require_qq_setup_service()
-        with _translated_errors(ChatSource.QQ):
-            return service.check_setup()
-
-    def get_qq_environment_config(self) -> QQEnvironmentConfig:
-        """Return the effective QQ environment config for prefill.
-
-        The GUI uses this only to prefill the setup dialog, never to read or
-        write the configuration itself.
-        """
-        service = self._require_qq_setup_service()
-        with _translated_errors(ChatSource.QQ):
-            return service.get_environment_config()
-
-    def setup_qq_environment(self, config: QQEnvironmentConfig) -> Any:
-        """Save a QQ environment config and re-check the connection."""
-        service = self._require_qq_setup_service()
-        with _translated_errors(ChatSource.QQ):
-            return service.save_environment(config)
-
     def set_qq_install_path(self, path: str | Path) -> Any:
         """Persist a user-selected QQ.exe path as the first discovery source.
 
@@ -588,12 +565,6 @@ class ChatAnalyzerFacade:
             return service.save_environment(
                 replace(config, qq_install_path=candidate, qq_install_path_explicit=True)
             )
-
-    def get_qq_runtime_status(self) -> Any:
-        """Return the current QQ runtime lifecycle status."""
-        service = self._require_qq_setup_service()
-        with _translated_errors(ChatSource.QQ):
-            return service.get_runtime_status()
 
     def get_qq_connection_snapshot(self) -> ConnectionSnapshot:
         """Report the QQ connection lifecycle without starting anything.
