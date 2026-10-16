@@ -178,6 +178,7 @@ DOMAIN_MODULES = {
         "test_qq_napcat_runtime_bootstrap",
         "test_qq_napcat_upgrade",
         "test_qq_private_unknown_sender",
+        "test_qq_pic_probe",
         "test_qq_process_detection",
         "test_qq_process_ownership_recovery",
         "test_qq_process_registry",
