@@ -1,81 +1,79 @@
 # Echo 发布与维护状态
 
-## 0.2.0 标准自动更新收敛与发布（2026-10-14）
-
-独立分支从最新 main 保留 A2/A3，集成 P1 正式 GitHub 源与 `Lindreams.Echo` 身份；
-打包默认身份与应用统一，歧义数字版本形状的 packId 在 vpk 前拒绝，普通点号身份保留。
-用户确认后仍要求完整业务清理成功和更新包复验，再使用官方 Velopack 1.2.161 安装并
-自动重启。PR #45 保留为历史实验，不作为本路径的 Broker/IPC/启动准入依赖。
-隔离真实 A 0.2.0 → B 0.2.1、自动启动、五项 SUCCESS、A/B 原生退出 0、文件与虚构
-数据哈希及实验卸载保留数据已验证。PR #46 已合并到 main，
-v0.2.0 tag、Release 与五个正式资产已发布；发行前最终 Full、发行专项及封印检查均通过。环境字典资源已按授权修复。
-之前的唯一偶发 QQ 虚构插件连接中止测试本次复核通过；保留历史记录，不把部分验证扩大为所有设备通过。
-详细验证、实际 packId 根因与发行边界见
-[标准更新收敛记录](research/2026-10-14-standard-update-convergence.md)。
-
-## A2.1 / A2.2 工作树验证（2026-10-12，未合入、未发布）
-
-基于 `e6e778c` 的独立短期分支修改正常退出与清理结果契约。游戏本源码首页关闭
-从此前三轮中两轮访问冲突，改善为收口专项十五轮均退出 0；超时/watchdog 与虚构自有
-helper 已做真实子进程验证。轻薄本、Frozen/Setup 尚未重验，原生崩溃的具体 DLL
-根因仍未确认，不能扩大为跨设备或发行验收通过。
-更新只接受成功的资源证据；已有 QQ/微信生命周期缺口保持 UNKNOWN，尚未应用更新。
-此前 Fast/Full 的两项失败已定位为旧 editable 注册与旧 GitHub 地址断言；
-收口仅刷新本项目注册并修正测试地址，未修改正确的生产入口。
-收口 focused 483 passed、Fast 3820 passed、Full 4244 passed；Full 的 30 个跳过
-与既有 Pillow 警告不算相应能力验收，以上最终回归命令进程退出码均为 0。
-最终回归与结果契约见 [A2 审计](research/2026-10-12-a2-exit-contract.md)。
-
-## A1 Setup 工作树验证（2026-10-12，未发布）
-
-本工作树集成 Velopack 1.2.161 Bootstrap 与现有 onedir 的 Setup 打包流程。
-隔离测试安装、首次/再次启动、三类 Hook 不启动 GUI、版本一致、数据目录分离及卸载后
-虚构数据保留已实测。源码与 Frozen 的正常关闭捕获到 `0xC0000005`。
-同一 A1 环境下，原始 main `1aeb199` 与 A1 源码各 3/3 复现；A1 未改变既有退出链路，
-未发现新增退出回归。该异常记录为既有风险，原生根因仍未确认，不能记为关闭验收通过。
-软件内更新与更新重启编排尚未实现；A2 开始前需处理退出问题及明确分发/信任策略。
-文件范围、自动化结果与证据边界见 [A1 审计](research/2026-10-12-windows-setup-a1.md)。
-
-> 本文记录 **v0.1.0 发布后**的交付事实、已知限制和近期待办，不再作为“发布前阻断清单”。
-> 2026-10-14 起本文包含 v0.2.0 正式发布状态。
-> 历史的上线前 Hardening 工作地图已原样保存到 [2026-10-10 发布前快照](research/2026-10-10-pre-release-hardening-snapshot.md)；其中的“当前”“未发布”“未合入”只描述当时的状态。
+本文只维护当前发布基线、现存风险及验证证据边界。核对日期：2026-10-16。
+当前实现与已发布二进制分开判断；历史研究中的“未合入／未发布”只描述记录当时。
+架构与数据语义见 [ARCHITECTURE](../ARCHITECTURE.md)、
+[DATA_SEMANTICS](../DATA_SEMANTICS.md)，开发操作见 [DEVELOPMENT](../DEVELOPMENT.md)；
+后续安排由负责人确认并在 [ROADMAP](ROADMAP.md) 维护。
 
 ## 当前发布基线
 
-- **当前已发布：** [Echo v0.2.0](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.0)（**正式版本，非 Pre-release**），Windows x64 Setup，并支持软件内发现、下载、校验、安装和自动重启的标准更新流程。
-- **代码锚点：** v0.2.0 tag 对应发行准备提交 `fab1eb2e997ad8efc6ee5451d378f21afbc9628b`（基于 main `0a178f10580fa857faef04ca3f7eefdbd96e0533`）；项目版本源为 `pyproject.toml`。历史版本 [Echo v0.1.0](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.1.0)（Pre-release，Windows x64 Portable ZIP，tag 对应 `0322e6a4755f3a9ce4d864e7db4bae08087f806c`）继续保留。
-- **发行资产：** `Echo-0.2.0-windows-x64-Setup.exe` 及 `.sha256`，以及 Velopack Full 包 `Lindreams.Echo-0.2.0-win-x64-stable-full.nupkg`、channel 索引 `releases.win-x64-stable.json` 和 `SHA256SUMS.txt`。Setup SHA256 为 `c9140b85284295c41eeec19ad26ea7f7b154b41a5d184d99f2ccda3595cd54e8`。
-- **签名状态：** 2026-10-14 发布的 Setup 与主程序未签名（Authenticode: NotSigned），Windows 可能提示未知发布者或 SmartScreen；SHA256 仅用于校验文件一致性。
-- **QQ 组件：** `main` 已锁定 NapCat `4.18.34`，运行时及 Echo patch 的版本和文件哈希以 `scripts/qq_napcat_runtime_pins.json` 为准；不要再沿用旧工作树的 4.18.33 状态描述。
-- **运行数据：** 用户报告与运行状态保存在独立的本地用户目录；版本升级、安装或卸载方案必须保护这部分数据。
+- [v0.2.0](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.0)
+  于 2026-10-14 正式发布，非 Draft／Pre-release；本次 GitHub 查询仍为最新正式版本。
+  本地与远端 tag 均指向 `fab1eb2e997ad8efc6ee5451d378f21afbc9628b`，
+  不把当前工作分支等同于该发行源码。
+- 五个资产已在线核对：`Echo-0.2.0-windows-x64-Setup.exe`、
+  `Echo-0.2.0-windows-x64-Setup.exe.sha256`、
+  `Lindreams.Echo-0.2.0-win-x64-stable-full.nupkg`、
+  `releases.win-x64-stable.json`、`SHA256SUMS.txt`。
+  Setup 公开 SHA256 为 `c9140b85284295c41eeec19ad26ea7f7b154b41a5d184d99f2ccda3595cd54e8`。
+  本次核对 Release 元数据、校验清单及 feed 身份／大小／哈希的一致性，未重新下载二进制或复做发行验收。
+- v0.2.0 交付 Windows x64 Setup 与应用内发现、下载、校验、安装和自动重启；
+  正式更新身份为 `Lindreams.Echo`／`win-x64-stable`。
+  [v0.1.0](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.1.0)
+  Portable Pre-release 保留，不能应用内升级到 Setup，需手动安装。
+- 发行记录中的 Setup 与主程序未做 Authenticode 签名；本次未重新检查二进制签名。
+  SHA256 证明文件一致性，不代替发布者签名或跨机器兼容性验证。
+- 当前源码锁定 NapCat 4.18.34 与 Echo patch；资产合同见
+  [runtime pins](../scripts/qq_napcat_runtime_pins.json)。
+  当前源码保留本地 Echo Report 文件分享，独立纪念卡图片生成已退休；
+  既有图片不迁移或删除，不据此改写 v0.2.0 已发布包的行为。
 
-## 已交付与仍需跟踪
+## Shutdown 与安装安全边界
 
-| 事项 | 当前事实与边界 |
+普通退出可以在有界清理后离开；退出完成、窗口消失或退出码为 0，均不单独构成安装授权。
+更新须经用户确认、空闲及安装身份检查、关闭任务入口、该次 shutdown 证据和包复验，
+才调用官方 Velopack 交接并重启。软件内卸载同样要求可信清理与当前安装核验；
+升级／卸载不得删除用户报告与配置，也不得管理用户自己的 QQ／微信进程。
+
+[ShutdownResult](../src/qq_chat_analyzer/application/shutdown_models.py) 的安装准入要求以下五项
+各出现恰好一次且全部为 SUCCESS：Direct DB 清理、保留的临时报告清理、QQ runtime 终止与凭据退役、
+来源生命周期、GUI workers 静止。缺项、重复项、未知项、FAILED、TIMED_OUT 或 UNKNOWN 均拒绝；
+普通汇总 status 为 SUCCESS 并不单独证明证据完整，历史缓存或调用方伪造结果不能替代本次关闭。
+
+未使用的生产来源可通过已知无资源路径证明空闲；已使用来源缺少完整停止／drain 证明时保持 UNKNOWN。
+微信 helper 进程树退出、Python reader／PIPE／句柄释放与 Node CleanupHook 完成是不同证据：
+前两项成功不证明最后一项。UNKNOWN 是证据不足时正确的安全结果，不应为了让更新可用而改成 SUCCESS。
+
+## 现存风险与验证缺口
+
+以下按当前源码或已有记录描述，不将“存在风险”写成已发生用户损失，也不反推所有缺口均存在于发行包。
+
+| 事项 | 已知事实与尚未证明的范围 |
 | --- | --- |
-| **REL-06 / QA-03：Setup 与 GitHub Release** | v0.2.0 已发布，Tag、Release 和五个正式资产齐备；不再记作发布前阻断。 |
-| **REL-06C：NapCat / QQ 链路** | 4.18.34 及相关安全、代际隔离和连接收敛成果已进入 main；发布后仍需收集不同 Windows / QQ 环境的兼容性证据。 |
-| **QA-04：检查与安装更新** | v0.2.0 已接入固定官方更新源（Velopack 1.2.161，身份 `Lindreams.Echo` / 渠道 `win-x64-stable`）：软件内发现、下载、校验，用户确认后依赖完整清理证据安装并重启；清理失败、超时或状态未知时拒绝安装。v0.1.0 Portable 不能应用内升级，需手动安装 Setup。 |
-| **QA-06：跨机器兼容** | 本机与部分真实用户的 QQ / 微信基本使用已验证；另有 QQ 进程冲突检测导致无法连接的机器，根因未确认。不得把部分通过扩大为所有设备通过。 |
-| **QA-01：发行与真实验收** | v0.2.0 已完成发布，包含隔离 Setup 安装/启动/卸载与虚构数据保留验证；保留未覆盖场景和已知兼容性问题，不倒填“全场景通过”。 |
-| **REL-07：桌面 GUI** | 基础入口已交付；真实使用反馈与小范围易用性优化进入后续版本。 |
-| **REL-08：分享** | 保留本地 Echo Report 文件分享；独立纪念卡图片生成已退休，既有图片不迁移或删除。 |
-| **历史风险：GUI native access violation** | 曾有偶发原生崩溃、根因未确认；没有新复现证据前保留记录，不称已修复，也不凭历史现象推断当前必然复现。 |
-| **第三方许可** | MPL-2.0、NOTICE 与第三方声明已经纳入交付；历史第三方资产来源与授权边界不能仅凭仓库声明视为全面法律审计通过，详见发布前快照。 |
+| QQ 跨机器兼容性 | 已有本机及部分用户基本使用证据；另有机器因 QQ 进程冲突检测无法连接，根因未确认。保留真实兼容性问题，不称已修复，不扩大为所有 Windows／QQ 环境通过。 |
+| 微信 shard 完整性 | **已确认的错误处理缺口／潜在漏读风险**：`_table_exists()` 将 WeChatDatabaseError 转为 False，故障 shard 可能被视为不存在目标表。正常多 shard 合并已有测试，不证明异常时读取完整；未确认真实数据丢失。会话计数的独立 unknown 处理也不能代替消息读取的完整性证明。 |
+| 来源生命周期与 CleanupHook | **证据缺口**：已有 helper 所有权、退出与资源回收检查，但已使用 QQ／微信来源仍缺全局生命周期证明，Node CleanupHook 也无可信完成证明。相关 UNKNOWN 拒绝安装是当前预期边界，不是已确认的资源泄漏；补证前不得放宽准入。 |
+| 微信断开与写回并发 | **验证不足／潜在竞态**：取钥请求有 generation 与提交锁，但 disconnect、独立配置保存与在途取钥写回的完整并发行为未充分验证。局部代际保护不等于所有取消／断开顺序安全；目前不声称已发生密钥回写或用户数据损坏。 |
+| UserProfile repr | **已确认的隐私防护缺口**：默认 dataclass repr 包含 speaker、speaker_key、昵称等字段；DTO 的 repr=False 不覆盖下游全部模型。不得记录／上传这些对象；尚无由此已泄漏真实信息的证据，全面 repr 防护与回归仍待补齐。 |
+| GUI 原生退出异常 | 历史出现过 `0xC0000005`；后续隔离源码与 Setup 更新实验有正常退出证据，但具体原生根因未确认。不能称所有环境已修复，也不能凭旧现象断言当前必然复现；任意 native hang 与长期稳定性仍非已验收保证。 |
+| 微信 runtime 迁移边界 | 当前已有统一的 CLI／DLL 成对解析，且有[不自动混配的回归](../tests/test_wechat_environment_config.py)，不能照搬历史“逐项补路径造成混配”的缺陷结论。配置仍不能区分旧 bundled 与用户 custom：完整旧路径保留，半有效配置不自动补齐；这是保守兼容边界，不等于全部迁移场景已真人验收。 |
+| 第三方图片来源与授权 | [NOTICE](../NOTICE.md) 已披露 QQ 图片来源边界：仅部分图片有明确同步记录，其余逐文件来源未核实；尚无可核实的权利人再分发／修改授权。来源披露、代码 MIT 或 Echo MPL-2.0、非商业运营均不能作为图片已获授权的证明。其他第三方材料仍受各自许可约束，不能称已全面合规审查。 |
 
-## 下一阶段：代码与测试的减法治理
+## 验证证据及边界
 
-**阶段主题：系统性减少代码与测试中经证实的冗余，以行为不变为前提。具体版本号待人工确认后再定。**
+| 证据 | 可以支持的结论与限制 |
+| --- | --- |
+| [标准更新收敛记录](research/2026-10-14-standard-update-convergence.md) | 记录隔离 A 0.2.0 → B 0.2.1 的实际安装更新、自动启动、五项 SUCCESS、A/B 原生退出 0、文件及虚构数据哈希、实验卸载保留数据。实验改用了隔离身份、本地 feed 和用户目录，不能当作全部生产来源连接后或跨机器通过。该记录结束时尚未发布，后续正式发布由上面的 Release 证明。 |
+| [A2 退出合同记录](research/2026-10-12-a2-exit-contract.md) | 保存正常／兜底退出、完整证据与 UNKNOWN 拒绝的历史验证。其“首页不批准更新”和早期 helper 所有权缺口描述属于当时版本；当前已有未连接来源的完整空闲路径及 helper 资源治理，不能原样作为当前结论。 |
+| [A4 卸载记录](research/2026-10-14-a4-setup-uninstall.md) | 记录隔离安装卸载与虚构数据保留；部分拒绝分支只有自动化证据，GUI 原生退出码未在该轮人工报告直接记录，不能据此补写全部卸载场景通过。 |
+| 现役回归 | [shutdown](../tests/test_shutdown_results.py)、[空闲证据](../tests/test_idle_shutdown_evidence.py)、[安装交接](../tests/test_update_install_handoff.py)、[微信 helper 资源](../tests/test_wechat_key_helper_resources.py)、[shard](../tests/test_wechat_db_source.py) 分别保护其合同；测试存在或局部通过不代表发行二进制与真人场景已重新验收。 |
 
-- 减法治理优先处理已有代码、测试和文档中可证实的重复与过时内容；不主动安排新大型功能或新数据来源。
-- 删除前先证明没有损失行为边界与历史故障覆盖；不以删掉代码/测试数量作为 KPI。
-- 纯重构以行为保持为前提，与功能变更分离提交；没有明确范围时不启动大规模整理。
-- 继续跟踪 v0.2.0 发布后的真实使用反馈与跨机器兼容性问题。
-- 长期版本主题与 1.0.0 的新功能目标详见 [ROADMAP.md](ROADMAP.md)。AI 能力继续留待 2.0 讨论。
+发行收尾提交 `ee8556a` 记录最终 Full、发行专项及封印检查通过；
+标准更新研究保留了此前一次 Full 的回环连接中止失败及节点／文件重跑通过记录，
+两者属于不同时间的验证，不能用重跑覆盖原失败或声称偶发根因已查明。
+本次仅核对公开发行信息、现役源码和测试覆盖位置，未运行 Full、构建或真人验收。
 
-## 工作与证据边界
-
-- `ARCHITECTURE.md` / `DATA_SEMANTICS.md` 分别是当前架构和数据语义事实源；发布资产与功能实现必须逐项核验，不以文档代替测试。
-- `docs/BUG_JOURNAL.md` 只记已定位并验证的工程问题。新的可复现问题宜使用 GitHub Issue 跟踪；请只提供虚构样本或脱敏的统计，不公开真实聊天数据、日志、私人路径及凭证。
-- 发布完成不代表跨机器、长时间稳定性、全部分享体验都已通过；自动化、Frozen、真实使用和 Release 是不同的验证层级。
-- 发布前 `REL-06/07/08`、`QA-01/03/04/06` 原始状态、测试快照、工作树记录和历史风险均保存在[历史快照](research/2026-10-10-pre-release-hardening-snapshot.md)，不在这里改写历史结论。
+历史故障根因见 [BUG_JOURNAL](BUG_JOURNAL.md)；新增问题只提供虚构样本或脱敏统计，
+不公开真实聊天、日志、私人路径和凭据。后续修复、签名与第三方资产的授权补证／替换／停止分发
+由负责人确定范围；不在本文复制未来功能计划，也不因文档订正宣告风险关闭。
