@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from statistics import median
 
 from ..message import ChatMessage
@@ -39,8 +39,8 @@ class ConversationSession:
     duration_seconds: int
     message_count: int
     participant_count: int
-    initiator: str
-    initiator_sender_key: str | None = None
+    initiator: str = field(repr=False)
+    initiator_sender_key: str | None = field(default=None, repr=False)
     initiator_is_self: bool | None = None
     self_message_count: int | None = None
     peer_message_count: int | None = None
@@ -73,7 +73,7 @@ class GroupSessionStats:
 
     self_initiated_count: int | None
     self_initiated_share: float | None
-    top_initiator_sender_key: str | None
+    top_initiator_sender_key: str | None = field(repr=False)
     top_initiated_count: int
     top_initiated_share: float
 

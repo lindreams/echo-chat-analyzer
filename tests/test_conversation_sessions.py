@@ -55,6 +55,20 @@ def test_gap_over_thirty_minutes_starts_new_session() -> None:
     assert tuple(item.message_count for item in report.sessions) == (1, 1)
 
 
+def test_group_session_repr_hides_initiator_without_changing_statistics():
+    from dataclasses import asdict
+
+    report = analyze_conversation_sessions((
+        _message(0, sender="fictional-private-name", sender_id="fictional-private-key",
+                 conversation_type="group"),
+    ))
+    assert "fictional-private" not in repr(report)
+    assert asdict(report)["sessions"][0]["initiator"] == "fictional-private-key"
+    assert report.sessions[0].initiator_sender_key == "fictional-private-key"
+    assert report.group_stats.top_initiator_sender_key == "fictional-private-key"
+    assert report.group_stats.top_initiated_count == 1
+
+
 def test_gap_exactly_thirty_minutes_stays_in_same_session() -> None:
     report = analyze_conversation_sessions((_message(0), _message(30 * 60)))
 

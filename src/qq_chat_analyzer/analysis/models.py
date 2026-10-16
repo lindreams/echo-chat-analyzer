@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 from .conversation_sessions import ConversationSessionReport
@@ -78,7 +78,7 @@ class ConsecutiveRunStats:
 class ProfileWord:
     """One frequent word attributed to a single speaker."""
 
-    word: str
+    word: str = field(repr=False)
     count: int
 
 
@@ -86,7 +86,7 @@ class ProfileWord:
 class UserProfile:
     """Combined activity and length profile for one speaker."""
 
-    speaker: str
+    speaker: str = field(repr=False)
     message_count: int
     message_share_percent: float
     average_length: float
@@ -94,13 +94,13 @@ class UserProfile:
     busiest_hour: int | None = None
     busiest_weekday: int | None = None
     top_words: tuple[ProfileWord, ...] = ()
-    display_name: str | None = None
+    display_name: str | None = field(default=None, repr=False)
     hourly_counts: tuple[HourlyActivity, ...] = ()
     weekday_counts: tuple[WeekdayActivity, ...] = ()
-    speaker_key: str | None = None
-    remark: str | None = None
-    nickname: str | None = None
-    contextual_name: str | None = None
+    speaker_key: str | None = field(default=None, repr=False)
+    remark: str | None = field(default=None, repr=False)
+    nickname: str | None = field(default=None, repr=False)
+    contextual_name: str | None = field(default=None, repr=False)
     median_length: float = 0.0
     consecutive_runs: ConsecutiveRunStats | None = None
 
@@ -131,7 +131,7 @@ class DistinctiveWordAvailability(str, Enum):
 class DistinctiveWord:
     """One member word ranked by smoothed log-odds z-score."""
 
-    word: str
+    word: str = field(repr=False)
     count: int
     member_rate: float
     others_rate: float
@@ -143,7 +143,7 @@ class DistinctiveWord:
 class MemberDistinctiveWords:
     """Distinctive words for one member who passed sample thresholds."""
 
-    speaker_key: str
+    speaker_key: str = field(repr=False)
     tokenized_message_count: int
     token_count: int
     eligible_word_candidate_count: int
@@ -168,9 +168,9 @@ class DistinctiveWordReport:
 class PrivateSharedWord:
     """One word both private sides used, with normalized per-side statistics."""
 
-    word: str
-    speaker_a: str
-    speaker_b: str
+    word: str = field(repr=False)
+    speaker_a: str = field(repr=False)
+    speaker_b: str = field(repr=False)
     count_a: int
     count_b: int
     total_tokens_a: int
@@ -178,7 +178,7 @@ class PrivateSharedWord:
     rate_a: float
     rate_b: float
     common_strength: float
-    preferred_speaker_key: str | None
+    preferred_speaker_key: str | None = field(repr=False)
     occurrence_support: int
 
 
@@ -193,13 +193,13 @@ class PrivateLanguageReport:
 class ConversationSummary:
     """Volume, span, and participation for one conversation."""
 
-    conversation_id: str | None
+    conversation_id: str | None = field(repr=False)
     message_count: int
     speaker_count: int
     start_timestamp: int | None = None
     end_timestamp: int | None = None
     duration_seconds: int | None = None
-    display_name: str | None = None
+    display_name: str | None = field(default=None, repr=False)
 
     @property
     def resolved_display_name(self) -> str:
@@ -240,7 +240,7 @@ class AnalysisReports:
 class ExpressionNearbyWord:
     """One word that often appears in the same message as an expression."""
 
-    word: str
+    word: str = field(repr=False)
     count: int
 
 
@@ -269,7 +269,7 @@ class ExpressionCombinationMember:
 class ExpressionCombinationMemberCount:
     """How often one sender used an expression combination."""
 
-    speaker_key: str
+    speaker_key: str = field(repr=False)
     count: int
 
 
@@ -289,7 +289,7 @@ class ExpressionCombinationUsage:
 class MemberExpressionUsage:
     """Expression frequency and composition for one stable speaker."""
 
-    speaker_key: str
+    speaker_key: str = field(repr=False)
     expression_occurrence_count: int
     expression_message_count: int
     expression_share_percent: float

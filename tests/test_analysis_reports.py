@@ -19,6 +19,48 @@ def _models():
     return importlib.import_module("qq_chat_analyzer.analysis.models")
 
 
+def test_user_profile_repr_hides_identity_and_words_without_changing_payload():
+    models = _models()
+    identities = dict(speaker="fictional-private-speaker", speaker_key="fictional-private-key",
+                      display_name="fictional-private-display", remark="fictional-private-remark",
+                      nickname="fictional-private-nickname", contextual_name="fictional-private-context")
+    profile = models.UserProfile(
+        **identities, message_count=3, message_share_percent=100, average_length=4, max_length=5,
+        top_words=(models.ProfileWord("fictional-private-word", 2),),
+    )
+    reports = models.AnalysisReports(user_profiles=models.UserProfileReport(3, 1, (profile,)))
+    assert "fictional-private" not in repr(reports)
+    assert "fictional-private" not in repr(profile.top_words[0])
+    payload = dataclasses.asdict(profile)
+    assert {key: payload[key] for key in identities} == identities
+    assert payload["top_words"] == ({"word": "fictional-private-word", "count": 2},)
+    assert profile.resolved_display_name == identities["display_name"]
+    assert profile.message_count == 3
+
+
+@pytest.mark.parametrize("name, values", [
+    ("MemberDistinctiveWords", dict(speaker_key="fictional-private-key", tokenized_message_count=2,
+                                    token_count=3, eligible_word_candidate_count=1)),
+    ("PrivateSharedWord", dict(word="fictional-private-word", speaker_a="fictional-private-a",
+                               speaker_b="fictional-private-b", preferred_speaker_key="fictional-private-a",
+                               count_a=2, count_b=3, total_tokens_a=4, total_tokens_b=5,
+                               rate_a=.5, rate_b=.6, common_strength=.5, occurrence_support=5)),
+    ("ConversationSummary", dict(conversation_id="fictional-private-room", display_name="fictional-private-name",
+                                 message_count=3, speaker_count=2)),
+    ("ExpressionCombinationMemberCount", dict(speaker_key="fictional-private-key", count=2)),
+    ("MemberExpressionUsage", dict(speaker_key="fictional-private-key", expression_occurrence_count=2,
+                                   expression_message_count=2, expression_share_percent=100,
+                                   expression_only_message_count=1)),
+    ("DistinctiveWord", dict(word="fictional-private-word", count=2, member_rate=.5,
+                             others_rate=.1, relative_ratio=5, ranking_score=1)),
+    ("ExpressionNearbyWord", dict(word="fictional-private-word", count=2)),
+])
+def test_adjacent_core_report_repr_hides_identity_and_retains_fields(name, values):
+    model = getattr(_models(), name)(**values)
+    assert "fictional-private" not in repr(model)
+    assert {key: dataclasses.asdict(model)[key] for key in values} == values
+
+
 def _analyzers():
     return importlib.import_module("qq_chat_analyzer.analysis.analyzers")
 
