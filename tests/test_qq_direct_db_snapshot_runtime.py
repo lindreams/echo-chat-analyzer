@@ -148,7 +148,7 @@ function buildCore() {
           }
           if (config.decrypt === 'no-output') return true;
           fs.mkdirSync(path.dirname(target), { recursive: true });
-          fs.writeFileSync(target, 'fictional-sqlite-db');
+          fs.copyFileSync(config.snapshotPath, target);
           if (config.decryptMutateUin !== undefined) {
             core.selfInfo.uin = config.decryptMutateUin;
           }
@@ -257,7 +257,9 @@ def _run_node(root: Path, config: dict, driver_dir: Path | None = None) -> dict:
             writer.execute("INSERT INTO entries VALUES('fictional')")
             writer.commit()
             _run('fixture', plain, Path(f'{plain}-wal'), source / 'nt_msg.db', source / 'nt_msg.db-wal')
-        config = {**config, 'sourceDirectory': str(source)}
+        snapshot = source / 'decrypted.db'
+        _run('snapshot', source / 'nt_msg.db', source / 'nt_msg.db-wal', snapshot)
+        config = {**config, 'sourceDirectory': str(source), 'snapshotPath': str(snapshot)}
         completed = subprocess.run(
             [NODE, str(driver), str(root), json.dumps(config)],
             capture_output=True, text=True, encoding='utf-8', check=False, timeout=30,

@@ -103,6 +103,118 @@ def test_formal_append_after_boundary_succeeds(fictional_source):
         assert db.execute("SELECT body FROM entries").fetchone() == ("fictional selected",)
 
 
+def test_published_single_file_needs_no_wal_or_shm(fictional_source):
+    """A merged WAL image must remain readable when sidecars cannot be created."""
+    import sqlite3
+    from qq_chat_analyzer.providers.qq_database_provider import QQDatabaseProvider
+
+    main, wal, output = fictional_source
+    original = (main.read_bytes(), wal.read_bytes())
+    def driver(program):
+        return _formal(program).replace(
+            'fs.writeFileSync(target,Buffer.concat(pages));',
+            "fs.writeFileSync(target,Buffer.concat(pages));fs.copyFileSync(target,outputPath+'.raw');")
+
+    result = _interleave(fictional_source, 'appendFrame(false);', driver_transform=driver)
+    assert result['ok'], result
+    # Deterministically deny SQLite's auxiliary file namespace, without changing
+    # the user's ACLs or requiring administrator privileges on Windows.
+    Path(f'{output}-wal').mkdir()
+    Path(f'{output}-shm').mkdir()
+    assert QQDatabaseProvider.quick_check(output) == 'ok'
+    with sqlite3.connect(f'{output.as_uri()}?mode=ro', uri=True) as reader:
+        assert reader.execute('PRAGMA integrity_check').fetchone() == ('ok',)
+        assert reader.execute('SELECT body FROM entries').fetchone() == ('fictional selected',)
+    header = output.read_bytes()[:100]
+    assert header[18:20] == b'\x01\x01'
+    assert header[20] == 48
+    assert int.from_bytes(header[28:32], 'big') == output.stat().st_size // 4096
+    raw = Path(f'{output}.raw').read_bytes()
+    final = output.read_bytes()
+    assert raw[18:20] == b'\x02\x02'
+    assert raw[:18] == final[:18] and raw[20:] == final[20:]
+    assert main.read_bytes() == original[0]
+    assert wal.read_bytes().startswith(original[1])
+
+
+@pytest.mark.parametrize('mutation', [
+    "fs.truncateSync(target,4096);",
+    "fs.appendFileSync(target,Buffer.alloc(4096));",
+    "const b=fs.readFileSync(target);b[0]^=1;fs.writeFileSync(target,b);",
+    "const b=fs.readFileSync(target);b[19]=3;fs.writeFileSync(target,b);",
+    "const b=fs.readFileSync(target);b[19]=1;fs.writeFileSync(target,b);",
+    "const b=fs.readFileSync(target);b.writeUInt32BE(99,28);fs.writeFileSync(target,b);",
+    "fs.writeFileSync(target+'-wal','fictional unexpected WAL');",
+    "fs.linkSync(target,outputPath+'.alias');",
+])
+def test_invalid_decrypted_image_is_not_published(fictional_source, mutation):
+    def driver(program):
+        return _formal(program).replace(
+            'fs.writeFileSync(target,Buffer.concat(pages));',
+            'fs.writeFileSync(target,Buffer.concat(pages));' + mutation)
+
+    result = _interleave(fictional_source, '', driver_transform=driver)
+    assert not result['ok'] and result['code'] == 'decrypt_failed', result
+    assert result['manifest'] is None
+    assert result['stagingCleaned'] and result['recovered']
+    assert not fictional_source[2].exists()
+
+
+@pytest.mark.parametrize('corrupt', [False, True])
+def test_encrypted_wal_capture_reaches_sessions_and_report(tmp_path, corrupt):
+    """Drive synthetic encrypted pages through publication and the real facade."""
+    import sqlite3
+    from contextlib import closing
+    from test_qq_direct_main_wal_poc import _reserve_48_bytes, _run
+    from test_qq_direct_database_facade import _create_plaintext_snapshot
+    from qq_direct_db_testing import FakeSnapshotRuntime
+    from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
+    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade, ChatSource, AnalysisConfig, FacadeError
+    from qq_chat_analyzer.application.qq.qq_direct_database_import_service import QQDirectDatabaseImportService
+
+    plain, output = tmp_path / 'plain.db', tmp_path / 'snapshot.db'
+    source = tmp_path / 'source'
+    source.mkdir()
+    main, wal = source / 'encrypted.db', source / 'encrypted.db-wal'
+    _reserve_48_bytes(plain)
+    _create_plaintext_snapshot(plain)
+    with closing(sqlite3.connect(plain)) as writer:
+        writer.execute('PRAGMA journal_mode=WAL')
+        writer.execute('PRAGMA wal_autocheckpoint=0')
+        writer.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        # Include page growth and overflow pages in the committed view.
+        writer.execute('CREATE TABLE padding(body TEXT)')
+        writer.execute('INSERT INTO padding VALUES (?)', ('fictional ' * 9000,))
+        writer.execute('UPDATE group_msg_table SET "40050"="40050"+1')
+        writer.commit()
+        _run('fixture', plain, Path(f'{plain}-wal'), main, wal)
+        assert _acquire((main, wal, output))['ok']
+    if corrupt:
+        data = bytearray(output.read_bytes())
+        data[4096] = 0xff  # Invalid b-tree page type; a valid header cannot hide it.
+        output.write_bytes(data)
+    runtime = FakeSnapshotRuntime(tmp_path / 'consumer', snapshot_path=output)
+    facade = ChatAnalyzerFacade(
+        qq_service=QQDirectDatabaseImportService(runtime_client=runtime),
+        analysis_service=AnalysisApplicationService(),
+        stopwords_directory=Path(__file__).resolve().parents[1],
+    )
+    if corrupt:
+        with pytest.raises(FacadeError) as caught:
+            facade.list_sessions(ChatSource.QQ)
+        assert caught.value.code == 'qq_direct_snapshot_invalid'
+    else:
+        sessions = {s.session_type: s for s in facade.list_sessions(ChatSource.QQ)}
+        assert set(sessions) == {'group', 'private'}
+        for kind, session in sessions.items():
+            outcome = facade.analyze_session(ChatSource.QQ, session.session_id,
+                                            AnalysisConfig(output_directory=tmp_path / f'{kind}-report'))
+            assert outcome.result.processed_message_count == 1
+            assert outcome.report_path.is_file()
+    assert runtime.cleaned == runtime.acquired
+    assert not any((runtime.root / 'generations').glob('*'))
+
+
 @pytest.mark.parametrize('mode', ['merged-append', 'merged-replace'])
 def test_formal_changed_decrypt_input_never_publishes(fictional_source, mode):
     result = _acquire(fictional_source, mode=mode)

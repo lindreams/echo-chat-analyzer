@@ -93,3 +93,24 @@ def test_sqlite_failure_logs_privacy_safe_file_and_quick_check_diagnostics(
     assert "quick_check=error" in diagnostic
     assert str(tmp_path) not in diagnostic
     assert "fictional-not-a-sqlite-database" not in diagnostic
+
+
+@pytest.mark.parametrize('kind, category', [('missing', 'access'), ('corrupt', 'corrupt'), ('btree', 'integrity')])
+def test_quick_check_distinguishes_access_from_corruption(tmp_path, caplog, kind, category):
+    path = tmp_path / 'private-snapshot.db'
+    if kind == 'corrupt':
+        path.write_bytes(b'fictional private content, not SQLite')
+    elif kind == 'btree':
+        _create_group_database_with_blob(path, b'fictional')
+        data = bytearray(path.read_bytes())
+        # Inflate the freeblock count of the table leaf. It opens normally but
+        # quick_check returns an integrity row rather than throwing an exception.
+        page_size = int.from_bytes(data[16:18], 'big')
+        data[page_size + 7] = 61
+        path.write_bytes(data)
+    with caplog.at_level('WARNING', logger='qq_chat_analyzer.desktop.qq_database'):
+        assert QQDatabaseProvider.quick_check(path) != 'ok'
+    assert f'category={category}' in caplog.text
+    assert str(tmp_path) not in caplog.text
+    assert 'private-snapshot' not in caplog.text
+    assert 'fictional private content' not in caplog.text
