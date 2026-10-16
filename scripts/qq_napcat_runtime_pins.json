@@ -79,12 +79,12 @@
     {
       "source": "qq_direct_db_snapshot/snapshot.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/snapshot.mjs",
-      "sha256": "9cc6d3b36b57645a663ee7bf93ceea0bd4b1ae932c6aa91939553b20bd78e695"
+      "sha256": "76bc958499df1ba4dfce694ea60140637abbc45cf670e1e758c18a1f45e1e18e"
     },
     {
       "source": "qq_direct_db_snapshot/main_wal.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/main_wal.mjs",
-      "sha256": "8eb0c94429dd6db666fba8d9b04e11ddfdc6c361d9eb7ca228e87a377d807784"
+      "sha256": "6e3933d9ff74fb01415739d3287de38ee2e09905d7fae9e35289444e7f5acad9"
     },
     {
       "source": "qq_direct_db_snapshot/workspace.mjs",

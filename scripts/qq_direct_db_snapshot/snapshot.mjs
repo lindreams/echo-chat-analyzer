@@ -22,7 +22,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { unlinkSync, readFileSync } from 'node:fs';
-import { createMergedEncryptedDatabase, captureCodeHash, fileState as strongFileState } from './main_wal.mjs';
+import { createMergedEncryptedDatabase, finalizeStandaloneSnapshot, captureCodeHash, fileState as strongFileState } from './main_wal.mjs';
 import { createWorkspace, workspaceCodeHash } from './workspace.mjs';
 
 const snapshotCodeHash = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
@@ -434,6 +434,7 @@ export function createEchoSnapshotApi(core, options = {}) {
       // WAL prefix. NapCat only receives the validated, owned merged image.
       let failureStage = 'source_location';
       let captureWitness = {};
+      let capturedPages;
       try {
         const directory = databaseApi.getNtDbDir();
         if (typeof directory !== 'string' || !directory) {
@@ -443,7 +444,7 @@ export function createEchoSnapshotApi(core, options = {}) {
         failureStage = 'workspace_isolation';
         workspace.assertSourceSeparate(mainPath);
         failureStage = 'shm_witness';
-        createMergedEncryptedDatabase({
+        const capture = createMergedEncryptedDatabase({
           mainPath, walPath: `${mainPath}-wal`, outputPath: stagingMerged,
           onPhase: onCapturePhase,
           onDiagnostic: ({ failureStage: stage, ...witness }) => {
@@ -452,6 +453,7 @@ export function createEchoSnapshotApi(core, options = {}) {
             traceAcquisitionDiagnostic(stage, null, generationId, witness, false);
           },
         });
+        capturedPages = capture.pages;
         traceStage('main_wal_boundary_verified', generationId);
         traceStage('main_wal_capture_complete', generationId);
       } catch (error) {
@@ -504,6 +506,15 @@ export function createEchoSnapshotApi(core, options = {}) {
         const cleaned = discardStaging();
         logDiagnostic('decrypt_failed');
         return fail(cleaned ? CODES.DECRYPT_FAILED : CODES.CLEANUP_FAILED);
+      }
+
+      // Decryption has returned, the independently captured input stayed fixed,
+      // and our workspace lease excludes another producer/consumer. Finalize
+      // only this staging output before the generation becomes visible.
+      try { finalizeStandaloneSnapshot(stagingDatabase, capturedPages); }
+      catch {
+        logDiagnostic('decrypt_failed');
+        return fail(discardStaging() ? CODES.DECRYPT_FAILED : CODES.CLEANUP_FAILED);
       }
 
       // No encrypted intermediate may enter a published generation.
