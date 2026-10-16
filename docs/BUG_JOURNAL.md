@@ -1,12 +1,13 @@
 # Echo Bug Journal
 
-> **退休导航（2026-10-07）**：QCE 产品与文件输入能力已正式移除。
-> 下文 QCE payload、旧命令与已删除测试路径是历史证据，保持原样；现役架构与状态分别见
+> **退休导航（2026-10-07）**：QCE 产品入口及其文件输入兼容已正式移除，不代表所有本地文件分析入口退休。
+> 下文 QCE payload、旧命令与已删除测试路径仅作历史证据，不表示当前仍受支持；现役架构与状态分别见
 > [ARCHITECTURE](../ARCHITECTURE.md) 和 [HARDENING](HARDENING.md)。
 
 > **定位**：只记录「已经解决并验证」的真实工程问题。
 >
-> Active Bug 不放这里，放 `docs/HARDENING.md`（它同时承担 Active Bug Backlog）。
+> [HARDENING](HARDENING.md) 维护现存风险和验证缺口；尚未解决的问题按需要使用 Issue 跟踪。
+> 各条修复方式、测试清单与真人验收描述记录当时的证据，不自动构成当前实现或发行版本的保障。
 
 ## 固定模板
 
@@ -82,7 +83,7 @@ Provider 又独立选择了另一个 `session.db`；
 
 ### 11. 对应 regression test
 
-以下测试名称已通过 git history 在仓库中核实，由本次修复引入并保留：
+当时的回归清单；前两项节点现已删除，其余四项仍存在：
 
 - `tests/test_wechat_database_probe.py::test_probe_uses_the_same_key_for_all_unique_candidates`
 - `tests/test_wechat_database_recovery.py::test_probe_result_preserves_owning_account_data_root`
@@ -175,19 +176,23 @@ QCE aggregate `content.text` 永远代表用户真正输入的普通文本。
 
 ### 11. 对应 regression test
 
-以下测试名称已通过 git history 在仓库中核实，为本修复的永久回归要求：
+以下为历史回归清单；QCE adapter 测试文件及此处的旧 service 测试节点均已删除：
 
 - `tests/test_qq_chat_exporter_adapter.py::test_structured_expression_fallback_is_not_text_content`
 - `tests/test_qq_chat_exporter_adapter.py::test_mixed_expression_fallback_preserves_only_authored_text`
 - `tests/test_qq_chat_exporter_adapter.py::test_plain_text_named_like_expression_is_preserved`
 - `tests/test_analysis_reports_service.py::test_private_qce_expression_fallback_does_not_leak_into_voice_words`
 
-永久保留：
+当时保护的场景：
 
 - expression-only
 - mixed authored + expression
 - literal typed word
 - private profile regression
+
+现役来源的相关语义回归见 [test_expression_lexical_boundary.py](../tests/test_expression_lexical_boundary.py)
+及 `tests/test_analysis_reports_service.py::test_private_expression_tokens_do_not_reenter_language_profile`，
+不表示旧 QCE 入口继续受支持或旧清单逐项保留。
 
 ### 历史状态
 
@@ -308,7 +313,8 @@ hyphenated ASCII protection 比 expression masking 先执行，
 
 ### 11. 对应 regression test
 
-以下测试名称已在当前测试文件中逐一核实，与本次修复直接相关：
+以下保留修复当时的测试名称；mapping 测试文件已删除，所列 tokenizer / adapter 节点也已删除，
+不能作为现役测试清单：
 
 `tests/test_wechat_official_emojis.py`（mapping 契约）：
 
@@ -331,7 +337,7 @@ hyphenated ASCII protection 比 expression masking 先执行，
 - `test_literal_english_words_without_brackets_are_preserved`
 - `test_every_alias_bracket_is_masked_as_an_expression`
   （对 110 个 alias 全量参数化，`[Pooh-pooh]` 的 preprocessing order
-  缺陷由它永久锁定）
+  缺陷当时由它锁定）
 - `test_newly_added_english_aliases_are_masked_as_expressions`
 - `test_newly_added_english_alias_never_leaks_into_language_tokens`
 - `test_undocumented_bracketed_english_stays_a_plain_word`
@@ -349,9 +355,14 @@ hyphenated ASCII protection 比 expression masking 先执行，
 - `test_every_alias_bracket_becomes_canonical_expression`
 - `test_plain_bracketed_english_stays_plain_text`
 
+现役表情与普通词统计隔离的相关覆盖见
+[test_expression_lexical_boundary.py](../tests/test_expression_lexical_boundary.py)
+及 `tests/test_analysis_reports_service.py::test_private_expression_tokens_do_not_reenter_language_profile`；
+这些断言不等同于上述历史 alias 全量契约逐项仍有覆盖。
+
 真实验收：
 
-朋友机器 / 真实 WeChat 数据使用最新版本复验通过：
+当时在朋友机器 / 真实 WeChat 数据上使用修复版本复验通过：
 原先的英文 expression names 不再进入语言画像，使用过程中未发现新 Bug。
 
 ### 历史状态
@@ -415,6 +426,8 @@ reply 自动 mention 与 structured mention display text 被当作普通正文�
 - `tests/test_qq_chat_exporter_adapter.py::test_plain_at_text_does_not_count_mention_display_emoji_as_authored_text`
 - `tests/test_qq_chat_exporter_adapter.py::test_plain_at_text_preserves_emoji_authored_after_mention`
 
+以上为历史证据，所属 QCE adapter 测试文件已随旧入口退休，不是当前回归入口。
+
 历史状态：CLOSED / merged。覆盖 commit：`d4d68f3`、`a9afca1`。
 
 ---
@@ -468,6 +481,8 @@ raw acquisition snapshot 可以安全地作为长期 cache / asset 被重新使�
 - `tests/test_full_session_transient.py::test_full_session_run_cleanup_after_consumer`
 - `tests/test_full_session_transient.py::test_full_session_exception_still_cleans_up`
 
+以上为历史证据，两个测试文件均已删除，不作为当前生命周期覆盖清单。
+
 历史状态：CLOSED / merged。覆盖 commit：`69eb42b`、`2194bba`。异常终止后的 orphan run directory 回收不在本项已完成范围内。
 
 ---
@@ -519,6 +534,8 @@ ALL 模式不传 bounds，因而没有触发单位错配；除此之外的历史
 - `tests/test_facade.py::test_wechat_export_scope_uses_seconds_not_milliseconds`
 - `tests/test_facade.py::test_wechat_export_keeps_none_when_scope_is_all`
 - `tests/test_facade.py::test_wechat_export_pushes_scope_time_window_to_provider`
+
+以上为历史证据，三个测试节点现已删除；不据此宣称当前仍有相同的端到端回归覆盖。
 
 历史状态：CLOSED / merged。覆盖 commit：`e9c2367`。
 
@@ -622,7 +639,9 @@ native CLI 将 no-limit / `limit=0` 解释为持续 step 到 statement done；Pr
 
 - `tests/test_wcdb_cli_unlimited.py::test_native_cli_without_positive_limit_returns_more_than_100000_rows`
 - `tests/test_wechat_db_source.py::test_read_session_rows_default_limit_is_unlimited`
-- `tests/test_wechat_db_source.py::test_export_session_json_default_limit_is_unlimited`
+
+以上两项仍存在。历史节点 `tests/test_wechat_db_source.py::test_export_session_json_default_limit_is_unlimited`
+现已删除，不计作当前回归覆盖。
 
 历史状态：CLOSED / merged。覆盖 commit：`87b4bae` 的 unlimited 部分。
 
@@ -675,7 +694,9 @@ QCE API adapter 是 Proxy，其未知方法 fallback 暴露可调用的 `then`�
 
 - `tests/test_qq_direct_db_snapshot_runtime.py::test_acquire_does_not_assimilate_database_api_adapter_as_a_thenable`
 
-状态：CLOSED / 真人验收通过；本轮尚未提交。
+上述节点为历史证据，现已删除。
+
+历史状态：CLOSED / 当时真人验收通过；修复已提交于 `c739434`，已进入当前分支历史。
 
 ---
 
@@ -730,7 +751,8 @@ Facade 按顺序清理 Direct DB 与 Echo 自有进程树，超时后有强制�
 - `tests/test_shutdown_ownership.py`
 - `tests/test_gui.py::test_main_window_close_owns_shutdown_without_waiting`
 
-状态：CLOSED / 真人验收通过；本轮尚未提交。
+历史状态：CLOSED / 当时真人验收通过；修复已提交于 `c739434`，已进入当前分支历史。
+上述测试文件与节点仍存在；当前 shutdown 安装准入及验证缺口以 [HARDENING](HARDENING.md) 为准。
 
 ---
 
@@ -790,32 +812,38 @@ GUI 列表、独立元数据历史、正式 package、默认 scratch 和来源 a
   正常替换、失败与 shutdown 清理；用户自定义输出、未知目录及外部 reparse target 不归其所有。
 - Local Data 删除完整 owned package；reopen 经 Facade / Catalog 安全定位 HTML，
   搜索只过滤内存 summaries，不读取报告正文，不隐藏 issues。
-- 新 package 发布成功后执行固定 max-50 retention，publisher 与 Catalog 共用 root；
+- 当时新 package 发布成功后执行固定 max-50 retention，publisher 与 Catalog 共用 root；
   时间未知 package 计数且优先淘汰，删除失败只继续原定淘汰集合，新报告仍成功并显示 warning。
+  此策略已在 `4c8c10f` 退休：当前保留报告，由用户主动管理和删除，不因数量超过 50 自动淘汰。
 - `tests/conftest.py` 的 autouse fixture 为每个测试设置 fake `LOCALAPPDATA`、`APPDATA`、
   home / XDG 目录并 patch `Path.home()`；测试 helper 显式注入临时 Catalog root，
   sentinel regression 覆盖默认 composition 和 packaging，禁止再碰真实用户数据。
 
 ### 9. 可推广的工程经验
 
-持久对象的列表、打开、删除与 retention 应共享磁盘 ownership 边界；
+持久对象的列表、打开、删除，以及当时的 retention 应共享磁盘 ownership 边界；
 GUI 视觉清空不能替代 filesystem 验证。测试隔离必须覆盖默认路径、composition 和 fallback，
 不能只依赖单个 helper；环境污染与产品缺陷需要分别取证。
 
 ### 10. 可以反向审计仓库的规则
 
-检查所有默认用户数据写入入口是否被 suite fixture 隔离；检查发布成功后才执行旧资产清理、
-目录 ownership / reparse 校验是否复用，以及公开成功状态是否如实附带清理失败 warning。
+检查所有默认用户数据写入入口是否被 suite fixture 隔离、目录 ownership / reparse 校验是否复用。
+当时自动淘汰链路还需验证发布成功后才清理旧资产、清理失败附带 warning；这不是当前报告发布后的自动清理要求。
 对未复现现象保留事实与未知，不把竞争假设写成最终根因。
 
 ### 11. 对应 regression test
 
-- `tests/test_gui_report_package_deletion.py::test_desktop_delete_all_changes_disk_and_refreshes_remaining_packages`
-- `tests/test_report_package_catalog.py`：metadata listing、损坏 package、ownership / reparse、reopen 与 retention。
-- `tests/test_facade.py::test_recovery_runs_once_before_first_default_scratch`
+- `tests/test_gui_report_package_deletion.py::test_desktop_checked_delete_changes_disk_and_preserves_unlisted_packages`：勾选删除作用于磁盘，保留未列出的 package。
+- `tests/test_report_package_catalog.py`：metadata listing、损坏 package、ownership / reparse、reopen 与报告保留；其中旧名带 retention 的测试实际断言 51 份报告均保留、旧 metadata 不改写。
+- `tests/test_facade.py::test_recovery_deletes_only_strict_owned_direct_children_and_continues`：严格限定自有 scratch 回收范围。
 - `tests/test_facade.py::test_retention_after_successful_publication_uses_injected_root_and_preserves_new`
 - `tests/test_facade.py::test_retention_publication_failure_never_calls_cleanup`
 - `tests/test_test_user_data_isolation.py::test_user_data_isolation`
-- `tests/test_gui.py`：Local Data 搜索、reopen、selection / keyboard 与 focus / hover 样式回归。
+- `tests/test_gui.py::test_local_data_search_reopen_keeps_identity_and_invalidates_selection`：Local Data 搜索、重开身份与选择失效。
 
-状态：CLOSED / 真人验收通过；本轮尚未提交。
+上列两个 Facade retention 测试名称沿用旧名：成功发布断言保留 50 份旧报告及新报告且不尝试删除；
+发布失败断言不清理旧报告，不代表仍执行 max-50。
+历史节点 `tests/test_gui_report_package_deletion.py::test_desktop_delete_all_changes_disk_and_refreshes_remaining_packages`
+与 `tests/test_facade.py::test_recovery_runs_once_before_first_default_scratch` 已删除，以上列出现役相关覆盖代替。
+
+历史状态：CLOSED / 当时真人验收通过；修复已提交于 `ec766f2`，已进入当前分支历史。
