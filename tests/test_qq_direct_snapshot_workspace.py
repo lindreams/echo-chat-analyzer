@@ -90,21 +90,25 @@ def test_owned_stage_recovery_and_unknown_stage_preservation(tmp_path):
 
 def test_live_owner_blocks_other_process_and_kill_allows_stale_recovery(tmp_path):
     root = tmp_path / 'root'
+    source = tmp_path / 'source' / 'fictional.db'
+    source.parent.mkdir()
+    source.write_bytes(b'fictional source remains untouched')
     program = f"""
 import {{createWorkspace}} from {json.dumps(MODULE)};
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 const root=process.argv[1], w=createWorkspace(root);
-await w.acquireLease();w.recover();w.createStaging();
-fs.writeFileSync(path.join(root,'staging','snapshot.db'),'fictional plaintext');
+await w.acquireLease();w.assertSourceSeparate(process.argv[2]);w.recover();w.createStaging();
+for (const name of ['merged.db','snapshot.db','snapshot.db-wal','snapshot.db-shm','snapshot.db-journal'])
+  fs.writeFileSync(path.join(root,'staging',name),'fictional plaintext');
 console.log('ready');process.stdin.resume();
 """
-    process = subprocess.Popen(['node', '--input-type=module', '-e', program, str(root)],
+    process = subprocess.Popen(['node', '--input-type=module', '-e', program, str(root), str(source)],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         assert process.stdout.readline().strip() == 'ready'
         assert not _run(root, 'workspace.recover();')["ok"]
-        assert (root / 'staging/snapshot.db').exists()
+        assert (root / 'staging/snapshot.db').read_bytes() == b'fictional plaintext'
     finally:
         process.kill()
         process.communicate(timeout=10)
@@ -118,6 +122,7 @@ console.log('ready');process.stdin.resume();
         time.sleep(0.1)
     assert recovered
     assert not (root / 'staging').exists()
+    assert source.read_bytes() == b'fictional source remains untouched'
 
 
 def test_cleanup_failure_retains_owner_and_blocks_new_stage(tmp_path):
@@ -131,19 +136,32 @@ def test_cleanup_failure_retains_owner_and_blocks_new_stage(tmp_path):
     assert _run(root, 'workspace.recover();workspace.createStaging();workspace.discard();')["ok"]
 
 
-def test_staging_junction_is_never_followed(tmp_path):
+@pytest.mark.parametrize('location', ['root', 'ancestor', 'staging', 'staging_entry'])
+def test_junction_cannot_redirect_cleanup_to_source(tmp_path, location):
+    import _winapi
+
     root = tmp_path / 'root'
-    assert _run(root, 'workspace.recover();')["ok"]
     target = tmp_path / 'target'
     target.mkdir()
     (target / 'snapshot.db').write_bytes(b'fictional user file')
-    result = subprocess.run(['cmd', '/c', 'mklink', '/J', str(root / 'staging'), str(target)], capture_output=True)
-    assert result.returncode == 0
+    if location in ('staging', 'staging_entry'):
+        operation = 'workspace.createStaging();' if location == 'staging_entry' else 'workspace.recover();'
+        assert _run(root, operation)['ok']
+        junction = root / 'staging'
+        if location == 'staging_entry':
+            junction = junction / 'snapshot.db'
+    else:
+        junction = root
+        if location == 'ancestor':
+            root = junction / 'nested'
+    _winapi.CreateJunction(str(target), str(junction))
     try:
         assert not _run(root, 'workspace.recover();')["ok"]
         assert (target / 'snapshot.db').read_bytes() == b'fictional user file'
+        assert not (target / 'owner.json').exists()
     finally:
-        (root / 'staging').rmdir()
+        junction.rmdir()
+    assert _run(root, 'workspace.recover();workspace.createStaging();workspace.discard();')['ok']
 
 
 def test_os_delete_failure_keeps_marker_until_successful_recovery(tmp_path):
@@ -189,3 +207,91 @@ def test_stage_marker_write_failure_removes_only_its_partial_marker(tmp_path):
     assert not result['ok']
     assert not (root / 'staging').exists()
     assert _run(root, 'workspace.recover();workspace.createStaging();workspace.discard();')['ok']
+
+
+def test_discard_cleans_every_formal_staging_artifact(tmp_path):
+    root = tmp_path / 'root'
+    assert _run(root, """
+      workspace.createStaging();
+      for (const name of ['merged.db','snapshot.db','snapshot.db-wal',
+                          'snapshot.db-shm','snapshot.db-journal','manifest.json'])
+        fs.writeFileSync(path.join(root,'staging',name),'fictional temporary artifact');
+      workspace.discard();
+    """)['ok']
+    assert not (root / 'staging').exists()
+
+
+def test_empty_staging_left_before_marker_creation_is_recovered(tmp_path):
+    root = tmp_path / 'root'
+    assert _run(root, 'workspace.recover();')['ok']
+    (root / 'staging').mkdir()
+    assert _run(root, 'workspace.recover();workspace.createStaging();workspace.discard();')['ok']
+    assert not (root / 'staging').exists()
+
+
+@pytest.mark.parametrize('location', ['same_directory', 'workspace_inside_source', 'source_inside_workspace'])
+def test_source_overlap_is_rejected_without_modifying_source(tmp_path, location):
+    source = tmp_path / 'source' / 'fictional.db'
+    if location == 'same_directory':
+        root = source.parent
+    elif location == 'workspace_inside_source':
+        root = source.parent / 'workspace'
+    else:
+        root = tmp_path / 'source'
+        source = root / 'nested' / 'fictional.db'
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b'fictional user source')
+    operation = f'workspace.assertSourceSeparate({json.dumps(str(source))});workspace.recover();workspace.createStaging();'
+    assert not _run(root, operation)['ok']
+    assert not (root / 'staging').exists()
+    assert source.read_bytes() == b'fictional user source'
+
+
+def test_unknown_root_file_is_preserved_while_owned_stage_is_recovered(tmp_path):
+    # Formal cleanup is scoped to validated subdirectories. Unlike the retired
+    # PoC it tolerates unrelated root files; they must never become targets.
+    root = tmp_path / 'root'
+    root.mkdir()
+    sentinel = root / 'unowned.db'
+    sentinel.write_bytes(b'fictional unrelated file')
+    assert _run(root, "workspace.createStaging();fs.writeFileSync(path.join(root,'staging','snapshot.db'),'fictional');workspace.recover();")['ok']
+    assert sentinel.read_bytes() == b'fictional unrelated file'
+    assert not (root / 'staging').exists()
+
+
+@pytest.mark.parametrize('location', ['root', 'staging'])
+@pytest.mark.parametrize('marker', ['{', '{"kind":"echo-main-wal-poc","version":1}', '{"kind":"echo-qq-snapshot","version":2}'])
+def test_invalid_owner_preserves_all_artifacts_until_marker_restored(tmp_path, location, marker):
+    root = tmp_path / 'root'
+    assert _run(root, "workspace.createStaging();fs.writeFileSync(path.join(root,'staging','snapshot.db'),'fictional plaintext');")['ok']
+    owner = (root if location == 'root' else root / 'staging') / 'owner.json'
+    original = owner.read_bytes()
+    owner.write_text(marker)
+    assert not _run(root, 'workspace.recover();workspace.createStaging();')['ok']
+    assert owner.read_text() == marker
+    assert (root / 'staging/snapshot.db').read_bytes() == b'fictional plaintext'
+    owner.write_bytes(original)
+    assert _run(root, 'workspace.recover();workspace.createStaging();workspace.discard();')['ok']
+
+
+@pytest.mark.parametrize('entry', ['snapshot.db', 'main.db', 'main.db-wal', 'nested'])
+def test_unowned_or_unknown_staging_member_prevents_any_deletion(tmp_path, entry):
+    root = tmp_path / 'root'
+    assert _run(root, 'workspace.createStaging();')['ok']
+    stage = root / 'staging'
+    merged = stage / 'merged.db'
+    merged.write_bytes(b'fictional owned artifact')
+    unknown = stage / entry
+    if entry == 'nested':
+        unknown.mkdir()
+    else:
+        unknown.write_bytes(b'fictional unowned artifact')
+    if entry == 'snapshot.db':
+        # A familiar filename alone is insufficient proof of ownership.
+        (stage / 'owner.json').unlink()
+    assert not _run(root, 'workspace.recover();workspace.createStaging();')['ok']
+    assert merged.read_bytes() == b'fictional owned artifact'
+    if entry == 'nested':
+        assert unknown.is_dir()
+    else:
+        assert unknown.read_bytes() == b'fictional unowned artifact'
