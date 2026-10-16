@@ -1,44 +1,31 @@
 # 余音 Echo Development Guide
 
-## 1. Project Overview
+## 1. Scope and references
 
-余音 Echo is a privacy-first local chat analysis tool.
-
-Current GUI / ChatSource product sources:
-- QQ Direct DB for desktop session discovery and analysis; bundled QQ / NapCat runtime for connection
-- WeChat local database (data directory detection, key acquisition, session analysis)
-
-Current-format JSON / JSONL import capabilities remain in the lower-level pipeline
-and the echo-chat local-file CLI, including WeChat detailed JSON / chatlab JSONL.
-They are not the removed `LOCAL_FILE` GUI product entry point.
-
-The project is designed to:
-- run locally;
-- keep chat data on the user's machine;
-- separate analysis core from user interfaces;
-- convert each source into ChatMessage;
-- support future additional chat sources without changing the analysis core.
-
-------------------------------------------------------------------------
+This guide owns executable development workflows. Follow [AGENTS.md](AGENTS.md)
+for task scope, privacy, safety and authorization. Architecture and supported
+inputs belong to [ARCHITECTURE.md](ARCHITECTURE.md); data contracts belong to
+[DATA_SEMANTICS.md](DATA_SEMANTICS.md). Release status, unresolved risks and
+acceptance boundaries belong to [HARDENING.md](docs/HARDENING.md).
+Source and tests establish implementation and coverage; historical records do
+not override current code or prove that a required contract is satisfied.
 
 ## 2. Development Environment
 
-Requirements: - Windows (primary development platform) - Python - Git
+Use Windows (the primary development platform), Python and Git.
 
-For QQ development, use Python 3.11+; the fresh-clone acceptance on
-2026-10-14 verified Python 3.13.9 at public main commit
-`6ee8828a4574bcbab81903da2442a8690ba6f6fc`.
-The existing `pyproject.toml` declaration remains `requires-python = ">=3.10"`,
-but QQ workspace validation in
+Use Python 3.11+ for QQ development and Windows builds. The current
+`pyproject.toml` still declares `requires-python = ">=3.10"`, while
 `src/qq_chat_analyzer/application/qq/qq_runtime_workspace.py` uses
-`hashlib.file_digest`, which is available only in Python 3.11+.
-This is a known inconsistency; Python 3.10 was not verified by that acceptance,
-and this documentation update does not change the project's global minimum.
+`hashlib.file_digest` (Python 3.11+) and `LocalChatAnalyzer.spec` imports `tomllib`
+(Python 3.11+). This is an unresolved declaration/runtime mismatch, not a promise
+of complete Python 3.10 compatibility. Changing the declared minimum or adding
+compatibility code requires a separate decision and implementation.
 
 Some JavaScript focused tests require a system Node.js executable on `PATH`.
-Node.js is not a separate prerequisite for the NapCat bootstrap or the GUI
-initialization verified in that acceptance. Install it when running tests that
-execute the JavaScript helpers; the `dev` Python extra does not install it.
+The `dev` Python extra does not install Node.js; provision it when the selected
+tests execute JavaScript helpers. Do not infer full GUI or QQ acceptance from
+the availability of Node.js or Python dependencies.
 
 The project uses a Python virtual environment:
 
@@ -112,12 +99,10 @@ After installation, developers can launch them without activating the shell:
 .\.venv\Scripts\echo-gui.exe
 ```
 
-Successful GUI initialization, including opening the QQ page, does not establish
-that real QQ login, database snapshot acquisition or analysis works. The
-fresh-clone acceptance used temporary user-data directories and fictional
-configuration without connecting QQ or reading chat databases. Real QQ
-acceptance is a separate step requiring a local QQ installation, human login
-and explicit verification of the snapshot and analysis flow.
+GUI initialization does not establish real QQ login, snapshot acquisition or
+analysis correctness. Automated checks use isolated user directories and fictional
+configuration; real QQ acceptance requires human login and explicit local
+verification of acquisition, analysis and cleanup under the authorized scope.
 
 The Python package remains `qq_chat_analyzer`; the distribution name used by
 `pip show` remains `qq-chat-analyzer`. No `qqchat` / `qqchat-gui` aliases are registered.
@@ -129,22 +114,10 @@ Windows PyInstaller build requires Python 3.11+ to read TOML, rejects stale inst
 version metadata, and copies the verified metadata into the frozen application.
 It does not require the source checkout to read its version at runtime.
 
-### 3.1.1 Windows Release Build Toolchain
-
-The Windows release build needs the pinned build toolchain, which is not part of
-the runtime dependencies. Install it from the same `pyproject.toml` extras:
-
-``` powershell
-.\.venv\Scripts\python.exe -m pip install -e ".[dev,gui,build]"
-```
-
-`scripts/build_windows_exe.ps1` runs `<project>\.venv\Scripts\pyinstaller.exe` and
-fails closed when it is missing. The versions pinned in the `build` extra are the
-toolchain the released frozen artifact is built with, so a release must not be
-produced with a different interpreter or an unpinned PyInstaller.
-
 ### 3.2 AI Existing Workspace
 
+Use this workflow when executing Python, tests or builds; a documentation-only
+edit does not require provisioning dependencies or running Python tests.
 New-clone initialization in section 3.1 is a human setup workflow. A new Git
 worktree normally has no `.venv`; this alone is not an environment failure and
 does not authorize initialization. An AI agent must prefer the current worktree's
@@ -184,8 +157,6 @@ recheck it in new sessions. Shared `echo-chat.exe` / `echo-gui.exe` entrypoints 
 editable-install metadata may still refer to the environment's original checkout.
 Use the verified Python and target source path for source execution, and verify
 subprocesses that override import paths also use the target worktree.
-The `.venv` commands in sections 4 and 5 are local-environment examples; when
-reusing an environment, use `& $EchoPython` with the same explicit source path.
 
 For the authorized Windows development environment, repair a missing build
 toolchain before rerunning build-contract tests or reporting the same failure:
@@ -200,8 +171,10 @@ then install the existing pinned extra without upgrading satisfied dependencies:
 ```
 
 Compare the actual versions with `pyproject.toml`; keep its pins and unrelated
-installed versions unchanged. This authorization covers missing build dependencies,
-not general dependency upgrades. Stop only when no usable environment exists,
+installed versions unchanged. This authorization covers missing build dependencies
+in the authorized current development environment, not general dependency upgrades
+or changes to another worktree's environment. A task that forbids environment
+changes takes precedence. Stop only when no usable environment exists,
 authorized repair cannot satisfy the requirements, or source isolation cannot be
 guaranteed. Do not create an unnecessary environment, fall back to system Python,
 or alter another worktree's virtual environment (including editable reinstallation).
@@ -240,31 +213,122 @@ checks; Fast tests do not replace the required focused integration validation.
 
 ------------------------------------------------------------------------
 
-## 4. Verify Environment
+## 4. Windows build and validation
 
-Verify the actual interpreter and pip selected for project commands:
+### 4.1 Frozen onedir build
 
-``` powershell
-.\.venv\Scripts\python.exe -c "import sys; print(sys.executable); print(sys.version)"
-.\.venv\Scripts\python.exe -m pip --version
+Use the validated environment from section 3.2, the target project's `.venv`
+PyInstaller and exact `build` extra pins. Do not build with an unpinned toolchain.
+The build consumes `LocalChatAnalyzer.spec` and
+`scripts/windows_runtime_manifest.json`; the manifest owns required native assets,
+WeChat binary hashes, copyright files and private-state exclusions. Provision
+those assets through the approved workflow; missing or mismatched assets must
+fail validation, not be bypassed. QQ pins/bootstrap are described in section 3.1.
+
+From the target repository root, after confirming that generated `build` / `dist`
+outputs may be replaced:
+
+```powershell
+& .\scripts\build_windows_exe.ps1
 ```
 
-If package metadata is needed, query it through the same interpreter:
+This produces `dist/Echo/Echo.exe`, copies validated runtime assets and app-local
+MSVC dependencies (minimum 14.43), and checks that private runtime state does not
+ship. `-RuntimeOnly` refreshes runtime assets in an existing onedir tree; it does
+not rebuild Python code and cannot substitute for a full release build. Do not
+launch the release tree before packaging; test a separate copy with isolated data.
+The spec checks the installed project version and Velopack version and copies
+metadata; review the dependency/entrypoint metadata and source provenance as in
+section 3.2 rather than treating a version match as complete proof.
 
-``` powershell
-.\.venv\Scripts\python.exe -m pip show qq-chat-analyzer
+When changing frozen/runtime/Setup packaging, select the affected build-contract
+tests explicitly, including relevant slow integrations. For example:
+
+```powershell
+& $EchoPython -m pytest tests/test_frozen_desktop_package_contract.py tests/test_windows_runtime_contract.py tests/test_package_windows_setup.py -q
 ```
+
+These tests do not replace a real Windows build, packaged launch/exit checks or
+human acceptance. If changing Portable packaging, also run
+`tests/test_package_windows_portable.py` and verify the relevant artifact; keeping
+that script does not establish a new product distribution decision.
+
+### 4.2 Setup packaging and acceptance
+
+The `gui` extra pins `velopack==1.2.161`. `echo-gui`, the package GUI
+module and the frozen entry dispatch Velopack before importing the GUI, with
+pending-update auto apply disabled. In-app updates require explicit user
+confirmation, complete successful cleanup evidence and package revalidation,
+then use the official wait-exit/apply/restart API.
+
+Build the existing onedir release with `scripts/build_windows_exe.ps1` first.
+Its runtime pins, app-local MSVC checks, copyright files and private-state
+exclusions still apply. The required copyright files are listed in
+`scripts/windows_runtime_manifest.json`.
+
+Use an explicitly selected vpk 1.2.161 and local .NET 8 SDK. Do not install
+global tools or change system PATH. With the approved `$EchoPython`, source
+isolation and process-local `DOTNET_ROOT` already verified:
+
+```powershell
+& $EchoPython scripts/package_windows_setup.py `
+    --source dist/Echo --output <new-external-artifact-directory> `
+    --vpk <local-tool-directory>/vpk.exe `
+    --pack-id EchoLabFictional --channel win-x64-lab
+```
+
+The wrapper checks frozen Echo/SDK versions, runtime hashes, licenses and
+private-state exclusions before invoking vpk. It packages a staging copy,
+checks feed identity and package integrity, verifies every application file
+and source immutability, then publishes the new directory. Existing output
+directories are refused. vpk self-update and delta generation are disabled.
+The project version supplies packVersion; there is no independent installer
+version override. Omit pack-id/channel for the fixed production identity
+`Lindreams.Echo` / `win-x64-stable`; isolated tests must override both.
+IDs containing a numeric version-like pair (such as `Echo.Lab.20261013.7abc`)
+are rejected before vpk:
+its legacy RELEASES filename parser mistakes that pair for the package version.
+Ordinary dotted IDs remain supported.
+The desktop consumes the same identity constants and official GitHub repository
+feed. Signing and publication remain separate release decisions.
+
+The Setup creates a desktop shortcut and a Start Menu shortcut
+(`--shortcuts Desktop,StartMenuRoot`), and it reuses `branding/Echo.ico` for the
+Setup executable and those shortcuts, so an installation looks like the
+`Echo.exe` it installs. Install-time branding and progress come from Velopack's
+native progress dialog, which is titled through `--packTitle`; no custom splash
+image is shipped.
+
+For real acceptance, use a lab-only packId, external `--installto`, isolated
+process-local `LOCALAPPDATA` and fictional configuration. Check install and
+user-data paths independently. Use the test installation's registered
+`Update.exe --uninstall --silent` command, and verify data hashes afterward.
+Never infer a clean exit from disappearance of the window: record the native
+process exit code. For update acceptance, verify isolated A-to-B installation,
+cleanup evidence, automatic restart and data retention. Keep source, Frozen,
+Setup and cross-machine results separate; required Full and release checks are
+not replaced by a successful package build. Record remaining gates in
+[HARDENING.md](docs/HARDENING.md).
 
 ------------------------------------------------------------------------
 
 ## 5. Running Tests
 
-After validating `$EchoPython` and the target `PYTHONPATH` as in section 3.2,
-prefer Focused, then Smoke, then the affected Domain. Expand to Fast or Full
-according to impact and risk; Full is not mandatory for every low-risk change
-or commit. Behavior changes and bug fixes still need meaningful regression
-coverage. Low-risk documentation, test grouping or equivalent mechanical changes
-may add zero tests when the rationale and appropriate verification are recorded.
+Validate `$EchoPython` and target `PYTHONPATH` as in section 3.2 before running
+commands. Focused means the files or nodes protecting the affected contract and
+is the daily baseline. Add Smoke, the affected Domain and relevant slow
+integrations as needed; use Fast for broader cross-domain regression and Full
+at appropriate phase or release gates. Do not mechanically run every tier.
+
+Before adding tests, inspect existing coverage and weigh regression value against
+maintenance cost, duplication and brittleness. TDD is optional: simple, low-risk,
+directly verifiable changes need neither a failing test first nor new tests.
+Complex algorithms, important bug regressions and high-risk behavior favor
+targeted tests; privacy, data integrity, authorization, identity, authentication,
+generation isolation, resource ownership and installation admission require sufficient regression
+protection. Avoid tests tied to internal implementation details, redundant
+parameter combinations or low-value scenarios. Record the validation chosen and
+its limits; a passing existing test may be sufficient evidence for a small change.
 
 ```powershell
 & $EchoPython -m pytest tests/test_facade.py -q
@@ -276,10 +340,12 @@ Every collected case has exactly one primary domain; Smoke can coexist with it.
 Native markers are registered in `pyproject.toml`. The explicit module ownership
 and exact Smoke node IDs live in `tests/conftest.py`; update them when adding or
 renaming tests. New unassigned modules fail collection rather than silently
-falling outside domain selection. Full directory collection rejects missing Smoke
-nodes before marker/keyword deselection. File/node Focused runs and explicit
+falling outside domain selection. Collection from the repository root or `tests`
+rejects missing Smoke nodes before `-m`, `-k` or `--deselect` selection.
+File/node Focused runs and explicit
 `--ignore` / `--ignore-glob` runs are partial and do not require the entire Smoke
-list. Inspect full and Smoke collection after edits:
+list. After changing markers, the domain inventory or Smoke node IDs, check
+the relevant selection with collection; full and Smoke examples are:
 
 ```powershell
 & $EchoPython -m pytest --collect-only -q
@@ -298,7 +364,9 @@ Replace `qq` in the Domain command with any marker above. Domain selection alone
 includes its slow/known-failure tests; use the explicit exclusions for a fast
 Domain run, or select the relevant integration nodes directly when required.
 Shared contracts or fixture/test-infrastructure changes warrant broader regression.
-The existing Fast and Full definitions remain unchanged:
+Fast excludes only the two markers below; unmarked tests stay in Fast regardless
+of their measured duration. Full adds no marker exclusion (individual tests can
+still skip or depend on their environment):
 
 ```powershell
 # Fast: cross-domain regression excluding heavy integrations and known failures
@@ -315,6 +383,32 @@ when changing packaging, Chromium rendering, CLI subprocesses, PowerShell helper
 Windows runtime integration or specific WeChat integration. Required release
 build, Full and human acceptance gates also remain in force.
 
+### 5.1 Isolation, determinism and regression value
+
+- Use fictional inputs only. `tests/conftest.py` redirects user-data/home paths,
+  replaces default QQ process/session ownership, and cleans test-created Qt roots
+  and finished worker relays. Reuse these fixtures; preserve pre-existing resources
+  and active work. They do not sandbox every external process or registry access.
+  Reuse existing fixtures and regression paths before adding helpers; exercise
+  production behavior through bounded seams rather than a parallel test system.
+- Before launching diagnostics or child processes, isolate their user directories,
+  persisted config and any registry access they exercise. Keep the verified target
+  source path in subprocesses; remove unrelated IDE `PYTHONPATH`/startup shims
+  instead of weakening privacy assertions. The isolation regression lives in
+  `tests/test_test_user_data_isolation.py`.
+- For deterministic waits, use one coherent clock for monotonic time, deadlines
+  and sleeping. Prefer bounded condition/event waits and targeted Qt event
+  delivery to arbitrary fixed sleeps. Tests may replace UX delays locally;
+  do not shorten production safety timeouts to improve test speed.
+- Restore monkeypatches and shared state; release only test-owned widgets,
+  workers, processes, files and handles. Distinguish active workers, stale relays
+  and pending callback dispatch; do not hide leaks by clearing active registries.
+- Keep unique historical regressions and security/lifecycle/platform contracts.
+  Prove equivalent coverage before removing duplicate tests: owning layers test
+  business rules, upper layers protect their boundary contracts. Test counts and
+  elapsed time are not quality targets; environment coupling is a reason to fix
+  isolation, not to delete coverage or quarantine a new regression for convenience.
+
 If Windows temporary-directory permission problems appear, pass a local base
 directory to the same explicit interpreter:
 
@@ -328,7 +422,8 @@ Do not commit temporary test directories, test counts, or timing snapshots.
 
 ## 6. Git Workflow
 
-Use feature branches. Before editing, run:
+Prefer short-lived branches and reuse a suitable workspace. A separate worktree
+is optional, useful when concurrent work or risk warrants isolation. Before editing, run:
 
 ``` powershell
 git status --short --branch
@@ -337,25 +432,37 @@ git status --short --branch
 Identify and preserve existing working-tree changes. Do not use `git restore`,
 `git checkout`, or broad cleanup to remove changes whose source is unknown.
 
-Workflow:
+Daily work favors a short-lived branch, appropriate validation, a local commit,
+integration into main, push and branch cleanup. PRs are useful for large features,
+important architectural changes, high-risk review or collaboration; they are not
+a default step. Neither Squash nor a single merge method is mandatory.
 
-    Create branch
-        ↓
-    Implement small change
-        ↓
-    Run tests
-        ↓
-    git diff --check
-        ↓
-    Commit
-        ↓
-    Push branch
-        ↓
-    Create Pull Request
-        ↓
-    Review
-        ↓
-    Squash merge
+All commit, push, merge, PR and destructive cleanup actions require the current
+user's explicit authorization. Human review and workflow examples do not grant
+execution permission. Implement and validate the reviewable result first; stop
+at the authorized boundary, retaining work awaiting review with an end condition.
+
+For an authorized simple integration, adapt this example to the reviewed branch
+and explicitly list the files (placeholders must be replaced before execution):
+
+```powershell
+git add -- <reviewed-file-1> <reviewed-file-2>
+git diff --cached --check
+git diff --cached --stat
+git diff --cached
+git commit -m '<reviewed-message>'
+git switch main
+git pull --ff-only origin main
+git merge --ff-only <reviewed-branch>
+git push origin main
+```
+
+Review the staged diff to exclude unrelated material already in the index. Switch
+only with a suitable clean worktree; if main is checked out elsewhere, use its
+verified worktree instead. If fast-forward fails or main has unexpected changes,
+inspect divergence and resolve within the approved scope; do not force, reset or
+silently choose another merge strategy. Verify local/remote SHAs after push and
+perform branch/worktree cleanup only under section 6.1 and the task's authorization.
 
 Do not use `git add .`; stage only explicitly named files. Run
 `git diff --check` before completion and confirm the changed-file list stays
@@ -366,15 +473,20 @@ configuration; - virtual environments.
 
 ### 6.1 Worktree lifecycle and Windows PowerShell cleanup
 
-Before a new task or phase, inspect `git worktree list --porcelain`,
-`git branch -vv` and each candidate's status. Prefer a clean, suitable existing
-workspace that another task is not using. A task's completion includes disposition
-of its worktree, branch, stash and temporary assets. Uncommitted changes or an old
-backup are not, by themselves, reasons to keep an idle workspace indefinitely.
-Choose to merge useful work, preserve the minimum recoverable payload, or explicitly
-abandon reviewed work. Retained objects need an owner/task and an end condition.
+When selecting, isolating, integrating or releasing a workspace, inspect
+`git worktree list --porcelain`, `git branch -vv` and each candidate's status and
+task occupancy. Prefer a clean, suitable existing workspace. At completion,
+record dispositions for worktrees, branches, stashes and temporary assets involved
+in the task; unrelated assets do not require a new audit.
+Uncommitted changes or an old backup are not, by themselves, reasons to keep an
+idle workspace indefinitely.
+Choose authorized integration, minimum recoverable preservation, or explicitly
+authorized abandonment. Work awaiting review can remain in place with its task
+and end condition; this is not permission to clean or discard it.
 
-For an authorized cleanup, use this sequence from the repository root:
+For an authorized cleanup, use the applicable checks below from the repository
+root. Stash, remote-branch, independent-clone and directory-removal checks apply
+only to those objects; do not expand a simple task into a repository-wide cleanup.
 
 1. Fetch `origin` and check the registered path, branch, HEAD and full status
    against the approved scope. Inspect both untracked files and ignored assets:
@@ -392,10 +504,13 @@ For an authorized cleanup, use this sequence from the repository root:
    unique result appears, retain that object and continue with other confirmed
    targets. Do not expose private configuration or chat data in the report.
 3. Check `git merge-base --is-ancestor <reviewed-head> origin/main`. A failed
-   ancestry check is not proof of lost work after squash/rebase: verify the PR
-   and final changes before deciding. For useful unmerged commits, push the
-   branch and verify `git ls-remote --heads origin <reviewed-ref>` matches its
-   full SHA before releasing the worktree; retain the unmerged branch.
+   ancestry check is not proof of lost work after squash/rebase: verify the final
+   changes and integration result (including the PR if used) before deciding.
+   For useful unmerged commits, only when push is authorized, push the branch and
+   verify `git ls-remote --heads origin <reviewed-ref>` matches its
+   full SHA before releasing the worktree; retain the unmerged branch. If push
+   is not authorized, retain the work or verify an authorized minimal recovery
+   copy before removing its workspace.
 4. Preserve only necessary files or patches outside the repository, including
    untracked files. For a stash containing untracked files, inspect its third
    parent as well as the tracked diff. Verify hashes and the recovery method,
@@ -417,10 +532,11 @@ For an authorized cleanup, use this sequence from the repository root:
    and other reparse points, including nested ones. Use `Remove-Item -LiteralPath`
    only on checked targets. Never enumerate an unknown parent and recursively
    delete its children or pass computed deletion paths to another shell.
-9. Recheck worktrees, branches, stashes and protected assets. Record actual
-   dispositions, remaining blockers and end conditions. Measure deleted file
-   bytes and/or disk free space; distinguish logical file size from physical
-   free-space changes and do not present an estimate as a measurement.
+9. Recheck affected objects and protected assets. Briefly record actual
+   dispositions, remaining blockers and end conditions. If reporting recovered
+   space, measure deleted file bytes and/or disk free space; distinguish logical
+   file size from physical free-space changes and do not present an estimate as
+   a measurement.
 
 Never use `git worktree remove --force`, `git clean -fdx` or `git reset --hard`.
 Do not automatically delete unmerged branches, another task's worktree or unknown
@@ -431,228 +547,3 @@ lifecycle update needs diff/scope verification; it does not require executing
 Python tests, packaging or installing dependencies.
 
 ------------------------------------------------------------------------
-
-## 7. Architecture Rules
-
-完整架构设计见 ARCHITECTURE.md（唯一架构事实来源）。本文档只保留与开发流程相关的规则，不再复制架构图。
-
-CLI handles:
-- command arguments;
-- user interaction;
-- displaying results;
-- exit codes.
-
-CLI should not contain analysis workflow.
-
-Application Service handles:
-- analysis workflow;
-- calling core modules;
-- DTO conversion;
-- application-level errors.
-
-ImportService handles:
-- file discovery and source recognition;
-- routing each input file to its source parser;
-- returning ChatMessage, ImportResult, and raw message count.
-
-Source parsers:
-- QQ Direct DB adapter converts the transient qq-db-json payload into source-neutral rich messages and ChatMessage;
-- WeChat parser converts WeChat detailed JSON/JSONL into ChatMessage;
-- parsers must not depend on analysis core or UI layers.
-
-Future API/Desktop interfaces should call Application Service instead of
-core modules directly.
-
-Core modules should implement analysis logic and avoid depending on
-CLI/Application layers or source-specific types.
-
-## 7.1 Multi-source Input Design Principles
-
-- Use an independent adapter/parser for each supported source format.
-- Every parser returns ChatMessage.
-- ImportService recognizes the source and routes the file.
-- AnalysisApplicationService calls ImportService and keeps the analysis workflow.
-- ImportService must reuse existing parsers and must not duplicate parsing logic.
-- Core analysis modules only consume ChatMessage.
-- Do not duplicate source parsing when adding a new source.
-- Do not introduce platform branches in analyzer.py, tokenizer.py, or cleaner.py.
-- Confirm real sample fields before choosing the first supported format.
-
-------------------------------------------------------------------------
-
-## 7.2 Current Local Import Pipeline
-
-- ImportRequest describes the input path and optional platform hint.
-- ImportOutcome carries ImportResult, ChatMessage, RichMessage and processed_message_count.
-- ImportService owns path validation, file discovery, source recognition and adapter/parser routing.
-- AnalysisApplicationService obtains messages through ImportService, then applies the final analysis scope.
-- Supported formats: qq-db-json, wechat-db-json, detailed-json, chatlab-jsonl,
-  and cli-json (a bare array conforming to the WeChat CLI schema).
-- echo-chat remains the local-file analysis entry point for these formats. It
-  does not provide qce list / qce analyze or import retired QQ file formats.
-
-QQChatExporter / QCE runtime, provider/service, QCE JSON and old QQ JSON/JSONL
-compatibility are retired. parser.py and qq_chat_exporter_adapter.py are absent.
-Retirement tests and release forbidden checks must remain.
-
-------------------------------------------------------------------------
-
-## 7.3 Current QQ / WeChat Source Integration
-
-The only official QQ product chain is:
-
-```text
-NapCat -> Direct DB -> qq_db_adapter -> unified message model -> Analysis
-```
-
-- NapCat owns startup/login and local decryption; QQDirectDatabaseImportService
-  orchestrates session acquisition and transient cleanup through acquired_session().
-- QQDatabaseProvider reads the validated snapshot and materializes qq-db-json;
-  qq_db_adapter interprets it into source-neutral RichMessage / ChatMessage.
-- QQ acquisition uses epoch seconds. The application scope filter remains the
-  final correctness boundary. No QCE export fallback exists.
-- WeChat acquisition remains unchanged: epoch-second SQL bounds, all matching
-  message shards, global ordering and unlimited acquisition by default.
-- CLI delegates local-file analysis to Application services; GUI uses
-  ChatAnalyzerFacade. Analysis does not know source formats or runtime tools.
-
-Current architecture and acceptance boundaries are in ARCHITECTURE.md and
-docs/HARDENING.md. The main branch released Echo v0.2.0 as a Windows x64 Setup
-with in-app discovery, download, verification, install and automatic restart; the
-earlier v0.1.0 Portable ZIP (Pre-release) remains a historical release.
-The pinned QQ runtime is NapCat 4.18.34 with Echo patches,
-per-launch RPC credentials, Worker boot_id isolation, explicit reconnection,
-and staging-input witnesses rather than native-read telemetry patches.
-Check scripts/qq_napcat_runtime_pins.json and the runtime bootstrap contract
-before packaging; a source checkout alone does not guarantee a current local
-runtime directory. The published build does not establish compatibility on
-every Windows machine; see docs/HARDENING.md for known follow-ups.
-Earlier Direct DB / QCE E2E records describe historical versions and are not
-current runtime interfaces. They remain in docs/BUG_JOURNAL.md,
-docs/research/ and docs/superpowers/ for engineering context.
-
-## 7.4 GUI / Facade / Presentation 开发规则
-
-GUI 开发规则：
-
-- GUI 只能通过 ChatAnalyzerFacade 调用业务能力；
-- GUI 不得直接调用 Provider、Parser、Adapter 或 Analysis Core；
-- GUI 不包含数据解析、分析算法与过滤规则；
-- 报告展示控件保持只读（setEditTriggers(NoEditTriggers)），但保留选中与复制。
-
-Facade 规则：
-
-- ChatAnalyzerFacade 是 GUI 的唯一业务入口（application/facade.py）；
-- Facade 负责来源分派、配置整理、Service 调度与异常归一（FacadeError）；
-- GUI 只展示 FacadeError.public_message，不展示 traceback；
-- Facade 通过依赖注入构造，测试可传入 stub。
-
-Presentation 规则：
-
-- Presentation 只负责展示模型转换与格式化，不重新计算分析结果；
-- 需要的统计数字必须由 Analysis Core 的 analyzer 产出；
-- 展示名称通过 AnalysisRequestDTO.speaker_names / conversation_names 注入，
-  不在展示层做来源判断。
-
-------------------------------------------------------------------------
-
-## 8. Privacy Rules
-
-Never commit:
-- real QQ/WeChat chat JSON/JSONL files;
-- QQ group numbers;
-- usernames/nicknames;
-- API keys;
-- tokens;
-- local paths.
-
-Tests must use fictional data only.
-
-------------------------------------------------------------------------
-
-## 9. Adding a New Chat Source
-
-1. Read the real export sample and confirm its field structure.
-2. Choose only the first supported format; do not support all variants in advance.
-3. Add an independent parser module that returns ChatMessage.
-4. Write fictional-data tests before implementation.
-5. Route the new parser through AnalysisApplicationService.
-6. Run the full test suite.
-7. Do not modify analyzer.py, tokenizer.py, or cleaner.py.
-
-
-## Source Structure
-
-src/qq_chat_analyzer/
-    application/       # application contracts and services
-    application/facade.py  # ChatAnalyzerFacade: GUI 唯一业务入口
-    analysis/          # Analysis Core v2/v3: reports and analyzers
-    presentation/      # view models, formatters, builders
-    gui/               # PySide6 GUI MVP
-    providers/         # QQ / WeChat data providers
-    message.py         # source-neutral ChatMessage model
-    wechat_parser.py   # WeChat detailed JSON parsing
-    qq_db_adapter.py   # QQ Direct DB payload conversion
-    wechat_db_adapter.py         # WeChat DB adapter
-    wechat_cli_adapter.py        # WeChat CLI adapter
-    smart_profile.py   # Smart Profile orchestration
-    detectors/         # robot/template/interactive bot detectors
-    cleaner.py         # text cleaning
-    tokenizer.py       # tokenization
-    analyzer.py        # analysis algorithms
-    exporters.py       # local artifact generation
-    cli.py             # command line adapter
-
-## Windows Setup: A1 integration
-
-The desktop extra requires `velopack==1.2.161`. `echo-gui`, the package GUI
-module and the frozen entry dispatch Velopack before importing the GUI, with
-pending-update auto apply disabled. In-app updates use the existing A3 flow:
-explicit user confirmation, complete A2 cleanup evidence, package revalidation,
-then the official wait-exit/apply/restart API.
-
-Build the existing onedir release with `scripts/build_windows_exe.ps1` first.
-Its runtime pins, app-local MSVC checks, copyright files and private-state
-exclusions still apply. The Velopack [1.2.161 upstream license](https://github.com/velopack/velopack/blob/1.2.161/LICENSE)
-is included through the same copyright manifest.
-
-Use an explicitly selected vpk 1.2.161 and local .NET 8 SDK. Do not install
-global tools or change system PATH. With the approved `$EchoPython`, source
-isolation and process-local `DOTNET_ROOT` already verified:
-
-```powershell
-& $EchoPython scripts/package_windows_setup.py `
-    --source dist/Echo --output <new-external-artifact-directory> `
-    --vpk <local-tool-directory>/vpk.exe `
-    --pack-id EchoA1Fictional --channel win-x64-a1
-```
-
-The wrapper checks frozen Echo/SDK versions, runtime hashes, licenses and
-private-state exclusions before invoking vpk. It packages a staging copy,
-checks feed identity and package integrity, verifies every application file
-and source immutability, then publishes the new directory. Existing output
-directories are refused. vpk self-update and delta generation are disabled.
-The project version supplies packVersion; there is no independent installer
-version override. Omit pack-id/channel for the fixed production identity
-`Lindreams.Echo` / `win-x64-stable`; isolated tests must override both. The
-official identity has passed real pinned vpk packaging. IDs containing a numeric
-version-like pair (such as `Echo.UserTest.20261013.7abc`) are rejected before vpk:
-its legacy RELEASES filename parser mistakes that pair for the package version.
-Ordinary dotted IDs remain supported.
-The desktop consumes the same identity constants and official GitHub repository
-feed. Signing and publication remain separate release decisions.
-
-The Setup creates a desktop shortcut and a Start Menu shortcut
-(`--shortcuts Desktop,StartMenuRoot`), and it reuses `branding/Echo.ico` for the
-Setup executable and those shortcuts, so an installation looks like the
-`Echo.exe` it installs. Install-time branding and progress come from Velopack's
-native progress dialog, which is titled through `--packTitle`; no custom splash
-image is shipped.
-
-For real acceptance, use a lab-only packId, external `--installto`, isolated
-process-local `LOCALAPPDATA` and fictional configuration. Check install and
-user-data paths independently. Use the test installation's registered
-`Update.exe --uninstall --silent` command, and verify data hashes afterward.
-Never infer a clean exit from disappearance of the window: record the native
-process exit code. See the [A1 audit](docs/research/2026-10-12-windows-setup-a1.md)
-for actual results and remaining gates.
