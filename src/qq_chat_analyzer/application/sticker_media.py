@@ -106,8 +106,7 @@ def _witness(info):
 
 def _inspect(raw: bytes, *, max_pixels: int, max_frames: int) -> tuple[str, int]:
     """Validate all frames with bounded decompression, retaining original bytes."""
-    # Frozen deliberately excludes Pillow. Default desktop analysis must not
-    # import it; source installs use the declared dependency for opt-in media.
+    # Keep decoding lazy so ordinary analysis never loads native image codecs.
     try:
         from PIL import Image, UnidentifiedImageError
     except ImportError:
@@ -115,11 +114,11 @@ def _inspect(raw: bytes, *, max_pixels: int, max_frames: int) -> tuple[str, int]
     try:
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
-            with Image.open(BytesIO(raw)) as container:
+            with Image.open(BytesIO(raw), formats=("PNG", "JPEG", "GIF", "WEBP")) as container:
                 if container.format not in {"PNG", "JPEG", "GIF", "WEBP"}:
                     raise _Rejected("invalid", "unsupported_format")
                 container.verify()
-            with Image.open(BytesIO(raw)) as image:
+            with Image.open(BytesIO(raw), formats=("PNG", "JPEG", "GIF", "WEBP")) as image:
                 fmt = image.format
                 count = 0
                 total_pixels = 0
@@ -247,6 +246,8 @@ def resolve_sticker_media(
                     if time.monotonic() > deadline:
                         raise _Rejected("limited", "scan_budget")
                     fmt, frames = _inspect(raw, max_pixels=max_pixels, max_frames=max_frames)
+                    if time.monotonic() > deadline:
+                        raise _Rejected("limited", "scan_budget")
                     results[key] = StickerMedia(
                         key, "available", verified_reference=reference,
                         sha256=hashlib.sha256(raw).hexdigest(), format=fmt,

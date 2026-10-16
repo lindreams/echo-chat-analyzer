@@ -233,3 +233,4 @@ def test_spec_excludes_only_jieba_lac_data():
         Path(item[0]).as_posix() for item in collected
         if not Path(item[0]).as_posix().startswith("jieba/lac_small/")
     }
+    assert "PIL" not in result["desktop_excludes"]

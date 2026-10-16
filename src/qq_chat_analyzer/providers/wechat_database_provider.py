@@ -224,6 +224,7 @@ class WeChatDatabaseProvider:
         timeout: int = DEFAULT_TIMEOUT_SECONDS,
         runner: Callable[..., Any] | None = None,
         diagnostic_spawner: Callable[..., Any] | None = None,
+        sticker_media_roots: tuple[Path, ...] = (),
     ) -> None:
         self._data_root = Path(data_root) if data_root is not None else None
         self._db_key = db_key
@@ -236,6 +237,11 @@ class WeChatDatabaseProvider:
         self._timeout = timeout
         self._runner = runner or _run_subprocess
         self._diagnostic_spawner = diagnostic_spawner
+        self._sticker_media_roots = tuple(sticker_media_roots)
+
+    def sticker_media_roots(self) -> tuple[Path, ...]:
+        """Return explicitly configured media authority, without discovery or I/O."""
+        return self._sticker_media_roots
 
     # --------------------------------------------------------- verification
 
@@ -345,6 +351,10 @@ class WeChatDatabaseProvider:
             timeout=self._timeout,
             runner=self._runner,
             diagnostic_spawner=self._diagnostic_spawner,
+            # Account probing must not carry media authority into another account.
+            sticker_media_roots=(
+                self._sticker_media_roots if Path(data_root) == self._data_root else ()
+            ),
         )
 
     # ---------------------------------------------------------------- listing

@@ -12,6 +12,7 @@ import hashlib
 import json
 from collections.abc import Mapping
 from pathlib import Path
+import re
 from typing import Any
 
 from .legacy_projection import project_legacy_messages
@@ -351,15 +352,30 @@ def _content_from_segment(
         return TextContent(text) if text is not None else None
     if content_type == 2:
         raw_md5 = values.get((45406, 2))
+        digest = raw_md5.hex() if isinstance(raw_md5, bytes) and len(raw_md5) == 16 else None
+        # 45424 has version-dependent encoding and weaker documented semantics.
+        # It may veto conflicting evidence, but cannot authorize a match alone.
+        alternate = values.get((45424, 2))
+        if isinstance(alternate, bytes):
+            if len(alternate) == 16:
+                alternate_digest = alternate.hex()
+            else:
+                text = _utf8_text(alternate)
+                alternate_digest = (
+                    text.lower() if text and re.fullmatch(r"[0-9a-fA-F]{32}", text) else None
+                )
+            if alternate_digest != digest:
+                digest = None
+        if any(len({value for tag, wire, value in fields if tag == digest_tag and wire == 2}) > 1
+               for digest_tag in (45406, 45424)):
+            digest = None
         paths = tuple(
             text for tag in (45403, 45812)
             if (text := _utf8_text(values.get((tag, 2))))
         )
         original = values.get((45418, 0))
         media = ImageReference(
-            content_md5=(
-                raw_md5.hex() if isinstance(raw_md5, bytes) and len(raw_md5) == 16 else None
-            ),
+            content_md5=digest,
             is_original=bool(original) if original in (0, 1) else None,
             local_paths=paths,
         ) if raw_md5 is not None or paths or original is not None else None

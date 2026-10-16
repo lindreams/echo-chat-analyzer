@@ -340,3 +340,115 @@ def test_filtered_official_analysis_chain_returns_only_kept_sticker_sends(tmp_pa
     assert result.reports.expression.expression_occurrence_count == 1
     report_text = (tmp_path / "output" / "echo-report.json").read_text(encoding="utf-8")
     assert digest not in report_text and str(roots) not in report_text
+
+
+def test_wechat_configured_media_flows_through_provider_and_facade(tmp_path):
+    from qq_chat_analyzer.application.facade import AnalysisConfig, ChatAnalyzerFacade, ChatSource
+    from qq_chat_analyzer.application.wechat.wechat_environment_config import (
+        WeChatEnvironmentConfig, WeChatEnvironmentConfigLoader, WeChatEnvironmentConfigWriter,
+    )
+    from qq_chat_analyzer.application.wechat.wechat_provider_factory import WeChatProviderFactory
+    from qq_chat_analyzer.application.wechat.wechat_export_import_service import WeChatExportImportService
+    from qq_chat_analyzer.providers.wechat_database_provider import WeChatDatabaseProvider
+
+    raw = image_bytes(animated=True)
+    digest = hashlib.md5(raw).hexdigest()
+    media_root = tmp_path / "explicit-originals"
+    media_root.mkdir()
+    (media_root / "unrelated-name.bin").write_bytes(raw)
+    path = tmp_path / "wechat.json"
+    config = WeChatEnvironmentConfig(sticker_media_roots=(media_root,))
+    WeChatEnvironmentConfigWriter(path).save(config)
+    loader = WeChatEnvironmentConfigLoader(path)
+    assert loader.load().sticker_media_roots == (media_root,)
+    factory = WeChatProviderFactory(config_loader=loader)
+    provider = factory.create()
+    assert isinstance(provider, WeChatDatabaseProvider)
+    assert provider.with_data_root(tmp_path / "other-account").sticker_media_roots() == ()
+    assert provider.sticker_media_roots() == (media_root,)
+    # Keep the real factory/provider wiring, replacing only database acquisition.
+    provider.list_sessions = lambda: []
+    def export(session_id, output_path, start_time=None, end_time=None):
+        output_path.write_text(json.dumps(dict(
+            source="wechat-db", conversation=dict(username=session_id), messages=[dict(
+                local_type=47, server_id="fiction-id", create_time=1760000000,
+                user_name="fiction-sender", message_content=f'<msg><emoji md5="{digest}"/></msg>',
+            )],
+        )), encoding="utf-8")
+        return output_path
+    provider.export_session_json = export
+    facade = ChatAnalyzerFacade(
+        wechat_service=WeChatExportImportService(provider_factory=factory),
+        analysis_service=AnalysisApplicationService(),
+    )
+    outcome = facade.analyze_session(ChatSource.WECHAT, "fiction-room", AnalysisConfig(
+        output_directory=tmp_path / "result",
+    ))
+    assert outcome.result.stickers.media[0].original_bytes == raw
+    assert outcome.result.stickers.media[0].frame_count == 2
+    opted_out = facade.analyze_session(ChatSource.WECHAT, "fiction-room", AnalysisConfig(
+        output_directory=tmp_path / "no-media", sticker_media_roots=(),
+    ))
+    assert opted_out.result.stickers.media[0].status == "not_requested"
+    assert len(opted_out.result.stickers.sends) == 1
+
+
+@pytest.mark.parametrize("value", ["", "relative", ["relative"], ["../outside"], [3], ["\\\\server\\share"]])
+def test_wechat_media_config_rejects_invalid_authority(tmp_path, value):
+    from qq_chat_analyzer.application.wechat.wechat_environment_config import (
+        WeChatEnvironmentConfigLoader, WeChatConfigCorrupted,
+    )
+    path = tmp_path / "wechat.json"
+    path.write_text(json.dumps(dict(sticker_media_roots=value)), encoding="utf-8")
+    with pytest.raises(WeChatConfigCorrupted):
+        WeChatEnvironmentConfigLoader(path).load()
+
+
+def test_facade_config_exposes_explicit_roots_without_source_discovery(tmp_path):
+    from qq_chat_analyzer.application.facade import AnalysisConfig
+    config = AnalysisConfig(sticker_media_roots=(tmp_path,))
+    assert config.with_output_directory(tmp_path / "result").sticker_media_roots == (tmp_path,)
+    assert str(tmp_path) not in repr(config)
+
+
+def test_qq_pic_media_subtype_never_substitutes_for_napcat_pic_subtype():
+    for subtype in (0, 1, 2):
+        message = _parse(_scalar(45002, 2) + _scalar(45003, subtype)
+                         + _bytes(45406, b"x" * 16) + _bytes(45424, b"79" * 16))
+        assert collect([message]) == ()
+        # Conflicting digest evidence cannot nominate an original.
+        assert message.contents[0].media.content_md5 is None
+
+
+@pytest.mark.parametrize("fields,want", [
+    (_bytes(45406, b"\xab" * 16), "ab" * 16),
+    (_bytes(45406, b"\xab" * 16) + _bytes(45424, b"AB" * 16), "ab" * 16),
+    (_bytes(45406, b"\xab" * 16) + _bytes(45424, b"\xab" * 16), "ab" * 16),
+    (_bytes(45424, b"ab" * 16), None),
+    (_bytes(45406, b"\xab" * 16) + _bytes(45424, b"invalid"), None),
+    (_bytes(45406, b"x" * 16) + _bytes(45406, b"\xab" * 16), None),
+    (_bytes(45406, b"\xab" * 16) + _bytes(45424, b"cd" * 16)
+     + _bytes(45424, b"ab" * 16), None),
+])
+def test_qq_pic_digest_evidence_is_consistent_and_does_not_authorize_sticker_classification(fields, want):
+    message = _parse(_scalar(45002, 2) + fields)
+    media = message.contents[0].media
+    assert (media.content_md5 if media is not None else None) == want
+    assert collect([message]) == ()
+
+
+def test_decode_finishing_after_deadline_cannot_publish_success(tmp_path, monkeypatch):
+    from qq_chat_analyzer.application import sticker_media
+    raw = image_bytes()
+    (tmp_path / "original").write_bytes(raw)
+    elapsed = [0]
+    inspect = sticker_media._inspect
+    def delayed_inspect(*args, **kwargs):
+        result = inspect(*args, **kwargs)
+        elapsed[0] = 11
+        return result
+    monkeypatch.setattr(sticker_media.time, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(sticker_media, "_inspect", delayed_inspect)
+    item = resolve(collect([wx(hashlib.md5(raw).hexdigest())]), (tmp_path,))[0]
+    assert (item.status, item.reason) == ("limited", "scan_budget")
+    assert item.original_bytes is None

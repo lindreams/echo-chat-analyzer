@@ -246,6 +246,8 @@ class AnalysisConfig:
     profile: str = DEFAULT_PROFILE
     output_directory: Path | None = None
     font_path: str | None = None
+    # None inherits the selected provider's explicit configuration; () opts out.
+    sticker_media_roots: tuple[Path, ...] | None = field(default=None, repr=False)
 
     def with_output_directory(self, directory: Path) -> "AnalysisConfig":
         """Return a copy that writes artifacts into ``directory``."""
@@ -333,6 +335,7 @@ class _SessionExport:
     payload_path: Path
     session: SessionInfo | None = None
     conversation_id: str | None = None
+    sticker_media_roots: tuple[Path, ...] = field(default=(), repr=False)
 
 
 class ChatAnalyzerFacade:
@@ -935,6 +938,7 @@ class ChatAnalyzerFacade:
                 return self._analyze_path(
                     session_export.payload_path,
                     resolved_config,
+                    source_media_roots=session_export.sticker_media_roots,
                     source=chat_source,
                     session=session,
                     scope=resolved_scope,
@@ -1034,6 +1038,7 @@ class ChatAnalyzerFacade:
         viewer_speaker_key: str | None = None,
         progress: Callable[[str], None] | None = None,
         direct_db_diagnostics: bool = False,
+        source_media_roots: tuple[Path, ...] = (),
     ) -> AnalysisOutcome:
         """Run analysis then presentation for one local path."""
         analysis_service = self._require_analysis_service()
@@ -1054,6 +1059,10 @@ class ChatAnalyzerFacade:
                 conversation_names=conversation_names or {},
                 conversation_kind=conversation_kind,
                 viewer_speaker_key=viewer_speaker_key,
+                sticker_media_roots=(
+                    source_media_roots if config.sticker_media_roots is None
+                    else config.sticker_media_roots
+                ),
             )
             with _translated_errors(source):
                 _report_progress(progress, "正在处理消息...")
@@ -1480,7 +1489,11 @@ class ChatAnalyzerFacade:
         # error. No source resource is held at this point.
         _publish_phase(on_phase, AnalysisPhase.ANALYZING_REPORT)
         with _translated_errors(source):
-            yield _SessionExport(payload_path=payload_path)
+            accessor = getattr(service, "sticker_media_roots", None)
+            yield _SessionExport(
+                payload_path=payload_path,
+                sticker_media_roots=tuple(accessor()) if accessor is not None else (),
+            )
 
     @staticmethod
     def _resolve_scope(

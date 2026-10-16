@@ -2,9 +2,10 @@
 
 本轮是本地核心数据能力，不新增 UI、榜单、报告章节或数据库读取器。
 自动测试只使用虚构消息及程序生成的媒体；**尚未验证真实 QQ / 微信恢复**。
-原件解码支持在安装声明依赖的源码环境中使用；现有 Frozen 配置明确排除 Pillow，
-本轮保持该发行边界。默认桌面分析不加载解码器，发送事实仍可用；若运行环境缺少
-解码器，原件验证返回 `unsupported/decoder_unavailable`，不能标为恢复成功。
+源码与 Frozen 使用同一 Pillow 验证路径；正式 spec 收集 Pillow、WebP 原生模块及其
+包含第三方组件声明的许可证。使用上游 PyInstaller hooks，避免维护另一套编解码器。
+默认分析不加载解码器；仅有明确目录授权且内容 MD5 命中时解码，限定 PNG/JPEG/GIF/WebP
+解码入口（APNG 属于 PNG）。异常缺少解码器仍返回 `unsupported/decoder_unavailable`。
 
 ## 实际支持矩阵
 
@@ -49,8 +50,14 @@ QQ 缺少 `45600` 的 MFACE 段仍沿用 Adapter 原先的省略行为，本轮�
 
 ## 关联证据与失败
 
-默认 `sticker_media_roots=()`：完全不发现或读取媒体。仅对调用者显式传入的绝对本地根
-扫描，不从配置、用户名、QQ 消息路径、URL 或客户端安装位置推导搜索范围。
+核心请求默认 `sticker_media_roots=()`：完全不发现或读取媒体。仅扫描显式授权的绝对本地根。
+Windows 微信既有 `wechat.json` 配置可增加 `sticker_media_roots` 路径数组，默认省略/空数组；
+Loader → 共享 ProviderFactory / Provider → ExportImportService → Facade → AnalysisRequestDTO
+传递同一授权，不新增数据库链路。它独立于 `data_root`，绝不据账号目录、消息路径、URL
+或安装位置推导扫描范围。配置不合法会报配置损坏；链接及文件安全在读取时再次验证。
+同数据根的常规设置保存保留授权，切换数据根及跨账号 Provider 探测副本清除旧授权。
+`AnalysisConfig.sticker_media_roots=None` 继承选中 Provider 的显式配置；传 `()` 关闭本次
+扫描，或传路径元组覆盖。本地文件分析也可直接传该元组，不发现用户配置或账号目录。
 文件名和扩展名均不参与匹配；先计算完整文件 MD5，与 Type 47 XML 的 MD5 比较。
 匹配后验证 PNG、JPEG、GIF、APNG、WebP 的真实格式和全部帧，保留原始字节、不转码。
 相同字节多份路径和多次发送仅保留一份媒体；同一 MD5 下不同字节视为歧义，拒绝任选。
@@ -92,10 +99,25 @@ verified_reference 仅是读取时来源证明；外部缓存随后可变动。�
   及 [字段说明](https://github.com/QQBackup/nt_msg_db_util/blob/317024ce2c5e3482fdf9f310a5a7159ab4927e34/db_docs/c2c_msg_table/40800.md)
   支持 PIC 的 MD5 / 原图标志 / 路径语义、MFACE 类型和资源路径线索；没有给出可靠的
   PIC 自定义表情判据，`45600` 仍是 bytes。通用媒体字段的说明不足以证明商城表情原件。
+- [QQChatExporter PR #518](https://github.com/shuakami/qq-chat-exporter/pull/518)
+  （合并提交 `ef1dae139a7598f49783ba5fc6c6feff6c438ee3`）使用 NapCat 原生 `picElement.picSubType`，
+  没有给出到 Direct DB 的字段映射；Echo 不重新接入已退休的 QCE 消息来源。
+  [NapCat 4.18.34 枚举](https://github.com/NapNeko/NapCatQQ/blob/v4.18.34/packages/napcat-core/types/msg.ts)
+  区分 `KNORMAL=0/KCUSTOM=1/KHOT=2`，不能将未来或其他值一律当普通图或自定义表情。
+  QQBackup 的 `45003` 是媒体类别（图片常见 1、语音 2、视频 7、文件 11），没有证据证明
+  等价于 picSubType；因此即使 `45003=1` 也不能确认自定义表情。
+  `45406` 的 raw MD5 与 `45424` 的 hex/旧 raw 编码分开解释：后者仅检查冲突，不能独立
+  授权原件关联。冲突或重复字段的不同摘要使 PIC 的 content_md5 未知，不能最后值胜出。
+  `45812` 是缓存位置线索，不证明是否原图，也不授予读取权限；`45418=1` 不提供表情分类。
 - 公开 [微信 Type 47 / MD5 说明](https://github.com/spacelan/wechat-emoticon/blob/0b9401cffe1d15b4c91df4f850b9132c3e9f3c17/README.md)
   及 [MD5 消费源码](https://github.com/spacelan/wechat-emoticon/blob/0b9401cffe1d15b4c91df4f850b9132c3e9f3c17/index.js)
   是历史协议佐证，不证明当前 Windows 微信缓存布局。本轮不声称已发现任何版本的
   自动缓存定位规则；采用显式根与实际内容摘要验证，仍需用户进行真实原件验收。
+- 复核 Windows 4.x 的公开
+  [表情导出源码](https://github.com/Rikkkum/wx_emoji_windows/blob/774cefe741e84023081f664919a29e86e54d34b5/scripts/export/wxemoticon-js.mjs)：
+  该工具从 emoticon.db 提取 URL 后下载，并非 Type 47 消息到本地原件的可验证映射。
+  本轮不执行上游代码、不获取额外密钥、不读收藏表情库、不下载媒体；配置的目录必须已含
+  原始明文文件。加密缓存、重编码副本、只有缩略图的目录不会因名称相似而恢复成功。
 
 后续 QQ 原件支持需要证明 `45600` 中资源摘要的编码，或其他经过验证的原件摘要映射；
 仅有 local_path 不能证明文件是原图。PIC 分类需要 Direct DB 本身的可靠标记，
@@ -123,8 +145,23 @@ print("保留发送", len(result.stickers.sends))
 print("素材结果", dict(Counter(m.status for m in result.stickers.media)))
 ```
 
+在既有 Windows 来源分析中可通过 `WeChatEnvironmentConfigWriter.save(replace(config,
+sticker_media_roots=(允许的绝对目录,)))` 保存授权，再使现有 ProviderFactory invalidate。
+仅本机操作，不修改密钥或运行时字段；常规用户配置默认没有媒体授权。也可在已有 Facade
+实例调用 `analyze_session(..., AnalysisConfig(sticker_media_roots=(允许的绝对目录,)))`，
+从 `outcome.result.stickers` 检查同一结果。本轮没有添加设置 UI 或报告展示。
+
 按发送者、会话、时间对照客户端中少量已知发送；重复发送应保留多条 send，但共用 media_key。
 对 available，用户在本机复算 `original_bytes` 的 MD5 与 send.content_md5、SHA-256 与
 media.sha256，并用本地图片工具逐帧检查原始动图。缺文件、改内容、缩略图、非法路径应
 明确失败，发送事实仍在；无 MD5 不能归并。QQ MFACE 当前应显示 unsupported，PIC / Type 3
 不得进入已确认集合。验收只适用于用户实际检查的来源版本、目录与样本，不能扩大为全量恢复。
+
+## 交付与后续边界
+
+虚构数据覆盖源码完整 Windows 来源编排与五种实际格式、动画字节保真、缺失/歧义/路径安全；
+正式 spec 隔离构建及独立 Frozen 编解码探针用于验证打包能力。这些都不等于真实客户端
+恢复验收，也不等于完整 Portable/Setup、QQ/微信原生运行时、安装升级及 GUI 人工验收。
+可开始消费 `sends/media` 的算法开发，但必须单独呈现事实范围、身份可信度和媒体覆盖率；
+QQ PIC 分类和 QQ MFACE 原件仍未支持。真实样本验收及明确不完整数据的展示规则确定前，
+不能宣称已具备 QQ/微信全量表情榜或正式原图展示能力。
