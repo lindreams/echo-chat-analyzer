@@ -89,6 +89,53 @@ Echo.exe 与 Setup 未签名；发布及本机正式在线更新的后续验收�
 | 微信 runtime 迁移边界 | 当前已有统一的 CLI／DLL 成对解析，且有[不自动混配的回归](../tests/test_wechat_environment_config.py)，不能照搬历史“逐项补路径造成混配”的缺陷结论。配置仍不能区分旧 bundled 与用户 custom：完整旧路径保留，半有效配置不自动补齐；这是保守兼容边界，不等于全部迁移场景已真人验收。 |
 | 第三方图片来源与授权 | [NOTICE](../NOTICE.md) 已披露 QQ 图片来源边界：仅部分图片有明确同步记录，其余逐文件来源未核实；尚无可核实的权利人再分发／修改授权。来源披露、代码 MIT 或 Echo MPL-2.0、非商业运营均不能作为图片已获授权的证明。其他第三方材料仍受各自许可约束，不能称已全面合规审查。 |
 
+## v0.2.1 Setup 体积基线与 LAC 候选验证
+
+本地正式 `Lindreams.Echo-0.2.1-win-x64-stable-full.nupkg` 的 SHA256 为
+`e7609384904b8db3b786a110612877f78a5a6ed7d9f4cae076bd02c6581cf10f`，
+与上述 Release 的资产 digest、125,800,799 bytes 大小一致，未下载大型资产。
+ZIP 中 1,425 项，解压总量 295,763,979 bytes；各项 `compress_size` 合计
+125,513,161 bytes，ZIP 目录等开销 287,638 bytes。以下使用 MiB（1,048,576 bytes），
+占比分母为 nupkg 文件大小；运行时内图片归其运行时，分类互斥。
+
+| 类别 | ZIP 压缩量 MiB | 包占比 |
+| --- | ---: | ---: |
+| Qt／PySide6／Shiboken | 36.74 | 30.62% |
+| 微信运行时 | 35.82 | 29.85% |
+| Python DLL／扩展／标准库 ZIP（不含 Qt 绑定与其他依赖） | 5.60 | 4.66% |
+| NapCat | 4.71 | 3.93% |
+| 图片（frontend、assets、微信指引） | 7.30 | 6.08% |
+| 应用、jieba、其他依赖与更新组件 | 29.54 | 24.62% |
+
+基线中的瘦身机会如下；本轮仅实施 LAC 数据排除，其余均未修改：
+
+- jieba `lac_small` 数据仍占 11.48 MiB；spec 已排除其代码，tokenizer 只使用
+  普通 `lcut`／`load_userdict`，数据采集仍带入模型。这是最直接的候选，理论包收益约
+  9.57%；另有 `analyse/idf.txt` 2.11 MiB，现役源码未见调用，须核实 hook 和运行时后再决定。
+- Qt 带入 Quick／Qml／QmlModels 约 5.42 MiB、Pdf 约 2.36 MiB、翻译 1.94 MiB，
+  现役源码未直接导入这些模块。需查清插件传递依赖和中文显示要求才能评估可删范围，
+  上述体积不是可保证收益。`opengl32sw.dll` 单项 7.33 MiB，可能参与图形兼容，不能直接删除。
+- 微信 `node.exe` 占 32.92 MiB，但当前 helper 需要 Node，不能把“最大文件”当作可删项；
+  NapCat 仅 4.71 MiB，正式 ZIP 未包含匹配 linux／darwin／win32-arm64 名称的 native 文件，
+  不能再以删除这些平台文件计算收益。Python 核心也未发现可安全直接删除的证据。
+- QQ 表情约 4.97 MiB、微信表情 0.71 MiB、品牌图 1.59 MiB；其中报告 wordmark
+  单项 1.51 MiB，可评估尺寸与编码，收益上限受这些现有体积约束，须真人核对画质与授权边界。
+
+正式 Setup 为 133,362,527 bytes（127.18 MiB），比 nupkg 多 7.21 MiB；
+差额包含封装开销，未解包归因，不视为全部可节省。
+
+0.3.0 前收尾确认官方 PyInstaller jieba hook 使用 `collect_data_files('jieba')`，
+模块 excludes 不阻止模型数据被收集。spec 现仅过滤 `jieba/lac_small` 的数据条目，
+保留普通词典、用户词典加载能力和其余 jieba 资源，不改依赖、pins 或运行时。
+使用既有 Windows 构建入口、全新输出目录与隔离用户目录生成 `EchoFinalLab`／
+`win-x64-final-lab` 实验候选，未修改正式包、Tag、Release，也未安装或启动候选。
+候选 nupkg 为 113,758,313 bytes（108.49 MiB），比基线减少 12,042,486 bytes
+（11.48 MiB，9.57%）；Setup 为 121,320,041 bytes（115.70 MiB），同样减少约 11.48 MiB。
+逐文件比较仅删除 22 个 LAC 文件、无新增应用文件；QQ／微信运行时逐文件一致，
+其余内容变化为 Echo.exe、标准库 ZIP 与实验身份 `sq.version`，不把全部字节差归因于模型。
+该候选构建于本轮 shard／repr 修复之前，仅验证瘦身，不能用作本轮最终发行验收。
+分词／收集合同相关 17 passed；候选 Frozen／Setup 合同 17 passed。
+
 ## 验证证据及边界
 
 ### 发布后体验问题调查（2026-10-16，源码）
