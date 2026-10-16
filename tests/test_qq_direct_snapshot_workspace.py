@@ -230,7 +230,9 @@ def test_empty_staging_left_before_marker_creation_is_recovered(tmp_path):
 
 
 @pytest.mark.parametrize('location', ['same_directory', 'workspace_inside_source', 'source_inside_workspace'])
-def test_source_overlap_is_rejected_without_modifying_source(tmp_path, location):
+@pytest.mark.parametrize('case_alias', [False, pytest.param(True, marks=pytest.mark.skipif(
+    os.name != 'nt', reason='Windows case-insensitive path aliases'))])
+def test_source_overlap_is_rejected_without_modifying_source(tmp_path, location, case_alias):
     source = tmp_path / 'source' / 'fictional.db'
     if location == 'same_directory':
         root = source.parent
@@ -241,6 +243,8 @@ def test_source_overlap_is_rejected_without_modifying_source(tmp_path, location)
         source = root / 'nested' / 'fictional.db'
     source.parent.mkdir(parents=True)
     source.write_bytes(b'fictional user source')
+    if case_alias:
+        root = Path(str(root).swapcase())
     operation = f'workspace.assertSourceSeparate({json.dumps(str(source))});workspace.recover();workspace.createStaging();'
     assert not _run(root, operation)['ok']
     assert not (root / 'staging').exists()
