@@ -144,7 +144,7 @@ def test_fixed_01_metadata_survives_list_reopen_and_retention_without_rewrite(tm
     assert {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in old.iterdir()} == before
 
 
-@pytest.mark.parametrize("revision", ["echo-analysis.v1", "echo-analysis.v2"])
+@pytest.mark.parametrize("revision", ["echo-analysis.v1", "echo-analysis.v2", "echo-analysis.v5"])
 def test_catalog_reopens_both_analysis_revisions_without_rewriting(tmp_path, revision):
     package = _package(tmp_path)
     metadata_path = package / "metadata.json"

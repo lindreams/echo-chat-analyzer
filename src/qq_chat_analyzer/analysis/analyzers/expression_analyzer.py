@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import itertools
-import unicodedata
 from collections import Counter
 from collections.abc import Mapping, Sequence
 
 from ...message import ChatMessage
+from ...unicode_emoji import iter_emoji_clusters
 from ...rich_message import (
     EXPRESSION_KIND_PLATFORM_FACE,
     EXPRESSION_KIND_STICKER,
@@ -499,66 +499,3 @@ def _rate(part: int, total: int) -> float:
     if total <= 0:
         return 0.0
     return round(part / total, 4)
-
-
-def iter_emoji_clusters(text: str):
-    """Yield stable common Unicode emoji clusters without full CLDR coverage."""
-    normalized = unicodedata.normalize("NFC", text)
-    index = 0
-    length = len(normalized)
-    while index < length:
-        char = normalized[index]
-        if (
-            _is_regional_indicator(char)
-            and index + 1 < length
-            and _is_regional_indicator(normalized[index + 1])
-        ):
-            yield normalized[index : index + 2]
-            index += 2
-            continue
-        if not _is_emoji_base(char):
-            index += 1
-            continue
-
-        end = index + 1
-        while end < length:
-            current = normalized[end]
-            if _is_emoji_modifier(current) or _is_variation_selector(current):
-                end += 1
-                continue
-            if (
-                current == "\u200d"
-                and end + 1 < length
-                and _is_emoji_base(normalized[end + 1])
-            ):
-                end += 2
-                while end < length and (
-                    _is_variation_selector(normalized[end])
-                    or _is_emoji_modifier(normalized[end])
-                ):
-                    end += 1
-                continue
-            break
-        yield normalized[index:end]
-        index = end
-
-
-def _is_emoji_base(char: str) -> bool:
-    code = ord(char)
-    return (
-        0x1F000 <= code <= 0x1FAFF
-        or 0x2600 <= code <= 0x27BF
-        or 0x2B00 <= code <= 0x2BFF
-    )
-
-
-def _is_emoji_modifier(char: str) -> bool:
-    return 0x1F3FB <= ord(char) <= 0x1F3FF
-
-
-def _is_variation_selector(char: str) -> bool:
-    return ord(char) in (0xFE0E, 0xFE0F)
-
-
-def _is_regional_indicator(char: str) -> bool:
-    return 0x1F1E6 <= ord(char) <= 0x1F1FF

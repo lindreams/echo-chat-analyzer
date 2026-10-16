@@ -214,5 +214,17 @@ def test_echo_report_html_inlines_expression_assets_without_local_paths(
     assert "references" not in html
 
 
+@pytest.mark.parametrize("key, expected", [
+    ("⌚", "⌚"), ("1️⃣", "1️⃣"), ("★", "表情"), ("❤\ufe0e", "表情"),
+])
+def test_expression_token_fallback_uses_the_same_unicode_contract(key, expected):
+    view = EchoReportView(title="Fictional Echo", language_profile=EchoLanguageProfile(
+        mode="private_common", available=True,
+        members=(EchoLanguageMember("fictional-a", "Fictional A", "A", ("expression:" + key,)),),
+    ))
+    payload = echo_report_to_dict(view)
+    assert payload["language_profile"]["members"][0]["primary_words"] == [{"text": expected}]
+
+
 #: A throwaway payload; tests only assert it round-trips through base64.
 _FAKE_PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRfake-minimal-png"

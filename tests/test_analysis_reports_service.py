@@ -251,7 +251,9 @@ def test_report_boundary_does_not_retain_full_expression_candidates() -> None:
     from qq_chat_analyzer.presentation import build_echo_report_view
 
     randomizer = random.Random(71)
-    pool = [chr(0x1F300 + index) for index in range(200)]
+    # Use actual Unicode data, not a block range containing non-emoji symbols.
+    from qq_chat_analyzer.unicode_emoji import _SEQUENCES
+    pool = sorted(item for item in _SEQUENCES if len(item) == 1)[:200]
     messages = [
         ChatMessage(
             timestamp=1704099600 + index,
@@ -295,6 +297,47 @@ def test_report_boundary_does_not_retain_full_expression_candidates() -> None:
     assert expression.expression_message_count == 1000
     assert expression.unique_expression_count == 200
     assert sum(member.expression_occurrence_count for member in expression.members) == 8000
+
+
+@pytest.mark.parametrize("source", ["qq", "wechat"])
+def test_sticker_rank_prefix_does_not_starve_official_expression_display(source):
+    from qq_chat_analyzer.analysis.analyzers import ExpressionAnalyzer
+    from qq_chat_analyzer.application.analysis_service import _build_reports
+    from qq_chat_analyzer.legacy_projection import project_legacy_messages
+    from qq_chat_analyzer.presentation import build_echo_report_view
+    from qq_chat_analyzer.presentation.echo_serializer import echo_report_to_dict
+    from qq_chat_analyzer.rich_message import RichMessage, ExpressionContent, SenderIdentity
+
+    # More leading stickers than either retained raw prefix; official entries
+    # must be selected from the complete ranking before candidates are trimmed.
+    faces = ("14", "1", "2", "3", "4") if source == "qq" else ("微笑", "捂脸", "大哭", "呲牙", "害羞")
+    contents = tuple(
+        ExpressionContent("sticker", f"fictional-sticker-{index}", "[贴图]")
+        for index in range(12) for _ in range(10)
+    ) + tuple(
+        ExpressionContent("platform_face", key, f"[{key}]")
+        for key in faces for _ in range(2)
+    )
+    rich = [RichMessage("fictional-ranking", source, "fictional-room",
+                        SenderIdentity("fictional-a", "Fictional A"), 1, "text", contents)]
+    messages = project_legacy_messages(rich)
+    candidates = ExpressionAnalyzer().analyze(messages, rich)
+    reports = _build_reports(messages, [], expression_report=candidates, expression_source=source)
+    bounded = reports.expression
+    for field in ("expression_occurrence_count", "expression_message_count", "unique_expression_count",
+                  "expression_only_message_count", "expression_only_rate", "total_message_count"):
+        assert getattr(bounded, field) == getattr(candidates, field)
+    assert candidates.expression_occurrence_count == 130
+    assert len(candidates.top_expressions) == 17
+    assert len(bounded.top_expressions) == 15
+    view = build_echo_report_view(reports, expression_source=source)
+    assert {item.expression_key for item in view.expression_culture.top_expressions} == set(faces)
+    assert len(view.expression_culture.members[0].top_expressions) == 3
+    payload = echo_report_to_dict(view)["expression_culture"]
+    assert payload["unique_expression_count"] == 17
+    assert payload["members"][0]["expression_occurrence_count"] == 130
+    assert all(item["kind"] == "platform_face" for item in payload["top_expressions"])
+    assert "fictional-sticker" not in json.dumps(payload)
 
 
 def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
@@ -344,6 +387,22 @@ def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
         not member["top_expressions"] for member in culture["members"]
     )
     assert "微信自定义表情" not in serialized
+
+
+def test_new_report_metadata_records_corrected_expression_semantics(tmp_path):
+    from datetime import datetime, timezone
+    from qq_chat_analyzer.application.report_package_metadata import build_report_metadata
+    from qq_chat_analyzer.application.scope_filter import AnalysisScope
+
+    app = _application_module()
+    path = tmp_path / "fictional-stickers.json"
+    _write_wechat_db_sticker_export(path)
+    result = app.AnalysisApplicationService().execute(_request(app, tmp_path, path))
+    metadata = build_report_metadata(
+        result=result, source="wechat", scope=AnalysisScope.all(),
+        generated_at=datetime(2026, 10, 16, tzinfo=timezone.utc),
+    )
+    assert metadata["analysis_revision"] == "echo-analysis.v6"
 
 
 @pytest.mark.parametrize("source", ["wechat", "qq"])

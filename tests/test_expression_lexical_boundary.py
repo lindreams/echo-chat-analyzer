@@ -16,7 +16,7 @@ _LEXICAL_TEXTS = (
     "ocean ocean coral marine",
 )
 _LEXICAL_WORDS = {word for text in _LEXICAL_TEXTS for word in text.split()}
-_EMOJIS = "😀😂🥰😎🤔😭😡👍👏🙏🎉❤️" * 3
+_EMOJIS = "😀😂🥰😎🤔😭😡👍👏🙏🎉❤️⌚#️⃣*️⃣👨‍👩‍👧"
 
 
 def _fictional_payload(source, conversation_type, expression_heavy, include_unicode=True):
@@ -112,4 +112,19 @@ def test_sender_specific_expressions_cannot_displace_real_distinctive_words():
     assert all(len(member.words) == 5 for member in baseline.members)
     assert [{word.word for word in member.words} for member in heavy.members] == [
         {word.word for word in member.words} for member in baseline.members
+    ]
+
+
+@pytest.mark.parametrize("source", ["qq", "wechat"])
+@pytest.mark.parametrize("conversation_type", ["group", "private"])
+def test_unicode_and_structured_expressions_preserve_lexical_consumers(
+    tmp_path, source, conversation_type,
+):
+    baseline, heavy = _lexical_pair(tmp_path, source, conversation_type)
+    assert heavy.reports.expression.expression_occurrence_count > 360
+    assert heavy.top_words == baseline.top_words
+    assert heavy.reports.distinctive_words == baseline.reports.distinctive_words
+    assert heavy.reports.private_language == baseline.reports.private_language
+    assert [profile.top_words for profile in heavy.reports.user_profiles.profiles] == [
+        profile.top_words for profile in baseline.reports.user_profiles.profiles
     ]

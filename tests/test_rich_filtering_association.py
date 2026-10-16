@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+from collections import Counter
 from datetime import date, datetime
 
 import pytest
@@ -99,26 +100,55 @@ def voice_expressions(analyzed):
             if token.startswith("expression:")]
 
 
-@pytest.mark.parametrize("stage", ["scope", "quality"])
-def test_filtered_duplicate_id_cannot_supply_rich_facts(tmp_path, monkeypatch, stage):
+@pytest.mark.parametrize("source", ["qq", "wechat"])
+@pytest.mark.parametrize("stage", ["scope", "quality", "sender", "template"])
+def test_filtered_duplicate_id_cannot_supply_rich_facts(tmp_path, monkeypatch, stage, source):
     kept_time = int(datetime(2026, 1, 2, 12).timestamp())
-    rows = [qq_row("duplicate", "Human authored 🐱", 14, timestamp=kept_time)]
+
+    def row(message_id, text, face, *, timestamp=kept_time, sender="fiction-human", image=False):
+        if source == "qq":
+            return qq_row(message_id, text, face, timestamp=timestamp, sender=sender, image=image)
+        face_text = "[微笑]" if face == 14 else "[大哭]"
+        authored = (text.replace(" 加入群聊", face_text + " 加入群聊")
+                    if " 加入群聊" in text else text + face_text)
+        result = wx_row(message_id, authored)
+        result.update(create_time=timestamp, user_name=sender)
+        return result
+
+    rows = [row("duplicate", "Human authored 🐱", 14)]
     scope = None
     if stage == "scope":
-        rows.append(qq_row("duplicate", "Outside scope 🐶", 15, image=True,
+        rows.append(row("duplicate", "Outside scope 🐶", 15, image=True,
                            timestamp=int(datetime(2025, 1, 2, 12).timestamp())))
         scope = AnalysisScope.custom(date(2026, 1, 2), date(2026, 1, 2))
     elif stage == "quality":
-        rows.append(qq_row("duplicate", "Filtered " + "z" * 110 + " 🐶", 15,
+        rows.append(row("duplicate", "Filtered " + "z" * 110 + " 🐶", 15,
                            image=True))
+    elif stage == "sender":
+        rows.extend(row("duplicate", "固定签到播报 🐶", 15,
+                        sender="fiction-robot", timestamp=kept_time + i * 120)
+                    for i in range(10))
     else:
-        rows.extend(qq_row(f"robot-{i}", "Daily fictional robot result 123", 15,
-                           sender="fiction-robot") for i in range(8))
-        rows[-1]["record_id"] = "duplicate"
-    result, (kept, analyzed) = analyze(tmp_path, monkeypatch, [qq_file(rows)], scope)
+        rows.extend(row("duplicate", f"欢迎 虚构成员{member} 🐶 加入群聊", 15,
+                        sender=f"fiction-welcome-{member}") for member in ("甲", "乙", "丙", "丁"))
+    service = importlib.import_module("qq_chat_analyzer.application.analysis_service")
+    original = service.run_smart_profile
+    decisions = []
+
+    def observe_profile(messages):
+        filtered = original(messages)
+        decisions.extend(filtered.applied_decisions)
+        return filtered
+
+    monkeypatch.setattr(service, "run_smart_profile", observe_profile)
+    payload = qq_file(rows) if source == "qq" else wx_file(rows)
+    result, (kept, analyzed) = analyze(tmp_path, monkeypatch, [payload], scope)
+    if stage in {"sender", "template"}:
+        assert any(item.target_type == stage and item.action == "ignore" for item in decisions)
     assert len(kept) == 1
-    assert expression_counts(result) == {"🐱": 1, "14": 1}
-    assert voice_expressions(analyzed) == ["expression:🐱", "expression:14"]
+    face_key = "14" if source == "qq" else "微笑"
+    assert expression_counts(result) == {"🐱": 1, face_key: 1}
+    assert voice_expressions(analyzed) == ["expression:🐱", f"expression:{face_key}"]
     assert "Human" in analyzed.tokens and "Filtered" not in analyzed.tokens
 
 
@@ -200,3 +230,56 @@ def test_direct_expression_call_does_not_guess_among_duplicate_ids(tmp_path):
     )
     assert {usage.expression_key: usage.count
             for usage in explicit.top_expressions} == {"14": 1, "15": 1}
+
+
+@pytest.mark.parametrize("source", ["qq", "wechat"])
+def test_unicode_projection_tokens_and_expression_report_agree(tmp_path, monkeypatch, source):
+    flag = "\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f"
+    text = "orchard1️⃣meadow ⌚ ⏰ ⏳ 👍🏽 👨‍👩‍👧 🇨🇳 " + flag + " ❤ ★☆♪♫❶ ❤\ufe0e"
+    if source == "qq":
+        payload = qq_file([qq_row("unicode", text, 14)])
+        face = "14"
+    else:
+        payload = wx_file([wx_row("unicode", text + "[Facepalm]")])
+        face = "捂脸"
+    result, (_, analyzed) = analyze(tmp_path, monkeypatch, [payload])
+    expected = {key: 1 for key in ("1️⃣", "⌚", "⏰", "⏳", "👍🏽", "👨‍👩‍👧", "🇨🇳", flag, "❤", face)}
+    assert expression_counts(result) == expected
+    assert Counter(token.removeprefix("expression:") for token in voice_expressions(analyzed)) == expected
+    assert analyzed.tokens == ["orchard", "meadow"]
+    report = result.reports.expression
+    assert report.expression_occurrence_count == 10
+    assert report.expression_message_count == 1 and report.expression_only_message_count == 0
+    assert report.members[0].expression_occurrence_count == 10
+
+
+@pytest.mark.parametrize("source", ["qq", "wechat"])
+@pytest.mark.parametrize("kind, status, expressions", [
+    ("unicode", "expression_only", 1),
+    ("official", "expression_only", 1),
+    ("sticker", "expression_only", 1),
+    ("word", "completed", 0),
+    ("decoration", "no_tokens", 0),
+])
+def test_single_content_kind_keeps_report_status_contract(
+    tmp_path, monkeypatch, source, kind, status, expressions,
+):
+    text = {"unicode": "⌚", "word": "orchard", "decoration": "★☆♪♫❶"}.get(kind, "")
+    if source == "qq":
+        if kind == "sticker":
+            from test_qq_db_rich_contents import _sticker
+            payload = _payload(_body(_sticker()))
+        else:
+            payload = qq_file([qq_row("boundary", text, 14 if kind == "official" else None)])
+    else:
+        if kind == "official":
+            text = "[Facepalm]"
+        payload = wx_file([wx_row("boundary", text, sticker=kind == "sticker")])
+    result, (_, analyzed) = analyze(tmp_path, monkeypatch, [payload])
+    assert result.status.value == status
+    assert len(voice_expressions(analyzed)) == expressions
+    if status == "no_tokens":
+        assert result.artifacts == ()
+    else:
+        assert {item.kind for item in result.artifacts} == {"echo_report_json", "echo_report_html"}
+        assert result.reports.expression.expression_occurrence_count == expressions

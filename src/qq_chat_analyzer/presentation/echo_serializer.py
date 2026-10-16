@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from ..resources import resource_path
+from ..unicode_emoji import iter_emoji_clusters
 from .echo_report_template import (
     ECHO_REPORT_APP_JS,
     ECHO_REPORT_CSS,
@@ -215,11 +216,7 @@ def _word_to_display(
 
 
 def _is_emoji_expression(expression_key: str) -> bool:
-    return any(
-        0x1F000 <= ord(char) <= 0x1FAFF
-        or 0x2600 <= ord(char) <= 0x27BF
-        for char in expression_key
-    )
+    return tuple(iter_emoji_clusters(expression_key)) == (expression_key,)
 
 
 def _expression_habits_to_dict(

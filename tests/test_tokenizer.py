@@ -27,3 +27,7 @@ def test_filters_trimmed_stopwords_and_ignores_blank_lines(
     stopwords_path.write_text("  我  \n\n喜欢\n", encoding="utf-8")
 
     assert tokenize("我喜欢数据分析", str(stopwords_path)) == ["数据分析"]
+
+
+def test_keycaps_are_word_boundaries_and_never_become_lexical_digits():
+    assert tokenize("orchard1️⃣2️⃣3️⃣meadow #️⃣*️⃣") == ["orchard", "meadow"]

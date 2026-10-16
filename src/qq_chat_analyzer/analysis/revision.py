@@ -17,4 +17,6 @@
 # Combination rankings likewise retain candidates until asset filtering.
 # Application report construction retains only raw prefixes and display-selected
 # candidates; full rankings remain transient during analysis and selection.
-ANALYSIS_REVISION = "echo-analysis.v5"
+# v6: Unicode 18.0 official emoji sequences, explicit presentation selectors,
+# and keycap-safe lexical masking replace broad Unicode block heuristics.
+ANALYSIS_REVISION = "echo-analysis.v6"

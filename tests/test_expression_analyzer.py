@@ -17,6 +17,7 @@ from qq_chat_analyzer.analysis.analyzers.expression_analyzer import (
     EXPRESSION_KIND_STICKER,
     EXPRESSION_KIND_UNICODE,
     ExpressionAnalyzer,
+    iter_emoji_clusters,
 )
 from qq_chat_analyzer.legacy_projection import project_legacy_messages
 from qq_chat_analyzer.message import ChatMessage
@@ -235,3 +236,30 @@ def test_rich_message_matching_falls_back_per_message_id() -> None:
     }
     assert report.members[0].expression_occurrence_count == 1
     assert report.members[1].expression_occurrence_count == 1
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("★ ☆ ♪ ♫ ❶ 1 # *", []),
+    ("⌚ ⏰ ⏳", ["⌚", "⏰", "⏳"]),
+    ("1️⃣#️⃣*️⃣ 2\u20e3", ["1️⃣", "#️⃣", "*️⃣", "2\u20e3"]),
+    ("❤ ♥ ❤️ ♥️ ❤\ufe0e ♥\ufe0e", ["❤", "♥", "❤️", "♥️"]),
+    ("⌚\ufe0e ⌚\ufe0f ☀\ufe0e ☀️", ["⌚\ufe0f", "☀️"]),
+    ("👍🏽👨‍👩‍👧🇨🇳", ["👍🏽", "👨‍👩‍👧", "🇨🇳"]),
+    ("\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f",
+     ["\U0001f3f4\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f"]),
+    ("\U0001faeb", ["\U0001faeb"]),  # Unicode / Emoji 18.0 cracking face
+    ("\U0001f02c\U0001fa00", []),  # unassigned / chess, inside old broad ranges
+])
+def test_unicode_18_sequences_and_chat_presentation_policy(text, expected):
+    assert list(iter_emoji_clusters(text)) == expected
+
+
+def test_decorations_do_not_change_expression_totals_or_expression_only_classification():
+    report = ExpressionAnalyzer().analyze([
+        _chat("★☆♪♫❶", message_id="decorations"),
+        _chat("★😀", message_id="mixed"),
+    ])
+    assert report.expression_occurrence_count == 1
+    assert report.expression_message_count == 1
+    assert report.expression_only_message_count == 0
+    assert [item.expression_key for item in report.top_expressions] == ["😀"]

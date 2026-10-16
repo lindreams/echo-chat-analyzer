@@ -140,6 +140,7 @@ def _render_frontend(
     *,
     kind: str,
     sessions: dict[str, object] | None,
+    expression_culture: dict[str, object] | None = None,
 ) -> dict[str, dict[str, object]]:
     payload = {
         "conversation": {"kind": kind, "name": "", "time_span": ""},
@@ -151,6 +152,7 @@ def _render_frontend(
         },
         "activity": {"hourly": [], "weekday": []},
         "members": [],
+        "expression_culture": expression_culture,
     }
     if sessions is not None:
         payload["conversation_sessions"] = sessions
@@ -174,6 +176,30 @@ def _render_frontend(
         env=environment,
     )
     return json.loads(completed.stdout)
+
+
+@pytest.mark.parametrize("known_sender", [True, False])
+def test_expression_chapter_uses_display_count_and_member_availability(tmp_path, known_sender):
+    from qq_chat_analyzer.message import ChatMessage
+    from qq_chat_analyzer.application.analysis_service import _build_reports
+    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
+
+    messages = [ChatMessage(
+        timestamp=1704099600 + index * 120, sender="Fictional A" if known_sender else "",
+        sender_id="fictional-a" if known_sender else None, conversation_type="private",
+        message_type="text", text=text, platform="qq",
+    ) for index, text in enumerate(("⌚", "⌚", "⏳"))]
+    view = build_echo_report_view(_build_reports(messages, []), expression_source="qq")
+    culture = echo_report_to_dict(view)["expression_culture"]
+    assert culture["expression_message_count"] == 3
+    assert culture["unique_expression_count"] == 2
+    assert [item["display_text"] for item in culture["top_expressions"]] == ["⌚"]
+    rendered = _render_frontend(tmp_path, kind="private", sessions=None, expression_culture=culture)
+    assert rendered["expression"]["hidden"] is (not known_sender)
+    assert rendered["expression-toc"]["hidden"] is (not known_sender)
+    if known_sender:
+        assert rendered["expression-message-count"]["text"] == "3 条"
+        assert rendered["expression-unique-count"]["text"] == "1 种"
 
 
 def test_session_chapter_never_displays_stable_ids_or_technical_ratio(tmp_path) -> None:

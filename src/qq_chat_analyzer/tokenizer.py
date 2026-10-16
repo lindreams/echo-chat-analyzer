@@ -9,6 +9,7 @@ from pathlib import Path
 import jieba
 
 from .wechat_official_emojis import wechat_expression_names
+from .unicode_emoji import mask_emoji
 
 
 _WORD_CONTENT_RE = re.compile(r"[\u3400-\u9fffA-Za-z0-9]")
@@ -60,7 +61,7 @@ def tokenize(
     # Mask expression markers before hyphen protection: a hyphenated bracket
     # code such as ``[Pooh-pooh]`` would otherwise be placeholder-protected
     # out of reach of the expression pattern and leak as a language token.
-    expression_masked_text = _EXPRESSION_PLACEHOLDER_RE.sub(" ", text)
+    expression_masked_text = _EXPRESSION_PLACEHOLDER_RE.sub(" ", mask_emoji(text))
     protected_text, protected_tokens = _protect_hyphenated_ascii(
         expression_masked_text
     )
