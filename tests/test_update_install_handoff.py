@@ -134,10 +134,10 @@ def test_install_confirmation_and_closed_dialog_drop_late_preparation(tmp_path, 
     dialog.show()
     received = []
     dialog.install_requested.connect(received.append)
-    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.No)
+    monkeypatch.setattr(QMessageBox, 'exec', lambda *args: QMessageBox.No)
     dialog.install_button.click()
     assert requests == []
-    monkeypatch.setattr(QMessageBox, 'question', lambda *args: QMessageBox.Yes)
+    monkeypatch.setattr(QMessageBox, 'exec', lambda *args: QMessageBox.Yes)
     dialog.install_button.click()
     dialog.install_button.click()
     assert len(requests) == 1
@@ -288,7 +288,7 @@ facade = app.build_facade()
 facade._installable_update_service = service
 window = MainWindow(facade)
 window.show()
-QMessageBox.question = lambda *args: QMessageBox.Yes
+QMessageBox.exec = lambda *args: QMessageBox.Yes
 warnings = []
 QMessageBox.warning = lambda *args: warnings.append(args)
 prepared = facade.prepare_update_install() if mode == 'direct' else None

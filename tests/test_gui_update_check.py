@@ -98,10 +98,10 @@ def test_main_window_navigation_keeps_download_progress_and_install_handoff(app,
     prepared = []
     monkeypatch.setattr(window, "request_update_install", prepared.append)
     confirmations = []
-    def confirm(*args):
-        confirmations.append(args[2])
+    def confirm(box):
+        confirmations.append(box.text())
         return module.QMessageBox.Yes
-    monkeypatch.setattr(module.QMessageBox, "question", confirm)
+    monkeypatch.setattr(module.QMessageBox, "exec", confirm)
     window.show()
     window.home_page._about_btn.click()
     page = window.stack.currentWidget()
@@ -174,6 +174,51 @@ def update_ui(app):
     if isValid(dialog):
         dialog.close()
     app.processEvents()
+
+
+@pytest.mark.parametrize("dark", [False, True])
+def test_install_confirmation_readable_and_cancel_is_safe(update_ui, app, dark):
+    from PySide6.QtCore import QTimer
+    from PySide6.QtGui import QColor, QPalette
+    from PySide6.QtWidgets import QMessageBox, QLabel
+    from qq_chat_analyzer.gui.theme import BASE_QSS
+
+    page, executor, facade = update_ui
+    facade.prepare_update_install = lambda: pytest.fail("cancelled installation prepared")
+    facade.result = InstallableUpdateResult("downloaded", "7.2.1", "7.3.0", 100)
+    page._show_installable_result(facade.result)
+    old_palette = app.palette()
+    old_style = app.styleSheet()
+    palette = QPalette(old_palette)
+    palette.setColor(QPalette.Window, QColor("#202020" if dark else "#ffffff"))
+    palette.setColor(QPalette.WindowText, QColor("#eeeeee" if dark else "#111111"))
+    app.setPalette(palette)
+    app.setStyleSheet(BASE_QSS)
+    observed = []
+
+    def cancel():
+        box = app.activeModalWidget()
+        if not isinstance(box, QMessageBox):
+            return
+        label = box.findChild(QLabel, "qt_msgbox_label")
+        observed.append((
+            box.button(QMessageBox.Yes).text(), box.button(QMessageBox.No).text(),
+            box.defaultButton() is box.button(QMessageBox.No),
+            box.escapeButton() is box.button(QMessageBox.No),
+            box.palette().color(QPalette.Window).name(),
+            label.palette().color(QPalette.WindowText).name(),
+        ))
+        QTest.keyClick(box, Qt.Key_Escape)
+
+    QTimer.singleShot(0, cancel)
+    try:
+        page.install_button.click()
+        assert observed == [("安装并重启", "取消", True, True, "#f8f5ed", "#1d1a17")]
+        assert executor.tasks == []
+        assert page.install_button.isEnabled()
+    finally:
+        app.setStyleSheet(old_style)
+        app.setPalette(old_palette)
 
 
 def test_download_percent_is_monotonic_and_cannot_confirm_completion(update_ui):

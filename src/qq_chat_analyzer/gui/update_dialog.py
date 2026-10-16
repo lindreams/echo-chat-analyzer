@@ -33,7 +33,7 @@ from ..application.facade import (
 )
 from ..resources import user_data_root
 from .theme import (
-    HOME_COLOR_PAPER, HOME_COLOR_MUTED, HOME_COLOR_ACCENT, HOME_QSS,
+    HOME_COLOR_PAPER, HOME_COLOR_TEXT, HOME_COLOR_LEAF, HOME_COLOR_MUTED, HOME_COLOR_ACCENT, HOME_QSS,
     COLOR_BORDER, COLOR_ERROR, REFRESH_SANS_FAMILY,
 )
 from .workers import submit
@@ -830,9 +830,30 @@ class UpdatePage(QWidget):
         # Lock admission even while the confirmation's nested Qt event loop runs.
         self._local_operation = True
         self._render()
-        confirmed = QMessageBox.question(self, '安装更新并重启？',
+        confirmation = QMessageBox(QMessageBox.Question, '安装更新并重启？',
             'Echo 将关闭、安装更新并自动重启。\n安装前会清理当前业务；清理失败则取消安装。',
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+            QMessageBox.Yes | QMessageBox.No, self)
+        # About's transparent child backgrounds otherwise inherit the system's
+        # dark surface while retaining Echo's ink text. Own this dialog's colors.
+        confirmation.setStyleSheet(f"""
+            QMessageBox, QMessageBox QLabel {{
+                background: {HOME_COLOR_PAPER}; color: {HOME_COLOR_TEXT};
+                font-family: {REFRESH_SANS_FAMILY}; font-size: 15px;
+            }}
+            QMessageBox QPushButton {{
+                background: {HOME_COLOR_PAPER}; color: {HOME_COLOR_TEXT};
+                border: 1px solid {COLOR_BORDER}; padding: 8px 20px;
+            }}
+            QMessageBox QPushButton:hover, QMessageBox QPushButton:focus {{
+                background: {HOME_COLOR_LEAF}; border-color: {HOME_COLOR_ACCENT};
+            }}
+        """)
+        confirmation.button(QMessageBox.Yes).setText('安装并重启')
+        confirmation.button(QMessageBox.No).setText('取消')
+        confirmation.setDefaultButton(QMessageBox.No)
+        confirmation.setEscapeButton(QMessageBox.No)
+        confirmed = confirmation.exec()
+        confirmation.deleteLater()
         if confirmed != QMessageBox.Yes or self._closed:
             self._local_operation = False
             if not self._closed:
