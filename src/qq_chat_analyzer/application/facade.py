@@ -30,7 +30,7 @@ import threading
 from time import monotonic as _monotonic, perf_counter as _perf_counter
 from tempfile import TemporaryDirectory
 from collections.abc import Iterable, Mapping
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta, timezone
 from enum import Enum
@@ -39,6 +39,7 @@ from typing import Any, Callable, Iterator
 from uuid import uuid4
 
 from ..resources import resources_dir, user_data_dir
+from ..diagnostics import qq_session_stage
 from .shutdown_models import ShutdownResult, ShutdownStatus, ShutdownStepResult
 from ..analysis.timestamps import to_epoch_seconds
 from ..presentation import EchoReportView
@@ -529,10 +530,11 @@ class ChatAnalyzerFacade:
             else:
                 raw_sessions = service.list_sessions()
 
-        return [
-            _to_session_info(chat_source, raw_session)
-            for raw_session in raw_sessions or ()
-        ]
+        with qq_session_stage(_LOGGER, "facade_convert") if chat_source is ChatSource.QQ else nullcontext():
+            return [
+                _to_session_info(chat_source, raw_session)
+                for raw_session in raw_sessions or ()
+            ]
 
 
     def get_connection_status(

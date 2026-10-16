@@ -35,7 +35,10 @@ export function createWorkspace(rootDirectory) {
     noLinks(root);
     mkdirSync(root, { recursive: true });
     noLinks(join(root, 'lease.lock'));
-    if (lease && lease.exitCode === null && lease.signalCode === null && !lease.killed) return;
+    if (lease) {
+      if (lease.exitCode === null && lease.signalCode === null && !lease.killed) return;
+      await release();
+    }
     // A fixed program receives the path only through the environment. No shell
     // interpolation, PID liveness guessing or persistent lock-file deletion.
     const command = "$ErrorActionPreference='Stop'; try { $f=[IO.File]::Open($env:ECHO_SNAPSHOT_LEASE,[IO.FileMode]::OpenOrCreate,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None); [Console]::WriteLine('ready'); [Console]::Out.Flush(); [Console]::In.ReadLine() | Out-Null; $f.Dispose() } catch { exit 1 }";
@@ -46,18 +49,25 @@ export function createWorkspace(rootDirectory) {
       windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'],
       env: { ...process.env, ECHO_SNAPSHOT_LEASE: join(root, 'lease.lock') },
     });
-    child.stdin.on('error', () => {});
-    await new Promise((done, failed) => {
-      const timer = setTimeout(() => { child.kill(); failed(busy()); }, 5000);
-      let received = '';
-      child.once('error', () => { clearTimeout(timer); failed(busy()); });
-      child.once('exit', () => { clearTimeout(timer); failed(busy()); });
-      child.stdout.on('data', bytes => {
-        received += bytes.toString();
-        if (received.trim() === 'ready') { clearTimeout(timer); done(); }
-      });
-    });
+    // Keep ownership even if readiness times out. A kill request is not proof
+    // that the OS handle has closed, and a retry must not race this child.
     lease = child;
+    child.stdin.on('error', () => {});
+    try {
+      await new Promise((done, failed) => {
+        const timer = setTimeout(() => failed(busy()), 5000);
+        let received = '';
+        child.once('error', () => { clearTimeout(timer); failed(busy()); });
+        child.once('exit', () => { clearTimeout(timer); failed(busy()); });
+        child.stdout.on('data', bytes => {
+          received += bytes.toString();
+          if (received.trim() === 'ready') { clearTimeout(timer); done(); }
+        });
+      });
+    } catch (error) {
+      await release();
+      throw error;
+    }
     child.unref(); child.stdin.unref(); child.stdout.unref();
     const marker = join(root, 'owner.json');
     if (existsSync(marker)) { if (!owner(marker)) reject(); }
@@ -65,14 +75,22 @@ export function createWorkspace(rootDirectory) {
   }
 
   async function release() {
-    const child = lease; lease = null;
+    const child = lease;
     if (!child) return;
-    if (child.exitCode !== null || child.signalCode !== null) return;
-    await new Promise(done => {
-      const timer = setTimeout(() => { child.kill(); done(); }, 2000);
-      child.once('exit', () => { clearTimeout(timer); done(); });
-      child.stdin.end('\n');
-    });
+    if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+      await new Promise((done, failed) => {
+        let timer = setTimeout(() => {
+          try { child.kill(); }
+          catch { failed(busy()); return; }
+          // Retain ownership and fail closed if even termination has no exit
+          // evidence. A later release may finish; no new holder can bypass it.
+          timer = setTimeout(() => failed(busy()), 2000);
+        }, 2000);
+        child.once('exit', () => { clearTimeout(timer); done(); });
+        child.stdin.end('\n');
+      });
+    }
+    if (lease === child) lease = null;
   }
 
   function validateDirectory(directory, kind, generationId) {

@@ -169,3 +169,44 @@ def test_existing_output_is_never_overwritten(packager, release):
     with pytest.raises(packager.PackageError):
         invoke(packager, release)
     assert sentinel.read_text() == "fictional existing work"
+
+
+def test_explicit_dotnet_dll_entry_is_used_for_help_and_pack(packager, release, monkeypatch):
+    source, output, project, manifest = release
+    commands = []
+    runner = fictional_vpk(source, lambda command: None)
+
+    def capture(command, **kwargs):
+        commands.append(command)
+        return runner(command, **kwargs)
+
+    monkeypatch.setattr(packager.subprocess, "run", capture)
+    timings = {}
+    packager.package_setup(source, output, vpk_path=Path("net8/vpk.dll"),
+                           dotnet_path=Path("local/dotnet.exe"),
+                           pack_id="EchoA1.Fictional", channel="win-x64-a1",
+                           project_file=project, manifest_file=manifest, timings=timings)
+    assert len(commands) == 2
+    assert all(command[:2] == [str(Path("local/dotnet.exe")), str(Path("net8/vpk.dll"))]
+               for command in commands)
+    assert timings.keys() == {"vpk_pack", "asset_validation_and_staging"}
+    assert all(elapsed >= 0 for elapsed in timings.values())
+
+
+def test_candidate_existing_output_preserved_before_bootstrap(packager, tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location("candidate_builder", ROOT / "scripts/build_candidate_setup.py")
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    monkeypatch.setattr(builder, "ROOT", tmp_path)
+    config = tmp_path / "tools.json"
+    config.write_text("{}")
+    output = tmp_path / "build/candidates/existing"
+    output.mkdir(parents=True)
+    sentinel = output / "keep.txt"
+    sentinel.write_text("fictional existing artifact")
+    monkeypatch.setattr(builder, "preflight", lambda config: (Path("dotnet"), Path("vpk"), Path("archive")))
+    monkeypatch.setattr(builder.napcat, "build_runtime", lambda *args: pytest.fail("bootstrap reached"))
+    monkeypatch.setattr("sys.argv", ["candidate", "--tools", str(config), "--output", str(output)])
+    assert builder.main() == 1
+    assert sentinel.read_text() == "fictional existing artifact"
+    assert not (tmp_path / "build/candidate-setup.lock").exists()

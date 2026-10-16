@@ -81,7 +81,19 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
     const send = (code, value) => {
       if (!res.writableEnded && !res.destroyed) res.writeHead(code, {'content-type': 'application/json', 'cache-control': 'no-store'}).end(JSON.stringify(value));
     };
-    const failure = (code, error) => { req.resume(); send(code, {ok: false, error}); };
+    const failure = (code, error) => {
+      const refused = () => send(code, {ok: false, error});
+      const bytes = Number(req.headers['content-length'] ?? '0');
+      // Reject before routing, but drain a bounded ordinary request before
+      // closing its connection. Otherwise a separately arriving body can turn
+      // the 401 into a Windows connection reset instead of an auth rejection.
+      req.on('error', () => {});
+      if (!req.complete && !req.headers['transfer-encoding'] &&
+          Number.isSafeInteger(bytes) && bytes >= 0 && bytes <= MAX_REQUEST_BYTES) {
+        req.once('end', refused);
+      } else refused();
+      req.resume();
+    };
     const boundPort = server.address().port;
     if (req.headers.origin || ![`127.0.0.1:${boundPort}`, `localhost:${boundPort}`].includes(req.headers.host)) return failure(403, 'invalid_origin');
     // Authenticate before any routing detail is decided, so an unauthenticated
@@ -122,7 +134,36 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       if (!method) return send(400, {ok: false, error: 'invalid_method'});
       const params = Object.hasOwn(body, 'params') ? body.params : [];
       if (!Array.isArray(params) || params.length !== method.count || (method.valid && !method.valid(params[0]))) return send(400, {ok: false, error: 'invalid_params'});
-      try { send(200, {ok: true, result: await method.call(...params)}); }
+      const acquireBudget = body.timeout_ms ?? 65000;
+      const acquiring = body.method === 'EchoSnapshotApi.acquire';
+      if (acquiring && (!Number.isInteger(acquireBudget) || acquireBudget < 1 || acquireBudget > 65000)) {
+        return send(400, {ok: false, error: 'invalid_params'});
+      }
+      const acquireDeadline = acquiring ? performance.now() + acquireBudget : 0;
+      let result, cleanupStarted = false;
+      const cleanupAbandoned = async () => {
+        if (cleanupStarted || result?.ok !== true || result.status !== 'ready' || !generation(result.generation_id)) return;
+        cleanupStarted = true;
+        try {
+          const cleaned = await snapshot.cleanup(result.generation_id);
+          if (cleaned?.ok !== true && cleaned?.code !== 'generation_not_found') throw new Error();
+        } catch {
+          // Keep snapshot ownership/recovery fail-closed; never log payloads.
+          console.error('[echo-snapshot] stage=abandoned_acquire_cleanup outcome=failed');
+        }
+      };
+      if (acquiring) {
+        res.once('close', () => { if (!res.writableFinished) void cleanupAbandoned(); });
+      }
+      try {
+        result = await method.call(...params);
+        if (acquiring && (res.destroyed || performance.now() >= acquireDeadline)) {
+          await cleanupAbandoned();
+          send(200, {ok: false, error: 'qq_runtime_operation_failed'});
+          return;
+        }
+        send(200, {ok: true, result});
+      }
       catch { send(200, {ok: false, error: 'qq_runtime_operation_failed'}); }
     });
   });

@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any, Callable
 import urllib.error
@@ -141,6 +142,7 @@ class NapCatQQProvider:
             raise NapCatQQError() from None
 
     def _rpc(self, method: str, params: list[Any] | None = None, *, timeout: float | None = None) -> Any:
+        deadline = time.monotonic() + (self._timeout if timeout is None else min(timeout, self._timeout))
         credential = resolve_bridge_credential(self._credential_source)
         if self._generation_changed:
             raise NapCatQQWorkerGenerationChanged()
@@ -148,7 +150,7 @@ class NapCatQQProvider:
             self._generation_changed = True
             raise NapCatQQWorkerGenerationChanged()
         if method != "Core.status" and self._boot_id is None:
-            self.status()
+            self.status(timeout=max(0, deadline - time.monotonic()))
         try:
             body = {"method": method, "params": params or []}
             if self._boot_id is not None:
@@ -156,7 +158,10 @@ class NapCatQQProvider:
             url = self._base_url + "/rpc"
             if self._runtime_id is not None:
                 url += "/" + self._runtime_id
-            status, text = self._request(url, json.dumps(body).encode(), self._timeout if timeout is None else min(timeout, self._timeout))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise NapCatQQError()
+            status, text = self._request(url, json.dumps(body).encode(), remaining)
             if status == 401:
                 # The bridge rejected this client's credential.  No retry and no
                 # fallback: the caller must re-establish an owned instance.
@@ -202,14 +207,14 @@ class NapCatQQProvider:
                             value["database_api_ready"], value["passphrase_ready"], value["snapshot_api_ready"],
                             _text(value.get("runtime_id")) or None, self._boot_id)
 
-    def list_friends(self) -> list[NapCatFriend]:
-        rows = self._rpc("EchoMetadata.listFriends")
+    def list_friends(self, *, timeout: float | None = None) -> list[NapCatFriend]:
+        rows = self._rpc("EchoMetadata.listFriends", timeout=timeout)
         if not isinstance(rows, list):
             raise NapCatQQError()
         return [NapCatFriend(*(_text(row.get(k)) for k in ("uid", "uin", "nickname", "remark"))) for row in rows if isinstance(row, dict)]
 
-    def list_groups(self) -> list[NapCatGroup]:
-        rows = self._rpc("EchoMetadata.listGroups")
+    def list_groups(self, *, timeout: float | None = None) -> list[NapCatGroup]:
+        rows = self._rpc("EchoMetadata.listGroups", timeout=timeout)
         if not isinstance(rows, list):
             raise NapCatQQError()
         return [NapCatGroup(_text(row.get("group_code")), _text(row.get("group_name")),

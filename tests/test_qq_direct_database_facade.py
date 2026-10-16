@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+import pytest
 
 from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
 from qq_chat_analyzer.application.facade import (
@@ -16,6 +17,32 @@ from qq_chat_analyzer.application.qq.qq_direct_database_import_service import (
 )
 
 from qq_direct_db_testing import FakeSnapshotRuntime
+
+
+@pytest.mark.parametrize("fails", [False, True])
+def test_qq_facade_conversion_diagnostics_preserve_results_and_errors(tmp_path, monkeypatch, caplog, fails):
+    from qq_chat_analyzer.application import facade as module
+    snapshot = tmp_path / "fictional.db"
+    _create_plaintext_snapshot(snapshot)
+    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
+    facade = ChatAnalyzerFacade(qq_service=QQDirectDatabaseImportService(runtime_client=runtime))
+    error = ValueError("PRIVATE_CONVERSION path account token")
+    if fails:
+        def convert(*args):
+            raise error
+        monkeypatch.setattr(module, "_to_session_info", convert)
+    with caplog.at_level("INFO"):
+        if fails:
+            with pytest.raises(ValueError) as caught:
+                facade.list_sessions(ChatSource.QQ)
+            assert caught.value is error
+        else:
+            assert len(facade.list_sessions(ChatSource.QQ)) == 2
+    log = "\n".join(r.getMessage() for r in caplog.records if "[qq sessions]" in r.getMessage())
+    assert "stage=facade_convert outcome=started" in log
+    assert f"stage=facade_convert outcome={'failed' if fails else 'success'}" in log
+    assert "PRIVATE" not in log and str(tmp_path) not in log
+    assert runtime.cleaned == ["gen-0001"]
 
 
 def _varint(value: int) -> bytes:

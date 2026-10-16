@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from ..qq_db_identity import QQ_DB_SELF_NAMESPACE, canonical_qq_uin
+from ..diagnostics import qq_session_stage
 
 
 QQ_DB_JSON_FORMAT = "qq-db-json"
@@ -75,10 +76,12 @@ class QQDatabaseProvider:
 
     def list_sessions(self, *, self_uin: str | None = None) -> list[QQSession]:
         """Return all conversations (groups + private) in the database."""
-        groups = self._discover_sessions_from_table(_GROUP_MESSAGE_TABLE, "group")
-        c2c = self._discover_sessions_from_table(
-            _C2C_MESSAGE_TABLE, "private", self_uin=self_uin
-        )
+        with qq_session_stage(_LOGGER, "group_query"):
+            groups = self._discover_sessions_from_table(_GROUP_MESSAGE_TABLE, "group")
+        with qq_session_stage(_LOGGER, "private_query"):
+            c2c = self._discover_sessions_from_table(
+                _C2C_MESSAGE_TABLE, "private", self_uin=self_uin
+            )
         return groups + c2c
 
     def _discover_sessions_from_table(

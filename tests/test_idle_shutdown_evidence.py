@@ -155,7 +155,7 @@ def test_registry_proves_real_fictional_job_tree_exit(tmp_path):
     from qq_chat_analyzer.runtime.windows_job import launch_owned_process
     if sys.platform != 'win32':
         pytest.skip('Windows Job evidence')
-    from test_windows_job_process import _command, _tree_handles, _dead, _native
+    from test_windows_job_process import _command, _tree_handles, _dead, _native, _until
     process = launch_owned_process(_command(tmp_path), cwd=tmp_path)
     handles = _tree_handles(tmp_path)
     registry, session = QQProcessRegistry(), QQRuntimeSession()
@@ -166,6 +166,9 @@ def test_registry_proves_real_fictional_job_tree_exit(tmp_path):
         assert steps(ChatAnalyzerFacade(qq_process_registry=registry, qq_runtime_session=session))['qq_runtime_termination'] is ShutdownStatus.SUCCESS
         assert process.closed
         assert process.exit_verified is True
+        # Job accounting reaches zero before Windows signals the independently
+        # retained process objects. Still require every native handle to signal.
+        _until(lambda: _dead(handles))
         assert _dead(handles)
     finally:
         process.close()

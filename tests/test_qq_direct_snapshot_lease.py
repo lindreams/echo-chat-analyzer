@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -273,3 +274,132 @@ def test_error_does_not_leak_identity_value(tmp_path: Path) -> None:
 
     assert FICTIONAL_UIN not in str(captured.value)
     assert FICTIONAL_UIN not in captured.value.public_message
+
+
+@pytest.mark.parametrize("failure", [None, "manifest", "quick_check", "group_query", "private_query", "cleanup", "double"])
+def test_session_stage_diagnostics(tmp_path, monkeypatch, caplog, failure):
+    snapshot = _snapshot(tmp_path)
+    _create_snapshot(snapshot)
+    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
+    service = _service(tmp_path, runtime)
+    if failure == "manifest":
+        runtime.manifest_overrides = {"state": "building"}
+    if failure == "quick_check":
+        monkeypatch.setattr(QQDatabaseProvider, "quick_check", lambda path: "failed")
+    if failure in ("group_query", "private_query", "double"):
+        original = QQDatabaseProvider._query_rows
+        def query(self, *args, **kwargs):
+            target = "c2c_msg_table" if failure == "private_query" else "group_msg_table"
+            if kwargs["table_name"] == target:
+                raise sqlite3.DatabaseError("PRIVATE_EXCEPTION SQL account credential")
+            return original(self, *args, **kwargs)
+        monkeypatch.setattr(QQDatabaseProvider, "_query_rows", query)
+    if failure in ("cleanup", "double"):
+        runtime.cleanup_error = QQSnapshotCleanupFailed("PRIVATE_CLEANUP")
+    expected = (QQDirectSnapshotCleanupFailed if failure in ("cleanup", "double") else
+                sqlite3.DatabaseError if failure in ("group_query", "private_query") else
+                QQDirectSnapshotInvalid)
+    with caplog.at_level("INFO"):
+        if failure:
+            with pytest.raises(expected):
+                service.list_sessions()
+        else:
+            assert len(service.list_sessions()) == 2
+    messages = [r.getMessage() for r in caplog.records if "[qq sessions]" in r.getMessage()]
+    log = "\n".join(messages)
+    for stage in ("manifest", "quick_check", "group_query", "private_query", "cleanup", "names", "service"):
+        if failure is None:
+            assert f"stage={stage} outcome=started" in log
+            assert f"stage={stage} outcome=success" in log
+    if failure:
+        stage = "group_query" if failure == "double" else failure
+        assert f"stage={stage} outcome=failed" in log
+        assert "stage=service outcome=failed" in log
+    if failure == "double":
+        assert log.index("stage=group_query outcome=failed") < log.index("stage=cleanup outcome=failed")
+        assert "failure_code=sqlite_error" in log
+        assert "failure_code=operation_failed" in log
+    assert runtime.cleaned == ["gen-0001"]
+    for private in ("PRIVATE", FICTIONAL_UIN, str(tmp_path), "fictional-group", "fictional-peer"):
+        assert private not in log
+
+
+@pytest.mark.parametrize("body_failure", [False, True])
+@pytest.mark.parametrize("cleanup_failure", [False, True])
+def test_broken_session_logging_preserves_cleanup_and_exception(tmp_path, monkeypatch, body_failure, cleanup_failure):
+    from qq_chat_analyzer import diagnostics
+    snapshot = _snapshot(tmp_path)
+    _create_snapshot(snapshot)
+    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
+    service = _service(tmp_path, runtime)
+    original_info = diagnostics.logging.Logger.info
+    def broken(self, message, *args, **kwargs):
+        if "[qq sessions]" in message:
+            raise RuntimeError("PRIVATE_LOG_FAILURE")
+        return original_info(self, message, *args, **kwargs)
+    monkeypatch.setattr(diagnostics.logging.Logger, "info", broken)
+    if cleanup_failure:
+        runtime.cleanup_error = QQSnapshotCleanupFailed("PRIVATE_CLEANUP")
+    if body_failure:
+        runtime.manifest_overrides = {"state": "building"}
+    if body_failure or cleanup_failure:
+        expected = QQDirectSnapshotCleanupFailed if cleanup_failure else QQDirectSnapshotInvalid
+        with pytest.raises(expected):
+            service.list_sessions()
+    else:
+        assert len(service.list_sessions()) == 2
+    assert runtime.cleaned == ["gen-0001"]
+
+
+@pytest.mark.parametrize("failure", [None, "names_provider", "group_names_rpc", "friend_names_rpc"])
+def test_optional_name_rpc_failure_is_observable_without_failing_sessions(tmp_path, caplog, failure):
+    snapshot = _snapshot(tmp_path)
+    _create_snapshot(snapshot)
+    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
+    service = _service(tmp_path, runtime)
+    def call(stage, result):
+        if stage == failure:
+            raise RuntimeError("PRIVATE_RPC account token path")
+        return result
+    provider = SimpleNamespace(
+        list_groups=lambda **kwargs: call("group_names_rpc", [SimpleNamespace(
+            group_code="fictional-group", group_name="PRIVATE_GROUP_NAME")]),
+        list_friends=lambda **kwargs: call("friend_names_rpc", [SimpleNamespace(
+            uin="fictional-peer", display_name="PRIVATE_FRIEND_NAME")]),
+    )
+    service._provider_factory = SimpleNamespace(create=lambda: call("names_provider", provider))
+    with caplog.at_level("INFO"):
+        assert len(service.list_sessions()) == 2
+    log = "\n".join(r.getMessage() for r in caplog.records if "[qq sessions]" in r.getMessage())
+    for stage in ("names_provider", "group_names_rpc", "friend_names_rpc"):
+        if failure == "names_provider" and stage != failure:
+            assert f"stage={stage}" not in log
+        else:
+            outcome = "failed" if stage == failure else "success"
+            assert f"stage={stage} outcome={outcome}" in log
+    assert "stage=names outcome=success" in log
+    assert runtime.cleaned == ["gen-0001"]
+    assert "PRIVATE" not in log
+
+
+def test_optional_names_share_a_short_budget_and_return_sessions_after_timeout(tmp_path, monkeypatch):
+    from qq_chat_analyzer.application.qq import qq_direct_database_import_service as module
+    snapshot = _snapshot(tmp_path)
+    _create_snapshot(snapshot)
+    runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot)
+    service = _service(tmp_path, runtime)
+    service.start()
+    clock = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    calls = []
+    def groups(*, timeout=None):
+        calls.append(timeout)
+        clock[0] += 30 if timeout is None else timeout
+        raise TimeoutError("PRIVATE_NAMES")
+    def friends(*, timeout=None):
+        pytest.fail("An exhausted optional budget must not start another RPC")
+    service._provider_factory = SimpleNamespace(create=lambda: SimpleNamespace(list_groups=groups, list_friends=friends))
+    assert len(service.list_sessions()) == 2
+    assert calls == [5.0]
+    assert clock[0] == 1005.0
+    assert runtime.cleaned == ["gen-0001"]

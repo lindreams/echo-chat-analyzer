@@ -22,6 +22,7 @@ from tempfile import TemporaryDirectory
 from typing import Any, Iterator
 
 from ...identity_names import first_identity_name
+from ...diagnostics import log_qq_session_event, qq_session_stage
 
 from ...providers.qq_database_provider import QQDatabaseProvider, QQSession
 from ...providers.qq_direct_snapshot_runtime import (
@@ -77,6 +78,7 @@ DEFAULT_SHUTDOWN_DRAIN_SECONDS = 5.0
 #: its separate readiness retry policy.
 DEFAULT_SHUTDOWN_RECOVER_SECONDS = 5.1
 DEFAULT_STARTUP_READINESS_SECONDS = 10.0
+DEFAULT_METADATA_TIMEOUT_SECONDS = 5.0
 _STARTUP_RETRY_INTERVAL_SECONDS = 0.1
 
 
@@ -379,34 +381,37 @@ class QQDirectDatabaseImportService:
         The generation is cleaned up in `finally` so the plaintext DB never
         outlives this call.
         """
-        client = self._begin_acquisition()
-        try:
-            generation_id: str | None = None
+        with qq_session_stage(_LOGGER, "service"):
+            client = self._begin_acquisition()
             try:
-                generation_id = client.acquire()
-                database_path, self_uin = _validated_generation(
-                    client.generation_directory(generation_id),
-                    generation_id,
-                )
-                provider = QQDatabaseProvider(database_path)
-                sessions = provider.list_sessions(self_uin=self_uin)
-            except QQSnapshotWorkerGenerationChanged as error:
-                self._require_reconnect()
-                raise QQReconnectRequired() from error
-            except QQSnapshotRuntimeError as error:
-                raise QQDirectSnapshotAcquireFailed() from error
+                generation_id: str | None = None
+                try:
+                    generation_id = client.acquire()
+                    database_path, self_uin = _validated_generation(
+                        client.generation_directory(generation_id),
+                        generation_id,
+                    )
+                    provider = QQDatabaseProvider(database_path)
+                    sessions = provider.list_sessions(self_uin=self_uin)
+                except QQSnapshotWorkerGenerationChanged as error:
+                    self._require_reconnect()
+                    raise QQReconnectRequired() from error
+                except QQSnapshotRuntimeError as error:
+                    raise QQDirectSnapshotAcquireFailed() from error
+                finally:
+                    if generation_id is not None:
+                        try:
+                            with qq_session_stage(_LOGGER, "cleanup"):
+                                client.cleanup(generation_id)
+                        except QQSnapshotWorkerGenerationChanged as error:
+                            self._require_reconnect()
+                            raise QQReconnectRequired() from error
+                        except QQSnapshotRuntimeError as error:
+                            raise QQDirectSnapshotCleanupFailed() from error
+                with qq_session_stage(_LOGGER, "names"):
+                    return self._named_sessions(sessions)
             finally:
-                if generation_id is not None:
-                    try:
-                        client.cleanup(generation_id)
-                    except QQSnapshotWorkerGenerationChanged as error:
-                        self._require_reconnect()
-                        raise QQReconnectRequired() from error
-                    except QQSnapshotRuntimeError as error:
-                        raise QQDirectSnapshotCleanupFailed() from error
-            return self._named_sessions(sessions)
-        finally:
-            self._end_acquisition()
+                self._end_acquisition()
 
     @contextmanager
     def acquired_session(
@@ -546,15 +551,24 @@ class QQDirectDatabaseImportService:
     def _metadata_names(self) -> tuple[dict[str, str], dict[str, str]]:
         group_names: dict[str, str] = {}
         friend_names: dict[str, str] = {}
+        # Names are optional. Two default 30 s RPC waits must not hold an
+        # already-read session list for another minute on a slow runtime.
+        deadline = time.monotonic() + DEFAULT_METADATA_TIMEOUT_SECONDS
         if self._provider_factory is not None:
             try:
-                provider = self._provider_factory.create()
+                with qq_session_stage(_LOGGER, "names_provider"):
+                    provider = self._provider_factory.create()
             except QQReconnectRequired:
                 raise
             except Exception:
                 return group_names, friend_names
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log_qq_session_event(_LOGGER, "group_names_rpc", "skipped", failure_code="budget_exhausted")
+                return group_names, friend_names
             try:
-                groups = provider.list_groups()
+                with qq_session_stage(_LOGGER, "group_names_rpc"):
+                    groups = provider.list_groups(timeout=remaining)
                 group_names = {
                     group.group_code: group.group_name
                     for group in groups
@@ -565,8 +579,13 @@ class QQDirectDatabaseImportService:
                 raise QQReconnectRequired() from error
             except Exception:
                 pass
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                log_qq_session_event(_LOGGER, "friend_names_rpc", "skipped", failure_code="budget_exhausted")
+                return group_names, friend_names
             try:
-                friends = provider.list_friends()
+                with qq_session_stage(_LOGGER, "friend_names_rpc"):
+                    friends = provider.list_friends(timeout=remaining)
                 friend_names = {
                     friend.uin: friend.display_name
                     for friend in friends
@@ -791,41 +810,43 @@ def _validated_generation(
     This is the single manifest-validation helper shared by `list_sessions`
     and `acquired_session`; no second validation path exists.
     """
-    manifest_path = generation_directory / _GENERATION_MANIFEST_NAME
-    try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        raise QQDirectSnapshotInvalid() from None
-    if not isinstance(payload, dict):
-        raise QQDirectSnapshotInvalid()
-    if payload.get("schema_version") != _MANIFEST_SCHEMA_VERSION:
-        raise QQDirectSnapshotInvalid()
-    if payload.get("generation_id") != generation_id:
-        raise QQDirectSnapshotInvalid()
-    if payload.get("state") != "ready":
-        raise QQDirectSnapshotInvalid()
+    with qq_session_stage(_LOGGER, "manifest"):
+        manifest_path = generation_directory / _GENERATION_MANIFEST_NAME
+        try:
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            raise QQDirectSnapshotInvalid() from None
+        if not isinstance(payload, dict):
+            raise QQDirectSnapshotInvalid()
+        if payload.get("schema_version") != _MANIFEST_SCHEMA_VERSION:
+            raise QQDirectSnapshotInvalid()
+        if payload.get("generation_id") != generation_id:
+            raise QQDirectSnapshotInvalid()
+        if payload.get("state") != "ready":
+            raise QQDirectSnapshotInvalid()
 
-    database_name = _safe_relative_name(payload.get("database"))
-    if database_name is None:
-        raise QQDirectSnapshotInvalid()
+        database_name = _safe_relative_name(payload.get("database"))
+        if database_name is None:
+            raise QQDirectSnapshotInvalid()
 
-    identity = payload.get("identity")
-    if not isinstance(identity, dict):
-        raise QQDirectSnapshotInvalid()
-    if identity.get("namespace") != QQ_DB_SELF_NAMESPACE:
-        raise QQDirectSnapshotInvalid()
-    self_uin = canonical_qq_uin(identity.get("value"))
-    if self_uin is None:
-        raise QQDirectSnapshotInvalid()
+        identity = payload.get("identity")
+        if not isinstance(identity, dict):
+            raise QQDirectSnapshotInvalid()
+        if identity.get("namespace") != QQ_DB_SELF_NAMESPACE:
+            raise QQDirectSnapshotInvalid()
+        self_uin = canonical_qq_uin(identity.get("value"))
+        if self_uin is None:
+            raise QQDirectSnapshotInvalid()
 
-    database_path = generation_directory / database_name
-    if not database_path.is_file():
-        raise QQDirectSnapshotInvalid()
+        database_path = generation_directory / database_name
+        if not database_path.is_file():
+            raise QQDirectSnapshotInvalid()
     # Runtime-side file stability telemetry prevents known torn reads. SQLite's
     # own quick_check is the independent final integrity gate before the app
     # exposes the generation to session discovery or materialization.
-    if QQDatabaseProvider.quick_check(database_path) != "ok":
-        raise QQDirectSnapshotInvalid()
+    with qq_session_stage(_LOGGER, "quick_check"):
+        if QQDatabaseProvider.quick_check(database_path) != "ok":
+            raise QQDirectSnapshotInvalid()
     return database_path, self_uin
 
 

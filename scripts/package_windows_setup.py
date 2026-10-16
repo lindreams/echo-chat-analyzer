@@ -19,6 +19,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 import tomllib
 import zipfile
 
@@ -52,8 +53,8 @@ def _validate_pins(entries: dict, contract: dict, manifest: Path) -> None:
             raise PackageError("Runtime pin mismatch: " + name)
 
 
-def _run(command: list[str]) -> str:
-    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")
+def _run(command: list[str], *, env: dict[str, str] | None = None) -> str:
+    result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env)
     if result.returncode:
         raise PackageError(f"vpk failed ({result.returncode}): {result.stdout}\n{result.stderr}")
     return result.stdout + result.stderr
@@ -61,7 +62,9 @@ def _run(command: list[str]) -> str:
 
 def package_setup(source_dir: str | Path, output_dir: str | Path, *, vpk_path: Path,
                   pack_id: str, channel: str, project_file: Path = ROOT / "pyproject.toml",
-                  manifest_file: Path = portable.MANIFEST_FILE) -> Path:
+                  manifest_file: Path = portable.MANIFEST_FILE, dotnet_path: Path | None = None,
+                  timings: dict[str, float] | None = None) -> Path:
+    started = time.perf_counter()
     root = Path(os.path.abspath(source_dir))
     output = Path(os.path.abspath(output_dir))
     portable._no_links(output)
@@ -90,7 +93,8 @@ def package_setup(source_dir: str | Path, output_dir: str | Path, *, vpk_path: P
         versions = [d.version for d in distributions if d.metadata["Name"].replace("_", "-").lower() == name]
         if versions != [expected]:
             raise PackageError(f"Frozen {name} metadata must be exactly {expected}")
-    if not re.search(r"Velopack CLI 1\.2\.161(?:,|\s|$)", _run([str(vpk_path), "-h"])):
+    vpk_command = [str(vpk_path)] if dotnet_path is None else [str(dotnet_path), str(vpk_path)]
+    if not re.search(r"Velopack CLI 1\.2\.161(?:,|\s|$)", _run(vpk_command + ["-h"])):
         raise PackageError("vpk must be version " + VELOPACK_VERSION)
     hashes = {name: portable._file_digest(path) for name, (path, _) in entries.items() if not name.endswith("/")}
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -107,12 +111,14 @@ def package_setup(source_dir: str | Path, output_dir: str | Path, *, vpk_path: P
                 shutil.copyfile(path, target)
                 if portable._file_digest(target) != hashes[name]:
                     raise PackageError("Source changed while staging")
-        _run([str(vpk_path), "pack", "--packId", pack_id, "--packVersion", release_version,
+        pack_started = time.perf_counter()
+        _run(vpk_command + ["pack", "--packId", pack_id, "--packVersion", release_version,
                            "--packDir", str(stage), "--mainExe", "Echo.exe", "--packTitle", "Echo",
                            "--channel", channel, "--runtime", "win-x64", "--delta", "None",
                            "--icon", str(ECHO_SETUP_ICON),
                            "--shortcuts", "Desktop,StartMenuRoot",
                            "--outputDir", str(artifacts), "--skip-updates", "--legacyConsole"])
+        pack_seconds = time.perf_counter() - pack_started
         setups = list(artifacts.glob("*-Setup.exe"))
         assets = json.loads((artifacts / f"releases.{channel}.json").read_text(encoding="utf-8"))["Assets"]
         if len(setups) != 1 or len(assets) != 1:
@@ -141,6 +147,9 @@ def package_setup(source_dir: str | Path, output_dir: str | Path, *, vpk_path: P
         }, indent=2) + "\n", encoding="utf-8")
         setup_name = setups[0].name
         artifacts.rename(output)
+    if timings is not None:
+        timings["vpk_pack"] = round(pack_seconds, 3)
+        timings["asset_validation_and_staging"] = round(time.perf_counter() - started - pack_seconds, 3)
     return output / setup_name
 
 
@@ -149,11 +158,13 @@ def main() -> int:
     parser.add_argument("--source", type=Path, default=ROOT / "dist/Echo")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--vpk", type=Path, required=True)
+    parser.add_argument("--dotnet", type=Path, help="explicit dotnet host for a vpk.dll entry (avoids SDK-selected shims)")
     parser.add_argument("--pack-id", default=PRODUCTION_PACKAGE_ID)
     parser.add_argument("--channel", default=PRODUCTION_CHANNEL)
     args = parser.parse_args()
     try:
-        print(package_setup(args.source, args.output, vpk_path=args.vpk, pack_id=args.pack_id, channel=args.channel))
+        print(package_setup(args.source, args.output, vpk_path=args.vpk, pack_id=args.pack_id, channel=args.channel,
+                            dotnet_path=args.dotnet))
         return 0
     except (PackageError, OSError, ValueError, KeyError, zipfile.BadZipFile) as error:
         print(f"Setup packaging refused: {error}", file=__import__("sys").stderr)

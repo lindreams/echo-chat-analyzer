@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import logging
+import sqlite3
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
+from collections.abc import Iterator
 
 from .resources import user_data_root
 from .logging_config import (
@@ -16,6 +20,47 @@ from .logging_config import (
 
 LOGGER_NAME = "qq_chat_analyzer.diagnostics"
 LOG_FILENAME = "echo.log"
+
+
+def log_qq_session_event(
+    logger: logging.Logger, stage: str, outcome: str, *,
+    elapsed_ms: int = 0, failure_code: str = "none",
+) -> None:
+    """Emit caller-owned fixed fields only; diagnostics never own control flow.
+
+    Callers must pass literal stages/outcomes/categories, never exception text,
+    server codes, request payloads or user identifiers.
+    """
+    try:
+        logger.info(
+            "[qq sessions] stage=%s outcome=%s elapsed_ms=%d failure_code=%s",
+            stage, outcome, elapsed_ms, failure_code,
+        )
+    except Exception:
+        pass
+
+
+@contextmanager
+def qq_session_stage(logger: logging.Logger, stage: str) -> Iterator[None]:
+    """Observe a bounded session-loading phase without changing its exception."""
+    started = time.perf_counter()
+    log_qq_session_event(logger, stage, "started")
+    try:
+        yield
+    except Exception as error:
+        category = (
+            "sqlite_error" if isinstance(error, sqlite3.DatabaseError) else
+            "io_error" if isinstance(error, OSError) else "operation_failed"
+        )
+        log_qq_session_event(
+            logger, stage, "failed",
+            elapsed_ms=int((time.perf_counter() - started) * 1000), failure_code=category,
+        )
+        raise
+    else:
+        log_qq_session_event(
+            logger, stage, "success", elapsed_ms=int((time.perf_counter() - started) * 1000),
+        )
 
 
 def runtime_root() -> Path:
@@ -63,5 +108,7 @@ __all__ = [
     "SensitiveDataFilter",
     "configure_diagnostics",
     "log_path",
+    "log_qq_session_event",
+    "qq_session_stage",
     "runtime_root",
 ]

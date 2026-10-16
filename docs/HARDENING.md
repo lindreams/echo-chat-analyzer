@@ -8,6 +8,28 @@
 
 ## 当前发布基线
 
+### v0.2.1 待审核补丁（尚未发布）
+
+版本元数据已更新为 0.2.1，QQ 可靠性修复与必要脱敏诊断已完成本地回归。
+已重建固定 NapCat candidate，并核验全部模板进入 Frozen 与正式身份 Setup 包。
+发行合同检查 52 passed；真实 0.2.0 Setup → 0.2.1 Setup 原位升级、两版 GUI
+原生退出 0、安装文件校验及卸载后虚构数据保留通过，测试注册项和快捷方式已移除。
+本轮未连接真实聊天来源，未验证跨机器连接或正式 GitHub 在线更新。
+复用既有实验身份 A/B 包重跑本地 feed：GUI 检查、下载、确认、五项 SUCCESS、安装与
+自动重启通过，A/B 原生退出 0、虚构数据保留。其更新核心与当前源码编译结果一致；
+该实验不等同于当前正式身份包通过 GitHub feed 更新。
+
+首轮产物齐备后的 Full 为 1563 passed、2 skipped、2 failed，原始失败记录保留。
+`test_registry_proves_real_fictional_job_tree_exit` 在 Job 计数归零后立即观察句柄，
+虚构原生实验确认 signaled 状态有短暂滞后；测试改为有界等待，保留全部句柄退出断言。
+旧凭据请求的 WinError 10053 可由分开发送请求头／体稳定复现，桥接层现对有界普通请求
+先丢弃接收体再结束拒绝响应，保持认证拒绝与请求大小限制；已更新 pins 并重建正式资产。
+最终 Full：1565 passed、2 skipped（396.50s），跳过项均为 Windows symlink 权限；
+相关 Focused 97 passed，发行／更新 Focused 87 passed。新包已重新通过真实 Setup 升级验收。
+Echo.exe 与 Setup 未签名；公开 Release 仍须人工确认，正式在线更新须在发布后验收。
+
+### 已发布 v0.2.0
+
 - [v0.2.0](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.0)
   于 2026-10-14 正式发布，非 Draft／Pre-release；本次 GitHub 查询仍为最新正式版本。
   本地与远端 tag 均指向 `fab1eb2e997ad8efc6ee5451d378f21afbc9628b`，

@@ -34,10 +34,36 @@ const core={dbPassphrase:'PRIVATE',selfInfo:info({uin:'12345678',uid:'u_self',ni
  FriendApi:{getBuddyV2ExWithCate:async()=>{mark('listFriends');return [{buddyList:[{uin:'23456789',uid:'u_friend',coreInfo:{uin:'23456789',uid:'u_friend',nick:'Nick',remark:'Remark',secret:'PRIVATE'},secret:'PRIVATE'},{uid:'u_only'},{uin:'34567890'}]}]}},
  GroupApi:{getGroups:async()=>{mark('listGroups');return [{groupCode:'45678901',groupName:'Group',memberCount:3},{groupCode:'56789012'}]},getGroupMemberAll:async()=>{mark('getGroupMemberAll');return {result:{infos:new Map([['u_member',{uid:'u_member',uin:'23456789',nick:'Nick',cardName:'Card',secret:'PRIVATE'}]])}}}}
 }};
-const snapshot={
+let snapshot={
  acquire:async()=>{mark('acquire');return {ok:true,status:'ready',generation_id:'test-generation'}},
  cleanup:async()=>{mark('cleanup');return {ok:true,status:'cleaned'}},
  recover:async()=>{mark('recover');return {ok:true,status:'recovered'}}};
+if(config.mode==='slow-acquire') snapshot.acquire=async()=>{
+  mark('acquire'); await new Promise(resolve=>setTimeout(resolve,200));
+  mark('ready'); return {ok:true,status:'ready',generation_id:'test-generation'};
+};
+if(config.mode==='blocked-acquire') snapshot.acquire=async()=>{
+  mark('acquire'); const until=performance.now()+100;
+  while(performance.now()<until) {} // A synchronous capture cannot receive socket-close events.
+  mark('ready');return {ok:true,status:'ready',generation_id:'test-generation'};
+};
+if(config.mode==='direct-db') {
+  const {createEchoSnapshotApi}=await import(config.snapshotModule);
+  const path=await import('node:path');let mutated=false;
+  core.apis.DatabaseApi.getNtDbDir=()=>config.sourceDirectory;
+  core.apis.DatabaseApi.decryptDatabase=async(_input,target)=>{
+    if(config.decryptDelay) await new Promise(resolve=>setTimeout(resolve,config.decryptDelay));
+    fs.copyFileSync(config.plaintext,target);mark('direct-decrypted');return true;
+  };
+  snapshot=createEchoSnapshotApi(core,{rootDirectory:config.snapshotRoot,onCapturePhase:phase=>{
+    if(phase!=='main_baseline_read') return;
+    mark('capture');
+    if(config.transientMain && !mutated) {
+      mutated=true;const main=path.join(config.sourceDirectory,'nt_msg.db');
+      const bytes=fs.readFileSync(main);bytes[100]^=1;fs.writeFileSync(main,bytes);
+    }
+  }});
+}
 if(config.mode==='offline'){core.selfInfo=info({online:false});core.apis.DatabaseApi={};}
 if(config.mode==='empty'){core.apis.FriendApi.getBuddyV2ExWithCate=async()=>{mark('listFriends');return []};core.apis.GroupApi.getGroups=async()=>{mark('listGroups');return []};}
 if(config.mode==='failure'){core.apis.FriendApi.getBuddyV2ExWithCate=async()=>{mark('listFriends');throw Error('PRIVATE passphrase token path')};}
@@ -69,13 +95,14 @@ def runtime(tmp_path_factory):
     processes = []
     by_base = {}
 
-    def start(mode="ready", *, token=TOKEN, runtime_id=None, marker=None, port=0):
+    def start(mode="ready", *, token=TOKEN, runtime_id=None, marker=None, port=0, **snapshot_options):
         config = {
             "mode": mode,
             "token": token,
             "runtimeId": runtime_id,
             "marker": str(marker) if marker is not None else "",
             "port": port,
+            **snapshot_options,
         }
         process = subprocess.Popen(
             [node, str(directory / "server.mjs"), json.dumps(config)],
@@ -114,6 +141,138 @@ def provider(base, credential=TOKEN):
     module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
     source = None if credential is None else _Credential(credential)
     return module.NapCatQQProvider(base, credential=source)
+
+
+def test_abandoned_acquire_cleans_late_generation(runtime, tmp_path):
+    import time
+    marker = tmp_path / "fictional-operations.txt"
+    base = runtime("slow-acquire", marker=marker)
+    client = provider(base)
+    boot = client.status().boot_id
+    parsed = urllib.parse.urlsplit(base)
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    connection.request("POST", "/rpc", json.dumps({
+        "method": "EchoSnapshotApi.acquire", "params": [], "boot_id": boot,
+    }), headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
+    try:
+        deadline = time.monotonic() + 3
+        while "acquire" not in marker.read_text():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+    finally:
+        connection.close()
+    deadline = time.monotonic() + 3
+    while "cleanup" not in marker.read_text() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    operations = marker.read_text().splitlines()
+    assert operations.count("ready") == 1
+    assert operations.count("cleanup") == 1
+
+
+def test_optional_rpc_budget_includes_initial_status_handshake(monkeypatch):
+    module = importlib.import_module('qq_chat_analyzer.providers.napcat_qq_provider')
+    clock = [1000.0]
+    monkeypatch.setattr(module.time, 'monotonic', lambda: clock[0])
+    timeouts = []
+    def transport(url, body, timeout):
+        method = json.loads(body)['method']
+        timeouts.append(timeout)
+        if method == 'Core.status':
+            clock[0] += 3
+            result = {'rpc_auth': 'bearer-v1', 'boot_id': 'b' * 64,
+                      'bridge_ready': True, 'qq_online': True, 'self_info': {},
+                      'database_api_ready': True, 'passphrase_ready': True, 'snapshot_api_ready': True}
+        else:
+            result = []
+        return 200, json.dumps({'ok': True, 'result': result})
+    client = module.NapCatQQProvider(credential=_Credential(), transport=transport)
+    assert client.list_groups(timeout=5) == []
+    assert timeouts == [5, 2]
+
+
+def test_expired_acquire_budget_discards_ready_result_even_while_socket_is_open(runtime, tmp_path):
+    marker = tmp_path / 'fictional-deadline.txt'
+    base = runtime('blocked-acquire', marker=marker)
+    boot = provider(base).status().boot_id
+    status, payload = request(base, raw=json.dumps({
+        'method': 'EchoSnapshotApi.acquire', 'params': [], 'boot_id': boot, 'timeout_ms': 50,
+    }).encode())
+    assert status == 200 and payload == {'ok': False, 'error': 'qq_runtime_operation_failed'}
+    assert marker.read_text().splitlines().count('cleanup') == 1
+
+
+@pytest.mark.parametrize('budget', [0, -1, 65001, 'PRIVATE_BUDGET', True])
+def test_invalid_acquire_budget_cannot_start_capture(runtime, tmp_path, budget):
+    marker = tmp_path / 'fictional-invalid-budget.txt'
+    base = runtime(marker=marker)
+    boot = provider(base).status().boot_id
+    status, payload = request(base, raw=json.dumps({
+        'method': 'EchoSnapshotApi.acquire', 'params': [], 'boot_id': boot, 'timeout_ms': budget,
+    }).encode())
+    assert status == 400 and payload == {'ok': False, 'error': 'invalid_params'}
+    assert 'acquire' not in marker.read_text().splitlines()
+
+
+@pytest.mark.slow_integration
+@pytest.mark.parametrize("scenario", ['ready', 'abandon', 'transient_main'])
+def test_real_bridge_snapshot_to_facade_and_abandoned_cleanup(runtime, tmp_path, monkeypatch, scenario):
+    import sqlite3
+    import time
+    from contextlib import closing
+    from types import SimpleNamespace
+    from test_qq_direct_main_wal_poc import _reserve_48_bytes, _run
+    from test_qq_direct_snapshot_workspace import _run as run_workspace
+    from test_qq_direct_database_facade import _create_plaintext_snapshot
+    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade, ChatSource, FacadeError
+    from qq_chat_analyzer.application.qq.qq_direct_database_import_service import (
+        QQDirectDatabaseImportService,
+    )
+    plain = tmp_path / 'fictional.db'
+    selected = tmp_path / 'selected.db'
+    source = tmp_path / 'source'
+    source.mkdir()
+    _reserve_48_bytes(plain)
+    _create_plaintext_snapshot(plain)
+    with closing(sqlite3.connect(plain)) as writer:
+        writer.execute('PRAGMA journal_mode=WAL')
+        writer.execute('PRAGMA wal_autocheckpoint=0')
+        writer.execute('UPDATE group_msg_table SET "40050"="40050"+1')
+        writer.commit()
+        with closing(sqlite3.connect(selected)) as backup:
+            writer.backup(backup)
+        _run('fixture', plain, Path(f'{plain}-wal'), source / 'nt_msg.db', source / 'nt_msg.db-wal')
+    root = tmp_path / 'workspace'
+    marker = tmp_path / 'operations.txt'
+    base = runtime('direct-db', marker=marker,
+                   snapshotModule=(ROOT / 'scripts/qq_direct_db_snapshot/snapshot.mjs').as_uri(),
+                   snapshotRoot=str(root), sourceDirectory=str(source), plaintext=str(selected),
+                   decryptDelay=200 if scenario == 'abandon' else 0,
+                   transientMain=scenario == 'transient_main')
+    metadata = provider(base)
+    metadata.status()
+    client = metadata.snapshot_client(root)
+    service = QQDirectDatabaseImportService(runtime_client=client,
+                                           provider_factory=SimpleNamespace(create=lambda: metadata))
+    service.start()
+    if scenario == 'abandon':
+        monkeypatch.setattr(client, '_acquire_timeout', 0.05)
+    try:
+        facade = ChatAnalyzerFacade(qq_service=service)
+        if scenario == 'abandon':
+            with pytest.raises(FacadeError) as caught:
+                facade.list_sessions(ChatSource.QQ)
+            assert caught.value.code == 'qq_direct_snapshot_acquire_failed'
+        else:
+            assert {s.session_type for s in facade.list_sessions(ChatSource.QQ)} == {'group', 'private'}
+        deadline = time.monotonic() + 5
+        while (not marker.exists() or 'direct-decrypted' not in marker.read_text() or
+               (root / 'staging').exists() or any((root / 'generations').glob('*'))):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        assert run_workspace(root, 'workspace.recover();')['ok']
+        assert marker.read_text().splitlines().count('capture') == (2 if scenario == 'transient_main' else 1)
+    finally:
+        client.recover()
 
 
 def request(base, method="Core.status", params=None, *, raw=None, headers=None,
@@ -280,7 +439,18 @@ def test_wrong_credential_is_refused_without_executing_the_method(runtime, tmp_p
     assert executed(calls) == ""
 
 
-def test_malformed_or_absent_authorization_header_is_refused(runtime, tmp_path):
+def test_malformed_or_absent_authorization_header_is_refused(runtime, tmp_path, monkeypatch):
+    import time
+    send = http.client.HTTPConnection.send
+
+    def separated_body(connection, data):
+        # urllib sends headers and body separately. An early refusal must not
+        # close the socket while a small, rejected request is still arriving.
+        if isinstance(data, bytes) and data.startswith(b'{'):
+            time.sleep(0.025)
+        return send(connection, data)
+
+    monkeypatch.setattr(http.client.HTTPConnection, 'send', separated_body)
     calls = tmp_path / "calls.txt"
     base = runtime(marker=calls)
     for headers in ({}, {"Authorization": "fictional"}, {"Authorization": f"Basic {TOKEN}"},

@@ -56,6 +56,36 @@ console.log(JSON.stringify(await createEchoSnapshotApi({{}}, {{rootDirectory:pro
     assert 'failure_stage=cleanup guard_code=workspace_invalid' in log.read_text()
 
 
+@pytest.mark.parametrize('phase', ['acquire', 'release', 'stuck'])
+def test_lease_timeout_waits_for_owned_child_exit(tmp_path, phase):
+    # Model a slow exit deterministically, without launching or killing QQ.
+    program = f"""
+import {{EventEmitter}} from 'node:events';
+import {{createRequire, syncBuiltinESMExports}} from 'node:module';
+const cp=createRequire(import.meta.url)('node:child_process');
+const realTimeout=global.setTimeout;
+global.setTimeout=(fn,ms,...args)=>realTimeout(fn,ms===5000||ms===2000?10:ms,...args);
+let exited=false, spawns=0;
+const child=new EventEmitter();
+Object.assign(child,{{pid:123,exitCode:null,signalCode:null,killed:false,unref(){{}}}});
+child.stdout=new EventEmitter();child.stdout.unref=()=>{{}};
+child.stdin=new EventEmitter();child.stdin.unref=()=>{{}};child.stdin.end=()=>{{}};
+child.kill=()=>{{child.killed=true;if(process.argv[2]!=='stuck')realTimeout(()=>{{exited=true;child.signalCode='SIGTERM';child.emit('exit');}},5);return true;}};
+cp.spawn=()=>{{spawns++;if(process.argv[2]!=='acquire')setImmediate(()=>child.stdout.emit('data',Buffer.from('ready\\n')));return child;}};
+syncBuiltinESMExports();
+const {{createWorkspace}}=await import({json.dumps(MODULE)});
+const w=createWorkspace(process.argv[1]);
+let failed=false;
+try {{await w.acquireLease();await w.release();}}catch {{failed=true;}}
+if(process.argv[2]==='stuck') {{try {{await w.acquireLease();}}catch {{}}}}
+console.log(JSON.stringify({{exited,failed,spawns}}));
+"""
+    result = subprocess.run(['node', '--input-type=module', '-e', program, str(tmp_path / 'root'), phase],
+                            capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {'exited': phase != 'stuck', 'failed': phase != 'release', 'spawns': 1}
+
+
 def _run(root, operation):
     program = f"""
 import {{createWorkspace}} from {json.dumps(MODULE)};

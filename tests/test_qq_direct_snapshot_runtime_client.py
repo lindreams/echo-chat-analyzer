@@ -112,9 +112,11 @@ def test_acquire_retries_inside_one_shared_budget_then_succeeds(
     monkeypatch.setattr(snapshot_runtime.time, "sleep", clock.advance)
     delay = snapshot_runtime._SNAPSHOT_UNSTABLE_RETRY_DELAY_SECONDS
     timeouts: list[float] = []
+    server_budgets: list[int] = []
 
     def transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:
         timeouts.append(timeout)
+        server_budgets.append(json.loads(body)["timeout_ms"])
         clock.advance(10.0)  # one capture re-reads the whole source
         if len(timeouts) <= 3:
             return 200, _envelope({"ok": False, "code": "snapshot_unstable", "status": "failed"})
@@ -128,6 +130,7 @@ def test_acquire_retries_inside_one_shared_budget_then_succeeds(
         65.0 - 20.0 - 2 * delay,
         65.0 - 30.0 - 3 * delay,
     ])
+    assert server_budgets == [int(timeout * 1000) for timeout in timeouts]
 
 
 def test_acquire_stops_at_the_shared_deadline_instead_of_retrying_for_minutes(

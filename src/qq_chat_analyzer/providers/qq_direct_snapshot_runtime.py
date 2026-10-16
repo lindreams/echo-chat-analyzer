@@ -384,10 +384,13 @@ class QQDirectSnapshotRuntimeClient:
                 timeout = handshake_deadline - time.monotonic()
                 if timeout <= 0:
                     raise QQSnapshotRuntimeUnavailable()
-            body = json.dumps(
-                {"method": f"{namespace}.{method}", "params": params, "boot_id": self._boot_id},
-                ensure_ascii=False,
-            ).encode("utf-8")
+            payload = {"method": f"{namespace}.{method}", "params": params, "boot_id": self._boot_id}
+            if namespace == RPC_METHOD_NAMESPACE and method == _ACQUIRE:
+                # Share this attempt's remaining budget with the owner. A
+                # synchronous capture can outlive the socket without processing
+                # its close event; the owner must discard that late generation.
+                payload["timeout_ms"] = max(1, min(int(timeout * 1000), DEFAULT_ACQUIRE_RPC_TIMEOUT_SECONDS * 1000))
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
             status, text = self._transport(url, body, timeout)
             result = _unwrap_rpc(status, text)
         except QQSnapshotWorkerGenerationChanged:

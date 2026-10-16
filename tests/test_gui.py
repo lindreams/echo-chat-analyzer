@@ -1026,11 +1026,64 @@ def test_qq_session_loading_timing_logs_contain_only_stage_and_durations(qt_app,
             _session(_facade_module().ChatSource.QQ, "fictional-private-id", "Fictional private name")
         ])
     messages = [record.getMessage() for record in caplog.records if "[qq sessions]" in record.getMessage()]
-    assert messages[0] == "[qq sessions] request started"
-    assert messages[1].startswith("[qq sessions] request completed elapsed=")
-    assert " render_elapsed=" in messages[1]
+    assert "stage=gui_request outcome=started" in messages[0]
+    assert any("stage=gui_render outcome=success" in message for message in messages)
+    assert "stage=gui_request outcome=success" in messages[-1]
+    assert all("elapsed_ms=" in message for message in messages)
     assert "fictional-private-id" not in " ".join(messages)
     assert "Fictional private name" not in " ".join(messages)
+
+
+@pytest.mark.parametrize("callback", ["success", "failure", "render_failure"])
+@pytest.mark.parametrize("stale", [False, True])
+def test_qq_session_callback_terminal_diagnostics(qt_app, caplog, monkeypatch, callback, stale):
+    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
+    executor = _DeferredExecutor()
+    workspace = QQWorkspace(StubFacade(), executor=executor)
+    with caplog.at_level("INFO", logger="qq_chat_analyzer.desktop.qq_workspace"):
+        workspace._load_sessions()
+        if stale:
+            workspace._invalidate_session_request()
+        if callback == "render_failure":
+            def broken(*args):
+                raise ValueError("PRIVATE_RENDER")
+            monkeypatch.setattr(workspace, "_handle_sessions_loaded", broken)
+        if callback == "failure":
+            executor.on_error("PRIVATE_CODE", "PRIVATE_MESSAGE")
+        elif callback == "render_failure" and not stale:
+            with pytest.raises(ValueError, match="PRIVATE_RENDER"):
+                executor.succeed([])
+        else:
+            executor.succeed([])
+    log = "\n".join(r.getMessage() for r in caplog.records if "[qq sessions]" in r.getMessage())
+    expected = ("discarded_failure" if callback == "failure" else "discarded_success") if stale else (
+        "success" if callback == "success" else "failed")
+    assert f"stage=gui_request outcome={expected}" in log
+    assert "PRIVATE" not in log
+
+
+@pytest.mark.parametrize("callback", ["success", "failure", "stale"])
+def test_qq_session_logging_failure_preserves_callback_behavior(qt_app, monkeypatch, callback):
+    from qq_chat_analyzer.gui import qq_workspace as module
+    executor = _DeferredExecutor()
+    workspace = module.QQWorkspace(StubFacade(), executor=executor)
+    errors = []
+    monkeypatch.setattr(workspace, "_handle_session_error", lambda *args: errors.append(args))
+    def broken(*args, **kwargs):
+        raise RuntimeError("PRIVATE_LOG_FAILURE")
+    monkeypatch.setattr(module._LOGGER, "info", broken)
+    workspace._load_sessions()
+    if callback == "stale":
+        workspace._invalidate_session_request()
+        executor.succeed([])
+        assert not workspace._sessions_loaded
+    elif callback == "failure":
+        executor.on_error("original_code", "Original message")
+        assert errors == [("original_code", "Original message")]
+        assert workspace._session_request is None
+    else:
+        executor.succeed([])
+        assert workspace._sessions_loaded and workspace._session_request is None
 
 
 class _SnapshotFacade(StubFacade):

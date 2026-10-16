@@ -273,7 +273,8 @@ isolation and process-local `DOTNET_ROOT` already verified:
 ```powershell
 & $EchoPython scripts/package_windows_setup.py `
     --source dist/Echo --output <new-external-artifact-directory> `
-    --vpk <local-tool-directory>/vpk.exe `
+    --dotnet <local-dotnet8-directory>/dotnet.exe `
+    --vpk <local-tool-directory>/tools/net8.0/any/vpk.dll `
     --pack-id EchoLabFictional --channel win-x64-lab
 ```
 
@@ -309,6 +310,46 @@ cleanup evidence, automatic restart and data retention. Keep source, Frozen,
 Setup and cross-machine results separate; required Full and release checks are
 not replaced by a successful package build. Record remaining gates in
 [HARDENING.md](docs/HARDENING.md).
+
+------------------------------------------------------------------------
+
+### 4.3 Quick local candidate Setup
+
+After the environment checks in section 3.2, use one fixed entry:
+
+```powershell
+& .\.venv\Scripts\python.exe scripts/build_candidate_setup.py
+```
+
+Once per machine, write ignored `build/setup-tools.json` with three absolute
+local paths: `dotnet` (the verified local .NET 8 `dotnet.exe`), `vpk` (vpk
+1.2.161's `tools/net8.0/any/vpk.dll`), and `napcat_archive` (the cached official
+NapCat ZIP from section 3.1). JSON paths may use forward slashes. No system PATH
+or global tool installation is required. Keep these paths out of Git.
+An SDK-installed `vpk.exe` can bind to .NET 9 even when DOTNET_ROOT selects 8;
+the explicit host/DLL pair avoids that mismatch. Preflight verifies the net8
+runtime configuration, CLI version, build pins, source and project version.
+
+Each run creates a new `build/candidates/<unique-run>` with `dist/Echo`, `work`,
+`frozen.log`, `setup`, and measured `timings.json`. `--output <new-directory>`
+selects an external location; existing directories are refused. The existing
+`dist/Echo` and release assets are preserved. Concurrent candidate builds are
+refused by `build/candidate-setup.lock`; after an interrupted process, verify it
+has exited before manually removing its stale lock.
+
+The cached official archive is size/hash checked, patched and bootstrapped on
+every run; existing private NapCat state causes refusal before replacement.
+Frozen is rebuilt with `--clean` from current code and dependencies, rather than
+reusing a tree based on incomplete timestamps. This deliberately limits caching
+to the verified upstream download. Runtime, privacy, MSVC, license, feed and
+every-file package checks still run through the existing build/Setup scripts.
+There is no arbitrary version override or automatic installation/publication.
+
+The result uses `Lindreams.Echo` / `win-x64-stable` for local trial installation;
+it is **not release acceptance**. Building it does not run Full, prove real QQ
+connectivity, or replace the Frozen/Setup lifecycle, update and privacy acceptance
+in section 4.2. Formal releases still require the selected regression and complete
+release safety checks. Do not publish a local candidate without that review.
 
 ------------------------------------------------------------------------
 

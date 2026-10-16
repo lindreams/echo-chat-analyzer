@@ -1,7 +1,9 @@
 param(
     [string]$ProjectRootOverride = "",
     [string]$MsvcRuntimeDirectoryOverride = "",
-    [switch]$RuntimeOnly
+    [switch]$RuntimeOnly,
+    [string]$DistPathOverride = "",
+    [string]$WorkPathOverride = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +17,11 @@ else {
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
 $PyInstaller = Join-Path $ProjectRoot ".venv\Scripts\pyinstaller.exe"
 $RuntimeSource = Join-Path $ProjectRoot "runtime"
-$PortableDirectory = Join-Path $ProjectRoot "dist\Echo"
+$DistRoot = if ($DistPathOverride) { [IO.Path]::GetFullPath($DistPathOverride) } else { Join-Path $ProjectRoot "dist" }
+$PortableDirectory = Join-Path $DistRoot "Echo"
+if ($DistPathOverride -and (Test-Path -LiteralPath $DistRoot)) {
+    throw 'An overridden dist directory must be new; existing artifacts are never replaced.'
+}
 $PortableRuntime = Join-Path $PortableDirectory "runtime"
 $MsvcRuntimeNames = @(
     "msvcp140.dll",
@@ -335,7 +341,9 @@ try {
         if (-not (Test-Path -LiteralPath $PyInstaller)) {
             throw "Project .venv PyInstaller is missing; restore the approved build environment first."
         }
-        & $PyInstaller --clean --noconfirm LocalChatAnalyzer.spec
+        $BuildArguments = @('--clean', '--noconfirm', '--distpath', $DistRoot)
+        if ($WorkPathOverride) { $BuildArguments += @('--workpath', [IO.Path]::GetFullPath($WorkPathOverride)) }
+        & $PyInstaller @BuildArguments LocalChatAnalyzer.spec
         if ($LASTEXITCODE -ne 0) {
             throw "PyInstaller build failed with exit code $LASTEXITCODE"
         }

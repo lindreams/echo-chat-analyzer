@@ -84,17 +84,17 @@
     {
       "source": "qq_direct_db_snapshot/main_wal.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/main_wal.mjs",
-      "sha256": "e2ec9ff266d7cc0e53b390ce24b0f53d980dd089305ea07044f27df597188749"
+      "sha256": "8eb0c94429dd6db666fba8d9b04e11ddfdc6c361d9eb7ca228e87a377d807784"
     },
     {
       "source": "qq_direct_db_snapshot/workspace.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/workspace.mjs",
-      "sha256": "791a9cb50bcc322fac336a05f796e047dffc3b6762fa2892831ee0ae7818edbd"
+      "sha256": "c848164c887c7881ed83bc08f1f42fe6bda43953565ba5449baeea169e5533b3"
     },
     {
       "source": "qq_napcat_plugin/bridge.mjs",
       "target": "plugins/napcat-plugin-echo/bridge.mjs",
-      "sha256": "65261ca673f795ef68d43b80f8b0e4d26d05ca7d972f4f351c9a693fdeae820d"
+      "sha256": "ace0f72fcfd716f3ca2f15e8897d64cd117616ca590bf7178ee5c5640718b664"
     }
   ],
   "pluginConfigSha256": "83f2f45b62071d5ad84ece29baa2a25654cab204f469e59cc0f44149346b55eb"

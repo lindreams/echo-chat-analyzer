@@ -124,6 +124,42 @@ def test_read_interleaving_fails_closed_and_cleans(fictional_source, action):
     assert not fictional_source[2].exists()
 
 
+def test_large_wal_is_read_in_bounded_batches_without_changing_snapshot(fictional_source):
+    # Hundreds of tiny synchronous reads enlarge the live consistency window.
+    # Use real, checksum-valid fictional frames; bound I/O rather than timing.
+    def driver(program):
+        setup = """
+  const wal=fs.readFileSync(walPath), last=wal.subarray(wal.length-4120), extra=[];
+  let running=[last.readUInt32BE(16),last.readUInt32BE(20)];
+  for(let i=0;i<600;i++) {
+    const next=Buffer.from(last);
+    running=checksum(Buffer.concat([next.subarray(0,8),next.subarray(24)]),
+      wal.readUInt32BE(0)===0x377f0682,running);
+    next.writeUInt32BE(running[0],16);next.writeUInt32BE(running[1],20);extra.push(next);
+  }
+  fs.appendFileSync(walPath,Buffer.concat(extra));
+  const index=fs.readFileSync(mainPath+'-shm');
+  index.writeUInt32LE(index.readUInt32LE(16)+600,16);
+  index.writeUInt32LE(running[0],24);index.writeUInt32LE(running[1],28);updateIndex(index);
+  const builtin=await import('node:module'), mutableFs=builtin.createRequire(import.meta.url)('node:fs');
+  const originalOpen=mutableFs.openSync, originalRead=mutableFs.readSync, originalClose=mutableFs.closeSync;
+  const walFds=new Set();let walReads=0;
+  mutableFs.openSync=(p,...args)=>{const fd=originalOpen(p,...args);if(String(p)===walPath)walFds.add(fd);return fd;};
+  mutableFs.readSync=(fd,...args)=>{if(walFds.has(fd))walReads++;return originalRead(fd,...args);};
+  mutableFs.closeSync=fd=>{walFds.delete(fd);return originalClose(fd);};
+  builtin.syncBuiltinESMExports();
+"""
+        return program.replace('  const result = fn(', setup + '  const result = fn(').replace(
+            '{ok:true, fired, ...result}', '{ok:true, fired, walReads, ...result}')
+    result = _interleave(fictional_source, '', driver_transform=driver)
+    assert result['ok'], result
+    assert result['validFrames'] > 600
+    assert result['walReads'] <= 10  # Includes both full, guarded passes.
+    with sqlite3.connect(fictional_source[2]) as connection:
+        assert connection.execute('PRAGMA integrity_check').fetchone() == ('ok',)
+        assert connection.execute('SELECT body FROM entries').fetchone() == ('fictional selected',)
+
+
 def test_output_collision_preserves_existing_file(fictional_source):
     output = fictional_source[2]
     output.write_bytes(b"fictional owned by another operation")

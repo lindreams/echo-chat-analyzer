@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..application.facade import ChatSource
+from ..diagnostics import log_qq_session_event, qq_session_stage
 from .progress_track import ConnectionProgressTrack
 from .session_analysis_panel import SessionAnalysisPanel, SessionConnectionBar
 from .theme import (
@@ -1089,23 +1090,33 @@ class QQWorkspace(QWidget):
         self.session_panel.show_reading_placeholder()
         self._session_loading.show()
         self.status_changed.emit(_LOADING_SESSIONS)
-        _LOGGER.info("[qq sessions] request started")
+        log_qq_session_event(_LOGGER, "gui_request", "started")
+
+        def terminal(outcome: str) -> None:
+            log_qq_session_event(
+                _LOGGER, "gui_request", outcome,
+                elapsed_ms=int((time.monotonic() - started_at) * 1000),
+                failure_code="operation_failed" if outcome == "failed" else "none",
+            )
 
         def succeeded(sessions: Any) -> None:
             if self._session_request is not request:
+                terminal("discarded_success")
                 return
-            render_started_at = time.monotonic()
             self._session_request = None
-            self._handle_sessions_loaded(sessions)
-            _LOGGER.info(
-                "[qq sessions] request completed elapsed=%.3fs render_elapsed=%.3fs",
-                time.monotonic() - started_at,
-                time.monotonic() - render_started_at,
-            )
+            try:
+                with qq_session_stage(_LOGGER, "gui_render"):
+                    self._handle_sessions_loaded(sessions)
+            except Exception:
+                terminal("failed")
+                raise
+            terminal("success")
 
         def failed(code: str, message: str) -> None:
             if self._session_request is not request:
+                terminal("discarded_failure")
                 return
+            terminal("failed")
             self._session_request = None
             self._handle_session_error(code, message)
 

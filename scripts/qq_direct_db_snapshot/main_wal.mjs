@@ -92,7 +92,7 @@ function walHeader(header) {
   return { littleEndian, initial, salt: header.subarray(16, 24) };
 }
 
-function readCommittedWal(path, boundary, onPhase = () => {}) {
+function readCommittedWal(path, boundary, onPhase = () => {}, retainPages = true) {
   const fd = openSync(path, 'r');
   try {
     const bytes = fstatSync(fd).size;
@@ -111,8 +111,15 @@ function readCommittedWal(path, boundary, onPhase = () => {}) {
     let lastCommitFrame = 0;
     let committedPageCount = 0;
     let lastCommitChecksum = null;
+    // Read only through B, in bounded batches. Per-frame salt/checksum/commit
+    // validation is unchanged; avoid one synchronous filesystem call per page.
+    let batch = Buffer.alloc(0), batchStart = 0;
     for (let index = 0; index < available; index++) {
-      const frame = readExactly(fd, frameSize, 32 + index * frameSize);
+      if (index >= batchStart + batch.length / frameSize) {
+        batchStart = index;
+        batch = readExactly(fd, Math.min(256, available - index) * frameSize, 32 + index * frameSize);
+      }
+      const frame = batch.subarray((index - batchStart) * frameSize, (index - batchStart + 1) * frameSize);
       const pageNumber = frame.readUInt32BE(0);
       onPhase('wal_frame_read');
       if (pageNumber === 0 || pageNumber > 0xfffffffe) fail('wal_page_number_invalid');
@@ -126,17 +133,20 @@ function readCommittedWal(path, boundary, onPhase = () => {}) {
       digest.update(frame);
       running = candidate;
       validFrames++;
-      transactionPages.set(pageNumber, frame.subarray(24));
+      // Own just the retained page, not the whole batch behind a subarray.
+      if (retainPages) transactionPages.set(pageNumber, Buffer.from(frame.subarray(24)));
       const sizeAfterCommit = frame.readUInt32BE(4);
       if (sizeAfterCommit !== 0) {
         if (sizeAfterCommit > 10_000_000) fail('committed_page_count_invalid');
-        for (const [number, encrypted] of transactionPages) {
-          committedPages.set(number, encrypted);
+        if (retainPages) {
+          for (const [number, encrypted] of transactionPages) {
+            committedPages.set(number, encrypted);
+          }
+          for (const number of committedPages.keys()) {
+            if (number > sizeAfterCommit) committedPages.delete(number);
+          }
+          transactionPages.clear();
         }
-        for (const number of committedPages.keys()) {
-          if (number > sizeAfterCommit) committedPages.delete(number);
-        }
-        transactionPages.clear();
         commitMarkers++;
         lastCommitFrame = validFrames;
         committedPageCount = sizeAfterCommit;
@@ -344,7 +354,9 @@ function capture({ mainPath, walPath, outputPath, passphrase, onPhase = () => {}
     // Revalidate every byte and every rolling checksum through the frozen end
     // mark, not just the eight stored bytes on the last frame.
     observe('wal_prefix');
-    const latest = readCommittedWal(walPath, before.boundary);
+    // Verification still re-reads every byte and checksum, but needs no second
+    // copy of all committed pages while the first copy is still retained.
+    const latest = readCommittedWal(walPath, before.boundary, undefined, false);
     if (walIdentity !== identityPath(walPath) || latest.identity !== walIdentity || !latest.header.equals(wal.header) ||
         latest.fingerprint !== wal.fingerprint) fail('wal_boundary_changed');
     observe('checkpoint_witness');

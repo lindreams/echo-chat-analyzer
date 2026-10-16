@@ -275,10 +275,10 @@ def test_group_sender_outside_current_member_list_stays_unknown(
     }
 
     class MetadataProvider:
-        def list_groups(self, *, page=1, limit=200):
+        def list_groups(self, *, page=1, limit=200, timeout=None):
             return []
 
-        def list_friends(self, *, page=1, limit=200):
+        def list_friends(self, *, page=1, limit=200, timeout=None):
             return [SimpleNamespace(
                 peer_uin="fictional-group-sender", display_name="Fictional Friend Remark"
             )]
@@ -324,10 +324,10 @@ def test_group_report_member_contract_keeps_self_and_departed_messages(tmp_path:
     }}}
 
     class MetadataProvider:
-        def list_groups(self, *, page=1, limit=200):
+        def list_groups(self, *, page=1, limit=200, timeout=None):
             return []
 
-        def list_friends(self, *, page=1, limit=200):
+        def list_friends(self, *, page=1, limit=200, timeout=None):
             return [SimpleNamespace(peer_uin=sender, display_name="Fictional Friend Remark")
                     for sender in senders]
 
