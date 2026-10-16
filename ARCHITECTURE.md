@@ -1,1026 +1,270 @@
-﻿# Architecture
+# Architecture
 
-本文档是 Local Chat Analyzer 的**唯一架构事实来源**。
+本文记录当前源码的架构、资源所有权及必须维持的安全合同。实现事实、已有测试与设计要求分别说明；存在测试不等于当前发行或真人验收通过。发布风险与验证状态见 [HARDENING](docs/HARDENING.md)。跨来源字段与统计定义见 [DATA_SEMANTICS](DATA_SEMANTICS.md)。
 
-描述范围：当前已实现并通过测试的结构；发布状态与版本治理见 `docs/HARDENING.md`。
-不包含未来路线图、环境搭建步骤和用户使用说明，参见第 9 节的文档边界。
+## 1. 系统目标、入口与整体结构
 
----
+Echo 是隐私优先的本地聊天分析工具。桌面来源为 QQ Direct DB 与微信数据库；真实聊天数据只在本机处理，不上传、不进入诊断日志或测试资产。更新检查访问网络，不意味着聊天处理需要远端服务。
 
-## 1. 设计动机
+- Desktop：`echo-gui`、`python -m qq_chat_analyzer.gui` 与 frozen 入口共同进入 [desktop.py](src/qq_chat_analyzer/desktop.py)，再进入 GUI。
+- CLI：`echo-chat` 经应用服务分析本地文件，支持 `qq-db-json`、`wechat-db-json`、`detailed-json`、`chatlab-jsonl`、`cli-json`。它不是 GUI 的第三种来源，不直接获取 QQ/微信数据库。
+- QQ 正式链路为 NapCat 启动／登录与 Direct DB 快照。QCE、旧 QQ JSON/JSONL 和外部 miyu 实时获取已退休，不得通过 hint 或 fallback 恢复；微信 CLI 导出格式仍可本地导入。
 
-项目要同时满足四个约束：
-
-1. **隐私优先** —— 真实聊天记录只在用户本机处理，不出网络，不进日志。
-2. **多来源** —— GUI 现役来源为 QQ 与微信。现役 adapter / `wechat_parser` 与
-   `ImportService` 提供当前支持格式的本地文件导入，`echo-chat` 仍使用该能力，但不构成 `LOCAL_FILE`
-   GUI 产品入口或 Facade 分析入口。
-3. **分析核心稳定** —— 新增来源不应该迫使分析逻辑改动。
-4. **面向普通用户** —— 最终形态是桌面应用，而非命令行脚本。
-
-这四条共同导出一个结论：**数据来源与分析逻辑必须彻底分离**。
-
-分离的手段是引入统一领域模型 `ChatMessage`。所有来源先转换成它，
-分析核心只消费它。于是来源的数量和格式差异被挡在核心之外，
-核心不需要知道 QQ 与微信的任何区别。
-
-GUI 带来第二个问题：界面若直接调用各个 Service，就会把来源判断、
-配置组装、异常处理散落到控件代码里。为此引入 `ChatAnalyzerFacade`
-作为应用层门面，GUI 只认识它一个入口。
-
----
-
-## 2. 完整数据流
-
-```mermaid
-flowchart TD
-    subgraph EXT["外部数据源（进程外）"]
-        QQDB["QQ 本地数据库<br/>NapCat 解密快照"]
-        NAPCAT["NapCat<br/>启动 / 登录 / 本地解密"]
-        WXAPP["微信本地数据库"]
-        FILE["已导出文件<br/>JSON / JSONL"]
-    end
-
-    subgraph ACQ["Provider 数据获取"]
-        PQQDB["qq_database_provider"]
-        PWXDB["wechat_database_provider"]
-    end
-
-    subgraph ADP["Adapter / Parser 格式转换"]
-        AQQDB["qq_db_adapter"]
-        AWXDB["wechat_db_adapter"]
-        AWXCLI["wechat_cli_adapter"]
-        PARSER["wechat_parser"]
-    end
-
-    MSG["统一消息模型<br/>RichMessage / ChatMessage"]
-
-    subgraph APP["Application 应用层"]
-        IMPORT["ImportService"]
-        SCOPE["Analysis Scope Filter"]
-        ORCH["QQDirectDatabaseImportService<br/>WeChatExportImportService"]
-        SVC["AnalysisApplicationService"]
-        FACADE["ChatAnalyzerFacade"]
-        PACKAGER["Echo Report Packager<br/>staging → 正式 package"]
-        CATALOG["ReportPackageCatalog<br/>metadata / ownership / usage"]
-    end
-
-    subgraph CORE["Analysis Core 分析核心"]
-        CLEAN["cleaner / tokenizer"]
-        LEGACY["analyzer<br/>词频 · 说话者统计"]
-        V2["analysis/analyzers<br/>activity · profile · conversation"]
-        REPORTS["AnalysisReports"]
-    end
-
-    subgraph PRES["Presentation 展示层"]
-        BUILD["build_echo_report_view"]
-        VIEW["EchoReportView"]
-        HTML["Echo JSON / HTML"]
-    end
-
-    subgraph UI["交互与输出"]
-        GUI["PySide6 GUI"]
-        CLI["CLI"]
-        EXP["exporters<br/>CSV · 词云"]
-    end
-
-    NAPCAT --> QQDB --> PQQDB --> AQQDB --> MSG
-    WXAPP --> PWXDB --> AWXDB --> MSG
-    FILE --> PARSER --> MSG
-    FILE --> AQQDB
-    FILE --> AWXDB
-    FILE --> AWXCLI --> MSG
-
-    ORCH --> PQQDB
-    ORCH --> PWXDB
-    IMPORT --> PARSER
-    IMPORT --> AQQDB
-    IMPORT --> AWXDB
-    IMPORT --> AWXCLI
-    MSG --> IMPORT --> SCOPE --> SVC
-    ORCH --> IMPORT
-
-    SVC --> CLEAN --> LEGACY
-    CLEAN --> V2 --> REPORTS
-    LEGACY --> EXP
-    REPORTS --> BUILD --> VIEW
-
-    FACADE --> ORCH
-    FACADE --> SVC
-    FACADE --> PACKAGER
-    FACADE --> CATALOG
-    GUI --> FACADE
-    CLI --> SVC
-    SVC --> BUILD
-    VIEW --> HTML
-    HTML --> PACKAGER
-```
-
----
-
-微信实时获取仅使用正式数据库 Provider；外部 `miyu` 实时获取链路已退役。
-`wechat_cli_adapter` 继续支持已导出 JSON 文件的本地导入。
-
-## 3. 依赖方向
-
-箭头表示"允许依赖"，且**永不反向**。
+下图表示运行时调用／数据交接，不是 Python import 许可图：
 
 ```text
-gui  ──▶  application/facade  ──▶  application/services  ──▶  analysis
-                  │                        │                     │
-                  │                        ├──▶ providers        ▼
-                  │                        ├──▶ adapters    presentation
-                  │                        └──▶ parsers          │
-                  └──────────────────────────────────────────────┘
-                          （facade 读取 presentation 产出）
+Desktop → gui/app.py（组合根）→ GUI → ChatAnalyzerFacade
+                                       ├─ 来源连接／获取服务 → Provider → 临时 payload
+                                       ├─ AnalysisApplicationService
+                                       │    → ImportService → Adapter / Parser
+                                       │    → RichMessage → ChatMessage 单向投影
+                                       │    → scope / 智能过滤 / 质量过滤
+                                       │    → 清洗、分词、Analysis Core → AnalysisReports
+                                       │    → Presentation → Echo JSON / HTML
+                                       └─ Report Package 发布与 Catalog
+CLI ─────────────────────────────────────→ AnalysisApplicationService
 ```
 
-两个容易被误读的事实：
+## 2. 模块职责、依赖方向与组合根
 
-- `presentation` 只依赖 `analysis` 的报告模型，不依赖任何其他层。
-- `facade` 同时依赖 application 服务与 presentation，是唯一的汇聚点。
-  这是刻意为之：把"调度 + 转换"的复杂度集中在一处，GUI 才能保持轻薄。
-
----
-
-## 4. 各层职责
-
-### 4.1 Provider
-
-| | 内容 |
+| 模块 | 现役职责及边界 |
 | --- | --- |
-| 负责 | 与进程外数据源通信：HTTP 调用、token 读取、数据库定位与读取、导出任务创建与轮询；产出本地文件路径或原始记录 |
-| 不负责 | 格式转换、分析、过滤、业务编排、面向用户的错误措辞 |
-| 可依赖 | 标准库、HTTP 客户端、自身模块 |
-| 禁止依赖 | `analysis/`、`presentation/`、`gui/`、`application/`、`ChatMessage` |
+| Provider | 外部 RPC、数据库只读查询、工具调用与原始导出；不做分析和应用流程编排。数据库 Provider 也处理来源 SQL／原生记录，不能概括成完全不理解来源语义。 |
+| Adapter / Parser | 解析来源格式并生成消息事实；不拥有连接、取钥、过滤策略或分析。现役模块位于包根目录。 |
+| ImportService | 路径与文件发现、格式识别、路由 Adapter / Parser，返回 ImportOutcome；不执行分析或报告发布。 |
+| 来源服务 | 编排来源准备、会话查询和 payload 获取；由各来源自己的 owner 管理资源。 |
+| AnalysisApplicationService | 导入、过滤、词法处理、调用分析器、组装结果并导出分析产物。CLI 与 GUI 共用这一分析流程。 |
+| ChatAnalyzerFacade | 应用门面：来源分派、配置与错误归一、分析请求、输出所有权、报告包、shutdown 及安装交接；不实现格式解析或统计算法。 |
+| Analysis Core | 消费统一消息、token 与必要的 Rich 事实，产生统计报告；不获取数据库、不依赖 GUI 或第三方工具。 |
+| Presentation | 报告到视图的转换、格式化、资源装配与 JSON/HTML 输出；具体 I/O 边界见第 6 节。 |
+| GUI / CLI | 输入、状态、进度与错误展示。GUI 业务动作经过 Facade；CLI 调用分析应用服务。 |
 
-Provider 是唯一允许触碰外部世界的层。它不理解聊天语义，
-只负责"把数据拿到本机"。
+[gui/app.py](src/qq_chat_analyzer/gui/app.py) 是组合根例外：它导入应用服务并注入依赖，为 QQ 创建共享 QQRuntimeSession、ProviderFactory 和延迟 SourceBundle，为微信延迟创建连接／设置／读取服务。不能把“GUI 控件不得绕过 Facade”扩大为“gui 包只能 import facade”。GUI 还使用应用 DTO、状态和结果契约。
 
-### 4.2 Adapter / Parser
+依赖约束是：分析核心不依赖 application、presentation、gui 或 providers；业务服务不依赖 GUI；界面业务代码不直接操作 Provider / Adapter / Analyzer。这不是“只有 Provider 可以 I/O”的规则：ImportService、配置、取钥、报告导出和 Catalog 都有各自明确的 I/O 所有权。
 
-| | 内容 |
-| --- | --- |
-| 负责 | 把某一种具体格式转换为 `ChatMessage` |
-| 不负责 | 数据获取、分析、过滤策略、文件发现 |
-| 可依赖 | `message.py`、标准库 |
-| 禁止依赖 | `analysis/`、`presentation/`、`gui/`、`providers/` |
+代码入口：[facade.py](src/qq_chat_analyzer/application/facade.py)、[analysis_service.py](src/qq_chat_analyzer/application/analysis_service.py)、[import_service.py](src/qq_chat_analyzer/application/import_service.py)。
 
-Adapter 与 Parser 属于**同一层的两种形态**：
+## 3. 数据模型、Adapter 与统一分析链
 
-- **Adapter** 处理 Provider 产出的外部数据格式。
-- **Parser** 处理用户手上已有的导出文件。
+### 双消息模型
 
-两者输出都是 `ChatMessage`，都不得依赖分析核心。
-新增来源时不要复制现有 parser，各来源使用独立模块。
+[RichMessage](src/qq_chat_analyzer/rich_message.py) 保存发送者身份、内容段、表达、reply / mention 等结构化事实；[ChatMessage](src/qq_chat_analyzer/message.py) 是现有过滤和多数统计的消息输入。两者都是现役模型，ChatMessage 不是唯一跨层模型。
 
-### 4.3 ChatMessage
+[legacy_projection.py](src/qq_chat_analyzer/legacy_projection.py) 单向投影 RichMessage：只拼接 TextContent 到正文，同时保留身份、会话、时间与消息属性。表达与非文本段不会伪造为正文，也不能由 ChatMessage 反推完整 RichMessage。部分本地文件导入路径只有 ChatMessage。
 
-| | 内容 |
-| --- | --- |
-| 负责 | 作为跨层唯一领域模型，表达一条与来源无关的聊天消息 |
-| 不负责 | 展示名称解析、统计、格式化、平台特有字段 |
-| 可依赖 | 标准库 |
-| 禁止依赖 | 其他任何业务层 |
+[ImportOutcome](src/qq_chat_analyzer/application/import_outcome.py) 同时保存消息与投影配对。过滤保留原 ChatMessage 实例；应用服务按 `id(legacy_message)` 关联仍存活的 RichMessage，而非按可能重复／缺失的 message_id 或复合字段猜测。被过滤消息不能向保留消息提供表达或非文本事实。
 
-`ChatMessage` 是 `frozen=True, slots=True`，**视为冻结契约**。
-新增展示需求不通过扩展它来满足（见 5.4 名称注入）。
+### 单次分析
 
-2026-08 人工批准一次向后兼容的最小扩展：`conversation_type`
-（`private` / `group` / `unknown`）与 `is_self`（`True` / `False` / `None`）
-作为跨平台分析所需的最小 identity semantics 进入 `ChatMessage`；
-`None` 表示数据源无法可靠判断本人，展示层仍通过名称注入与
-`resolved_display_name` 解析，不复制平台身份规则。
-关于 `sender_id`、`conversation_type`、`is_self` 的平台映射、canonical identity
-与 Unknown 语义，以根目录 `DATA_SEMANTICS.md` 为唯一事实来源；本文只定义其架构职责。
+1. 来源服务产生 payload，ImportService 选择 Adapter / Parser。
+2. 最终 Analysis Scope Filter 按统一时间语义过滤；来源 SQL 时间条件仅用于减少获取量，不能替代最终过滤。
+3. 智能过滤分发送者、整条消息模板、停用词三个层次；质量过滤后再进行分析。停用词只作用于词法，不应代替整条模板过滤。
+4. 清洗／分词生成全局及发送者 token，核心生成 AnalysisReports，应用服务触发导出。
 
-### 4.4 Application
+这是统一编排，不表示所有处理都完全来源无关：应用词法路径向 `clean_text` 传入 platform，[cleaner.py](src/qq_chat_analyzer/cleaner.py) 仍有微信特殊处理；表达资源准备也保留来源映射。应把原生字段和第三方工具隔离在来源边界，不能把这一设计方向写成整个现役分析链已无平台分支。
 
-应用层含四类组件，职责各不相同。
+身份、未知归属、顺序、会话和 authored lexical text 的唯一详细定义在 [DATA_SEMANTICS](DATA_SEMANTICS.md)。
 
-**ImportService** —— 路径校验、文件发现、来源识别、parser/adapter 路由。
-它直接引用全部 parser 与 adapter，是格式识别的集中点。
-不做分析，不做导出。
+## 4. QQ 连接、授权代际与 Snapshot 所有权
 
-当前支持格式只有 `qq-db-json`、`wechat-db-json`、`detailed-json`、`chatlab-jsonl`
-和 `cli-json`（符合微信 CLI schema 的 bare array）。`echo-chat` 是这些格式的本地文件
-分析入口；已退休的 QCE JSON 与旧 QQ JSON/JSONL 不会通过显式 platform hint 恢复支持。
-
-**来源编排服务** —— 桌面 QQ 使用 `QQDirectDatabaseImportService`，微信使用
-`WeChatExportImportService`。
-它们把“先获取、再导入”串起来，并提供会话列表查询。Provider 负责来源数据获取，
-Adapter 负责格式转换，分析核心不读取 QQ 原生字段。
-
-#### QQ Direct DB 当前主链
-
-正式 QQ 产品链只有：NapCat → Direct DB → `qq_db_adapter` → 统一消息模型 → Analysis。
-桌面 QQ 先通过 NapCat 启动 / 登录；会话列表和分析的正式获取路径为：
+### 连接动作与被动状态
 
 ```text
-QQ 本地 main+WAL+SHM → hardened committed boundary B capture
-→ staging 加密合并 DB → NapCat in-process decryptDatabase → Echo snapshot generation
-→ QQDatabaseProvider（只读）→ qq-db-json 临时 payload
-→ qq_db_adapter → ChatMessage → ImportService / AnalysisApplicationService
-→ Analysis Core → Presentation → Echo JSON / HTML Report
+GUI → Facade.start_qq_auth_flow → QQAuthBridge → Echo-owned launcher → QQ / NapCat
+GUI → Facade 状态接口 → ConnectionManager → QQConnectionService → NapCatQQProvider
+GUI → Facade.list_sessions / analyze_session → QQDirectDatabaseImportService
 ```
 
-`gui/app.py` 为 QQ 构造 `QQDirectDatabaseImportService`；Facade 通过该服务获取
-会话和单次分析数据。服务首次启动时先 `recover` 上次遗留 plaintext；每次获取
-都使用新的 generation，执行 `acquire`、校验 manifest、只读查询并物化 payload，
-随后在 `finally` 清理 generation；分析和报告不持有 plaintext DB。正常关闭时先停止新的获取，
-有限等待进行中的获取并 `recover`，再终止 Echo 自有的 QQ runtime 进程树（见第 11 节）。
+- Auth Bridge 负责工作区准备、实例身份校验、授权启动、QR freshness、取消与断开；新授权只接受本 session 更新过的 QR。
+- 自有旧 runtime 清理失败时保留 registry 所有权并拒绝新启动；凭据退休阻止旧客户端继续使用，但不构成进程已退出的证据。
+- ConnectionManager 映射被动连接／授权等待状态，不拥有另一套 connect 动作。QQConnectionService 把认证 RPC 状态转换为应用状态。
+- QQSetupService 保留配置读写、路径准备和被动 runtime 查询。QQRuntimeManager / BundledQQRuntime 仍有底层生命周期能力与测试，但正式 GUI 启动由 Auth Bridge 发起。
+- 有效登录可使 `available` / CONNECTED 成立；`direct_db_ready` 还要求数据库、passphrase、Snapshot API 等能力。获取服务完成 startup recover 后才进入 ACTIVE。三者都不证明清理或退出完成。
 
-首次会话查询或分析触发服务启动：在有限的 readiness 窗口内等待本地 RPC bridge
-与 `EchoSnapshotApi.recover` 可用，完成遗留 plaintext 清理后才进入 `ACTIVE`。
-bridge/API 暂未就绪或暂时不可达时返回可重试的 `not_ready`，后续请求可重新启动；
-真正的 recover 清理失败则保持关闭，不允许读取旧 generation。QQ 连接状态可先显示
-已连接，不代表 Direct DB snapshot API 已完成 readiness。
+### 四种代际标识
 
-每次 `acquire` 由 snapshot helper 串行执行：先清除旧 generation、staging 与历史
-plaintext，清理失败则拒绝解密；再分别有限等待 DatabaseApi/passphrase 和本人身份，
-获取先固定 SHM 见证的 committed boundary B，校验 WAL header/salt/checksum 和完整前缀、
-main identity/stat/content 稳定性及 checkpoint witness；B 后 append 可以继续，checkpoint、
-main 改变、WAL reset/truncate 或无法证明一致性均 fail closed，不回退 main-only。
-复用同一个 hardened capture 模块生成 staging 加密合并文件，交给现有 NapCat 解密；
-Echo 在解密前后对 staging 输入校验 `dev` / `ino`、大小与纳秒级 `mtime` / `ctime`
-强见证，无效或变化的见证均 fail closed；不再依赖上游 native-read telemetry 或 G2 patch。
-发布 generation 前删除加密合并文件，复核身份未改变后
-写入原 schema manifest 并原子发布 generation。RPC 客户端的
-acquire 超时覆盖两个顺序等待窗口。DatabaseApi namespace Proxy 的可调用 `then` 不能作为 async
-函数返回值直接返回，否则 Promise 会把它当作 thenable 而永久 pending；helper
-通过普通对象承载该 Proxy。应用服务校验 generation 后只读查询，清理 generation
-后才让下游消费临时 payload；失败时不使用旧 generation。
-
-RPC 客户端仅对 `snapshot_unstable` 执行 bounded retry；每次重试仍获取新的
-generation，耗尽后明确失败，不绕过任何 guard。Windows/libuv 文件 identity
-比较已统一使用 descriptor `fstat`，路径探测先 open 再 fstat，保留 `dev` 与 `ino`
-双重保护，避免同一文件的 path stat / descriptor stat 来源差异造成误拒绝。
-
-同一 snapshot root 的 Windows OS 独占 lease 从获取前 recover 持有到 generation 消费后
-cleanup，进程内 mutating 操作仍串行。root/staging ownership marker、generation manifest 和
-固定文件 allowlist 约束删除范围；未知文件、目录或 junction 拒绝清理。全部成员验证后才删除，
-ownership proof 最后删除；清理失败明确返回失败并保留可恢复残留。runtime 强杀后 OS handle
-释放，下一次 startup/acquire 在 lease 内恢复，不通过 PID 存活猜测接管。lease 由隐藏的
-PowerShell 子进程持有，stdin EOF 释放，不需要另一套 Python 环境。
-
-这里有两个不同的 transient 资源：`snapshot.db` 属于 runtime generation，会话列表查询
-结束或所选会话的 `qq-db-json` payload 物化完成后立即调用 `cleanup(generation_id)`；
-payload 属于本次分析的临时目录，在导入、分析消费结束或抛异常后清理。两者都不作为
-长期 cache。启动 `recover` 和关闭时的 `recover` 处理遗留的 runtime plaintext；
-cleanup 失败会作为错误上报，不能假装分析已安全完成。
-
-QQChatExporter / QCE 的 runtime、provider/service、CLI 命令、QCE JSON 和旧 QQ JSON/JSONL
-兼容均已退休，`parser.py` 与 `qq_chat_exporter_adapter.py` 已删除；不存在 QCE fallback。
-DB 原生字段与 protobuf 解释留在 Provider / Adapter 边界内，不能进入分析核心。已有真人验收确认
-正式 hardened main+WAL acquisition、解密、会话列表、分析、JSON / HTML 报告
-和正常 shutdown 清理可用。2026-10-02 最终验收已关闭 Stage 3.5、A4、A5、A6，
-Final Cleanup / Final Smoke 均 PASS；此前 main-only 损坏快照问题已关闭。
-验收范围与跨机器 RC 等开放事项见 `docs/HARDENING.md`，不将本机验收扩大为
-跨机器或跨 QQ 版本 schema 保证。上述 2026-10-02 验收属于历史版本，
-不覆盖当前 4.18.34、RPC 认证、Worker 代际隔离与显式重连变更；最新验收状态见该工作地图。
-
-群成员元数据使用已验证的 `result.infos`：优先 `cardName`，缺失时回退 `nick`；
-不通过好友列表假定群成员关系，也不为缺失元数据猜名称。Provider 按
-`40050 ASC, 40001 ASC` 查询消息，Adapter / Import 保留该顺序。
-Adapter 按段序保留多段文本与 QQ face，Unicode emoji 继续由来源中立的表达分析处理；
-group reply 按可唯一匹配的序列建立 ReplyRelation，mention 保留结构化关系，
-引用及 mention 元数据不混入 authored text。图片段映射为 `NonTextContent("image")`，
-其他未识别段只保留 `NonTextContent("unknown")`，不猜具体媒体类型；重复段不去重。
-legacy 正文只投影 TextContent，纯图片也可完成分析并生成消息统计与空词频报告。
-
-Direct DB MarketFace（`45002=11`）以 `45600` bytes 的 SHA-256 建立独立命名空间中的
-不透明 sticker 身份，不声称已解码 QQ emoji ID，也不等同于旧 QCE `type_17`。
-已有表达映射与 ReplyRelation 保留是当前结构能力；完整 Sticker / 表情包语义与
-Reply / 引用回复分析属于 0.2，不是 0.1 发布前置。产品状态见 `docs/HARDENING.md`。
-
-Final Cleanup 已移除 `analysis-ordering` 专用计数/日志与闲置 `pollCount`；
-保留 `analysis-timing`、DEBUG member-shape、identity coverage，以及
-failure_stage / guard_code、WAL/SHM/identity/checkpoint witness、staging 输入强见证、
-generation/source/snapshot/`quick_check`、cleanup/recover/shutdown 等长期诊断。
-Direct DB helper 的 `QCE_LOG_FILE` 仅是保留的历史诊断变量名，不代表 QCE 能力；
-保留该诊断接口，不为字符串清零强改运行逻辑。来源注释修正同步模板、pin 与部署副本。
-
-获取范围是减少无关数据的优化边界；`Analysis Scope Filter` 才是最终 correctness
-guarantee。两者必须同时保留，且时间单位按来源区分：QQ Direct DB 获取使用
-epoch seconds 查询；WeChat 转换为 epoch seconds 用于 `m.create_time` SQL 条件。
-QCE 的毫秒获取分支已退休，不再构成时间单位协议。
-
-WeChat 的一个 session 的 `Msg_*` table 可分布在 0..N 个 `message_N.db` shard。
-Provider 发现全部匹配 shard，对每个 shard 使用同一时间范围查询，再做全局
-`create_time` 排序；显式正数 limit 在全局 merge 后应用。正常消息获取默认不限量，
-`wcdb_cli` 的 no-limit/`limit=0` 表示持续 step 至 statement done，而不是默认
-100000 条上限。
-
-**来源连接服务** —— `QQConnectionService`。把 Echo bridge 的 Core.status
-翻译成 `QQConnectionStatus`（runtime ready、有效 QQ 登录、独立的 Direct DB ready、
-下一步操作提示）。它是应用层内 Provider 的合法调用者之一；GUI 通过 Facade
-获取状态，不直接接触 Provider。
-
-**运行时管理** —— `QQRuntimeManager`。负责检测、启动、停止外部 QQ 采集
-运行环境，并把底层异常转换成用户层 `QQRuntimeStatus`。它只依赖
-`runtime/` 的 `ChatRuntime` 协议，不解析外部工具输出，也不接触 Provider
-的 HTTP 通信。启动立即返回进程状态；QQ 登录由连接服务后续探测，
-`wait_ready()` 通过注入的 NapCat bridge readiness 探测等待就绪。
-
-**运行时实现** —— `BundledQQRuntime` 与 `QQRuntimeConfig`。配置承载
-`executable_path`、`working_directory`、bridge `base_url` 与版本；
-实现负责进程启动、停止、状态与 `wait_ready()` 探测，
-不复制 Provider 的业务解析。
-
-**Windows 发布合同（De-QCE）** —— Desktop 默认 QQ runtime 位于
-`runtime/qq-napcat-candidate`：官方 NapCat v4.18.34、late-passphrase
-补丁、Echo plugin 白名单与 `napcat-plugin-echo`。连接和 metadata 使用
-`NapCatQQProvider`；snapshot correctness 使用 Echo staging 输入强见证。Provider 与
-snapshot client 绑定同一个已认证的 Worker `boot_id`，代际失效后仅显式重连可重新绑定，
-新连接 recover 成功后才允许 acquire。
-本机 bridge RPC 使用每次启动独立的凭据；凭据校验与 Worker 代际校验共同约束请求，
-不能仅凭端口健康认领其他 runtime。此处描述当前分支 / 工作树实现，合入与发行状态见
-`docs/HARDENING.md`。
-`windows_runtime_manifest.json` 限定发布程序资产，build 在复制前后校验
-`qq_napcat_runtime_pins.json` 的关键产物 hash。正式 portable 不携带旧 `runtime/qq`、
-qce-server、QCE plugin 或 static/qce；不自动回退 QCE。
-QCE Python provider/service、`qce_compat`、文件 adapter 与旧 `parser` 均不得进入 fresh
-发行包或 frozen PYZ；现有 runtime forbidden checks 和 frozen package 合同共同守护。
-旧 Desktop 配置只迁移 QQ 安装路径，不能恢复旧 runtime 或 API endpoint。
-
-**AnalysisApplicationService** —— 业务流程编排：
-调用 ImportService 取得消息，按本次请求应用 Analysis Scope Filter，
-再 driving 清洗、分词、分析，
-组装 `AnalysisResultDTO` 与 `AnalysisReports`，触发导出。
-
-**Analysis Scope Filter** —— 应用层的单次分析时间范围过滤：
-只读取 `ChatMessage.timestamp`，支持全部、最近一年、最近半年和自定义日期范围。
-过滤发生在 ImportService 之后、现有智能过滤和 Analyzer 之前；Analyzer 不感知范围配置。
-“全部”模式直接保留原消息，指定范围过滤为空时在进入 Analyzer 前返回应用错误。
-
-**Desktop Bootstrap（A1 工作树实现）** —— `desktop.py:main` 是源码
-`echo-gui`、`python -m qq_chat_analyzer.gui` 与 Frozen `desktop_entry.py` 的
-共同入口。它先运行固定版本 Velopack 1.2.161 的 Hook 分派，显式禁用
-`auto_apply_on_startup`，再导入 `gui.app._run_gui`。安装、更新与卸载 Hook
-由 SDK 结束进程，不创建 GUI。`gui.app.main` 保留为兼容入口别名。
-`scripts/package_windows_setup.py` 将现有 onedir 的已校验副本交给固定版本 vpk；
-版本来自 `pyproject.toml`，安装目录与现有用户数据目录分离。
-Bootstrap 不包含应用更新或更新后重启编排；独立检查/下载核心见下文 A3。
-发行状态与实际验收见
-[A1 审计](docs/research/2026-10-12-windows-setup-a1.md)。
-
-**Update Check Core（QA-04）** —— `application/update_check_service.py` 提供
-Qt 无关、聊天来源无关的 `UpdateCheckResult`、`UpdateChecker.check(manual=False)`
-与默认 `UpdateCheckService`。当前版本只读取 `version.APP_VERSION`，标准库 HTTP
-查询 GitHub `/repos/lindreams/echo-chat-analyzer/releases/latest`，仅接受正式 Release。
-严格校验 SemVer；可去掉 tag 的 `v` 前缀，build metadata 不影响优先级，远端
-prerelease tag 也不接受。正式版本按 major/minor/patch 比较，同号正式版高于本地 prerelease。
-
-GUI 的唯一入口为 `ChatAnalyzerFacade.check_for_updates(manual=False)`，由 GUI 在
-worker 中异步调用并在 GUI 线程展示结果；「关于余音」对话框提供手动检查更新入口，
-仅提示并打开校验后的官方 GitHub Release 页面，不自动下载、替换或静默更新。
-构造时无网络/磁盘 I/O。返回状态为 `update_available`、`up_to_date`、`no_release`、
-`skipped`、`unavailable`，另带当前/最新版本、校验后的 Release 页面 URL、检查时间、
-安全错误代码与 `public_message`。网络或响应失败不冒充“已是最新”；异常响应正文不外泄。
-请求无重试，socket timeout 为 5 秒，响应最多 256 KiB；该 timeout 不是总时限，
-不得在 GUI 主线程或同步启动流程中调用。不会下载或替换程序。
-
-自动检查使用 `<user_data_dir>/update-check.json`，只保存 Unix 时间字段
-`last_check_time`，按所有检查尝试（含失败和手动检查）去重 24h；恰好 24h 可再检查。
-手动检查绕过去重，但同一 service 实例的并发调用立即返回 `skipped/in_progress`。
-状态缺失、损坏或时钟回拨产生的未来时间不抑制检查；原子写入失败不影响结果，
-同一实例仍保留内存去重。该最小策略不承诺跨进程互斥或状态不可写时的跨重启去重。
-
-**Installable Update Core（A3）** —— `application/installable_update_service.py`
-独立提供 Qt 无关的 Velopack 检查与下载，保留 SDK `UpdateInfo`，不接受上述 GitHub
-Release 结果作为包元数据。GUI 通过 Facade 的 `check_installable_update()`、
-`download_update(progress=...)`、`get_update_status()` 接入；旧 `check_for_updates()`
-仍只提供发布页提示。检查和下载在 worker 执行，状态读取只访问内存。
-裸服务默认无 feed，返回 `unconfigured`；桌面 composition root 从
-`application/update_channel.py` 注入固定 GitHub 仓库源、`Lindreams.Echo` packId 和
-`win-x64-stable` channel，不从 GUI 输入、环境变量或 Release 页面推导。生产仅接受配置的
-HTTPS feed，本地绝对目录用于虚构测试。应用内下载要求 Windows Frozen、SDK
-经显式 locator 核验的可写 Setup `current/` 布局、非 Portable 且安装 packId/channel 匹配；
-源码和 Portable 保留发布页入口。只读 Setup/MSI 根目录的 SDK fallback cache 暂不支持，拒绝猜测缓存路径。
-服务同一实例拒绝并发请求，下载失败保留候选供显式重试，成功请求幂等；SDK 管理包缓存
-和下载锁。进度整数 0–100，100 只在下载返回且待安装包身份/大小匹配后发出。
-SDK 的本地 pending 资产没有 hash，恢复的 `downloaded` 仅表示包缓存待安装，
-不证明可信完整性，也不授予应用更新权限。A2 完整 SUCCESS
-证据要求保持不变。检查/下载接口见
-[A3 交接](docs/research/2026-10-13-a3-update-core.md)。
-
-**A3 GUI 集成** —— 关于对话框保留发布页检查展示，并直接调用上述 Facade 接口。
-检查 worker 先检查可安装更新；`unsupported` / `unconfigured` 才回退发布页检查，
-两种结果仍分别解释，不将发布页版本作为下载候选。下载 worker 将现有 worker 的
-位置参数 reporter 转成 `download_update(progress=reporter)`，Qt relay 在 GUI 线程
-交付进度与结果。只有 `InstallableUpdateResult.status=downloaded` 确认下载完成，
-百分比和 worker 正常返回不意味着成功。关闭不取消下载；重开从 Facade 内存快照恢复，
-对话框用 GUI QTimer 观察同一服务，不能以本地对话框状态代替候选/缓存事实。
-请求代际、终态后回调退役及单调百分比保护处理重复点击与迟到事件。
-不再保留候选 `updater.download(report)`、模拟 phase 进度协议或“重启后自动安装”提示；
-更新 worker 纳入现有全局 worker 跟踪。下载后提供用户确认的“安装并重启”入口，
-0.2.0 只允许未建立来源连接、无分析任务的空闲会话。Facade 的
-`prepare_update_install()` 在 worker 刷新可信 feed，验证 pending、SHA256、大小及包内
-id/version/channel，返回不含路径/SDK 对象的 `InstallHandoffResult` 和一次性 token。
-确认/复验不启动安装器；关闭/迟到回调不能提出退出意图。
-MainWindow 在 worker relay 退场后记录意图并正常关闭，仍使用原 ShutdownProtocol。
-桌面退出入口等待最终结果；只有五项完整 SUCCESS 且资源步骤等于 Facade 的实际缓存
-关闭证据，才调用 `handoff_update_install(token, result)`。交接无网络，以 5 秒协作式预算重新验证
-安装/包状态；Windows 只读共享句柄禁止写入/删除，持续保护包直至进程退出。
-之后才调用 `wait_exit_then_apply_updates(..., silent=False, restart=True)`，并自然退出。
-不调用立即退出的 apply API，保留原有限 watchdog；失败/超时/UNKNOWN 均不启动安装器。
-40 秒 ShutdownProtocol 等待与 50 秒 Python watchdog 不是持有 GIL 的原生阻塞的绝对超时保证；
-固定 SDK 的交接未释放 GIL，此时 watchdog 线程也可能被阻塞。保留并记录该边界，不另建退出架构。
-B1/B2 已通过真实隔离 Setup A 0.2.0 → B 0.2.1、自动启动、正常关闭、再次启动及文件/虚构数据校验。
-B2-W1 独立证明固定 SDK 的仅同步句柄可成功等待、随后退出码查询却因缺少权限失败；
-B2 的 Access denied 警告高度可信地由此引起，不等同于未等待旧进程退出。
-0.2.0 按官方 1.2.161 标准安装与自动重启机制交接，不依赖自定义 Broker、IPC、跨进程
-认证或启动准入；PR #45 保留为历史实验，不是本链路依赖。上游真正等待错误/60 秒超时后
-继续 apply 及目录式强杀属于该固定版本行为，当前范围不承诺极端新进程竞争互斥。
-本应用仍严格要求退出前业务清理成功及包复验通过，不将普通清理失败交给上游继续处理。
-正式包、签名、跨设备验证及发布审批仍需联合验收，代码集成不代表已发布。
-接口、验收边界和正式发布条件见 [A3 安装交接](docs/research/2026-10-13-a3-install-handoff.md)。
-
-**Report Package 生命周期（BUG-03）** —— Report Package 是 Echo 唯一持久分析对象，
-也是 Local Data 历史列表的事实来源。`ReportHistoryManager`、`analysis_history.jsonl`
-及其读写 API 已退休，不再维护与报告目录分离的元数据历史。
-
-Windows 默认根目录为 `%LOCALAPPDATA%\LocalChatAnalyzer`（由 `user_data_dir()` 提供）：
-
-```text
-LocalChatAnalyzer/
-├─ reports/
-│  └─ Echo_Report_YYYYMMDD_HHMMSS[_N]/
-│     ├─ echo-report.html
-│     ├─ echo-report.json
-│     ├─ metadata.json
-│     └─ README.txt
-└─ transient/
-   └─ chat-analyzer-output-<8位十六进制>/
-```
-
-- `reports/` 的持久资产只包括正式 Report Package，不放默认分析 scratch 或 raw export。
-  发布期间在同一 root 创建 `.echo-report-<uuid>` staging，四文件完整写入后 rename
-  为正式 package；staging 不进入 catalog，也不计入报告存储统计。发布时创建同 root ownership
-  sidecar，绑定 root、staging 和 sidecar 的文件系统身份，并持有 OS 文件锁。
-  普通发布异常会尝试清理 staging；catalog list / clear_all 会恢复清理具有有效 ownership
-  且未被活跃发布锁定的 staging。清理前拒绝 reparse point、身份变化和未知成员；仅有前缀
-  或缺少有效 sidecar 的旧 staging 不会被删除。恢复失败只记录安全诊断，clear_all 沿用
-  既有失败错误；staging 不作为正式报告或不可读报告 issue 展示。
-- `package_echo_report()` 只负责发布；Facade 显式使用 Catalog 的 canonical
-  `reports_root`，成功返回正式目录即作为本次结果。发布成功后不自动删除任何既有报告；
-  发布失败不删除旧报告，生成的报告仍留在本次 output。
-- `ReportPackageCatalog` 只读 `metadata.json` 构建 summary（包括 `conversation_kind`）；
-  检查 package 完整性时不读取 report JSON 或聊天正文。损坏或不完整 package
-  作为 issue 对用户可见，不因 metadata 不可读而脱离 package ownership 枚举。
-- 正式报告的分析结果是 immutable historical snapshot。app upgrade 不自动 migration 或
-  re-analysis；Local Data 重开使用包内原 HTML。新算法或新数据库字段需要新版重新
-  acquisition / analysis，生成新包；旧报告不伪造缺失数据。既有删除与
-  可选分享产物的生命周期不改变这一分析快照约束。
-- `echo-report-meta.v1` 是包摘要契约，允许 additive 可选字段；reader 忽略未知字段，
-  新 reader 必须继续读取旧包。新包追加 `app_version`、`report_schema_version` 和
-  `analysis_revision`；旧包缺这些字段仍正常 list / reopen / 统计，不补写当前版本。
-  `echo-report.v0.7` 是展示 JSON 契约，不是原始消息或可重新分析的完整中间结果；
-  当前不承诺用新版 presentation 重新渲染旧 JSON。
-- app release version 唯一事实源为 `pyproject.toml`；`version.py` 从安装元数据读取，
-  GUI 与 metadata writer 共用。frozen build 核对安装版本与发布版本一致并携带元数据。
-  `analysis/revision.py` 单独记录分析语义修订；影响结果的数据解释、identity、过滤、
-  分词或统计规则变化时递增，纯 presentation 改动不递增。report schema 使用 serializer
-  的既有常量，三个版本不绑定递增。
-- listing、统计与 delete 共用正式 package 候选边界：reports root 的直属真实目录，
-  且名称严格符合 ownership naming。合法名称的普通文件不是 Report Package，忽略并保留；
-  reparse / symlink / junction 仍进入安全拒绝流程，不跟随外部目标。
-- 报告发布后不按数量或空间阈值自动淘汰：既有正式报告只由用户在 Local Data 显式删除。
-  删除前验证 direct child、ownership naming、canonical root、目录身份与
-  整棵树的 symlink / junction / reparse 边界，不跟随外部路径。
-- `ReportPackageCatalog.storage_usage()` 只使用文件元信息统计 owned package 数量与字节占用，
-  包含损坏或不完整但仍属 Echo 管理范围的 package；不读取报告正文或 metadata，也不使用
-  mtime / ctime 作为报告时间。无法安全统计（reparse、身份变化、文件系统错误）的 package
-  仍计入数量并单独标记为 unmeasured，未知占用不得记为零。Facade 通过
-  `get_report_storage_usage()` 暴露该统计，供后续 GUI 显示报告数量与总占用空间。
-- 默认 scratch 位于 `transient/`，Facade 持有最近一次成功分析的 scratch，替换或 shutdown
-  时清理；分析失败也清理。每个 Facade 首次创建默认 scratch 前执行一次 stale scratch
-  recovery，只处理严格命名的直属自有目录，拒绝 reparse，失败记日志并继续。
-  用户指定的 `output_directory` 不归该 scratch 清理流程所有；该 recovery 不处理
-  Direct DB generation，后者有独立的生命周期边界。
-
-| | 内容 |
+| 标识 | 约束对象 |
 | --- | --- |
-| 负责 | 流程编排、DTO 转换、应用级错误 |
-| 不负责 | 具体统计算法、文件格式解析、界面措辞 |
-| 可依赖 | `providers/`、adapters、parsers、`analysis/`、`message.py` |
-| 禁止依赖 | `gui/` |
+| 启动凭据 | QQRuntimeSession 为每次启动生成本地 RPC 凭据，通过子进程环境交给 bridge；不从普通配置恢复，也不写入报告或日志。 |
+| Worker boot_id | bridge 实例启动时生成；Provider 与 snapshot client 绑定同一个已认证 Worker，不能只凭固定端口健康接管。 |
+| 连接 epoch | 应用服务请求准入代次；请求在 readiness 前捕获 epoch，在正式准入时复验，防止旧请求进入新连接。 |
+| Snapshot generation | 单次快照身份及其 manifest / 数据库；不是 Worker 或连接身份。 |
 
-### 4.5 Analysis Core
+[Facade](src/qq_chat_analyzer/application/facade.py) 显式连接时，在同一 reconnect guard 内重置 Direct DB epoch 和 ProviderFactory 连接绑定，随后才执行授权 I/O。活动 startup / acquisition 阻止重连。普通配置 `invalidate()` 只清缓存，不更换当前连接 owner。
 
-| | 内容 |
+[NapCatQQProvider](src/qq_chat_analyzer/providers/napcat_qq_provider.py) 与 [snapshot client](src/qq_chat_analyzer/providers/qq_direct_snapshot_runtime.py) 是本地认证 RPC 客户端，不创建 Worker。旧 client 不得升级为新启动凭据或新 boot_id；Worker 变化锁定为需要显式重连，旧 acquire、metadata、cleanup、recover 不重放到新 Worker。[bridge.mjs](scripts/qq_napcat_plugin/bridge.mjs) 在调用允许的方法前校验认证与绑定；[plugin](scripts/qq_napcat_plugin/index.mjs) 在 Worker 内注册 Snapshot API。
+
+### 获取与一致性合同
+
+[QQDirectDatabaseImportService](src/qq_chat_analyzer/application/qq/qq_direct_database_import_service.py) 负责 startup、准入、payload 与 drain；[snapshot helper](scripts/qq_direct_db_snapshot/snapshot.mjs) 负责串行快照操作：
+
+1. startup recover 成功才准入；短暂 API 未就绪可重试，真正恢复失败保持关闭。
+2. acquire 前清理旧 generation / staging / 自有遗留明文；清理失败拒绝解密。
+3. main+WAL+SHM 获取固定 SHM 见证的 committed boundary B，验证 WAL header / salt / checksum、完整前缀、main identity/stat/content 稳定性和 checkpoint witness。允许 B 后 append；checkpoint、main 改变、reset/truncate 或无法证明一致性均失败关闭，不回退 main-only。
+4. staging 加密合并文件交给 NapCat 进程内解密；解密前后校验 dev / ino、大小、纳秒级 mtime / ctime 强见证，使用 descriptor fstat 保持文件身份比较一致。输入变化、无效见证或本人身份变化禁止发布。
+5. 删除 staging 加密输入后，写入 manifest 并原子发布 generation。客户端只对 snapshot_unstable 在共享总预算内有限重试，每次仍经过全部 guard。
+6. 应用校验 generation / manifest / 数据库 / self identity，只读查询；同一 generation 内选择会话并物化 payload。失败不读取旧 generation。
+
+一致性实现见 [main_wal.mjs](scripts/qq_direct_db_snapshot/main_wal.mjs)。这里记录必须维持的拒绝条件，不将历史真人验收扩大为跨 QQ 版本保证。
+
+### lease、清理与资源边界
+
+[workspace.mjs](scripts/qq_direct_db_snapshot/workspace.mjs) 以 Windows OS 独占文件 lease 覆盖获取前 recover、发布、消费直至 cleanup；进程内变更另行串行。lease 由隐藏 PowerShell 子进程持有，stdin EOF／进程结束释放，不以 PID 存活猜测接管。
+
+- source 与 workspace 必须隔离：Windows 路径比较归一大小写，拒绝同目录及相互嵌套；symlink / junction / reparse 防护不能因字符串路径看似安全而省略。
+- root / staging owner、generation manifest、固定文件 allowlist 共同限定删除范围；先验证全部候选，再删除，所有权证明最后移除。未知成员或无效所有权不能被递归清除。
+- 不相关 generation 的 cleanup 不释放当前消费者 lease。清理／恢复失败阻止正常返回；清理错误不能被先前的获取／解密错误掩盖，保留可恢复残留，不包装为成功。
+- 已准入任务捕获原 client，读取、metadata 和 cleanup 都维持原代际；cleanup 本身仍算活动获取，不能被重连挤出。
+- generation 中的 plaintext DB 在会话查询完成或 payload 物化后 cleanup，早于下游分析；临时 qq-db-json 仍含明文，由 acquisition 上下文在消费结束／异常后清理。二者均不作长期 cache。
+
+GUI 取消会话结果只使请求失效，不中断底层 acquisition / cleanup。授权取消绑定具体 Event，迟到取消不能关闭新授权；迟到 launcher 返回的自有资源必须关闭。
+
+`disconnect_qq()` 结束授权／运行会话，不执行完整 Direct DB drain / recover，也不提供全部资源释放证明。正常 shutdown 另见第 7 节；Worker 异常丢失时的失败关闭不代表残留已经清除，须由后续合法 recover 处理。
+
+## 5. 微信连接、取钥与数据库读取
+
+### 服务与读取链
+
+GUI 经 Facade 调用微信 setup、连接状态与导出服务。延迟 SourceBundle 共享 ProviderFactory，状态查询与读取使用同一配置。主页只读 setup 检查不提前构造取钥 helper。
+
+- [WeChatDataDetector](src/qq_chat_analyzer/application/wechat/wechat_data_detector.py) 发现候选数据位置，不证明当前账号可读。
+- [WeChatSetupService](src/qq_chat_analyzer/application/wechat/wechat_setup_service.py) 协调位置、取钥、保存配置、Provider 失效和读前验证。
+- [WeChatConnectionService](src/qq_chat_analyzer/application/wechat/wechat_connection_service.py) 区分数据位置、密钥与 runtime 探测；available 不是 session.db 已读通或 helper 已清理的证明。
+- [WeChatDatabaseProvider](src/qq_chat_analyzer/providers/wechat_database_provider.py) 通过 wcdb_cli 读取；连接准备验证实际数据库可读。错误密钥／账号位置不能降级为普通空会话。仅在唯一可读候选且再次验证成功时自动恢复位置，歧义不猜测。
+- [WeChatExportImportService](src/qq_chat_analyzer/application/wechat/wechat_export_import_service.py) 编排会话查询、时间范围与 export_only；Facade 将导出写入本次 scratch，交给统一分析服务。独立 execute 接口也可直接接 ImportService，不拥有取钥或 SQL。
+
+### helper 唯一 owner
+
+[WeChatKeyService](src/qq_chat_analyzer/application/wechat/wechat_key_service.py) 的 acquire 请求独占 helper 生命周期；取消只发信号，不表示资源已释放。排队前已取消的请求不能启动 helper，旧 owner 未完成／仍有失败资源时不能启动第二个 helper。
+
+Windows helper 创建即进入 Echo 自有 Job，只管理 helper 后代，不纳管或终止用户的 Weixin.exe。清理在后台 owner 执行：整树退出、reader join、PIPE、process / Job 句柄共用一次 deadline。失败保留资源及所有权，后续连接 worker 可在同一准入机制下 retry_cleanup；不得由 GUI 与旧 owner 并发回收。
+
+Setup 的请求 generation 与提交锁保护取钥请求之间的代际提交顺序，并检查请求是否已取消；不能将这些局部隔离保证扩大为所有断开、取消、写回场景均安全。disconnect()、独立配置保存与在途请求之间的完整并发行为尚未得到充分验证。断开清除保存的密钥及进程内 key 状态，保留数据位置／runtime 配置，不删除聊天数据，也不证明 helper 或来源完整退出。
+
+后台 shutdown 封闭取钥准入、有界等待 owner，并传播失败／超时。Job 整树为空、Python 资源释放、Node CleanupHook 完成是三种证据；已使用 helper 即使前两项成功，仍缺少最后一项及完整来源退出证明，当前保持 UNKNOWN，不能授予更新安装。
+
+### 分片与身份
+
+同一 session 的 Msg_* 表可分布于多个 message_N.db。Provider 查询全部匹配 shard，每个应用相同的包含端点的 epoch-second 时间条件，再全局按 create_time 排序，最后应用显式正数 limit；正常消息读取默认不限量。wcdb_cli 的 no-limit / limit=0 必须持续 step 到 statement done，不能隐含截断。
+
+self identity 只按已证明的命名空间映射；目录后缀不能无证据截断，详见 [DATA_SEMANTICS](DATA_SEMANTICS.md)。
+
+## 6. Analysis、Presentation 与 Echo Report
+
+### 统计与展示
+
+应用服务驱动 cleaner / tokenizer、基础 analyzer 和 analysis/analyzers，组装 [AnalysisReports](src/qq_chat_analyzer/analysis/models.py)。Conversation Sessions 在核心计算；Presentation 消费其结果，不另建统计口径。表达 token 与正文词法排名分离，不能让表情展示名、reply 引用或自动 mention 污染语言画像。
+
+CLI 仍通过向 AnalysisApplicationService 注入 legacy writer，按条件生成 CSV、词云等附加产物。
+
+发送者／会话名称映射由调用方经请求 DTO 注入，应用服务转交分析器；已有稳定 sender ID 时不得用展示名覆盖，缺失稳定 ID 时，现役 stable_sender_key() 允许回退到 sender 文本，但这种回退不具备可靠的稳定身份保证。DTO 的名称映射使用 repr=False，不代表下游所有报告模型同样受到保护，见第 8 节。
+
+[presentation/builders.py](src/qq_chat_analyzer/presentation/builders.py) 负责报告到视图的选择、格式化与名称解析；其职责不等于重新分析原始消息。Presentation 不只是“只依赖报告模型的纯函数”：builders 使用共享 identity_names 与表达资产模块，[expression_assets.py](src/qq_chat_analyzer/presentation/expression_assets.py) 读取资源，[echo_serializer.py](src/qq_chat_analyzer/presentation/echo_serializer.py) 装配前端／图片资源并写 JSON / HTML。它不读取来源数据库、不拥有连接，也不依赖 Qt。
+
+### 报告包与历史所有权
+
+[package_echo_report](src/qq_chat_analyzer/application/echo_report_export.py) 发布四文件包：echo-report.html、echo-report.json、metadata.json、README.txt。Report Package 是持久分析历史的事实来源；不存在另一套 analysis_history.jsonl 历史索引。
+
+- 发布在 canonical reports_root 的 `.echo-report-<uuid>` staging 完成；同 root sidecar 绑定 root / staging / sidecar 文件身份，并持有 OS 发布锁。完整写入后 rename 为正式包，staging 不参与历史列表或存储统计。
+- [report_staging.py](src/qq_chat_analyzer/application/report_staging.py) 只恢复有效自有且未被活跃发布锁定的 staging，拒绝 reparse、身份变化和未知成员；仅名称前缀不构成删除授权。恢复失败保留安全诊断，不能把残留伪装成正式报告。
+- 发布成功不自动淘汰旧包；发布失败不删除旧报告，已生成产物留在当前 output，受该 output 自己的生命周期管理。
+- [ReportPackageCatalog](src/qq_chat_analyzer/application/report_package_catalog.py) 从 metadata.json 建 summary，不读取聊天正文。损坏／不完整包仍可作为 issue 展示和纳入自有包清点；storage_usage 只读文件元信息，无法测量的包标为 unmeasured，不把未知字节数当零。
+- 列表、统计、删除共用直属正式包候选边界。删除必须验证 direct child、ownership naming、canonical root、目录身份及整树 symlink / junction / reparse，不能跟随外部目标。既有正式包只由用户显式删除，不按数量／空间自动淘汰。
+- 默认分析 scratch 在 transient 下，Facade 持有最近一次成功结果，替换／shutdown 清理，分析失败也清理；首次使用前仅恢复严格命名、无 reparse 的自有旧 scratch。用户指定 output_directory 不归该自动清理 owner；QQ generation 另行管理。
+
+旧报告是不可变分析快照：升级不自动迁移或重新分析，历史重开使用原 HTML；展示 JSON 不是可完整重分析的原始消息。metadata 允许 additive 字段，旧包缺版本字段不能补写成当前版本。
+
+GUI 的 Local Data 经 Facade 的 list_report_packages、get_report_package_html_path 与删除接口访问 Catalog，以 package_name 定位；不拼接任意用户路径。重开由系统浏览器展示已验证的包内 HTML，失败保留记录并显示安全错误。
+
+应用版本来自 pyproject.toml／安装元数据；report schema 来自 serializer；[analysis/revision.py](src/qq_chat_analyzer/analysis/revision.py) 标记数据解释、身份、过滤、分词、统计的语义修订，纯展示改动不递增分析修订。三者不绑定递增。
+
+## 7. Desktop、Shutdown、Setup、Update、Uninstall
+
+### Bootstrap 与普通退出
+
+Desktop 先执行固定 Velopack SDK Hook 分派，再导入 GUI；安装／更新／卸载 Hook 不创建窗口，禁用 auto_apply_on_startup。Setup 与 Portable 共享分析能力，安装布局与用户数据目录分离；构建流程归 DEVELOPMENT。
+
+发行资产由 [Windows runtime manifest](scripts/windows_runtime_manifest.json) 与 [QQ runtime pins](scripts/qq_napcat_runtime_pins.json) 限定，构建复制前后校验关键产物 hash。正式包不得重新携带 QCE runtime／兼容模块或本机私有数据；旧配置迁移不能恢复退休 endpoint。
+
+MainWindow.closeEvent 只触发同一个幂等 [ShutdownProtocol](src/qq_chat_analyzer/gui/shutdown.py)，不在 GUI 线程等待。app.exec 返回后，入口有界等待该 protocol，优先自然退出，异常／超时进入 fallback。
+
+Facade 封闭来源构造和分析执行入口，依次尝试来源生命周期关闭、Direct DB 禁止新获取并 bounded drain / recover、retained output 清理、自有 runtime 终止与凭据退休。步骤独立计时，失败仍尝试后续步骤；recover 需要旧凭据，不能先退休凭据或重新绑定 client。
+
+Windows [windows_job.py](src/qq_chat_analyzer/runtime/windows_job.py) 以 PROC_THREAD_ATTRIBUTE_JOB_LIST 将正式 QQ launcher 和微信 helper 原子创建到不可继承、未命名、kill-on-close Job；纳管失败不回退无托管启动。QQProcessRegistry 持有 Job，日志线程／launcher 结束不释放所有权。兼容 PID 清理不用于 Job 对应 PID，不按进程名、路径或端口接管用户 QQ/微信或旧孤儿进程。
+
+协议 finished / wait 仅表示 owner 调用结束。普通退出允许失败后的有限 fallback，不等于安装更新获准。watchdog 在正常返回后仍保持 armed，保护解释器收尾；Windows 强退针对当前 Echo pseudo-handle，不扩大到外部进程。
+
+### 更新安装准入
+
+[shutdown_models.py](src/qq_chat_analyzer/application/shutdown_models.py) 要求以下五项各出现恰好一次且全部 SUCCESS：
+
+1. direct_db_cleanup
+2. retained_output_cleanup
+3. qq_runtime_termination
+4. source_lifecycle
+5. gui_workers
+
+缺项、重复、未知项、空证据、UNKNOWN、FAILED、TIMED_OUT 均拒绝安装，不能用空登记表、CLOSED、取消完成或 worker 回调成功补足证据。
+
+- Direct DB 仅在 drain 成功、无活动 startup / acquisition 且 recover 成功时 SUCCESS；超时即使稍后完成仍 TIMED_OUT，recover 异常仍 FAILED。重复调用缓存首次结果，进行中为 UNKNOWN；已创建 client 不能凭 CLOSED 跳过 recover。
+- QQRuntimeSession 封闭新 launch 并保留进程历史；retire 不抹除退出证据。pending launch、未知进程或缺少证明仍 UNKNOWN。
+- Registry 在释放 Job 前有界确认 ActiveProcesses 为零，再释放句柄／PIPE／reader；普通 close、PID 清理、clear / discard 不能追补整树退出证据，失败保留所有权。
+- 未调用 factory 且已封闭的自有 SourceBundleBuilder 可证明为空；已使用 QQ/微信、在途 factory 或未知注入对象不能自证成功。AnalysisApplicationService 要求已封闭且静止，GUI worker / pool / relay 也必须静止。
+
+因此当前空闲、未使用来源的会话可取得完整证据；普通连接后断开不自动恢复完整安装准入。Direct DB SUCCESS 不代表 source_lifecycle 或进程树成功。
+
+### 检查、下载与最终交接
+
+[update_check_service.py](src/qq_chat_analyzer/application/update_check_service.py) 只查询正式 GitHub Release 并提供经校验的发布页提示；不提供安装包授权。网络失败不冒充最新版本，必须在 worker 中调用。
+
+[installable_update_service.py](src/qq_chat_analyzer/application/installable_update_service.py) 经组合根注入 [固定更新源与 channel](src/qq_chat_analyzer/application/update_channel.py)，使用 Velopack 检查／下载。源码、Portable 或未经核验的安装布局不具备应用内安装能力；不从 GUI、环境变量或发布页推导 feed。SDK 本地 pending 的 downloaded 不证明包可信，百分比 100 或 worker 正常返回也不是安装授权。
+
+用户确认后 prepare_update_install 刷新可信 feed，复验 pending、SHA256、大小、包内 id/version/channel，返回一次性 token；准备不启动安装器。GUI worker relay 退出后才提出正常关闭意图；最终入口只接受 Facade 实际缓存的关闭证据与完整五项 SUCCESS。handoff 再复验安装／包状态，以 Windows 只读共享句柄阻止包被写入／删除，随后调用 wait_exit_then_apply_updates，保留自然退出和有限 watchdog。失败、超时或 UNKNOWN 不调用安装交接。
+
+能力边界：协作式复验预算、协议等待和 Python watchdog 都不能绝对中断持续持有 GIL 的原生 SDK 调用；固定 SDK 自己的等待失败／超时后继续 apply、目录式强杀和极端新进程竞争，也不能被应用描述成已解决。这些限制不放宽退出前清理与包复验要求，实际发行验证见 HARDENING。
+
+### 卸载交接
+
+[SetupUninstallService](src/qq_chat_analyzer/application/setup_uninstall_service.py) 独立验证当前 Setup 安装身份与卸载器；用户确认产生一次性 token，完整关闭证据后再次验证，再交给等待 Echo 退出的 broker。准备、broker started 与卸载实际完成是不同状态；失败不得声称卸载成功。普通退出不隐含卸载，卸载也不授权删除用户聊天数据。
+
+## 8. 关键不变量、测试证据与限制
+
+下表指向已有守护范围，不声明本次文档修订运行过这些测试，也不替代发行／真人验收。
+
+| 合同 | 现有测试入口 |
 | --- | --- |
-| 负责 | 全部统计与分析算法，输入 `ChatMessage`，输出报告模型 |
-| 不负责 | 文件读写、数据获取、格式化展示、平台判断 |
-| 可依赖 | `message.py`、`rich_message.py`（P0 source-neutral 旁路输入）、标准库、算法类第三方库 |
-| 禁止依赖 | `application/`、`presentation/`、`gui/`、`providers/`、adapters、parsers |
+| Rich 事实按投影实例关联，重复／缺失 ID 不串线 | [test_rich_filtering_association.py](tests/test_rich_filtering_association.py) |
+| 身份、零值未知、会话边界与 authored text | [test_identity_semantics.py](tests/test_identity_semantics.py)、[test_conversation_sessions.py](tests/test_conversation_sessions.py)、[test_qq_db_adapter_self_identity.py](tests/test_qq_db_adapter_self_identity.py)、[test_expression_lexical_boundary.py](tests/test_expression_lexical_boundary.py) |
+| QQ 凭据、Worker 绑定、epoch 准入、旧 cleanup 不操作新 Worker | [test_qq_bridge_credential.py](tests/test_qq_bridge_credential.py)、[test_qq_worker_generation.py](tests/test_qq_worker_generation.py)、[test_qq_connection_admission.py](tests/test_qq_connection_admission.py) |
+| Snapshot 一致性、generation cleanup 与 lease／路径隔离 | [test_qq_direct_db_snapshot_runtime.py](tests/test_qq_direct_db_snapshot_runtime.py)、[test_qq_direct_snapshot_lease.py](tests/test_qq_direct_snapshot_lease.py)、[test_qq_direct_snapshot_workspace.py](tests/test_qq_direct_snapshot_workspace.py) |
+| 微信 shard 全局合并、limit、self canonicalization | [test_wechat_db_source.py](tests/test_wechat_db_source.py) |
+| 微信 helper 独占、取消、清理失败保留、树退出与资源证据分离 | [test_wechat_key_service.py](tests/test_wechat_key_service.py)、[test_wechat_key_helper_resources.py](tests/test_wechat_key_helper_resources.py)、[test_wechat_key_helper_tree.py](tests/test_wechat_key_helper_tree.py) |
+| 报告发布／失败保留、staging 恢复与历史所有权 | [test_echo_report_export.py](tests/test_echo_report_export.py)、[test_report_staging_recovery.py](tests/test_report_staging_recovery.py)、[test_report_package_catalog.py](tests/test_report_package_catalog.py) |
+| Job owner 不接管外部进程，失败保留；关闭与成功分开 | [test_qq_job_wiring.py](tests/test_qq_job_wiring.py)、[test_shutdown_ownership.py](tests/test_shutdown_ownership.py)、[test_idle_shutdown_evidence.py](tests/test_idle_shutdown_evidence.py) |
+| 五项准入、超时／失败不可洗白、安装／卸载复验 | [test_shutdown_results.py](tests/test_shutdown_results.py)、[test_update_shutdown_admission.py](tests/test_update_shutdown_admission.py)、[test_update_install_handoff.py](tests/test_update_install_handoff.py)、[test_setup_uninstall.py](tests/test_setup_uninstall.py) |
 
-核心分两代，并存且互不干扰：
+隐私是必须维持的约束：真实聊天数据、账号、昵称、密钥、token 不进入日志、提交和测试；测试只用虚构样本，公开错误使用 FacadeError.public_message，不展示 traceback 或原始异常载荷。报告本身含用户分析结果，必须按本地用户资产管理，不能因字段不进 repr 就认定可公开。
 
-- **v1**：`cleaner.py`、`tokenizer.py`、`analyzer.py` —— 词频、说话者统计。
-- **v2/v3**：`analysis/` 包 —— 活跃度、消息长度、用户画像、会话概览、
-  Conversation Sessions 等结构化分析能力。
+现有缺口必须保留：
 
-**Conversation Sessions** 位于 Analysis Core 内部，只消费统一后的
-`ChatMessage.timestamp`、`conversation_type`、`is_self` 与稳定发送者身份。
-Session 切分、initiator 判定和汇总统计必须在核心完成；
-Presentation 与 Echo 只消费结果，不得重新计算。
+- WeChatDatabaseProvider._table_exists() 捕获 WeChatDatabaseError 后返回 False，可能将分片查询失败解释为目标表不存在，从而遗漏故障 shard。正常路径的多分片合并测试不能证明异常情况下的数据完整性；这是待修复风险，不代表已经确认发生实际数据丢失。
+- [UserProfile](src/qq_chat_analyzer/analysis/models.py) 的默认 dataclass repr 仍包含 speaker、speaker_key、昵称等敏感字段；“所有报告与 DTO 敏感字段均已隐藏”不成立。禁止记录这些对象是操作约束，全面 repr 防泄漏仍需实现／测试补齐。
+- 已使用来源的完整生命周期证明、微信 Node CleanupHook 完成证据仍不足，保持 UNKNOWN；不能删掉安全要求以使更新可用。
+- 旧请求隔离依赖当前协议与绑定检查，不代表已验证上游所有 Worker 重启路径、所有 QQ schema 或全部机器环境。
+- QQ 断开／异常退出不等于所有明文已立即清除；合法后续 recover 和普通退出 fallback 有明确能力边界。
 
-**Rich 能力（Expression v1.1）** 可选消费 `rich_message.py` 中的 source-neutral
-content part（如 `ExpressionContent`），作为 `ChatMessage` legacy 文本投影之外
-的旁路输入。QQ face、QQ market_face、微信 type47 sticker 与微信
-`local_type=1` 官方文本表情 `[名称]` 统一进入 `ExpressionContent`；
-`ImportOutcome.rich_messages` 只在来源 adapter 已支持 Rich 语义时填充；
-Analysis 仍不得出现平台分支。
+## 9. 文档职责与索引
 
-**禁止在核心中出现平台分支。** 不得出现 QQ、微信、`wxid`、`chatroom` 之类判断。
-唯一例外是 `analysis/models.py` 中对内部标识可展示性的判定，
-那是展示语义规则而非来源分支（见 5.4）。
-
-### 4.6 Presentation
-
-| | 内容 |
+| 文件 | 唯一维护的主题 |
 | --- | --- |
-| 负责 | 格式转换、标题与描述生成、排序截断、图表数据组装 |
-| 不负责 | **任何统计计算**、数据获取、控件创建 |
-| 可依赖 | `analysis/` 的报告模型、标准库 |
-| 禁止依赖 | `gui/`、Qt、任何 GUI 框架、`providers/`、adapters |
-
-展示层是纯函数式的转换层。它拿到的数字必须已由 analyzer 算好，
-自己只做"怎么说给人听"。产出 `EchoReportView`，其中包含
-`EchoMemberCard`、会话与语言画像等展示模型；图表数据使用共享的 `ChartPoint`。
-
-`AnalysisApplicationService` 构建并导出 Echo JSON / HTML；Facade 返回报告位置与
-`echo_report_view`，桌面通过系统浏览器打开 HTML；独立分享图片生成已退休，历史图片不迁移或删除。
-
-### 4.7 Facade
-
-| | 内容 |
-| --- | --- |
-| 负责 | 来源选择与分派、配置整理、Service 调度、异常统一、返回展示模型 |
-| 不负责 | 统计、解析、控件创建、数据获取细节 |
-| 可依赖 | application 各服务、`presentation/` |
-| 禁止依赖 | `gui/` |
-
-`ChatAnalyzerFacade` 是 **GUI 的唯一入口**。对外 API：
-
-- `list_sources()` → `tuple[SourceInfo, ...]`，含可用性标记
-- `list_sessions(source)` → `list[SessionInfo]`，统一 QQ 与微信差异
-- `get_connection_status(source)` → `QQConnectionStatus`，返回来源连接状态
-- `list_report_packages()` → `ReportPackageListing`，返回 metadata summaries 与 issues
-- `get_report_package_html_path(package_name)` → `Path`，安全定位 package 内的普通 HTML 文件
-- `clear_report_packages()`，删除完整自有 package，部分失败转换为公开错误
-- `analyze_session(source, session_id, config)` → `AnalysisOutcome`
-
-`ChatSource` 只有 `QQ` 与 `WECHAT` 两个现役来源；已无 `LOCAL_FILE`、
-`AnalysisPage`、`Facade.analyze_file` 或 `--headless-analyze` 产品入口。
-`analyze_session` 内部通过来源获取的中间 payload 把会话送入通用分析核心；QQ payload
-位于本次 Echo-owned transient lease 中，消费者完成后清理。底层 parser、
-`ImportService`、JSON / JSONL 与 `AnalysisApplicationService` 能力仍保留，供来源
-中间文件进入统一核心使用。
-
-两条重要约定：
-
-1. **异常在此归一。** 底层异常统一转换为 `FacadeError`，
-   携带 `code` 与 `public_message`。GUI 只展示 `public_message`，永不展示 traceback。
-2. **中间文件对 GUI 不可见。** `analyze_session` 内部会产生导出文件（`payload_path`），
-   但这属于实现细节，不出现在返回值与 API 语义里。
-
-依赖注入构造（`qq_service`、`wechat_service`、`analysis_service`、
-`report_package_catalog`），测试可传入 stub 或临时 reports root。
-`AnalysisOutcome` 保留分析 DTO、会话、Echo 展示模型和报告位置，不再构建旧 Dashboard 数据。
-
-### 4.8 GUI
-
-| | 内容 |
-| --- | --- |
-| 负责 | 控件装配、事件转发、状态展示（空 / 进行中 / 成功 / 错误） |
-| 不负责 | 读数据库、解析文件、调用 Provider、任何统计计算 |
-| 可依赖 | `application/facade.py`、`presentation/` 的视图模型、PySide6 |
-| 禁止依赖 | `providers/`、parsers、adapters、`analyzer.py`、`tokenizer.py`、`cleaner.py`、`sqlite3` |
-
-GUI 层零业务逻辑。Echo 报告在系统浏览器中展示。
-分析成功后在现有状态栏展示报告保存状态。
-Local Data 通过 Facade 读取真实 package catalog，支持刷新、删除选中报告、删除全部报告、轻量搜索与 reopen。
-搜索仅对已加载的 summaries 做 `query.strip().casefold()` substring 匹配：会话名、来源、
-会话类型、生成日期、分析范围的显示文本；空查询显示全部，issues 始终可见。
-报告不做自动淘汰，列表展示当前全部已发布正式报告；不可读报告不靠搜索静默隐藏。
-搜索不发起新的 Facade / Catalog 磁盘调用，refresh 后保留 query 并重新过滤。
-选中行的 `Qt.UserRole` 保存 `package_name`，打开按钮和双击共用 reopen 流程：
-Facade → Catalog 安全定位 `echo-report.html` → 注入的系统 opener。
-GUI 不拼接任意用户路径，metadata 不存绝对路径；定位或打开失败显示安全错误并保留记录。
-Reopen 使用系统默认浏览器查看已有 HTML，不重新生成报告或重新分析。
-
-当前 GUI 结构由 `MainWindow` 承载 `HomePage`、`QQWorkspace`、
-`WeChatWorkspace`、处理页、`LocalDataPage`。
-QQ 与微信来源分别由 `QQWorkspace` / `WeChatWorkspace` 负责连接与生命周期，
-会话列表、搜索、排序、时间范围与分析按钮由两者共享的
-`SessionAnalysisPanel` 承担。
-
-分析中的共享页面由 `ProcessingPage` 承载 `ProcessingAnimationWidget`；其确定性
-`processing_animation_model.py`、`processing_geometry.py` 和
-`processing_animation.py` 只负责原生 Qt 动画状态、几何和绘制，不读取聊天数据，
-也不推断分析进度。独立预览入口 `processing_animation_preview.py` 供无真实聊天记录的视觉验收使用。
-
-Facade 通过 `analyze_session(..., on_phase=...)` 在真实业务边界发布
-`application/analysis_phase.py` 定义的 `READING` 与
-`ANALYZING_REPORT` 结构化阶段（按顺序、同一阶段每次任务最多一次）。
-QQ / 微信 Workspace 将事件转发给 `MainWindow` 与同一 `ProcessingPage`；
-不根据中文进度文本、预估耗时或动画循环推测实际处理进度。
-任务取消、成功、失败和页面离开时停止动画；旧任务的迟到阶段事件
-不得改变新任务的页面。后台取消仍采用协作式机制，不保证立即终止阻塞中的数据获取。
-
-### 4.9 CLI
-
-| | 内容 |
-| --- | --- |
-| 负责 | 命令参数解析、用户交互、结果显示、退出码 |
-| 不负责 | 分析流程、Provider 构造、格式解析 |
-| 可依赖 | `application/` |
-| 禁止依赖 | `providers/`、核心分析模块 |
-
-CLI 与 GUI 是同层的两个交互适配器，共享同一套应用服务，
-**不允许存在两套业务逻辑**。
-
-### 4.10 Exporter
-
-| | 内容 |
-| --- | --- |
-| 负责 | 生成本地产物：词频 CSV、词-说话者 CSV、词云图、Top 说话者图 |
-| 不负责 | 统计计算、数据获取 |
-| 可依赖 | 分析结果、绘图与字体库 |
-| 禁止依赖 | `gui/`、`providers/`、`application/` |
-
----
-
-## 5. 核心设计原则
-
-每条给出原则、理由与违例信号，便于在 review 中实际检查。
-
-### 5.1 单向依赖
-
-依赖只能由外层指向内层，核心永不感知外层。
-
-理由：核心稳定性是多来源支持的前提。
-
-违例信号：`analysis/` 中出现 `from ..application import ...`。
-
-### 5.2 ChatMessage 是唯一跨层领域模型
-
-所有来源统一转换为它，核心只消费它。
-
-理由：把来源差异挡在核心之外，新增来源不改核心。
-
-违例信号：平台专用模型进入 `analysis/`；为了展示需求去改 `ChatMessage` 字段。
-
-Rich 能力阶段允许 `ImportOutcome` 额外携带 `rich_messages` 作为旁路通道，
-供 Analysis Core 可选消费；`ChatMessage` 仍是 legacy text projection 的稳定入口，
-禁止用 Rich 数据反向补全 `ChatMessage`，也禁止平台字段进入 `analysis/`。
-
-### 5.3 来源与分析隔离
-
-分析核心不知道 QQ、微信、本地文件的存在。
-
-理由：来源会持续增加，分析算法不应随之膨胀。
-
-违例信号：`analyzer.py` / `tokenizer.py` / `cleaner.py` / `analysis/` 中出现平台判断。
-
-### 5.4 展示名称由调用方注入
-
-这是 v0.7.0 阶段的关键决策（该版本号后来已统一为 `0.1.0`），单列说明。
-
-问题：分析结果里的 `sender` 可能是 `wxid_xxx`，`conversation_id` 可能是
-`xxx@chatroom`，用户无法理解。但 `ChatMessage` 不可改，
-分析核心又不允许认识微信。
-
-解法：名称映射由**调用方经 DTO 注入**。
-`AnalysisRequestDTO` 提供 `speaker_names` 与 `conversation_names`
-（`Mapping[str, str]`，默认空），`AnalysisApplicationService` 透传给
-`UserProfileAnalyzer` 与 `ConversationAnalyzer`。
-
-报告模型提供 `display_name` 字段与 `resolved_display_name` 属性，
-展示层只读后者。三级 fallback：
-
-```text
-display_name 非空            →  display_name
-conversation_id 可展示       →  conversation_id
-否则                         →  UNKNOWN_CONVERSATION_NAME（未知会话）
-```
-
-不可展示的内部标识：含 `@chatroom`，或以 `wxid_` 开头。
-
-**未注入映射时，行为与注入机制引入前完全一致**（回退到原始 key），
-因此该机制对既有调用方无侵入。
-
-两个隐私约束：`speaker_names` / `conversation_names` 在 DTO 中标记
-`repr=False`，避免真实昵称随 repr 泄露到日志。
-
-### 5.5 GUI 无业务逻辑
-
-GUI 只装配控件、转发事件、展示状态。
-
-理由：业务逻辑一旦进入控件，就无法被测试，也无法被 CLI 复用。
-
-违例信号：`gui/` 中出现 `sqlite3`、Provider 导入、循环求和统计。
-
-### 5.6 异常在 Facade 归一
-
-底层异常不穿透到界面，统一转为 `FacadeError`。
-
-理由：用户看 traceback 没有意义；界面也不应该认识每种底层异常。
-
-违例信号：GUI 中 `except` 捕获 Provider 或 Service 的具体异常类型。
-
-### 5.7 隐私优先贯穿各层
-
-原始聊天内容只在本机处理，不出网络。DTO 对敏感字段使用 `repr=False`，
-摘要模型不保存正文与消息列表，测试只用虚构数据。
-
-违例信号：日志或终端输出完整正文；测试引入真实导出文件。
-
----
-
-## 6. 模块映射
-
-以下为当前代码的真实结构。
-
-| 目录 / 模块 | 架构层 |
-| --- | --- |
-| `providers/qq_database_provider.py` / `providers/napcat_qq_provider.py` | QQ Direct DB 获取 / NapCat readiness 与 metadata |
-| `providers/wechat_database_provider.py` | Provider |
-| `qq_db_adapter.py` | QQ Direct DB Adapter |
-| `wechat_db_adapter.py` | Adapter |
-| `wechat_cli_adapter.py` | Adapter |
-| `wechat_parser.py` | Parser（微信导出文件） |
-| `message.py` | 领域模型 ChatMessage |
-| `application/import_service.py` | 导入编排 |
-| `application/import_request.py` / `import_outcome.py` / `import_result.py` | 导入契约 |
-| `application/qq/qq_direct_database_import_service.py` | 桌面 QQ Direct DB 获取与生命周期编排 |
-| `application/qq/qq_connection_service.py` | QQ 连接状态 |
-| `application/qq/qq_connection_manager.py` / `application/qq/qq_auth_bridge.py` | QQ 连接流程与登录授权 |
-| `application/qq/qq_setup_service.py` / `application/qq/qq_environment_config.py` | QQ 连接设置与配置 |
-| `application/qq/qq_provider_factory.py` | QQ Provider 装配与缓存 |
-| `application/qq/qq_runtime_manager.py` / `application/qq/qq_process_registry.py` | QQ runtime 管理与自有进程记录 |
-| `application/connection_models.py` | 来源无关的连接状态契约 |
-| `application/wechat/wechat_export_import_service.py` | 来源编排（微信） |
-| `application/wechat/wechat_connection_service.py` | 微信连接状态 |
-| `application/wechat/wechat_connection_progress.py` | 微信连接进度 |
-| `application/wechat/wechat_setup_service.py` | 微信连接设置 |
-| `application/wechat/wechat_environment_config.py` | 微信环境配置 |
-| `application/wechat/wechat_provider_factory.py` | 微信 Provider 装配与缓存 |
-| `application/wechat/wechat_data_detector.py` | 微信数据位置检测 |
-| `application/wechat/wechat_key_service.py` | 微信读取授权 |
-| `application/analysis_service.py` | 应用服务 |
-| `application/update_check_service.py` | 正式 Release 更新检查、来源无关结果契约与最小本地去重 |
-| `application/scope_filter.py` | 单次分析时间范围过滤 |
-| `application/echo_report_export.py` | 四文件 Report Package staging 与正式发布 |
-| `application/report_staging.py` | Report staging ownership、发布锁与安全恢复清理 |
-| `application/report_package_metadata.py` | Report Package metadata 构建 |
-| `application/report_package_catalog.py` | metadata catalog、安全定位、完整 package 删除与报告存储统计 |
-| `application/dto.py` / `errors.py` | 应用契约 |
-| `application/facade.py` | Facade |
-| `runtime/` | 外部运行时契约（ChatRuntime）与捆绑运行时实现（BundledQQRuntime） |
-| `cleaner.py` / `tokenizer.py` / `analyzer.py` | Analysis Core v1 |
-| `analysis/models.py` | 报告模型（v2/v3） |
-| `analysis/analyzers/*.py` | 独立分析器 |
-| `analysis/conversation_sessions.py` | Conversation Sessions 切分与汇总分析 |
-| `analysis/identity.py` | 稳定发送者 identity 辅助 |
-| `analysis/peaks.py` / `timestamps.py` | 分析辅助 |
-| `presentation/models.py` | 视图模型 |
-| `presentation/builders.py` / `formatters.py` | 视图构建与格式化 |
-| `gui/main_window.py` | GUI 页面装配与导航 |
-| `gui/app.py` / `__main__.py` / `workers.py` | GUI 启动与执行 |
-| `cli.py` | 交互适配（CLI） |
-| `exporters.py` | 输出适配 |
-| `detectors/*.py` / `smart_profile.py` / `filter_pipeline.py` / `filter_decisions.py` / `candidates.py` / `decision_engine.py` | 智能过滤子系统 |
-
-两处需要如实说明的结构现状：
-
-1. **三个 Adapter 位于包根目录，没有 `adapters/` 子包**，
-   与 `providers/` 的组织方式不一致。属历史结构差异，不影响依赖方向。
-2. **Facade 位于 `application/` 而非独立顶层包**，
-   因其本质是应用层的门面，而不是新的一层业务。
-
----
-
-## 7. 扩展指南
-
-### 7.1 新增聊天来源
-
-1. 先阅读真实导出样例，确认字段结构；只支持第一种格式，不预先支持所有变体。
-2. 若需进程外获取，在 `providers/` 新增 provider 模块。
-3. 新增独立 adapter 或 parser，输出 `ChatMessage`；**不要复制现有 parser**。
-4. 在 `ImportService` 注册识别与路由。
-5. 若需"先导出再导入"，新增 `XxxExportImportService`。
-6. 在 `ChatSource` 枚举与 Facade 分派中登记。
-7. 先写虚构数据测试，再实现。
-
-**不许修改**：`analyzer.py`、`tokenizer.py`、`cleaner.py`、`analysis/`、
-`presentation/`、`gui/`、`message.py`。
-
-验收标准：分析核心的代码与测试零改动，全量测试通过。
-
-### 7.2 新增分析能力
-
-1. 在 `analysis/models.py` 新增 frozen dataclass 报告模型。
-2. 在 `analysis/analyzers/` 新增独立 analyzer，入参为 `ChatMessage` 序列。
-3. 在 `AnalysisReports` 新增字段，给默认值以保证向后兼容。
-4. 在 `AnalysisApplicationService._build_reports()` 接线。
-5. 若需展示，再到 `presentation/` 增加对应视图模型与构建逻辑。
-
-需要 Rich 语义的新分析器（如 Expression v1.1）可额外接收 `ImportOutcome.rich_messages`
-中的 source-neutral `RichMessage`；该通道默认空元组，旧分析器不感知。
-
-**不许**把新统计塞进 `analyzer.py`；
-**不许**在 analyzer 内读文件、分词或访问网络。
-
-### 7.3 新增展示方式
-
-1. 在 `presentation/models.py` 新增视图模型，在 `builders.py` 做转换。
-2. **不许在展示层重新计算统计** —— 需要的数字应先在 analyzer 中产出。
-3. 新界面（Web、报告导出等）作为 Facade 的新调用者接入，
-   不绕过 Facade 直接调用 Service。
-
----
-
-## 8. 架构不变量
-
-以下规则可被机械检查，新增层时应同步补守护测试。
-
-```text
-1. analysis/     不 import application | presentation | gui | providers | adapters | parsers
-2. presentation/ 不 import gui | PySide6 | providers | adapters
-3. gui/          不 import providers | parser | wechat_parser | analyzer
-                 | tokenizer | cleaner | sqlite3
-4. gui/          除 facade 外不 import application 的其他模块
-5. 核心分析模块  不出现 wxid / chatroom / qq / wechat 平台分支
-6. 报告与 DTO    敏感字段不进入 repr
-7. 测试          不读取真实聊天数据
-```
-
-其中若干条已由现有测试守护（如 GUI 不导入 provider、
-展示层不依赖 Qt、DTO 敏感字段不泄露）。
-
----
-
-## 9. 文档边界
-
-本文档只讲架构。其他内容各有归属：
-
-| 内容 | 归属文档 |
-| --- | --- |
-| 当前 Hardening / Active Bug 工作地图 | `docs/HARDENING.md` |
-| 环境搭建、测试命令、Git 流程 | `DEVELOPMENT.md` |
-| AI 协作规范 | `AGENTS.md` |
-| 项目简介与快速上手 | `README.md` |
-| 跨平台字段、identity 与分析语义 | `DATA_SEMANTICS.md` |
-| 已解决且验证的真实工程问题 | `docs/BUG_JOURNAL.md` |
-| 历史设计记录 | `docs/design/`、`docs/superpowers/specs/` |
-
-当架构描述与其他文档冲突时，**以本文档为准**。
-
----
-
-## 10. Connection Layer
-
-记录 Phase 10 新增的连接层。它回答一个问题：
-“这个来源现在能不能用”。
-
-- **GUI 不管理 runtime 生命周期。**
-  界面不再启动运行环境、不做健康检查、不检查 token，
-  只负责展示状态、触发连接动作、展示错误。
-- **Facade 提供连接状态。**
-  GUI 仍然只认识 `ChatAnalyzerFacade` 一个入口，
-  通过 `get_qq_connection_snapshot()` 被动查询状态，通过 `start_qq_auth_flow()`
-  发起授权连接；`cancel_qq_auth_flow()` 和 `disconnect_qq()` 处理取消与断开。
-- **Auth Bridge 拥有连接动作，Connection Manager 映射状态。**
-  `QQAuthBridge` 负责工作区准备、实例身份检查、授权启动与取消清理；
-  `application/qq/qq_connection_manager.py` 负责被动探测和授权等待状态映射，
-  不再提供另一套 connect 动作。`QQSetupService` 保留配置读写和被动 runtime 查询，
-  不再提供 connect、start、stop 或等待就绪动作。
-- **ConnectionSnapshot 是只读状态模型。**
-  定义位于 `application/connection_models.py`。
-  不可变，跨层传递，GUI 只读取不重新推导。
-  状态取值：`DISCONNECTED`、`INITIALIZING`、`STARTING`、
-  `WAITING_AUTH`、`CONNECTED`、`ERROR`。
-- **当前仅 QQ 使用该结构。**
-  未来微信可以复用同一套抽象，但**不提前实现**；
-  微信仍走原有连接状态路径。
-- **每个 QQ auth session 都要求 QR freshness。** 新 auth flow 在启动 runtime 前记录
-  当前 QR cache 基线；只有本 session 启动后发生变化的 QR 才可展示或接受。断开或开始
-  新会话会终止旧 runtime session 并 reset 对应的 auth/QR 状态，避免复用旧 runtime 的
-  QR 状态。
-
-调用链：
-
-```text
-GUI
- ↓
-Facade
- ↓
-Auth Bridge（授权动作 / 资源所有权）
- ↓
-Connection Manager（被动状态 / 授权等待） / QQ Connection Service
-```
-
-`QQRuntimeManager` 与 `BundledQQRuntime` 仍由 setup 的被动状态查询工厂构造，
-其底层生命周期及所有权测试继续保留；正式 GUI 的启动由 Auth Bridge 发起。
-
-### 10.1 GUI 连接体验状态
-
-连接页只把 Facade 已有状态映射为展示状态，不新增 Provider 状态，也不在 GUI
-重新判断连接是否成功：
-
-| 展示状态 | 会话区域 | 可用操作 |
-| --- | --- | --- |
-| 未连接 | “暂无会话；连接数据源后，这里会显示聊天记录” | 连接当前来源、返回数据源选择 |
-| 连接中 / 等待登录 | “正在连接数据源...” | 取消当前连接任务、返回数据源选择 |
-| 数据读取中 | “正在读取聊天数据...” | 返回数据源选择 |
-| READY | Facade 返回的真实会话列表 | 选择会话、返回数据源选择 |
-
-QQ 与微信的页面状态互相隔离。切换来源或返回数据源选择时，GUI 清空上一来源的
-状态文字、会话缓存、搜索条件和引导控件；迟到的异步回调不得更新当前来源页面。
-“返回数据源选择”只放弃当前 GUI 流程，不代表登出、断开或关闭 QQ/微信客户端。
-分析中的取消仍沿用原分析取消流程。
-
----
-
-## 11. 退出与 shutdown ownership
-
-关闭窗口与停止 Echo 自有的运行时进程是两件独立的事，归属明确分开。
-
-- **GUI 只触发，不等待。** `MainWindow.closeEvent` 关闭窗口后立即返回，
-  主窗口消失；用户不需要盯着一个“正在关闭”窗口。
-- **shutdown protocol 只有一个。** 窗口持有 `ShutdownProtocol`
-  （`gui/shutdown.py`），`begin()` 只允许启动一次，重复 close 不会产生第二个
-  互相竞争的清理流程。
-- **入口点拥有结束权。** `gui/app.py` 在 `app.exec()` 返回后，先调用
-  `window.begin_shutdown()`（幂等），再以有限时长等待同一个 protocol。
-  清理调用返回后优先自然退出；等待超时或异常才立即强制退出。
-  原因：CPython 不会 join daemon 线程，解释器收尾会冻结清理线程，
-  因此“只启动不等待”的清理会丢失，Echo 启动的进程树会残留。
-- **清理顺序由 Facade 拥有。** `ChatAnalyzerFacade.shutdown()` 按
-  “停止接受新的 Direct DB acquisition → bounded drain / recover plaintext →
-  终止 Echo 自有的 QQ runtime 进程树”执行。每一步都有独立时间窗，
-  某一步失败或超时仍尝试后续步骤；持续持有 GIL 的原生阻塞受下述 fallback 能力边界限制。
-- **Windows 托管进程在创建时获得所有权。** 正式 Auth Bridge 启动和保留的底层 runtime launcher 通过
-  `runtime/windows_job.py` 的 `PROC_THREAD_ATTRIBUTE_JOB_LIST` 原子创建到
-  不可继承、未命名的 kill-on-close Job 中。`QQProcessRegistry` 持有会话资源，
-  launcher 或日志线程结束不释放 Job；正常 shutdown 关闭 Job，Echo 异常退出
-  则由 Windows 关闭句柄并终止受管后代。纳管失败不退回无托管启动。
-  旧 PID 记录仅保留兼容清理；Job 对应 PID 不再执行 taskkill。
-  不按端口、进程名或路径扫描认领，不接管外部健康服务或旧版本孤儿进程，
-  不触碰用户自己启动的 QQ。
-- **超时有明确 fallback。** 等待超过 bounded 窗口后请求强制退出；跨步骤总预算与
-  last-resort watchdog 都是有限值。watchdog 在正常返回后仍保持 armed，
-  用于解释器收尾被后台线程拖住的情况；与立即强制退出共享一次性出口。
-  40 秒协议等待与 50 秒 Python watchdog 均不保证中断持续持有 GIL 的原生调用，
-  包括固定 SDK 安装交接；这是已记录的能力边界，不放宽更新准入。
-  Windows 兜底只对当前 Echo 进程的 pseudo-handle 调用 `TerminateProcess`，
-  不走本机 Qt 子进程中已复现访问冲突的 `os._exit` 路径；其他平台保留 `os._exit`。
-- **结束与成功分别表达。** `ShutdownProtocol.finished` / `wait()` 只表示
-  owner 调用已结束；`result` 传播 Facade 的不可变 `ShutdownResult`，逐步记录
-  `SUCCESS`、`FAILED`、`TIMED_OUT`、`UNKNOWN`。`status=SUCCESS` 只汇总已有证据；
-  更新准入还要求 `direct_db_cleanup`、`retained_output_cleanup`、
-  `qq_runtime_termination`、`source_lifecycle`、`gui_workers` 各出现恰好一次且全部成功。
-  缺项、重复项、未识别项、空证据、异常、超时和未知均不允许更新，普通退出保留上述预算与 fallback 边界。
-  Facade 验证临时报告实际移除，保留异常与步骤超时，缓存首次结果避免重复清理
-  把失败洗成成功。协议尚未 finished 时不发布成功结果。
-  Direct DB 自有实现的 `shutdown()` 返回 `ShutdownStatus`：禁止新 acquisition 后，
-  仅 drain 成功、无活动 startup/acquisition 且 recover 成功才给出 SUCCESS；
-  drain 超时即使 recover 成功仍保留 TIMED_OUT，recover 异常保留 FAILED。
-  重复调用保留该次结果，进行中为 UNKNOWN；可重试 startup 失败不能凭 CLOSED
-  跳过已有 client 的 recover。Facade 仅接受此具体自有实现的证据，其他注入服务仍为 UNKNOWN。
-  这仅补齐 `direct_db_cleanup`，不证明来源或进程树已释放，不放宽总更新准入。
-  生产 SourceBundleBuilder 仅在已封闭构造入口且从未调用资源 factory 时证明为空；
-  未知 callable、已调用但未发布的 factory 和已使用 QQ/微信来源仍为 UNKNOWN。
-  微信主页只读配置状态通过既有 setup 检查逻辑读取，不提前构造 provider/key helper。
-  自有 AnalysisApplicationService 封闭新执行并清点 execute 中的活动数；静止且无外部
-  legacy writer 时为 SUCCESS，活动分析或未知注入实现为 UNKNOWN。
-  自有 QQRuntimeSession 封闭新 launch 并保留绑定进程的历史，retire 不清除退出证据；
-  pending launch、未知进程或缺少树退出证明为 UNKNOWN。新鲜无运行时的 owner 可证明为空。
-  QQProcessRegistry 封闭登记后，WindowsJobProcess 在释放 Job 前有界确认 ActiveProcesses
-  为零，再清理句柄/PIPE/readers；只有这种可查询的整树退出证据可成功。既有 PID 清理、
-  普通 close、清空或 discard 均不能凭登记表为空追补证明，缺证历史保留 UNKNOWN。
-  退出失败仍 FAILED、步骤超时仍 TIMED_OUT。未知 registry/session 仍不得自证成功。
-  GUI 将未静止的 worker/pool/relay
-  状态作为未知证据加入结果。A2 仅提供准入证据；A3 在正常退出入口复验后调用 Velopack 交接。
-  隔离 Qt 子进程已验证启动后不连接、不分析的正常窗口关闭可取得完整五项 SUCCESS；
-  这只是关闭准入，不是包复验或安装授权。普通连接后断开仍受来源完整证据缺口限制。
-  无资源成功只适用于已知清点为空的关闭快照；A3 更新编排仍必须停止生产者，
-  不得在可继续创建资源的界面缓存这个结果作为安装授权。
-
-- **微信 helper 清理由获取请求唯一拥有。** GUI 经 Facade 传递每次请求的取消
-  Event，取消按钮和窗口关闭均不在 GUI 线程等待；已取消的排队请求不能启动 helper。
-  Windows helper 创建时进入 Echo 自有 Job，不纳管或终止用户的 `Weixin.exe`。
-  进程树退出、reader join、PIPE 与 process/Job 句柄释放共用一次清理 deadline；
-  失败保留所有权，后续连接 worker 可重试清理，旧请求未结束不能启动第二个 helper。
-  Facade 后台关闭通过 setup 有界等待 key owner，清理失败/超时进入 `source_lifecycle`。
-  Job 空、Python 资源释放和 Node `CleanupHook` 是不同证据；即使前两者成功，
-  缺少最后一项及其他来源完整生命周期证明时仍为 `UNKNOWN`，不得用于更新安装准入。
-
-守护测试：`tests/test_gui_shutdown_protocol.py`、
-`tests/test_desktop_exit_ownership.py`、`tests/test_shutdown_ownership.py`，
-`tests/test_shutdown_results.py`、`tests/test_shutdown_worker_results.py`、
-`tests/test_desktop_natural_exit.py`、`tests/test_desktop_exit_subprocess.py`，
-以及 `tests/test_gui.py` 的 close 用例。
+| 本文 | 当前架构、调用链、职责、资源所有权与安全不变量；实际实现以源码为依据。 |
+| [DATA_SEMANTICS.md](DATA_SEMANTICS.md) | 跨来源身份、字段、未知值和统计语义。 |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | 搭建、测试、调试、构建与 Git 工作流程。 |
+| [AGENTS.md](AGENTS.md) | AI 开发者必须遵守的操作规则。 |
+| [docs/HARDENING.md](docs/HARDENING.md) | 当前未解决风险、发布与验证边界。 |
+| [docs/BUG_JOURNAL.md](docs/BUG_JOURNAL.md) | 有验证证据的历史故障。 |
+| docs/research/ | 无法由上述文件替代的专题技术证据，不作为现役架构默认事实来源。 |
+| [NOTICE.md](NOTICE.md) | 第三方来源与权利声明。 |
+
+不在多个文件重复维护阶段测试数字、历史工作树路径或同一架构说明。实现与文档冲突时先核对源码和测试，设计要求未落实则显式记录缺口，不让实现迎合旧叙述。
