@@ -111,25 +111,6 @@ def isolate_user_data(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
 
 
-@pytest.fixture(scope="function")
-def qq_asset_root(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> Path:
-    """Point the QQ resolver at a throwaway directory of fake PNGs."""
-    from qq_chat_analyzer.presentation import expression_assets
-
-    root = tmp_path / "qq-emojis"
-    root.mkdir()
-    monkeypatch.setattr(
-        expression_assets, "QQ_ASSET_ROOT", str(root), raising=False
-    )
-    monkeypatch.setattr(
-        expression_assets, "_qq_asset_index", None, raising=False
-    )
-    return root
-
-
 # Primary ownership follows the contract under test, not fixture/source imports.
 # GUI source wiring belongs to ui_report; source-specific facade setup to wechat.
 # Shared import/analysis orchestration belongs to core; frozen QQ packaging and
@@ -183,7 +164,6 @@ DOMAIN_MODULES = {
         "test_qq_direct_db_snapshot_runtime",
         "test_qq_direct_identity_names",
         "test_qq_direct_main_wal_acquisition",
-        "test_qq_direct_main_wal_lifecycle",
         "test_qq_direct_main_wal_poc",
         "test_qq_direct_scope_acquisition",
         "test_qq_direct_self_identity",
@@ -209,7 +189,6 @@ DOMAIN_MODULES = {
         "test_qq_version",
         "test_qq_version_gate",
         "test_qq_worker_generation",
-        "test_qq_workspace_metadata_diagnostic",
     },
     "wechat": {
         "test_facade_wechat_setup",
@@ -240,6 +219,7 @@ DOMAIN_MODULES = {
         "test_echo_report_serializer",
         "test_facade",
         "test_gui",
+        "test_processing_animation",
         "test_gui_history_bulk",
         "test_gui_qq_deqce_wiring",
         "test_gui_qq_qr_waiting",

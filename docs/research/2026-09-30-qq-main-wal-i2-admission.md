@@ -32,7 +32,32 @@ retry、checkpoint-lock 或 main-only fallback。
 
 ## 生命周期规则
 
-`main_wal_acceptance.py` 是独立 Windows PoC harness，正式链路不 import 它。
+`main_wal_acceptance.py` 曾是独立 Windows PoC harness，正式链路不 import 它。
+该 harness 及其 Python workspace 已在 A3 退休；下述规则保留为历史验收记录。
+
+### A3 安全证明迁移（2026-10-15）
+
+生命周期验证改为直接导入正式 `workspace.mjs`，不再维护第二套 workspace。
+`tests/test_qq_direct_snapshot_workspace.py` 使用虚构文件与真实 Node / Windows OS lease，覆盖：
+
+- 强杀后恢复、活跃 owner 的跨进程互斥，以及虚构源文件保持不变。
+- root、祖先路径、staging 和其成员 junction 拒绝；源目录与 workspace 三种重叠关系拒绝。
+- root / staging 损坏、旧 PoC 类型或错误版本的 owner marker 拒绝，拒绝时保留数据。
+- 无 marker、未知文件、未知子目录、旧 PoC 的 main/WAL 副本拒绝；删除前验证全部成员。
+- 全部正式 staging 文件与 SQLite sidecar 清理、mkdir 后尚未写 marker 的空 staging 恢复。
+- OS 拒绝删除时保留 marker 并阻止新 staging；解除占用后恢复。
+- marker 写入异常只移除本次部分产物，并可重新获取 lease；generation 删除中断后恢复。
+
+正式调用方的成功发布、解密返回失败或抛异常后的清理，继续由
+`test_qq_direct_db_snapshot_runtime.py` 覆盖；消费异常清理由 `test_qq_direct_snapshot_lease.py` 覆盖。
+正式策略允许根目录中无关文件存在，但不会删除它们；这与旧 PoC 拒绝整个根目录的策略不同。
+额外只读诊断发现：Windows 下同一物理源目录仅改变路径大小写，正式 `assertSourceSeparate`
+会放行，而相同大小写会返回 `workspace_invalid`。该既有缺口未修改，本轮不宣称两套源隔离
+语义完全等价；后续须明确正式路径规范化契约并补大小写别名回归，不能以当前测试通过替代。
+旧 PoC owner 不会被正式实现接管；本轮未扫描或处理仓库外旧工作区及真实数据。
+`main_wal_poc.mjs` capture CLI、共享 capture 实现及其虚构数据测试保留；正式安全策略未修改。
+
+### 历史 PoC 规则
 
 - 根目录固定在仓库外的本机临时区域，须有固定版本的 PoC ownership marker。
   根目录不能与源 QQ 数据目录重叠；根路径和清理项不能经过 symlink/junction。

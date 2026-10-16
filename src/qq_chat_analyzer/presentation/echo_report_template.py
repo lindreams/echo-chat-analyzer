@@ -124,18 +124,6 @@ ECHO_REPORT_HTML_SKELETON = r"""
       <p class="chapter-intro" id="session-lead"></p>
       <p class="session-viewer-identity" id="session-viewer-identity" hidden></p>
 
-      <!-- Private initiators (private only) -->
-      <div class="session-initiators" id="session-private-initiators" hidden>
-        <p id="session-self"></p>
-        <p id="session-peer"></p>
-      </div>
-      <p class="session-unknown-note" id="session-unknown-note" hidden></p>
-      <dl class="session-fields" id="session-fields-old">
-        <div><dt>一次会聊多久</dt><dd id="session-median-duration-old"></dd><small>所有聊天轮次的中位时长</small></div>
-        <div><dt>最长的一次</dt><dd id="session-longest-duration"></dd><small>这段时间里持续最久的一轮</small></div>
-        <div class="wide"><dt>每轮消息</dt><dd id="session-average-messages-old"></dd><small>平均每轮留下的消息数量</small></div>
-      </dl>
-
       <!-- 谁来起拍 -->
       <div class="session-movement" id="session-beat" hidden>
         <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span><span id="session-beat-title">谁来起拍</span></h3>
@@ -371,21 +359,14 @@ h1, h2, h3, p { margin-top: 0; }
 .archive-fields dd { margin: 18px 0 7px; font-size: 29px; }
 .archive-fields small { color: var(--faint); }
 
-.session-ledger { border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
-.session-initiators { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--rule); }
-.session-initiators[hidden] { display: none; }
-.session-initiators p { min-height: 128px; margin: 0; padding: 38px 34px 30px 0; font: 28px/1.55 var(--serif); }
-.session-initiators p + p { padding-right: 0; padding-left: 34px; border-left: 1px solid var(--rule); }
 .session-fields { display: grid; grid-template-columns: 1fr 1fr; margin: 0; }
 .session-fields[hidden] { display: none; }
 .session-fields div { min-height: 150px; padding: 28px 0; }
 .session-fields div:nth-child(odd) { padding-right: 34px; border-right: 1px solid var(--rule); }
 .session-fields div:nth-child(even) { padding-left: 34px; }
-.session-fields .wide { grid-column: 1 / -1; padding-right: 0; border-top: 1px solid var(--rule); border-right: 0; }
 .session-fields dt { color: var(--muted); font-size: 12px; letter-spacing: .08em; }
 .session-fields dd { margin: 18px 0 7px; font-size: 25px; }
-.session-fields small, .session-unknown-note { color: var(--faint); font-size: 12px; }
-.session-unknown-note { margin: 0; padding: 16px 0; border-bottom: 1px solid var(--rule); }
+.session-fields small { color: var(--faint); font-size: 12px; }
 .session-rest-note {
   margin: 48px 0 0;
   color: var(--faint);
@@ -847,10 +828,8 @@ h1, h2, h3, p { margin-top: 0; }
   .archive-fields { grid-template-columns: 1fr; }
   .archive-fields div, .archive-fields div:nth-child(odd), .archive-fields div:nth-child(even) { padding: 24px 0; border-right: 0; border-bottom: 1px solid var(--rule); }
   .archive-fields .wide { grid-column: auto; }
-  .session-initiators, .session-fields { grid-template-columns: 1fr; }
-  .session-initiators p, .session-initiators p + p { min-height: auto; padding: 24px 0; border-left: 0; border-bottom: 1px solid var(--rule); }
+  .session-fields { grid-template-columns: 1fr; }
   .session-fields div, .session-fields div:nth-child(odd), .session-fields div:nth-child(even) { padding: 24px 0; border-right: 0; border-bottom: 1px solid var(--rule); }
-  .session-fields .wide { grid-column: auto; }
   .highnote-grid { grid-template-columns: 1fr; }
   .session-rest-note { margin-top: 40px; }
   .member-list.mode-private { display: block; }
@@ -1037,7 +1016,7 @@ document.documentElement.classList.add("js-ready");
   if (sessionsToc) {
     sessionsToc.hidden = !hasSessions;
   }
-    if (hasSessions) {
+  if (hasSessions) {
     var conversationKind = conversation && conversation.kind;
     var isPrivate = conversationKind === "private";
     var isGroup = conversationKind === "group";
@@ -1069,13 +1048,6 @@ document.documentElement.classList.add("js-ready");
 
     // === Private mode: five-section narrative ===
     if (isPrivate) {
-      // Hide old private layout remnants
-      var privateBlock = document.getElementById("session-private-initiators");
-      var unknownNote = document.getElementById("session-unknown-note");
-      var oldFields = document.getElementById("session-fields-old");
-      if (privateBlock) privateBlock.hidden = true;
-      if (unknownNote) unknownNote.hidden = true;
-      if (oldFields) oldFields.hidden = true;
 
       // 总览 / 第一句话
       setText("session-beat-title", "总览 · 第一句话");
@@ -1114,34 +1086,9 @@ document.documentElement.classList.add("js-ready");
       setText("session-reply-self-to-peer", selfToPeer !== null ? "约 " + formatReplyDuration(selfToPeer) : "暂无足够样本");
       setText("session-reply-peer-to-self", peerToSelf !== null ? "约 " + formatReplyDuration(peerToSelf) : "暂无足够样本");
 
-      // 一段乐句
-      setHidden("session-movement", false);
-      setText("session-median-duration", "约 " + formatSessionDuration(sessions.median_duration_seconds));
-      setText("session-average-messages", "约 " + formatSessionMessages(sessions.average_message_count) + " 条");
-      var charText = sessions.session_character;
-      if (charText) {
-        setText("session-character", charText);
-        setHidden("session-character", false);
-      } else {
-        setHidden("session-character", true);
-      }
-
       // 几段特别的聊天
       setText("session-highnotes-title", "几段特别的聊天");
-      setHidden("session-highnotes", false);
-      renderLoudest("session-loudest-messages", sessions.loudest_most_messages,
-        function (s) {
-          return formatSessionMessages(s.message_count) + " 条消息 · " + formatSessionDuration(s.duration_seconds);
-        });
-      renderLoudest("session-loudest-duration", sessions.loudest_longest_duration,
-        function (s) {
-          return formatSessionDuration(s.duration_seconds) + " · " + formatSessionMessages(s.message_count) + " 条消息";
-        });
       renderLoudest("session-loudest-participants", null, function () { return ""; });
-      renderLoudest("session-loudest-densest", sessions.loudest_densest,
-        function (s) {
-          return formatSessionMessages(s.message_count) + " 条消息 · " + formatSessionDuration(s.duration_seconds);
-        });
       renderLoudest("session-loudest-back-and-forth", sessions.loudest_most_back_and_forth,
         function (s) {
           var selfMessages = finiteNumber(s.self_message_count);
@@ -1150,24 +1097,10 @@ document.documentElement.classList.add("js-ready");
           return counts + " · " + formatSessionDuration(s.duration_seconds);
         });
 
-      // 休止
-      setHidden("session-rest", false);
-      var thresholdSeconds = finiteNumber(sessions.threshold_seconds);
-      var thresholdMinutes = thresholdSeconds !== null && thresholdSeconds > 0 ? Math.round(thresholdSeconds / 60) : 30;
-      setText("session-threshold-note",
-        "超过 " + String(thresholdMinutes) + " 分钟未继续交流，会视作下一轮聊天。"
-      );
     }
 
     // === Group mode: 5-section narrative ===
     if (isGroup) {
-      // Hide old private layout
-      var privateBlock = document.getElementById("session-private-initiators");
-      if (privateBlock) privateBlock.hidden = true;
-      var unknownNote = document.getElementById("session-unknown-note");
-      if (unknownNote) unknownNote.hidden = true;
-      var oldFields = document.getElementById("session-fields-old");
-      if (oldFields) oldFields.hidden = true;
       setHidden("session-reply", true);
       setHidden("session-self-peak-hour", true);
       setHidden("session-peer-peak-hour", true);
@@ -1192,7 +1125,16 @@ document.documentElement.classList.add("js-ready");
         setHidden("session-peak-hour", true);
       }
 
-      // 一段乐句
+      // 聊天里的几个高音
+      setText("session-highnotes-title", "聊天里的几个高音");
+      renderLoudest("session-loudest-participants", sessions.loudest_most_participants,
+        function (s) {
+          return String(s.participant_count) + " 人参与 · " + formatSessionMessages(s.message_count) + " 条消息";
+        });
+      renderLoudest("session-loudest-back-and-forth", null, function () { return ""; });
+
+    }
+    if (isPrivate || isGroup) {
       setHidden("session-movement", false);
       setText("session-median-duration", "约 " + formatSessionDuration(sessions.median_duration_seconds));
       setText("session-average-messages", "约 " + formatSessionMessages(sessions.average_message_count) + " 条");
@@ -1204,8 +1146,6 @@ document.documentElement.classList.add("js-ready");
         setHidden("session-character", true);
       }
 
-      // 聊天里的几个高音
-      setText("session-highnotes-title", "聊天里的几个高音");
       setHidden("session-highnotes", false);
       renderLoudest("session-loudest-messages", sessions.loudest_most_messages,
         function (s) {
@@ -1215,17 +1155,10 @@ document.documentElement.classList.add("js-ready");
         function (s) {
           return formatSessionDuration(s.duration_seconds) + " · " + formatSessionMessages(s.message_count) + " 条消息";
         });
-      renderLoudest("session-loudest-participants", sessions.loudest_most_participants,
-        function (s) {
-          return String(s.participant_count) + " 人参与 · " + formatSessionMessages(s.message_count) + " 条消息";
-        });
       renderLoudest("session-loudest-densest", sessions.loudest_densest,
         function (s) {
           return formatSessionMessages(s.message_count) + " 条消息 · " + formatSessionDuration(s.duration_seconds);
         });
-      renderLoudest("session-loudest-back-and-forth", null, function () { return ""; });
-
-      // 休止
       setHidden("session-rest", false);
       var thresholdSeconds = finiteNumber(sessions.threshold_seconds);
       var thresholdMinutes = thresholdSeconds !== null && thresholdSeconds > 0 ? Math.round(thresholdSeconds / 60) : 30;
@@ -1249,7 +1182,7 @@ document.documentElement.classList.add("js-ready");
     return y + "/" + m + "/" + day + " \u00b7 " + hh + ":" + mm;
   }
 
-    function renderLoudest(containerId, session, formatFn) {
+  function renderLoudest(containerId, session, formatFn) {
     var container = document.getElementById(containerId);
     if (!container) return;
     if (session && session.message_count > 0) {
@@ -1274,7 +1207,9 @@ document.documentElement.classList.add("js-ready");
     } else {
       container.hidden = true;
     }
-  }  var hourly = (data && data.activity && data.activity.hourly) || [];
+  }
+
+  var hourly = (data && data.activity && data.activity.hourly) || [];
   var busiestBlock = document.getElementById("busiest-hour");
   if (busiestBlock) {
     var peak = null;

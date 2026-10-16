@@ -89,7 +89,7 @@
     {
       "source": "qq_direct_db_snapshot/workspace.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/workspace.mjs",
-      "sha256": "3a73995c8cd43ae6d09ac4aaedc06fa494579ad78328ef7ab329dd28c35e2d27"
+      "sha256": "791a9cb50bcc322fac336a05f796e047dffc3b6762fa2892831ee0ae7818edbd"
     },
     {
       "source": "qq_napcat_plugin/bridge.mjs",

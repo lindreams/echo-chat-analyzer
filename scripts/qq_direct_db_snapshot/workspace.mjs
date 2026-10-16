@@ -154,10 +154,14 @@ export function createWorkspace(rootDirectory) {
   }
   function assertSourceSeparate(source) {
     noLinks(source);
-    const directory = resolve(dirname(source));
-    if (root === directory || root.startsWith(directory + '\\') ||
-        root.startsWith(directory + '/') || resolve(source).startsWith(root + '\\') ||
-        resolve(source).startsWith(root + '/')) reject();
+    // Windows case aliases must not bypass source/workspace isolation.
+    const comparisonPath = path => process.platform === 'win32' ? path.toLowerCase() : path;
+    const directory = comparisonPath(resolve(dirname(source)));
+    const workspace = comparisonPath(root);
+    const sourcePath = comparisonPath(resolve(source));
+    if (workspace === directory || workspace.startsWith(directory + '\\') ||
+        workspace.startsWith(directory + '/') || sourcePath.startsWith(workspace + '\\') ||
+        sourcePath.startsWith(workspace + '/')) reject();
   }
   function assertLease() {
     if (!lease || lease.exitCode !== null || lease.signalCode !== null || lease.killed) reject();

@@ -107,9 +107,6 @@ class StubFacade:
         setup_error=None,
         data_root=None,
         data_roots=(),
-        qq_setup_status=None,
-        qq_runtime_status=None,
-        qq_environment_config=None,
         message_range=None,
         reports=(),
         report_issues=(),
@@ -131,9 +128,6 @@ class StubFacade:
         self._setup_error = setup_error
         self._data_root = data_root
         self._data_roots = list(data_roots)
-        self._qq_setup_status = qq_setup_status
-        self._qq_runtime_status = qq_runtime_status
-        self._qq_environment_config = qq_environment_config
         self._message_range = message_range
         self._reports = list(reports)
         self._report_issues = tuple(report_issues)
@@ -149,16 +143,9 @@ class StubFacade:
         self.detect_wechat_data_roots_calls: list[object] = []
         self.acquire_wechat_db_key_calls: list[object] = []
         self.verify_wechat_database_calls: list[object] = []
-        self.get_qq_setup_status_calls: list[object] = []
-        self.get_qq_runtime_status_calls: list[object] = []
-        self.get_qq_environment_config_calls: list[object] = []
-        self.setup_qq_environment_calls: list[object] = []
         self.set_qq_install_path_calls: list[object] = []
-        self.start_qq_runtime_calls: list[object] = []
-        self.connect_qq_calls: list[object] = []
         self.start_qq_auth_flow_calls: list[object] = []
         self.get_qq_connection_snapshot_calls: list[object] = []
-        self.shutdown_qq_runtime_calls: list[object] = []
         self.shutdown_calls: list[object] = []
         self.disconnect_qq_calls: list[object] = []
         self.disconnect_wechat_calls: list[object] = []
@@ -214,68 +201,11 @@ class StubFacade:
             return self._default_connection_status(source)
         return self._connection_status
 
-    def get_qq_setup_status(self):
-        self.get_qq_setup_status_calls.append(1)
-        if self._qq_setup_status is not None:
-            return self._qq_setup_status
-        module = importlib.import_module(
-            "qq_chat_analyzer.application.qq.qq_setup_service"
-        )
-        return module.QQSetupStatus(
-            state=module.QQSetupState.CONFIG_MISSING,
-            configured=False,
-            runtime_available=False,
-            message="QQ \u5c1a\u672a\u8fde\u63a5\u3002",
-            action_hint="\u8bf7\u70b9\u51fb\u300c\u8fde\u63a5QQ\u300d\u81ea\u52a8\u5b8c\u6210\u8fde\u63a5\u3002",
-        )
-
-    def get_qq_runtime_status(self):
-        self.get_qq_runtime_status_calls.append(1)
-        if self._qq_runtime_status is not None:
-            return self._qq_runtime_status
-        module = importlib.import_module("qq_chat_analyzer.application.qq.qq_runtime_manager")
-        return module.QQRuntimeStatus(
-            state=module.QQRuntimeState.STOPPED,
-            available=False,
-            message="QQ \u672a\u8fde\u63a5\u3002",
-            action_hint="\u8bf7\u70b9\u51fb\u300c\u8fde\u63a5QQ\u300d\u3002",
-        )
-
-    def get_qq_environment_config(self):
-        self.get_qq_environment_config_calls.append(1)
-        return self._qq_environment_config
-
-    def setup_qq_environment(self, config):
-        self.setup_qq_environment_calls.append(config)
-        if self._setup_error is not None:
-            raise self._setup_error
-        return None
-
     def set_qq_install_path(self, path):
         self.set_qq_install_path_calls.append(path)
         if self._setup_error is not None:
             raise self._setup_error
         return None
-
-    def start_qq_runtime(self):
-        self.start_qq_runtime_calls.append(1)
-        if self._qq_runtime_status is not None:
-            return self._qq_runtime_status
-        module = importlib.import_module("qq_chat_analyzer.application.qq.qq_runtime_manager")
-        return module.QQRuntimeStatus(
-            state=module.QQRuntimeState.RUNNING,
-            available=True,
-            message="QQ \u5df2\u8fde\u63a5\u3002",
-            action_hint="",
-        )
-
-    def connect_qq(self):
-        self.connect_qq_calls.append(1)
-        if self._connect_qq_error is not None:
-            raise self._connect_qq_error
-        if self._connection_status_after_connect is not None:
-            self._connection_status = self._connection_status_after_connect
-        return self._qq_snapshot()
 
     def start_qq_auth_flow(self, progress=None, *, cancel_event=None):
         self.start_qq_auth_flow_calls.append(1)
@@ -296,15 +226,8 @@ class StubFacade:
             raise self._connection_error
         return self._qq_snapshot()
 
-    def shutdown_qq_runtime(self):
-        self.shutdown_qq_runtime_calls.append(1)
-
     def shutdown(self):
         self.shutdown_calls.append(1)
-        # The real facade orders Direct DB plaintext cleanup before QQ runtime
-        # termination; the stub mirrors that by delegating to its own runtime
-        # shutdown so closeEvent keeps exercising the same single shutdown path.
-        self.shutdown_qq_runtime()
 
     def disconnect_qq(self):
         self.disconnect_qq_calls.append(1)

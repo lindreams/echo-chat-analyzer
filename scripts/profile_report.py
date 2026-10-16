@@ -22,7 +22,7 @@ from qq_chat_analyzer.detectors import (
 )
 from qq_chat_analyzer.application import ImportRequest, ImportService
 from qq_chat_analyzer.message import ChatMessage
-from qq_chat_analyzer.smart_profile import run_smart_profile
+from qq_chat_analyzer.filter_pipeline import FilterPipeline
 
 
 SUPPORTED_INPUT_SUFFIXES = frozenset({".json", ".jsonl"})
@@ -83,17 +83,11 @@ def collect_profile_statistics(
         - welcome_template_candidate_count
         - repeated_template_candidate_count
     )
-    decisions = create_filter_decisions(
-        [
-            *robot_candidates,
-            *template_candidates,
-            *interactive_bot_candidates,
-        ]
-    )
+    decisions = create_filter_decisions([*robot_candidates, *template_candidates])
     automation_source_decisions = create_filter_decisions(
         interactive_bot_candidates
     )
-    filtering_result = run_smart_profile(parsed_messages)
+    filtering_result = FilterPipeline().apply_filter_decisions(parsed_messages, decisions)
 
     return ProfileReport(
         input_file_count=len(input_files),

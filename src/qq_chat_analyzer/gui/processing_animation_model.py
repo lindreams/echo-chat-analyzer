@@ -46,12 +46,6 @@ def ease(value: float) -> float:
     return t * t * (3.0 - 2.0 * t)
 
 
-def ease_out(value: float) -> float:
-    """Prototype ``out``: cubic ease-out, kept so both prototype curves exist."""
-    t = clamp01(value)
-    return 1.0 - (1.0 - t) ** 3
-
-
 def mix(start: float, end: float, amount: float) -> float:
     """Prototype ``mix``: linear interpolation between two values."""
     return start + (end - start) * amount
@@ -66,15 +60,6 @@ class PaperSide(str, Enum):
     def other(self) -> "PaperSide":
         """Return the opposite side, as the prototype's alternating flights do."""
         return PaperSide.RIGHT if self is PaperSide.LEFT else PaperSide.LEFT
-
-
-class WritingStage(str, Enum):
-    """One step of the analysis loop, in prototype order."""
-
-    PEN_DROP = "pen_drop"
-    WRITING = "writing"
-    REST = "rest"
-    TURNING = "turning"
 
 
 class LeafKind(str, Enum):
@@ -119,18 +104,6 @@ class AnimationTiming:
     def landing_ms(self) -> float:
         """Reading time until the incoming sheet is bound to the spine."""
         return self.reading_cycle_ms * self.landing_ratio
-
-    @property
-    def writing_cycle_ms(self) -> float:
-        """One full analysis gesture: pen drop, writing, rest, page turn."""
-        return (
-            self.pen_drop_ms + self.writing_ms + self.rest_ms + self.turn_ms
-        )
-
-    @property
-    def max_leaf_depth(self) -> float:
-        """Deepest sheet offset the book ever shows, whatever the sheet count."""
-        return self.max_visible_page_edges * self.leaf_rise
 
 
 @dataclass(frozen=True, slots=True)
@@ -205,7 +178,6 @@ class ProcessingAnimationModel:
         self._phase = phase
         self._requested = phase
         self._clock_ms = 0.0
-        self._reading_cycles = 0
         self._next_side = PaperSide.LEFT
         self._next_leaf_id = 0
         self._leaves: dict[PaperSide, list[PaperLeaf]] = {
@@ -341,19 +313,6 @@ class ProcessingAnimationModel:
     # ---------------------------------------------------------- public state
 
     @property
-    def timing(self) -> AnimationTiming:
-        return self._timing
-
-    @property
-    def phase(self) -> AnalysisPhase:
-        """The phase currently on screen; it lags a pending request."""
-        return self._phase
-
-    @property
-    def requested_phase(self) -> AnalysisPhase:
-        return self._requested
-
-    @property
     def active(self) -> bool:
         return self._active
 
@@ -368,26 +327,6 @@ class ProcessingAnimationModel:
     @property
     def reduced_motion(self) -> bool:
         return self._reduced_motion
-
-    @property
-    def clock_ms(self) -> float:
-        """Phase-local time, in the same units as :attr:`timing`."""
-        return self._clock_ms
-
-    @property
-    def reading_cycles(self) -> int:
-        """How many complete reading cycles this run has played."""
-        return self._reading_cycles
-
-    @property
-    def is_transitioning(self) -> bool:
-        return self._transition is not None
-
-    @property
-    def transition_elapsed_ms(self) -> float:
-        return (
-            self._transition.elapsed_ms if self._transition is not None else 0.0
-        )
 
     @property
     def pen_alpha(self) -> float:
@@ -409,51 +348,6 @@ class ProcessingAnimationModel:
     @property
     def turn(self) -> PaperTurn | None:
         return self._turn
-
-    @property
-    def turn_progress(self) -> float | None:
-        """Progress of the page turn, or ``None`` when no sheet is turning."""
-        return None if self._turn is None else self._turn.progress
-
-    @property
-    def writing_stage(self) -> WritingStage | None:
-        """Current analysis step, or ``None`` outside the analysis loop."""
-        if not self._active or self._phase is not AnalysisPhase.ANALYZING_REPORT:
-            return None
-        if self._transition is not None:
-            # The pen is still entering; writing has not started.
-            return None
-        return self._analysis_stage()
-
-    @property
-    def writing_stage_progress(self) -> float:
-        """Linear progress inside :attr:`writing_stage`."""
-        stage = self.writing_stage
-        if stage is None:
-            return 0.0
-        timing = self._timing
-        clock = self._clock_ms
-        if stage is WritingStage.PEN_DROP:
-            return clamp01((clock + timing.pen_drop_ms) / timing.pen_drop_ms)
-        if stage is WritingStage.WRITING:
-            return clamp01(clock / timing.writing_ms)
-        if stage is WritingStage.REST:
-            return clamp01((clock - timing.writing_ms) / timing.rest_ms)
-        return clamp01(
-            (clock - timing.writing_ms - timing.rest_ms) / timing.turn_ms
-        )
-
-    @property
-    def has_residual_activity(self) -> bool:
-        """Whether anything is still moving: a transition, turn or flight."""
-        if not self._active:
-            return False
-        incoming = self._incoming
-        return (
-            self._transition is not None
-            or self._turn is not None
-            or (incoming is not None and not incoming.landed)
-        )
 
     @property
     def incoming(self) -> PaperLeaf | None:
@@ -506,7 +400,6 @@ class ProcessingAnimationModel:
             if self._clock_ms >= timing.landing_ms:
                 self._bind_incoming()
         if self._clock_ms >= timing.reading_cycle_ms:
-            self._reading_cycles += 1
             self._clock_ms %= timing.reading_cycle_ms
             self._next_side = self._next_side.other()
             self._incoming = self._make_incoming(self._next_side)
@@ -640,17 +533,6 @@ class ProcessingAnimationModel:
             # A sheet was still flying in when the reversal started: keep it,
             # and resume the reading clock where that sheet already is.
             self._clock_ms = incoming.progress * timing.landing_ms
-
-    def _analysis_stage(self) -> WritingStage:
-        timing = self._timing
-        clock = self._clock_ms
-        if clock < 0.0:
-            return WritingStage.PEN_DROP
-        if clock < timing.writing_ms:
-            return WritingStage.WRITING
-        if clock < timing.writing_ms + timing.rest_ms:
-            return WritingStage.REST
-        return WritingStage.TURNING
 
     # -------------------------------------------------------- paper handling
 
@@ -788,9 +670,7 @@ __all__ = [
     "PaperTurn",
     "PenMotion",
     "ProcessingAnimationModel",
-    "WritingStage",
     "clamp01",
     "ease",
-    "ease_out",
     "mix",
 ]
