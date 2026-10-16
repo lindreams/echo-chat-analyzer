@@ -121,7 +121,7 @@ def test_analysis_logs_each_timing_stage_without_private_content(
     ]
     expected = {
         "import", "scope_filter", "smart_profile", "message_quality_filter",
-        "text_analysis", "ExpressionAnalyzer.preflight", "word_ranking",
+        "text_analysis", "ExpressionAnalyzer.preflight", "word_ranking", "sticker_data",
         "report_build", "artifact_export", "total",
         "ActivityAnalyzer", "UserProfileAnalyzer",
         "ConversationAnalyzer",

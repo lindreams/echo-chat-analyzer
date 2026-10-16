@@ -354,6 +354,9 @@ def test_sticker_row_becomes_rich_expression_and_legacy_message(
         ExpressionContent(
             expression_kind="sticker",
             expression_key="fictionalmd5abcdef",
+            sticker=wechat_db_adapter.StickerIdentity(
+                classification_basis="wechat_type_47", identity_basis="unresolved",
+            ),
             display_text="[贴图]",
             source="wechat",
             position=0,

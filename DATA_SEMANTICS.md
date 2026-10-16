@@ -1,5 +1,11 @@
 # Data Semantics
 
+表情包原件数据能力另见 [STICKER_DATA](docs/STICKER_DATA.md)：新通路保留来源确认的
+发送记录及独立媒体结果，经现有过滤后的 Rich 实例关联，不改变本页 ExpressionReport
+的旧 sticker 总量、候选裁剪或 fallback key。微信只有通过校验且无歧义的 XML MD5
+可在新通路归并素材；降级身份逐次独立。QQ MFACE 保留 opaque 身份，原件关联未证实；
+QQ PIC 不据动画或路径推断表情包，微信 Type 3 仍不进入已确认集合。
+
 本文定义现役消息身份、字段和统计语义；模块职责见 [ARCHITECTURE](ARCHITECTURE.md)。来源解析、核心统计和展示消费是不同环节，不能把展示规则写成来源事实。
 
 ## 1. 消息与身份

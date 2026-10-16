@@ -47,6 +47,13 @@ CLI ─────────────────────────�
 
 ## 3. 数据模型、Adapter 与统一分析链
 
+表情包数据复用同一 Rich / 投影配对及过滤链：Adapter 在 ExpressionContent 附带
+StickerIdentity，核心 `analysis/stickers.py` 提取逐次发送事实；应用层
+`application/sticker_media.py` 仅在显式可信根内验证有来源摘要的原件，结果通过
+`AnalysisResultDTO.stickers` 返回，不进入现有报告序列化。媒体读取不属于分析核心，
+不新增数据库入口、磁盘缓存或网络获取。支持边界与本机验收见
+[STICKER_DATA](docs/STICKER_DATA.md)。
+
 ### 双消息模型
 
 [RichMessage](src/qq_chat_analyzer/rich_message.py) 保存发送者身份、内容段、表达、reply / mention 等结构化事实；[ChatMessage](src/qq_chat_analyzer/message.py) 是现有过滤和多数统计的消息输入。两者都是现役模型，ChatMessage 不是唯一跨层模型。

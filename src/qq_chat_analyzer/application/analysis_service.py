@@ -22,6 +22,7 @@ from ..analysis.analyzers import (
 )
 from ..analysis.analyzers.expression_analyzer import iter_emoji_clusters
 from ..analysis.models import AnalysisReports, ExpressionReport
+from ..analysis.stickers import StickerData, collect_sticker_sends
 from ..presentation.builders import prepare_expression_report
 from ..analyzer import (
     WordSpeakerSummary,
@@ -59,6 +60,7 @@ from .import_request import ImportRequest
 from .import_service import ImportService
 from .scope_filter import AnalysisScopeMode, filter_messages
 from .shutdown_models import ShutdownStatus
+from .sticker_media import resolve_sticker_media
 from .errors import ApplicationServiceError
 
 
@@ -176,6 +178,12 @@ class AnalysisApplicationService:
             for legacy, rich in outcome.rich_message_pairs
             if id(legacy) in kept_instances
         }
+        with timed_stage("sticker_data"):
+            sticker_sends = collect_sticker_sends(rich_by_instance.values())
+            stickers = StickerData(
+                sends=sticker_sends,
+                media=resolve_sticker_media(sticker_sends, roots=request.sticker_media_roots),
+            )
         diagnostic_counts = AnalysisDiagnosticCounts(
             raw_message_count=outcome.processed_message_count,
             imported_message_count=len(parsed_messages),
@@ -209,6 +217,7 @@ class AnalysisApplicationService:
         if status in (AnalysisStatus.NO_VALID_TEXT, AnalysisStatus.NO_TOKENS):
             return AnalysisResultDTO(
                 status=status,
+                stickers=stickers,
                 processed_message_count=processed_message_count,
                 valid_text_count=analyzed.valid_text_count,
                 diagnostic_counts=diagnostic_counts,
@@ -309,6 +318,7 @@ class AnalysisApplicationService:
             artifacts=(*legacy_artifacts, *_ECHO_ARTIFACTS),
             reports=reports,
             echo_report_view=echo_report_view,
+            stickers=stickers,
         )
 
     def _write_legacy_artifacts(

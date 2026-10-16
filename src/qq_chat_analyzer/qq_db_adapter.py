@@ -22,6 +22,8 @@ from .rich_message import (
     EXPRESSION_KIND_PLATFORM_FACE,
     EXPRESSION_KIND_STICKER,
     ExpressionContent,
+    ImageReference,
+    StickerIdentity,
     MentionRelation,
     NonTextContent,
     MessageRelation,
@@ -348,7 +350,20 @@ def _content_from_segment(
         text = _utf8_text(values.get((45101, 2)))
         return TextContent(text) if text is not None else None
     if content_type == 2:
-        return NonTextContent("image")
+        raw_md5 = values.get((45406, 2))
+        paths = tuple(
+            text for tag in (45403, 45812)
+            if (text := _utf8_text(values.get((tag, 2))))
+        )
+        original = values.get((45418, 0))
+        media = ImageReference(
+            content_md5=(
+                raw_md5.hex() if isinstance(raw_md5, bytes) and len(raw_md5) == 16 else None
+            ),
+            is_original=bool(original) if original in (0, 1) else None,
+            local_paths=paths,
+        ) if raw_md5 is not None or paths or original is not None else None
+        return NonTextContent("image", media=media)
     if content_type == 6:
         face_index = values.get((47601, 0))
         if not isinstance(face_index, int):
@@ -383,6 +398,13 @@ def _content_from_segment(
         display_text=label or fallback,
         source="qq",
         position=expression_position,
+        sticker=StickerIdentity(
+            classification_basis="qq_content_type_11",
+            identity_basis="qq_45600_sha256_opaque",
+            identity_key=key,
+            local_paths=tuple(text for tag in (45812, 45814)
+                              if (text := _utf8_text(values.get((tag, 2))))),
+        ) if kind == EXPRESSION_KIND_STICKER else None,
     )
 
 

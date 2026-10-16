@@ -26,7 +26,7 @@ import sys
 class BlockUnusedFeatures(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if fullname.startswith(('qq_chat_analyzer.presentation.share',
-                                'matplotlib', 'wordcloud')):
+                                'matplotlib', 'wordcloud', 'PIL')):
             raise AssertionError('desktop imported unused feature: ' + fullname)
 
 sys.meta_path.insert(0, BlockUnusedFeatures())

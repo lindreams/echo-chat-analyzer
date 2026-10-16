@@ -44,6 +44,7 @@ from .rich_message import (
     RichContent,
     RichMessage,
     SenderIdentity,
+    StickerIdentity,
     TextContent,
 )
 from .wechat_official_emojis import canonical_wechat_emoji_name
@@ -316,6 +317,7 @@ def _sticker_expression(
     """Build a source-neutral sticker from WeChat type-47 XML."""
     fallback_key = message_id or "unknown"
     md5 = None
+    unambiguous = False
     if (
         content
         and len(content) <= _XML_PARSE_MAX_LEN
@@ -329,14 +331,29 @@ def _sticker_expression(
             emoji = root.find(".//emoji")
             if emoji is not None:
                 md5 = _clean_string(emoji.get("md5"))
+                unambiguous = len(root.findall(".//emoji")) == 1
 
     expression_key = md5 or fallback_key
+    # Preserve the legacy expression key/counting contract. Only a validated
+    # digest may identify a material in the new data channel; fallback IDs and
+    # arbitrary XML strings never authorize deduplication or resource matching.
+    reliable_md5 = (
+        md5.lower()
+        if unambiguous and md5 and re.fullmatch(r"[0-9a-fA-F]{32}", md5)
+        else None
+    )
     return ExpressionContent(
         expression_kind=EXPRESSION_KIND_STICKER,
         expression_key=expression_key,
         display_text="[贴图]",
         source=WECHAT_PLATFORM,
         position=0,
+        sticker=StickerIdentity(
+            classification_basis="wechat_type_47",
+            identity_basis="wechat_xml_md5" if reliable_md5 else "unresolved",
+            identity_key=f"wechat:md5:{reliable_md5}" if reliable_md5 else None,
+            content_md5=reliable_md5,
+        ),
     )
 
 

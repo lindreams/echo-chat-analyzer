@@ -118,6 +118,7 @@ def isolate_user_data(tmp_path, monkeypatch):
 # Keep this inventory explicit: new modules must choose a domain during review.
 DOMAIN_MODULES = {
     "core": {
+        "test_sticker_data",
         "test_analysis_reports",
         "test_analysis_reports_service",
         "test_analyzer",
