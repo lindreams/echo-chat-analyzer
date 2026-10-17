@@ -19,7 +19,7 @@ $env:ECHO_QQ_INTEGRITY_CHECK_OUTPUT = $EchoCheckOutput
 Write-Host 'QQ integrity candidate 1 (based on 0.2.2). Close other Echo instances first.'
 Write-Host 'Connect QQ once, wait for the result in Echo, then close Echo normally.'
 try {
-    $EchoCheckProcess = Start-Process -FilePath $EchoExecutable -WorkingDirectory $EchoCheckRun -WindowStyle Hidden -PassThru
+    $EchoCheckProcess = Start-Process -FilePath $EchoExecutable -WorkingDirectory $EchoCheckRun -WindowStyle Normal -PassThru
     $EchoCheckProcess.WaitForExit()
 } catch {
     # Never print raw process exceptions (which can include private paths).

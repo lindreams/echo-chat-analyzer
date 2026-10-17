@@ -159,7 +159,7 @@ $ErrorActionPreference='Stop'
 $OriginalLocal=$env:LOCALAPPDATA
 function Start-Process {
  param($FilePath,$WorkingDirectory,$WindowStyle,[switch]$PassThru)
- if($WindowStyle -ne 'Hidden' -or $env:ECHO_QQ_INTEGRITY_CHECK -ne '1') {throw 'invalid launch'}
+ if($WindowStyle -ne 'Normal' -or $env:ECHO_QQ_INTEGRITY_CHECK -ne '1') {throw 'invalid launch'}
  if($env:LOCALAPPDATA -eq $OriginalLocal -or -not $env:LOCALAPPDATA.StartsWith($WorkingDirectory)) {throw 'not isolated'}
  if(-not $env:ECHO_QQ_INTEGRITY_CHECK_OUTPUT.StartsWith($WorkingDirectory)) {throw 'wrong output'}
  REPORT

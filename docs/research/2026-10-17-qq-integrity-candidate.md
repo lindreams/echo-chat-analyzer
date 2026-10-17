@@ -7,10 +7,10 @@
 
 ## 交付文件与一次运行
 
-独立便携候选位于任务工作树的 `build/integrity1-delivery/`，不进入正式 Release，也不覆盖已安装版本。
+独立便携候选位于任务工作树的 `build/integrity1-final-delivery/`，不进入正式 Release，也不覆盖已安装版本。
 
-- 文件：`Echo-0.2.2-qq-integrity1-windows-x64.zip`，108328882 字节。
-- SHA256：`05f414b4daab4f95ec2a88853107788854a7496da94a32e1e03a6eb2c45a2c1d`。
+- 文件：`Echo-0.2.2-qq-integrity1-windows-x64.zip`，108328880 字节。
+- SHA256：`452f1169c6fea8dbb855e36a398c7d391281d3fe331e393773f58bb8d299e7cb`。
 - 解压到新目录，关闭其他 Echo，双击 `Run-QQ-Integrity-Check.cmd`。
 - 在 Echo 中按正常流程连接 QQ，等待会话列表成功或失败，然后正常关闭 Echo。
 - 命令窗口显示本次 `check-...` 目录；只回传其中的 `integrity-result.json`。
@@ -83,7 +83,11 @@ Frozen 内置 pins。微信程序资产通过既有构建合同核验。
   提取出的诊断代码执行 23 项测试通过。31 项 Frozen/Windows/NapCat 构建合同检查通过。
 - 实际 EXE 在隔离用户目录下启动，窗口出现后发送正常关闭消息，退出码 0；程序树前后逐文件
   哈希不变，未触发 QQ 登录或生成快照。此项只证明程序启动/关闭，不证明真实 QQ 连接。
+- 最终启动器使用 Normal 显示需要交互的 Echo 窗口；实际启动器与真实 EXE 联动验证窗口可见、
+  正常关闭退出码 0，并输出固定 not_reached JSON。该验证未请求 QQ 登录，不把它当作连接成功。
 
 日志、构建元数据、程序目录、验证摘要和候选 ZIP 仅保留在本工作树忽略的 `build/` 下，供本任务
 人工转交和复验；本分支保留到朋友结果驱动的生产修复完成及审核后再决定去向。未合入 main，
 未操作 0.3.0 工作树，未读取真实聊天数据或用户配置。
+`integrity1-delivery/` 中的早期外层包装仅作构建记录，已被 `integrity1-final-delivery/` 替代；
+转交朋友时只使用上文最终 SHA256 对应的 ZIP。
