@@ -297,7 +297,7 @@ def test_wal_replacement_during_main_baseline_is_rejected(fictional_source):
     assert not fictional_source[2].exists()
 
 
-def _reserve_48_bytes(path: Path) -> None:
+def _reserve_48_bytes(path: Path, reserve: int = 48) -> None:
     """Set SQLite's per-page reserve before creating any fictional tables."""
     import sqlite3 as _loaded_sqlite3  # Ensure sqlite3.dll is loaded on Windows.
 
@@ -319,7 +319,7 @@ def _reserve_48_bytes(path: Path) -> None:
     database = ctypes.c_void_p()
     assert library.sqlite3_open(os.fsencode(path), ctypes.byref(database)) == 0
     try:
-        reserved = ctypes.c_int(48)
+        reserved = ctypes.c_int(reserve)
         assert library.sqlite3_file_control(
             database, b"main", 38, ctypes.byref(reserved),
         ) == 0

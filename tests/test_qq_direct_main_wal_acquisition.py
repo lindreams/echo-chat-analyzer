@@ -79,6 +79,128 @@ def _acquire(source, action="", **kwargs):
     return _interleave(source, action, driver_transform=_formal, **kwargs)
 
 
+@pytest.mark.parametrize('reserve', [48, 80])
+@pytest.mark.parametrize('decoder', ['fixture', 'pinned_napcat'])
+def test_complex_database_preserves_committed_structures(tmp_path, reserve, decoder):
+    from contextlib import closing
+    import hashlib
+    import os
+    import sqlite3
+    from test_qq_direct_main_wal_poc import _reserve_48_bytes, _run
+
+    def driver(program):
+        program = _formal(program)
+        if decoder == 'fixture':
+            return program
+        # Execute only the decoder from the hash-pinned bundle, never NapCat's
+        # entrypoint, account discovery, configuration or native QQ modules.
+        bundle_path = os.environ.get('ECHO_TEST_NAPCAT_BUNDLE')
+        if not bundle_path:
+            pytest.skip('explicit hash-pinned NapCat bundle required')
+        bundle = Path(bundle_path).read_bytes()
+        pins = json.loads((Path(__file__).parents[1] / 'scripts/qq_napcat_runtime_pins.json').read_text())
+        assert hashlib.sha256(bundle).hexdigest() in {
+            pins['napcatPatch']['upstreamSha256'], pins['napcatPatch']['patchedSha256']}
+        text = bundle.decode('utf8')
+        start, end = text.index('const T8 = 1024'), text.index('let tu = null')
+        module = ("import {pbkdf2Sync as aI, createDecipheriv as GL} from 'node:crypto';\n"
+                  "import * as $e from 'node:fs';\n" + text[start:end] + '\nexport {zE};')
+        decoder_start = program.index('      const encrypted=fs.readFileSync(source)')
+        decoder_end = program.index('      return true;', decoder_start)
+        return program[:decoder_start] + (
+            "      const {zE}=await import('data:text/javascript;base64,'+Buffer.from("
+            + json.dumps(module) + ").toString('base64'));\n"
+            "      if(!zE(source,Buffer.from(process.env.ECHO_POC_PASSPHRASE),target)) return false;\n"
+        ) + program[decoder_end:]
+
+    # Resolve the optional real decoder before constructing the large fixture.
+    if decoder == 'pinned_napcat' and not os.environ.get('ECHO_TEST_NAPCAT_BUNDLE'):
+        pytest.skip('explicit hash-pinned NapCat bundle required')
+    plain = tmp_path / 'fictional.db'
+    _reserve_48_bytes(plain, reserve)
+    source = tmp_path / 'source'
+    source.mkdir()
+    main, wal, output = source / 'encrypted.db', source / 'encrypted.db-wal', tmp_path / 'snapshot.db'
+    writer = sqlite3.connect(plain)
+    try:
+        writer.execute('PRAGMA journal_mode=WAL')
+        writer.execute('PRAGMA wal_autocheckpoint=0')
+        writer.execute('CREATE TABLE entries(id INTEGER PRIMARY KEY, body TEXT NOT NULL, tag TEXT)')
+        writer.execute('CREATE INDEX by_body ON entries(body)')
+        writer.execute('CREATE INDEX by_tag ON entries(tag, id)')
+        writer.execute('CREATE TABLE keyed(k TEXT PRIMARY KEY, payload BLOB) WITHOUT ROWID')
+        writer.executemany('INSERT INTO entries VALUES(?,?,?)', (
+            (i, f'fictional-{i:06}-' + 'x' * (9000 if i % 13 == 0 else 300), f'tag-{i % 97}')
+            for i in range(12000)))
+        writer.executemany('INSERT INTO keyed VALUES(?,?)', (
+            (f'fictional-key-{i}', bytes([i % 256]) * 12000) for i in range(300)))
+        writer.commit()
+        writer.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+        writer.execute('DELETE FROM entries WHERE id % 3 = 0')
+        writer.execute('DELETE FROM keyed WHERE k < ?', ('fictional-key-200',))
+        writer.commit()
+        # Pin an older WAL commit: the checkpoint can backfill that commit,
+        # while later growth and freed pages remain in the WAL.
+        reader = sqlite3.connect(plain)
+        reader.execute('BEGIN')
+        reader.execute('SELECT count(*) FROM entries').fetchone()
+        try:
+            writer.execute("UPDATE entries SET body=body || ? WHERE id % 7 = 0", ('y' * 17000,))
+            writer.commit()
+            writer.execute('CREATE TABLE obsolete(payload BLOB)')
+            writer.executemany('INSERT INTO obsolete VALUES(?)', [(bytes(18000),)] * 400)
+            writer.commit()
+            writer.execute('DROP TABLE obsolete')
+            writer.commit()
+            checkpoint = writer.execute('PRAGMA wal_checkpoint(PASSIVE)').fetchone()
+            assert 0 < checkpoint[2] < checkpoint[1]
+            assert writer.execute('PRAGMA freelist_count').fetchone()[0] > 100
+            assert writer.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
+            expected = writer.serialize()
+            assert len(expected) > 20 * 1024 * 1024
+            expected_entries = writer.execute('SELECT * FROM entries ORDER BY id').fetchall()
+            expected_keyed = writer.execute('SELECT * FROM keyed ORDER BY k').fetchall()
+            # Force uncommitted cache spill after the selected commit. These
+            # frames must never become part of the acquired generation.
+            writer.execute('PRAGMA cache_size=16')
+            writer.execute('BEGIN')
+            writer.execute('CREATE TABLE uncommitted(payload BLOB)')
+            writer.executemany('INSERT INTO uncommitted VALUES(?)', [(bytes(18000),)] * 400)
+            _run('fixture', plain, Path(f'{plain}-wal'), main, wal)
+            # The encrypter regenerates salts/checksums. Preserve the real
+            # checkpoint counters, which are outside the WAL-index checksum.
+            index_path = Path(f'{main}-shm')
+            encrypted_index = bytearray(index_path.read_bytes())
+            # Do not read SQLite's locked SHM bytes 120..127 on Windows.
+            with Path(f'{plain}-shm').open('rb', buffering=0) as shm:
+                assert shm.read(24)[16:24] == encrypted_index[16:24]
+                for offset in (96, 128):
+                    shm.seek(offset)
+                    encrypted_index[offset:offset + 4] = shm.read(4)
+            index_path.write_bytes(encrypted_index)
+            assert (wal.stat().st_size - 32) // 4120 > int.from_bytes(encrypted_index[16:20], 'little')
+            result = _interleave((main, wal, output), '', driver_transform=driver)
+            assert result['ok'], result
+            with closing(sqlite3.connect(f'{output.as_uri()}?mode=ro', uri=True)) as db:
+                assert db.execute('PRAGMA quick_check(1)').fetchall() == [('ok',)]
+                assert db.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
+                assert db.execute('SELECT * FROM entries ORDER BY id').fetchall() == expected_entries
+                assert db.execute('SELECT * FROM keyed ORDER BY k').fetchall() == expected_keyed
+                assert not db.execute("SELECT 1 FROM sqlite_schema WHERE name='uncommitted'").fetchall()
+            # Compare all usable bytes, including overflow and freelist trunks.
+            actual = output.read_bytes()
+            assert len(actual) == len(expected)
+            assert actual[:18] == expected[:18]
+            assert actual[18:20] == b'\x01\x01'
+            for at in range(0, len(expected), 4096):
+                first = 20 if at == 0 else 0
+                assert actual[at + first:at + 4096 - reserve] == expected[at + first:at + 4096 - reserve]
+        finally:
+            reader.close()
+    finally:
+        writer.close()
+
+
 def test_formal_generation_uses_merged_input_and_keeps_manifest_contract(fictional_source):
     import sqlite3
     result = _acquire(fictional_source)
