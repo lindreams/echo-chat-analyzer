@@ -25,6 +25,7 @@ from ...identity_names import first_identity_name
 from ...diagnostics import log_qq_session_event, qq_session_stage
 
 from ...providers.qq_database_provider import QQDatabaseProvider, QQSession
+from ...providers.qq_snapshot_integrity_probe import collect_integrity_probe, finish_integrity_probe
 from ...providers.qq_direct_snapshot_runtime import (
     QQDirectSnapshotRuntimeClient,
     QQSnapshotRuntimeError,
@@ -45,7 +46,6 @@ from .qq_provider_factory import QQReconnectRequired
 
 
 _LOGGER = logging.getLogger("qq_chat_analyzer.desktop.qq_direct_database")
-
 
 def _startup_failure_code(error: Exception) -> str:
     """Fixed diagnostic categories, independent of exception text/code overrides."""
@@ -400,14 +400,18 @@ class QQDirectDatabaseImportService:
                     raise QQDirectSnapshotAcquireFailed() from error
                 finally:
                     if generation_id is not None:
+                        cleanup_completed = False
                         try:
                             with qq_session_stage(_LOGGER, "cleanup"):
                                 client.cleanup(generation_id)
+                            cleanup_completed = True
                         except QQSnapshotWorkerGenerationChanged as error:
                             self._require_reconnect()
                             raise QQReconnectRequired() from error
                         except QQSnapshotRuntimeError as error:
                             raise QQDirectSnapshotCleanupFailed() from error
+                        finally:
+                            finish_integrity_probe(client.generation_directory(generation_id), cleanup_completed)
                 with qq_session_stage(_LOGGER, "names"):
                     return self._named_sessions(sessions)
             finally:
@@ -477,13 +481,17 @@ class QQDirectDatabaseImportService:
                     raise QQDirectSnapshotAcquireFailed() from error
                 finally:
                     if generation_id is not None:
+                        cleanup_completed = False
                         try:
                             client.cleanup(generation_id)
+                            cleanup_completed = True
                         except QQSnapshotWorkerGenerationChanged as error:
                             self._require_reconnect()
                             raise QQReconnectRequired() from error
                         except QQSnapshotRuntimeError as error:
                             raise QQDirectSnapshotCleanupFailed() from error
+                        finally:
+                            finish_integrity_probe(client.generation_directory(generation_id), cleanup_completed)
                 cleaned_at = time.perf_counter()
                 group_names, friend_names = self._metadata_names()
                 metadata_at = time.perf_counter()
@@ -845,7 +853,9 @@ def _validated_generation(
     # own quick_check is the independent final integrity gate before the app
     # exposes the generation to session discovery or materialization.
     with qq_session_stage(_LOGGER, "quick_check"):
-        if QQDatabaseProvider.quick_check(database_path) != "ok":
+        check_result = QQDatabaseProvider.quick_check(database_path)
+        collect_integrity_probe(database_path, check_result, payload.get("integrity_probe"))
+        if check_result != "ok":
             raise QQDirectSnapshotInvalid()
     return database_path, self_uin
 

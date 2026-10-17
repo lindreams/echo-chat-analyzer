@@ -150,6 +150,7 @@ DOMAIN_MODULES = {
         "test_qq_connection_admission",
         "test_qq_connection_manager",
         "test_qq_database_provider_audit",
+        "test_qq_snapshot_integrity_probe",
         "test_qq_db_adapter",
         "test_qq_db_adapter_self_identity",
         "test_qq_db_identity",

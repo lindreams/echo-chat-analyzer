@@ -29,6 +29,7 @@ def _formal(program):
   let decryptCalls=0, mainOnly=false, mergedConsumed=false;
   const core={selfInfo:{uin:'10086'},apis:{DatabaseApi:{
     hasPassphrase:()=>true, getNtDbDir:()=>path.dirname(mainPath),
+    getPassphraseBuffer:()=>Buffer.from(process.env.ECHO_POC_PASSPHRASE),
     async decryptDatabase(source,target) {
       decryptCalls++; mainOnly ||= source==='nt_msg.db' || source===mainPath;
       mergedConsumed=fs.existsSync(source) && source.endsWith('merged.db');
@@ -81,12 +82,13 @@ def _acquire(source, action="", **kwargs):
 
 @pytest.mark.parametrize('reserve', [48, 80])
 @pytest.mark.parametrize('decoder', ['fixture', 'pinned_napcat'])
-def test_complex_database_preserves_committed_structures(tmp_path, reserve, decoder):
+def test_complex_database_preserves_committed_structures(tmp_path, reserve, decoder, monkeypatch):
     from contextlib import closing
     import hashlib
     import os
     import sqlite3
     from test_qq_direct_main_wal_poc import _reserve_48_bytes, _run
+    monkeypatch.setenv('ECHO_QQ_INTEGRITY_CHECK', '1')
 
     def driver(program):
         program = _formal(program)
@@ -181,6 +183,11 @@ def test_complex_database_preserves_committed_structures(tmp_path, reserve, deco
             assert (wal.stat().st_size - 32) // 4120 > int.from_bytes(encrypted_index[16:20], 'little')
             result = _interleave((main, wal, output), '', driver_transform=driver)
             assert result['ok'], result
+            verification = result['manifest']['integrity_probe']
+            assert verification['status'] == 'verified' and verification['reserve'] == reserve
+            assert verification['main_mismatches'] == verification['wal_mismatches'] == 0
+            assert verification['main_pages'] > 0 and verification['wal_pages'] > 0
+            assert verification['header_equal']
             with closing(sqlite3.connect(f'{output.as_uri()}?mode=ro', uri=True)) as db:
                 assert db.execute('PRAGMA quick_check(1)').fetchall() == [('ok',)]
                 assert db.execute('PRAGMA integrity_check').fetchall() == [('ok',)]
@@ -223,6 +230,36 @@ def test_formal_append_after_boundary_succeeds(fictional_source):
     import sqlite3
     with sqlite3.connect(fictional_source[2]) as db:
         assert db.execute("SELECT body FROM entries").fetchone() == ("fictional selected",)
+
+
+@pytest.mark.parametrize('origin', ['main', 'wal', 'none'])
+def test_probe_detects_decoder_difference_by_page_origin(fictional_source, monkeypatch, origin):
+    monkeypatch.setenv('ECHO_QQ_INTEGRITY_CHECK', '1')
+
+    def driver(program):
+        program = _formal(program).replace(
+            "  const core={selfInfo:",
+            "  const borrowed=Buffer.from(process.env.ECHO_POC_PASSPHRASE);\n  const core={selfInfo:",
+        ).replace('getPassphraseBuffer:()=>Buffer.from(process.env.ECHO_POC_PASSPHRASE)',
+                  'getPassphraseBuffer:()=>borrowed')
+        if origin != 'none':
+            # This fixture takes page 1 from main and page 2 from WAL. Change
+            # a usable byte without disturbing finalizer's header invariants.
+            offset = 110 if origin == 'main' else 4096 + 110
+            program = program.replace('fs.writeFileSync(target,Buffer.concat(pages));',
+                f'const altered=Buffer.concat(pages); altered[{offset}]^=1; fs.writeFileSync(target,altered);')
+        return program.replace('  const recovered=await api.recover();',
+            "  if(!borrowed.equals(Buffer.from(process.env.ECHO_POC_PASSPHRASE))) throw new Error('borrowed credential modified');\n"
+            '  const recovered=await api.recover();')
+
+    result = _interleave(fictional_source, '', driver_transform=driver)
+    assert result['ok'], result
+    verification = result['manifest']['integrity_probe']
+    assert verification == {'status': 'verified', 'pages': 2, 'reserve': 48,
+        'main_pages': 1, 'wal_pages': 1, 'main_mismatches': int(origin == 'main'),
+        'wal_mismatches': int(origin == 'wal'), 'header_equal': True}
+    assert 'fictional-local-passphrase' not in json.dumps(result)
+    assert result['stagingCleaned'] and result['recovered'] and not result['encryptedPublished']
 
 
 def test_published_single_file_needs_no_wal_or_shm(fictional_source):
@@ -283,7 +320,7 @@ def test_invalid_decrypted_image_is_not_published(fictional_source, mutation):
 
 
 @pytest.mark.parametrize('corrupt', [False, True])
-def test_encrypted_wal_capture_reaches_sessions_and_report(tmp_path, corrupt):
+def test_encrypted_wal_capture_reaches_sessions_and_report(tmp_path, corrupt, monkeypatch):
     """Drive synthetic encrypted pages through publication and the real facade."""
     import sqlite3
     from contextlib import closing
@@ -293,6 +330,13 @@ def test_encrypted_wal_capture_reaches_sessions_and_report(tmp_path, corrupt):
     from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
     from qq_chat_analyzer.application.facade import ChatAnalyzerFacade, ChatSource, AnalysisConfig, FacadeError
     from qq_chat_analyzer.application.qq.qq_direct_database_import_service import QQDirectDatabaseImportService
+    from qq_chat_analyzer.providers import qq_snapshot_integrity_probe as probe
+
+    monkeypatch.setattr(probe, '_claimed', False)
+    monkeypatch.setattr(probe, '_pending', None)
+    monkeypatch.setenv('ECHO_QQ_INTEGRITY_CHECK', '1')
+    result_file = tmp_path / 'safe-result.json'
+    monkeypatch.setenv('ECHO_QQ_INTEGRITY_CHECK_OUTPUT', str(result_file))
 
     plain, output = tmp_path / 'plain.db', tmp_path / 'snapshot.db'
     source = tmp_path / 'source'
@@ -310,12 +354,18 @@ def test_encrypted_wal_capture_reaches_sessions_and_report(tmp_path, corrupt):
         writer.execute('UPDATE group_msg_table SET "40050"="40050"+1')
         writer.commit()
         _run('fixture', plain, Path(f'{plain}-wal'), main, wal)
-        assert _acquire((main, wal, output))['ok']
+        captured = _acquire((main, wal, output))
+        assert captured['ok']
+        verification = captured['manifest']['integrity_probe']
+        assert verification['status'] == 'verified'
+        assert verification['main_mismatches'] == verification['wal_mismatches'] == 0
+        assert verification['header_equal']
     if corrupt:
         data = bytearray(output.read_bytes())
         data[4096] = 0xff  # Invalid b-tree page type; a valid header cannot hide it.
         output.write_bytes(data)
     runtime = FakeSnapshotRuntime(tmp_path / 'consumer', snapshot_path=output)
+    runtime.manifest_overrides = {'integrity_probe': verification}
     facade = ChatAnalyzerFacade(
         qq_service=QQDirectDatabaseImportService(runtime_client=runtime),
         analysis_service=AnalysisApplicationService(),
@@ -335,6 +385,12 @@ def test_encrypted_wal_capture_reaches_sessions_and_report(tmp_path, corrupt):
             assert outcome.report_path.is_file()
     assert runtime.cleaned == runtime.acquired
     assert not any((runtime.root / 'generations').glob('*'))
+    result = json.loads(result_file.read_text())
+    assert result['initial_check'] == ('failed' if corrupt else 'ok')
+    assert result['category'] == ('btree' if corrupt else 'ok')
+    assert result['cleanup'] == 'confirmed'
+    assert result['repeat_matches']
+    assert result['page_verification'] == verification
 
 
 @pytest.mark.parametrize('mode', ['merged-append', 'merged-replace'])

@@ -1,7 +1,8 @@
 // Local-only Direct DB snapshot lifecycle — runtime-side generation API (Phase 1).
 //
-// This helper never auto-decrypts and never accesses or serializes the
-// passphrase.  It exposes a restricted EchoSnapshotApi with three methods
+// This helper never auto-decrypts or serializes the passphrase. The opt-in
+// integrity probe uses an owned in-process key copy, then zeroes it.
+// It exposes a restricted EchoSnapshotApi with three methods
 // (acquire / cleanup / recover) that own the plaintext snapshot lifecycle
 // through an explicit generation + atomic-publish scheme:
 //
@@ -22,7 +23,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { unlinkSync, readFileSync } from 'node:fs';
-import { createMergedEncryptedDatabase, finalizeStandaloneSnapshot, captureCodeHash, fileState as strongFileState } from './main_wal.mjs';
+import { createMergedEncryptedDatabase, finalizeStandaloneSnapshot, verifySnapshotPages, captureCodeHash, fileState as strongFileState } from './main_wal.mjs';
 import { createWorkspace, workspaceCodeHash } from './workspace.mjs';
 
 const snapshotCodeHash = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
@@ -435,6 +436,7 @@ export function createEchoSnapshotApi(core, options = {}) {
       let failureStage = 'source_location';
       let captureWitness = {};
       let capturedPages;
+      const probeWalPages = process.env.ECHO_QQ_INTEGRITY_CHECK === '1' ? new Set() : null;
       try {
         const directory = databaseApi.getNtDbDir();
         if (typeof directory !== 'string' || !directory) {
@@ -447,6 +449,9 @@ export function createEchoSnapshotApi(core, options = {}) {
         const capture = createMergedEncryptedDatabase({
           mainPath, walPath: `${mainPath}-wal`, outputPath: stagingMerged,
           onPhase: onCapturePhase,
+          onPageSelected: probeWalPages ? (number, origin) => {
+            if (origin === 'wal') probeWalPages.add(number);
+          } : undefined,
           onDiagnostic: ({ failureStage: stage, ...witness }) => {
             failureStage = stage;
             captureWitness = witness;
@@ -511,6 +516,22 @@ export function createEchoSnapshotApi(core, options = {}) {
       // Decryption has returned, the independently captured input stayed fixed,
       // and our workspace lease excludes another producer/consumer. Finalize
       // only this staging output before the generation becomes visible.
+      let integrityProbe;
+      if (probeWalPages) {
+        let ownedPassphrase;
+        integrityProbe = { status: 'unavailable' };
+        try {
+          const borrowed = databaseApi.getPassphraseBuffer();
+          if (!Buffer.isBuffer(borrowed) || !borrowed.length) throw new Error();
+          ownedPassphrase = Buffer.from(borrowed);
+          const plainBefore = strongFileState(stagingDatabase);
+          integrityProbe = verifySnapshotPages({ mergedPath: stagingMerged, plaintextPath: stagingDatabase,
+            passphrase: ownedPassphrase, walPages: probeWalPages });
+          if (plainBefore === null || plainBefore !== strongFileState(stagingDatabase) ||
+              inputBefore !== strongFileState(stagingMerged)) integrityProbe = { status: 'unstable' };
+        } catch { integrityProbe = { status: 'unavailable' }; }
+        finally { ownedPassphrase?.fill(0); }
+      }
       try { finalizeStandaloneSnapshot(stagingDatabase, capturedPages); }
       catch {
         logDiagnostic('decrypt_failed');
@@ -537,6 +558,7 @@ export function createEchoSnapshotApi(core, options = {}) {
         generation_id: generationId,
         state: 'ready',
         database: DATABASE_NAME,
+        ...(integrityProbe ? { integrity_probe: integrityProbe } : {}),
         identity: {
           namespace: IDENTITY_NAMESPACE,
           value: identityAfter,

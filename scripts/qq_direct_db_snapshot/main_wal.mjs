@@ -325,7 +325,7 @@ export function createSnapshot(options) {
   if (!options.passphrase) fail('passphrase_unavailable');
   return capture(options, true);
 }
-function capture({ mainPath, walPath, outputPath, passphrase, onPhase = () => {}, onDiagnostic = () => {} }, plaintext) {
+function capture({ mainPath, walPath, outputPath, passphrase, onPhase = () => {}, onDiagnostic = () => {}, onPageSelected }, plaintext) {
   // Observability is best effort and cannot influence capture or its guards.
   const observe = (failureStage, witness = {}) => {
     try { onDiagnostic({ failureStage, ...witness }); } catch {}
@@ -371,6 +371,7 @@ function capture({ mainPath, walPath, outputPath, passphrase, onPhase = () => {}
           ? readExactly(mainFd, PAGE_SIZE, PREFIX_SIZE + (number - 1) * PAGE_SIZE)
           : null);
       if (!encrypted) fail('new_page_missing_from_wal');
+      onPageSelected?.(number, wal.pages.has(number) ? 'wal' : 'main');
       if (number === 1 && !encrypted.subarray(0, 16).equals(salt)) fail('page_one_salt_mismatch');
       writeExactly(outputFd, plaintext ? decryptPage(encrypted, number, key, salt) : encrypted);
       onPhase('output_page_written');
@@ -419,6 +420,50 @@ function capture({ mainPath, walPath, outputPath, passphrase, onPhase = () => {}
       try { closeSync(mainFd); }
       finally { if (!published && ownedOutput) unlinkSync(outputPath); }
     }
+  }
+}
+
+// Diagnostic only: compare the SAME owned merged input with NapCat's output.
+// No source is reopened, no hashes/page contents are retained or returned.
+export function verifySnapshotPages({ mergedPath, plaintextPath, passphrase, walPages }) {
+  const encryptedFd = openSync(mergedPath, 'r');
+  let plainFd = null, key = null;
+  try {
+    plainFd = openSync(plaintextPath, 'r');
+    const bytes = fstatSync(plainFd).size;
+    if (!bytes || bytes % PAGE_SIZE || fstatSync(encryptedFd).size !== bytes + PREFIX_SIZE) {
+      fail('plaintext_snapshot_invalid');
+    }
+    const salt = readExactly(encryptedFd, 16, PREFIX_SIZE);
+    key = keyFor(passphrase, salt);
+    const header = readExactly(plainFd, 100, 0);
+    const reserve = header[20];
+    if (!header.subarray(0, 16).equals(HEADER) || ![48, 80].includes(reserve)) {
+      fail('plaintext_snapshot_invalid');
+    }
+    const result = { status: 'verified', pages: bytes / PAGE_SIZE, reserve,
+      main_pages: 0, wal_pages: 0, main_mismatches: 0, wal_mismatches: 0, header_equal: true };
+    for (let first = 1; first <= result.pages; first += 256) {
+      const count = Math.min(256, result.pages - first + 1);
+      const encrypted = readExactly(encryptedFd, count * PAGE_SIZE, PREFIX_SIZE + (first - 1) * PAGE_SIZE);
+      const plain = readExactly(plainFd, count * PAGE_SIZE, (first - 1) * PAGE_SIZE);
+      for (let at = 0; at < count; at++) {
+        const number = first + at, offset = at * PAGE_SIZE;
+        const expected = decryptPage(encrypted.subarray(offset, offset + PAGE_SIZE), number, key, salt);
+        const actual = plain.subarray(offset, offset + PAGE_SIZE);
+        const origin = walPages.has(number) ? 'wal' : 'main';
+        result[`${origin}_pages`]++;
+        if (!expected.subarray(0, PAGE_SIZE - reserve).equals(actual.subarray(0, PAGE_SIZE - reserve))) {
+          result[`${origin}_mismatches`]++;
+        }
+        if (number === 1) result.header_equal = expected.subarray(0, 100).equals(actual.subarray(0, 100));
+      }
+    }
+    return result;
+  } finally {
+    key?.fill(0);
+    if (plainFd !== null) closeSync(plainFd);
+    closeSync(encryptedFd);
   }
 }
 
