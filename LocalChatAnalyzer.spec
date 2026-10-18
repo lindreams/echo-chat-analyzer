@@ -95,9 +95,13 @@ a = Analysis(
 )
 # The upstream jieba hook collects all data independently of module excludes.
 # Ordinary lcut uses dict.txt and the Python HMM; only Paddle uses lac_small.
+# Installation provenance can contain a builder's local source path. Runtime
+# version/dependency/entrypoint metadata remains available without direct_url.
 a.datas = [
     entry for entry in a.datas
     if Path(entry[0]).parts[:2] != ("jieba", "lac_small")
+    and not (Path(entry[0]).name == "direct_url.json"
+             and Path(entry[0]).parent.name.endswith(".dist-info"))
 ]
 pyz = PYZ(a.pure)
 

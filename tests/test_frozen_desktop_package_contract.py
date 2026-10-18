@@ -99,6 +99,7 @@ def test_frozen_release_version_is_available_without_source_checkout() -> None:
     ]
     assert len(distributions) == 1
     assert distributions[0].version == project["project"]["version"]
+    assert not list(INTERNAL.glob("*.dist-info/direct_url.json"))
 
 
 def _manifest() -> dict:
