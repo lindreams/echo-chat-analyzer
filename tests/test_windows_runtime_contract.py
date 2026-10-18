@@ -206,8 +206,8 @@ def test_manifest_pins_the_wechat_native_assets_that_ship() -> None:
 # ------------------------------------------------ tracked build toolchain
 
 
-def test_spec_excludes_only_jieba_lac_data():
-    """Module exclusion must also remove LAC data, preserving other jieba assets."""
+def test_spec_excludes_unused_jieba_data_and_local_install_provenance():
+    """Keep runtime metadata/data without shipping editable-install locations."""
     import runpy
     from types import SimpleNamespace
     from PyInstaller.utils.hooks import collect_data_files
@@ -216,6 +216,14 @@ def test_spec_excludes_only_jieba_lac_data():
         (str(Path(destination) / Path(source).name), source, "DATA")
         for source, destination in collect_data_files("jieba")
     ]
+    metadata = "qq_chat_analyzer-0.2.2.dist-info"
+    provenance = f"{metadata}/direct_url.json"
+    retained_metadata = {f"{metadata}/{name}" for name in (
+        "METADATA", "WHEEL", "entry_points.txt",
+    )}
+    collected += [(name, "fictional source", "DATA") for name in (
+        provenance, *retained_metadata, "unrelated/direct_url.json",
+    )]
     analysis = SimpleNamespace(datas=collected, pure=[], scripts=[], binaries=[])
     # Execute the real spec's post-Analysis collection rule without building.
     result = runpy.run_path(str(PROJECT_ROOT / "LocalChatAnalyzer.spec"), init_globals={
@@ -229,8 +237,12 @@ def test_spec_excludes_only_jieba_lac_data():
     assert "jieba/dict.txt" in retained
     assert "jieba/analyse/idf.txt" in retained
     assert not any(name.startswith("jieba/lac_small/") for name in retained)
+    assert provenance not in retained
+    assert retained_metadata <= retained
+    assert "unrelated/direct_url.json" in retained
     assert retained == {
         Path(item[0]).as_posix() for item in collected
         if not Path(item[0]).as_posix().startswith("jieba/lac_small/")
+        and item[0] != provenance
     }
     assert "PIL" not in result["desktop_excludes"]
