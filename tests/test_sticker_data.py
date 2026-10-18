@@ -43,6 +43,140 @@ def resolve(sends, roots=(), **limits):
     return resolve_sticker_media(sends, roots=roots, **limits)
 
 
+def qq_pic(digest):
+    """One confirmed QQ PIC send carrying only a fictional trusted digest."""
+    return collect([_parse(_scalar(45002, 2) + _scalar(45003, 1)
+                           + _bytes(45406, bytes.fromhex(digest)) + _scalar(45418, 1))])[0]
+
+
+@pytest.mark.parametrize("received_name", ["digest", "opaque"])
+def test_both_qq_sides_recover_using_only_authorized_content_evidence(tmp_path, received_name):
+    from qq_chat_analyzer.analysis.stickers import StickerData
+    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
+    from qq_chat_analyzer.application.qq.qq_media_directories import discover_qq_media
+    from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
+
+    account = tmp_path / "12345001"
+    mine = account / "nt_qq/nt_data/Pic/2026-01/Ori"
+    received = account / "nt_qq/nt_data/Emoji/emoji-recv/2026-02/Ori"
+    mine.mkdir(parents=True)
+    received.mkdir(parents=True)
+    raws = (image_bytes("JPEG"), image_bytes("GIF", animated=True))
+    digests = tuple(hashlib.md5(raw).hexdigest() for raw in raws)
+    paths = (mine / f"{digests[0]}.jpg", received / (
+        f"{digests[1]}.gif" if received_name == "digest" else "fictional-resource-id.dat"))
+    blobs = []
+    for index, (digest, path, raw) in enumerate(zip(digests, paths, raws)):
+        path.write_bytes(raw)
+        blobs.append(_body(_scalar(45002, 2) + _scalar(45003, 1)
+            + _bytes(45406, bytes.fromhex(digest))
+            + _bytes(45424, digest.upper().encode())
+            + _bytes(45402, b"fictional-file-unique-not-content-md5.jpg")
+            + _bytes(45812, str(path).encode()) + _scalar(45418, 1 - index)))
+    payload = _payload(*blobs, session_type="private")
+    payload["self"] = {"namespace": "qq_uin", "value": "10001"}
+    for record, sender in zip(payload["records"], ("10001", "20002")):
+        record["fields"]["40033"] = sender
+    messages, warnings = parse_qq_db_rich_messages(payload)
+    assert not warnings
+    sends = collect(messages)
+    assert [send.is_self for send in sends] == [True, False]
+    assert [send.content_md5 for send in sends] == list(digests)
+    scopes, = discover_qq_media(data_path=account)
+    assert set(scopes.roots) == {mine, received}
+    data = ChatAnalyzerFacade.associate_sticker_media(StickerData(sends=sends),
+        media_keys=tuple(send.media_key for send in sends), roots=scopes.roots, source="qq")
+    assert [media.status for media in data.media] == ["available", "available"]
+    assert [media.original_bytes for media in data.media] == list(raws)
+
+
+@pytest.mark.parametrize("kind", ["different_bytes", "corrupt", "outside", "thumb", "relative"])
+def test_qq_path_candidates_never_replace_content_or_read_authority(tmp_path, monkeypatch, kind):
+    from contextlib import contextmanager
+    from dataclasses import replace
+    from qq_chat_analyzer.application import sticker_media
+    ori = tmp_path / "nt_qq/nt_data/Emoji/emoji-recv/2026-02/Ori"
+    ori.mkdir(parents=True)
+    raw = image_bytes("GIF", animated=True)
+    digest = hashlib.md5(raw).hexdigest()
+    path = ori / "opaque-resource"
+    content = image_bytes("PNG")  # A valid but different image is not an original.
+    if kind == "corrupt":
+        content = b"GIF89a" + b"broken" * 4
+        digest = hashlib.md5(content).hexdigest()
+    elif kind in {"outside", "thumb"}:
+        path = (tmp_path / "unapproved" if kind == "outside" else ori.parent / "Thumb") / "opaque-resource"
+        path.parent.mkdir()
+        content = raw
+    path.write_bytes(content)
+    hint = "../opaque-resource" if kind == "relative" else str(path)
+    send = replace(qq_pic(digest), local_paths=(hint,), is_self=False)
+    opened = []
+    real_open = sticker_media._open_original
+    @contextmanager
+    def record(candidate, root):
+        assert candidate.is_relative_to(ori)
+        opened.append(candidate)
+        with real_open(candidate, root) as stream:
+            yield stream
+    monkeypatch.setattr(sticker_media, "_open_original", record)
+    item, = resolve((send,), (ori,), targeted=True, digest_names_only=True)
+    assert item.original_bytes is None
+    if kind == "corrupt":
+        assert (item.status, item.reason) == ("invalid", "invalid_image")
+        assert opened == [path]
+    elif kind == "different_bytes":
+        assert (item.status, item.reason) == ("missing", "digest_mismatch")
+        assert opened == [path]
+    else:
+        assert (item.status, item.reason) == ("missing", "no_digest_name_match")
+        assert opened == []
+
+
+def test_qq_repeated_material_keeps_earlier_authorized_path_candidate(tmp_path):
+    from dataclasses import replace
+    from qq_chat_analyzer.analysis.stickers import StickerData
+    from qq_chat_analyzer.application.sticker_media import associate_sticker_media
+    raw = image_bytes("PNG")
+    path = tmp_path / "opaque-original"
+    path.write_bytes(raw)
+    first = replace(qq_pic(hashlib.md5(raw).hexdigest()), local_paths=(str(path),))
+    later = replace(first, local_paths=(), is_self=False)
+    result = associate_sticker_media(StickerData(sends=(first, later)),
+        media_keys=(first.media_key,), roots=(tmp_path,), source="qq")
+    assert result.media[0].original_bytes == raw
+
+
+def test_qq_search_diagnostics_distinguish_name_filter_and_budget(tmp_path):
+    raw = image_bytes("PNG")
+    (tmp_path / "opaque-original").write_bytes(raw)
+    stats = {}
+    options = dict(targeted=True, digest_names_only=True, diagnostics=stats)
+    item, = resolve((qq_pic(hashlib.md5(raw).hexdigest()),), (tmp_path,), **options)
+    assert (item.status, item.reason) == ("missing", "no_digest_name_match")
+    assert stats["files_seen"] == 1 and stats["candidate_files"] == stats["files_read"] == 0
+    assert stats["traversal_complete"] is True and stats["budget_exhausted"] is False
+    assert stats["all_files_checked"] is False
+    assert str(tmp_path) not in repr(stats) and hashlib.md5(raw).hexdigest() not in repr(stats)
+    item, = resolve((qq_pic("a" * 32),), (tmp_path,), max_scan_entries=0, **options)
+    assert (item.status, item.reason) == ("limited", "scan_budget")
+    assert stats["traversal_complete"] is False and stats["budget_exhausted"] is True
+
+
+@pytest.mark.parametrize("failure", ["bytes", "entries", "cancel"])
+def test_qq_opaque_path_candidate_uses_existing_global_budgets(tmp_path, failure):
+    from dataclasses import replace
+    raw = image_bytes("PNG")
+    path = tmp_path / "opaque-resource"
+    path.write_bytes(raw)
+    send = replace(qq_pic(hashlib.md5(raw).hexdigest()), local_paths=(str(path),), is_self=False)
+    options = {"bytes": dict(max_total_bytes=1), "entries": dict(max_scan_entries=0),
+               "cancel": dict(cancelled=lambda: True)}[failure]
+    item, = resolve((send,), (tmp_path,), targeted=True, digest_names_only=True, **options)
+    assert item.status == ("cancelled" if failure == "cancel" else "limited")
+    assert item.original_bytes is None
+
+
 def test_reliable_identity_and_unresolved_sends_never_merge_by_message_id():
     digest = "abcdef0123456789abcdef0123456789"
     sends = collect([wx(digest.upper()), wx(digest), wx("invalid"), wx(), wx()])
@@ -149,6 +283,159 @@ def test_read_and_decode_budgets_fail_closed(tmp_path):
                    (tmp_path,), max_frames=1)[0].status == "limited"
 
 
+def test_targeted_lookup_opens_only_digest_named_candidates_in_a_qq_tree(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+
+    from qq_chat_analyzer.application import sticker_media
+
+    raw = image_bytes("GIF", animated=True)
+    digest = hashlib.md5(raw).hexdigest()
+    ori = tmp_path / "nt_qq" / "nt_data" / "Pic" / "2026-10" / "Ori"
+    thumb = ori.parent / "Thumb"
+    ori.mkdir(parents=True)
+    thumb.mkdir(parents=True)
+    # Names and suffixes are hints only: the bytes still decide the format.
+    (ori / f"{digest}.jpg").write_bytes(raw)
+    (thumb / "unrelated-thumb").write_bytes(b"fictional unrelated cache file")
+    (ori / "not-a-sticker").write_bytes(b"fictional unrelated cache file")
+
+    opened = []
+    original_open = sticker_media._open_original
+
+    @contextmanager
+    def record(path, root):
+        opened.append(path.name)
+        with original_open(path, root) as stream:
+            yield stream
+
+    monkeypatch.setattr(sticker_media, "_open_original", record)
+    # Fewer record slots than files forces name-only candidate selection.
+    item = resolve((qq_pic(digest),), (tmp_path,),
+                   targeted=True, max_entries=1)[0]
+    assert (item.status, item.format, item.frame_count) == ("available", "GIF", 2)
+    assert item.animation_preserved is True and item.original_bytes == raw
+    assert opened == [f"{digest}.jpg"]
+
+
+def test_targeted_lookup_never_accepts_a_name_match_with_other_bytes(tmp_path):
+    raw, other = image_bytes("GIF"), image_bytes("PNG")
+    digest = hashlib.md5(raw).hexdigest()
+    ori = tmp_path / "Pic" / "2026-10" / "Ori"
+    ori.mkdir(parents=True)
+    (ori / f"{digest}.gif").write_bytes(other)
+    item = resolve((qq_pic(digest),), (tmp_path,),
+                   targeted=True, max_entries=0)[0]
+    assert (item.status, item.reason) == ("missing", "no_digest_match")
+    assert item.original_bytes is None
+
+
+def test_targeted_lookup_reports_a_completed_name_only_walk_as_no_name_match(tmp_path):
+    digest = "a" * 32
+    folder = tmp_path / "Emoji"
+    folder.mkdir()
+    for index in range(3):
+        (folder / f"renamed-{index}.png").write_bytes(b"fictional unrelated")
+    item = resolve((qq_pic(digest),), (tmp_path,),
+                   targeted=True, max_entries=1)[0]
+    assert (item.status, item.reason) == ("missing", "no_digest_name_match")
+    assert item.original_bytes is None
+
+
+def test_targeted_lookup_still_reads_a_small_explicit_copies_folder(tmp_path):
+    raw = image_bytes("GIF", animated=True)
+    digest = hashlib.md5(raw).hexdigest()
+    (tmp_path / "renamed-copy.bin").write_bytes(raw)
+    item = resolve((qq_pic(digest),), (tmp_path,), targeted=True)[0]
+    assert item.status == "available" and item.original_bytes == raw
+    assert resolve((qq_pic(digest),), (), targeted=True)[0].status == "not_requested"
+
+
+def test_qq_discovered_scope_never_opens_unrelated_small_cache_files(tmp_path, monkeypatch):
+    from qq_chat_analyzer.application import sticker_media
+
+    raw = image_bytes("PNG")
+    digest = hashlib.md5(raw).hexdigest()
+    (tmp_path / "renamed.png").write_bytes(raw)
+    real_open = sticker_media._open_original
+
+    def named_only(path, root):
+        assert digest in path.name
+        return real_open(path, root)
+
+    monkeypatch.setattr(sticker_media, "_open_original", named_only)
+    options = dict(targeted=True, digest_names_only=True)
+    item = resolve((qq_pic(digest),), (tmp_path,), **options)[0]
+    assert (item.status, item.reason) == ("missing", "no_digest_name_match")
+    (tmp_path / f"{digest}.bin").write_bytes(raw)
+    assert resolve((qq_pic(digest),), (tmp_path,), **options)[0].original_bytes == raw
+    item = resolve((qq_pic(digest),), (tmp_path,), cancelled=lambda: True, **options)[0]
+    assert item.status == "cancelled" and item.original_bytes is None
+
+
+@pytest.mark.parametrize("budget", ["entries", "bytes", "time", "cancel"])
+def test_coalesced_qq_scopes_share_budgets_across_all_months(tmp_path, monkeypatch, budget):
+    from qq_chat_analyzer.application import sticker_media
+    from qq_chat_analyzer.application.qq.qq_media_directories import qq_media_search_roots
+
+    raw = image_bytes("PNG")
+    digest = hashlib.md5(raw).hexdigest()
+    scopes = []
+    for index in range(59):
+        ori = tmp_path / "12345001/nt_qq/nt_data/Pic" / f"{2020 + index // 12}-{1 + index % 12:02}" / "Ori"
+        ori.mkdir(parents=True)
+        (ori / f"{digest}.png").write_bytes(raw)
+        scopes.append(ori)
+    options = dict(targeted=True, digest_names_only=True, authorized_scopes=tuple(scopes))
+    visited = []
+    real_scan = sticker_media.os.scandir
+
+    def scan(path):
+        visited.append(path)
+        return real_scan(path)
+
+    monkeypatch.setattr(sticker_media.os, "scandir", scan)
+    if budget == "entries":
+        options["max_scan_entries"] = 150
+    elif budget == "bytes":
+        options["max_total_bytes"] = len(raw) * 20
+    elif budget == "time":
+        monkeypatch.setattr(sticker_media.time, "monotonic", lambda: 11 if len(visited) > 20 else 0)
+    else:
+        options["cancelled"] = lambda: len(visited) > 20
+    item = resolve((qq_pic(digest),), qq_media_search_roots(tuple(scopes)), **options)[0]
+    assert item.original_bytes is None
+    if budget == "cancel":
+        assert (item.status, item.reason) == ("cancelled", "user_cancelled")
+    else:
+        assert item.status == "limited"
+        assert item.reason == ("total_byte_budget" if budget == "bytes" else "scan_budget")
+
+
+@pytest.mark.parametrize("scope_kind", ["empty", "outside", "traversal"])
+def test_coalesced_media_scope_cannot_expand_root_authority(tmp_path, scope_kind):
+    root = tmp_path / "approved"
+    root.mkdir()
+    other = tmp_path / "other"
+    other.mkdir()
+    scopes = {
+        "empty": (), "outside": (other,),
+        "traversal": (root / ".." / "other",),
+    }[scope_kind]
+    item = resolve((qq_pic("a" * 32),), (root,), targeted=True,
+                   digest_names_only=True, authorized_scopes=scopes)[0]
+    assert (item.status, item.reason) == ("unsafe", "invalid_scope")
+    assert item.original_bytes is None
+
+
+def test_targeted_lookup_remains_bounded_on_large_directories(tmp_path):
+    for index in range(6):
+        (tmp_path / f"fictional-{index}.bin").write_bytes(b"unrelated")
+    item = resolve((qq_pic("b" * 32),), (tmp_path,),
+                   targeted=True, max_scan_entries=3)[0]
+    assert (item.status, item.reason) == ("limited", "scan_budget")
+    assert item.original_bytes is None
+
+
 def test_no_root_or_no_reliable_digest_never_opens_local_resources(tmp_path, monkeypatch):
     from qq_chat_analyzer.application import sticker_media
 
@@ -160,6 +447,8 @@ def test_no_root_or_no_reliable_digest_never_opens_local_resources(tmp_path, mon
     assert resolve(collect([wx()]), (tmp_path,))[0].status == "unsupported"
     qq = _parse(_sticker() + _bytes(45812, b"../outside.gif"))
     assert resolve(collect([qq]), (tmp_path,))[0].status == "unsupported"
+    # Targeted evidence never upgrades an opaque MFACE identity into a digest.
+    assert resolve(collect([qq]), (tmp_path,), targeted=True)[0].status == "unsupported"
 
 
 def test_missing_decoder_does_not_claim_available_original(tmp_path, monkeypatch):
@@ -411,13 +700,42 @@ def test_facade_config_exposes_explicit_roots_without_source_discovery(tmp_path)
     assert str(tmp_path) not in repr(config)
 
 
-def test_qq_pic_media_subtype_never_substitutes_for_napcat_pic_subtype():
-    for subtype in (0, 1, 2):
-        message = _parse(_scalar(45002, 2) + _scalar(45003, subtype)
-                         + _bytes(45406, b"x" * 16) + _bytes(45424, b"79" * 16))
-        assert collect([message]) == ()
-        # Conflicting digest evidence cannot nominate an original.
-        assert message.contents[0].media.content_md5 is None
+def test_qq_custom_pic_send_fact_only_for_observed_subtype_and_legacy_image_kept():
+    digest = "ab" * 16
+    fields = _scalar(45003, 1) + _bytes(45406, bytes.fromhex(digest))
+    message = _parse(_scalar(45002, 2) + fields)
+    # The legacy non-text image fact is unchanged; sticker evidence is separate.
+    assert message.contents[0].kind == "image"
+    assert message.message_type == "image"
+    sends = collect([message])
+    assert len(sends) == 1
+    assert sends[0].classification_basis == "qq_pic_45003_custom"
+    assert sends[0].identity_basis == "qq_pic_45406_md5"
+    assert sends[0].identity_key == sends[0].media_key == "qq-pic:md5:" + digest
+    assert sends[0].content_md5 == digest
+    assert sends[0].message_id == message.message_id
+    assert sends[0].sender_id == "fictional-sender"
+    assert sends[0].conversation_id == "fictional-room"
+    assert sends[0].content_index == 0
+
+
+@pytest.mark.parametrize("subtype", [0, 2, 3, 255])
+@pytest.mark.parametrize("repeat", [False, True])
+def test_qq_ordinary_unknown_or_unreliable_pic_subtype_never_becomes_sticker(subtype, repeat):
+    segment = _scalar(45002, 2) + _scalar(45003, subtype) + _bytes(45406, b"\xab" * 16)
+    if repeat:
+        segment += _scalar(45003, subtype)
+    message = _parse(segment)
+    assert message.contents[0].kind == "image"
+    assert message.contents[0].sticker is None
+    assert collect([message]) == ()
+
+
+def test_qq_pic_subtype_conflicting_values_are_not_classified():
+    message = _parse(_scalar(45002, 2) + _scalar(45003, 0) + _scalar(45003, 1)
+                     + _bytes(45406, b"\xab" * 16))
+    assert message.contents[0].sticker is None
+    assert collect([message]) == ()
 
 
 @pytest.mark.parametrize("fields,want", [
@@ -437,6 +755,154 @@ def test_qq_pic_digest_evidence_is_consistent_and_does_not_authorize_sticker_cla
     assert collect([message]) == ()
 
 
+@pytest.mark.parametrize("fields", [
+    b"",
+    _bytes(45424, b"ab" * 16),
+    _bytes(45406, b"\xab" * 16) + _bytes(45424, b"cd" * 16),
+    _bytes(45406, b"\xab" * 16) + _bytes(45406, b"\xcd" * 16),
+    _bytes(45406, b"\xab" * 16) + _bytes(45424, b"invalid"),
+])
+def test_qq_custom_pic_without_reliable_digest_keeps_send_but_never_merges(fields):
+    message = _parse(_scalar(45002, 2) + _scalar(45003, 1) + fields)
+    sends = collect([message, message])
+    assert len(sends) == 2
+    assert {send.identity_key for send in sends} == {None}
+    assert {send.content_md5 for send in sends} == {None}
+    assert sends[0].media_key == "unresolved:" + sends[0].occurrence_id
+    assert sends[0].media_key != sends[1].media_key
+    assert sends[0].identity_basis == "unresolved"
+    assert all(item.status == "unsupported" for item in resolve(sends))
+
+
+def test_authorized_qq_custom_pic_gif_original_is_fully_recovered(tmp_path):
+    raw = image_bytes(animated=True)
+    digest = hashlib.md5(raw).hexdigest()
+    (tmp_path / "misleading-name.jpg").write_bytes(raw)
+    message = _parse(_scalar(45002, 2) + _scalar(45003, 1)
+                     + _bytes(45406, bytes.fromhex(digest))
+                     + _bytes(45403, b"..\\outside-hint.gif"))
+    sends = collect([message, message])
+    assert len(sends) == 2 and len({send.media_key for send in sends}) == 1
+    # Without explicit authorization no media is read at all.
+    assert resolve(sends)[0].status == "not_requested"
+    media = resolve(sends, (tmp_path,))
+    assert len(media) == 1
+    item = media[0]
+    assert item.media_key == sends[0].media_key
+    assert item.status == "available" and item.reason is None
+    assert item.format == "GIF" and item.frame_count == 2
+    assert item.animation_preserved is True
+    assert item.original_bytes == raw
+    assert item.sha256 == hashlib.sha256(raw).hexdigest()
+
+
+def test_official_chain_adds_only_custom_pic_and_keeps_legacy_semantics(tmp_path, monkeypatch):
+    from test_rich_filtering_association import analyze
+    digest = "cd" * 16
+    custom = _scalar(45002, 2) + _scalar(45003, 1) + _bytes(45406, bytes.fromhex(digest))
+    ordinary = _scalar(45002, 2) + _scalar(45003, 0) + _bytes(45406, b"\xab" * 16)
+    result, (messages, analyzed) = analyze(tmp_path, monkeypatch, [_payload(
+        _body(_text("Fictional remark about the first day"), custom),
+        _body(_text("Fictional note on the second attempt"), custom),
+        _body(_text("Fictional comment on another image"), ordinary))])
+    assert [message.message_type for message in messages] == ["mixed"] * 3
+    assert len(result.stickers.sends) == 2
+    assert {send.identity_key for send in result.stickers.sends} == {"qq-pic:md5:" + digest}
+    assert len(result.stickers.media) == 1
+    assert result.stickers.media[0].status == "not_requested"
+    assert result.reports.expression.expression_occurrence_count == 0
+    assert not any(token.startswith("expression:")
+                   for _, tokens in analyzed.sender_tokens for token in tokens)
+
+
+def _private_payload(*blobs, senders):
+    payload = _payload(*blobs, session_type="private")
+    for record, sender in zip(payload["records"], senders):
+        record["fields"]["40033"] = sender
+    return payload
+
+
+def test_qq_private_send_identity_follows_source_self_marker_only():
+    from qq_chat_analyzer.analysis.stickers import count_sticker_messages
+    from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
+    payload = _private_payload(
+        _body(_sticker(b"mine")), _body(_sticker(b"theirs")),
+        _body(_sticker(b"opaque")), senders=("10001", "20002", 0))
+    payload["self"] = {"namespace": "qq_uin", "value": "10001"}
+    messages, warnings = parse_qq_db_rich_messages(payload)
+    assert warnings == ()
+    sends = collect(messages)
+    assert [send.is_self for send in sends] == [True, False, None]
+    assert [send.sender_id for send in sends] == ["10001", "20002", None]
+    counts = count_sticker_messages(messages)
+    assert (counts.self_messages, counts.other_messages,
+            counts.unknown_messages) == (1, 1, 1)
+    assert counts.total_messages == 3
+
+
+def test_unknown_self_identity_is_never_inferred_from_participants():
+    from qq_chat_analyzer.analysis.stickers import count_sticker_messages
+    from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
+    messages, _ = parse_qq_db_rich_messages(_private_payload(
+        _body(_sticker(b"first")), _body(_sticker(b"second")),
+        senders=("10001", "20002")))
+    sends = collect(messages)
+    assert [send.is_self for send in sends] == [None, None]
+    counts = count_sticker_messages(messages)
+    assert (counts.self_messages, counts.other_messages,
+            counts.unknown_messages) == (0, 0, 2)
+
+
+def test_wechat_send_identity_requires_known_self_username():
+    from qq_chat_analyzer.analysis.stickers import count_sticker_messages
+    base = dict(local_type=47, username="fiction-room", create_time=1760000000,
+                message_content='<msg><emoji md5="' + "a" * 32 + '"/></msg>')
+    mine = wechat_db_adapter.parse_rich_message(dict(
+        base, user_name="fiction-me", self_username="fiction-me", server_id="m1"))
+    theirs = wechat_db_adapter.parse_rich_message(dict(
+        base, user_name="fiction-peer", self_username="fiction-me", server_id="m2"))
+    opaque = wechat_db_adapter.parse_rich_message(dict(
+        base, user_name="fiction-peer", server_id="m3"))
+    sends = collect([mine, theirs, opaque])
+    assert [send.is_self for send in sends] == [True, False, None]
+    assert [send.classification_basis for send in sends] == ["wechat_type_47"] * 3
+    counts = count_sticker_messages([mine, theirs, opaque])
+    assert (counts.self_messages, counts.other_messages,
+            counts.unknown_messages) == (1, 1, 1)
+
+
+@pytest.mark.parametrize("segments", [
+    (_sticker(b"one"), _sticker(b"two")),
+    (_scalar(45002, 2) + _scalar(45003, 1) + _bytes(45406, b"\xab" * 16),
+     _scalar(45002, 2) + _scalar(45003, 1) + _bytes(45406, b"\xcd" * 16)),
+])
+def test_message_counts_count_message_once_while_sends_stay_per_content(segments):
+    from qq_chat_analyzer.analysis.stickers import count_sticker_messages
+    message = _parse(*segments)
+    sends = collect([message])
+    counts = count_sticker_messages([message])
+    assert len(sends) == len(segments) == 2
+    assert (counts.total_messages, counts.unknown_messages) == (1, 1)
+
+
+def test_private_chain_denominators_match_kept_messages_and_sends(tmp_path, monkeypatch):
+    from test_rich_filtering_association import analyze
+    payload = _private_payload(
+        _body(_text("Fictional morning note from me"), _sticker(b"mine")),
+        _body(_text("Fictional reply from the other side"), _sticker(b"theirs")),
+        _body(_text("Filtered " + "z" * 110)),
+        _body(_text("Unattributed message body")),
+        senders=("10001", "20002", "20002", "0"))
+    payload["self"] = {"namespace": "qq_uin", "value": "10001"}
+    result, (messages, _) = analyze(tmp_path, monkeypatch, [payload])
+    counts = result.stickers.message_counts
+    assert counts.total_messages == len(messages)
+    assert result.diagnostic_counts.analyzed_message_count == len(messages)
+    assert [send.is_self for send in result.stickers.sends] == [True, False]
+    assert (counts.self_messages, counts.other_messages,
+            counts.unknown_messages) == (1, 1, 1)
+
+
 def test_decode_finishing_after_deadline_cannot_publish_success(tmp_path, monkeypatch):
     from qq_chat_analyzer.application import sticker_media
     raw = image_bytes()
@@ -451,4 +917,105 @@ def test_decode_finishing_after_deadline_cannot_publish_success(tmp_path, monkey
     monkeypatch.setattr(sticker_media, "_inspect", delayed_inspect)
     item = resolve(collect([wx(hashlib.md5(raw).hexdigest())]), (tmp_path,))[0]
     assert (item.status, item.reason) == ("limited", "scan_budget")
+    assert item.original_bytes is None
+
+
+def test_batch_association_reuses_one_scan_and_preserves_send_facts(tmp_path, monkeypatch):
+    from qq_chat_analyzer.analysis.stickers import StickerData, StickerMessageCounts
+    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
+    from qq_chat_analyzer.application import sticker_media
+
+    raws = (image_bytes("PNG"), image_bytes("GIF", animated=True))
+    digests = [hashlib.md5(raw).hexdigest() for raw in raws]
+    sends = tuple(qq_pic(digest) for digest in digests for _ in range(4))
+    for digest, raw in zip(digests, raws):
+        (tmp_path / f"{digest}.bin").write_bytes(raw)
+    data = StickerData(sends=sends, message_counts=StickerMessageCounts(self_messages=8))
+    scans, decodes = [], []
+    real_scan, real_inspect = sticker_media.os.scandir, sticker_media._inspect
+
+    def scan(path):
+        scans.append(path)
+        return real_scan(path)
+
+    def inspect(raw, **kwargs):
+        decodes.append(raw)
+        return real_inspect(raw, **kwargs)
+
+    monkeypatch.setattr(sticker_media.os, "scandir", scan)
+    monkeypatch.setattr(sticker_media, "_inspect", inspect)
+    result = ChatAnalyzerFacade.associate_sticker_media(
+        data, media_keys=tuple(dict.fromkeys(s.media_key for s in sends)),
+        roots=(tmp_path,), source="qq")
+    assert result.sends is data.sends and result.message_counts is data.message_counts
+    assert {m.original_bytes for m in result.media} == set(raws)
+    assert scans == [tmp_path] and len(decodes) == 2
+    again = ChatAnalyzerFacade.associate_sticker_media(
+        result, media_keys=tuple(m.media_key for m in result.media),
+        roots=(tmp_path,), source="qq")
+    assert again == result and scans == [tmp_path] and len(decodes) == 2
+
+
+def test_batch_without_consent_or_with_unknown_identity_keeps_unavailable_facts(tmp_path, monkeypatch):
+    from qq_chat_analyzer.analysis.stickers import StickerData
+    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
+    from qq_chat_analyzer.application import sticker_media
+
+    data = StickerData(sends=(qq_pic("a" * 32), *collect([_parse(_sticker(b"opaque"))])))
+    monkeypatch.setattr(sticker_media.os, "scandir", lambda *args: pytest.fail("no authority to scan"))
+    result = ChatAnalyzerFacade.associate_sticker_media(
+        data, media_keys=tuple(s.media_key for s in data.sends), roots=(), source="qq")
+    assert result.sends is data.sends
+    assert [m.status for m in result.media] == ["not_requested", "unsupported"]
+
+
+def test_batch_rejects_oversized_selection_before_io(tmp_path, monkeypatch):
+    from qq_chat_analyzer.analysis.stickers import StickerData
+    from qq_chat_analyzer.application.sticker_media import associate_sticker_media
+    from qq_chat_analyzer.application import sticker_media
+    data = StickerData(sends=tuple(qq_pic(f"{i:032x}") for i in range(33)))
+    monkeypatch.setattr(sticker_media.os, "scandir", lambda *a: pytest.fail("invalid batch"))
+    with pytest.raises(ValueError, match="invalid_sticker_batch"):
+        associate_sticker_media(data, media_keys=tuple(s.media_key for s in data.sends),
+                                roots=(tmp_path,), source="qq")
+
+
+def test_batch_memory_ceiling_applies_across_pages(tmp_path, monkeypatch):
+    from qq_chat_analyzer.analysis.stickers import StickerData
+    from qq_chat_analyzer.application import sticker_media
+    raws = (image_bytes("PNG"), image_bytes("GIF", animated=True))
+    sends = tuple(qq_pic(hashlib.md5(raw).hexdigest()) for raw in raws)
+    for send, raw in zip(sends, raws):
+        (tmp_path / f"{send.content_md5}.dat").write_bytes(raw)
+    monkeypatch.setattr(sticker_media, "MAX_RETAINED_MEDIA_BYTES", len(raws[0]))
+    first = sticker_media.associate_sticker_media(StickerData(sends=sends),
+        media_keys=(sends[0].media_key,), roots=(tmp_path,), source="qq")
+    second = sticker_media.associate_sticker_media(first,
+        media_keys=(sends[1].media_key,), roots=(tmp_path,), source="qq")
+    by_key = {item.media_key: item for item in second.media}
+    assert by_key[sends[0].media_key].original_bytes == raws[0]
+    assert (by_key[sends[1].media_key].status, by_key[sends[1].media_key].reason) == (
+        "limited", "total_byte_budget")
+
+
+def test_global_decode_and_file_budgets_are_shared_by_materials(tmp_path):
+    from qq_chat_analyzer.application.sticker_media import resolve_sticker_media
+    raws = (image_bytes("PNG"), image_bytes("GIF", animated=True))
+    sends = tuple(qq_pic(hashlib.md5(raw).hexdigest()) for raw in raws)
+    for send, raw in zip(sends, raws):
+        (tmp_path / f"{send.content_md5}.dat").write_bytes(raw)
+    items = resolve_sticker_media(sends, roots=(tmp_path,), targeted=True,
+        digest_names_only=True, max_total_frames=1)
+    assert [item.status for item in items] == ["available", "limited"]
+    assert items[1].reason == "total_decode_budget" and items[1].original_bytes is None
+    items = resolve_sticker_media(sends, roots=(tmp_path,), targeted=True,
+        digest_names_only=True, max_files=1)
+    assert all((item.status, item.reason) == ("limited", "file_count_budget") for item in items)
+
+
+def test_matching_but_unsupported_format_is_distinct_from_invalid_image(tmp_path):
+    raw = image_bytes("BMP")
+    (tmp_path / "original").write_bytes(raw)
+    item, = resolve(collect([wx(hashlib.md5(raw).hexdigest())]), (tmp_path,))
+    assert (item.status, item.reason) == ("unsupported", "unsupported_format")
     assert item.original_bytes is None

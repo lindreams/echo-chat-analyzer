@@ -338,8 +338,282 @@ class _SessionExport:
     sticker_media_roots: tuple[Path, ...] = field(default=(), repr=False)
 
 
+# One fixed stage -> (facade code, public message) pair for a QQ media fetch.
+# Only these stages exist, so no path, account, message ID or kernel text is
+# ever shown; an unrecognised failure keeps the generic message.
+_QQ_MEDIA_STAGE_FAILURES = {
+    "media_message_query_failed": (
+        "qq_media_message_query_failed",
+        "QQ 内核消息查询失败，未获取媒体。请确认 QQ 已登录后重试。",
+    ),
+    "media_mapping_rejected": (
+        "qq_media_mapping_rejected",
+        "QQ 内核未能唯一确认这条消息的图片元素，未获取媒体。",
+    ),
+    "media_api_unavailable": (
+        "qq_media_api_unavailable",
+        "当前 QQ 运行时不支持图片下载接口，未获取媒体。",
+    ),
+    "media_busy": (
+        "qq_media_busy",
+        "上一次图片获取尚未结束，请稍后重试。",
+    ),
+    "media_budget_exhausted": (
+        "qq_media_budget_exhausted",
+        "本次连接可用的图片获取次数已用完，请重新连接 QQ 后重试。",
+    ),
+    "media_download_timeout": (
+        "qq_media_download_timeout",
+        "QQ 未在限定时间内完成图片下载（可能是网络获取超时），未展示。",
+    ),
+    "media_download_failed": (
+        "qq_media_download_failed",
+        "QQ 下载接口返回失败，未展示。",
+    ),
+    "media_path_invalid": (
+        "qq_media_path_invalid",
+        "QQ 返回的图片位置为空或不可安全读取，未展示。",
+    ),
+    "media_file_missing": (
+        "qq_media_file_missing",
+        "QQ 返回的图片文件已不存在，未展示。",
+    ),
+    "media_open_failed": (
+        "qq_media_open_failed",
+        "无法打开 QQ 返回的图片文件（文件被占用或拒绝访问），未展示。",
+    ),
+    "media_file_type_rejected": (
+        "qq_media_file_type_rejected",
+        "QQ 返回的位置不是常规文件（目录、链接或特殊文件），未展示。",
+    ),
+    "media_file_identity_changed": (
+        "qq_media_file_identity_changed",
+        "QQ 返回的路径在打开前后指向了不同文件，未展示。",
+    ),
+    "media_file_empty": (
+        "qq_media_file_empty",
+        "QQ 返回的图片文件为空（0 字节），未展示。",
+    ),
+    "media_file_too_large": (
+        "qq_media_too_large",
+        "取回的图片超过 2 MiB 上限，未展示。",
+    ),
+    "media_read_incomplete": (
+        "qq_media_read_incomplete",
+        "图片文件读取不完整（读取长度与文件大小不符），未展示。",
+    ),
+    "media_file_changed": (
+        "qq_media_file_changed",
+        "图片文件在读取过程中发生变化（大小或身份改变），未展示。",
+    ),
+    "media_file_rejected": (
+        "qq_media_file_rejected",
+        "取回的图片文件未通过其他安全校验，未展示。",
+    ),
+}
+
+
 class ChatAnalyzerFacade:
     """Coordinate sources, analysis, and presentation behind one surface."""
+
+    @staticmethod
+    def discover_qq_sticker_directories(*, data_path=None, cancelled=lambda: False):
+        """Opt-in metadata discovery; returned scopes still require user consent."""
+        from .qq.qq_media_directories import discover_qq_media
+
+        try:
+            return discover_qq_media(data_path=data_path, cancelled=cancelled)
+        except Exception:
+            raise FacadeError(code="sticker_discovery_failed", public_message="QQ 素材目录识别失败，未读取媒体文件。") from None
+
+    @staticmethod
+    def associate_sticker_media(data, *, media_keys, roots=(), source, cancelled=lambda: False,
+                                diagnostics=None):
+        """Associate an explicit batch without acquiring another chat database."""
+        from .sticker_media import associate_sticker_media
+
+        try:
+            return associate_sticker_media(
+                data, media_keys=media_keys, roots=roots, source=source, cancelled=cancelled,
+                diagnostics=diagnostics)
+        except Exception:
+            # Worker diagnostics must not receive private paths or decoder data.
+            raise FacadeError(code="sticker_media_failed", public_message="原图验证失败，请稍后重试。") from None
+
+    def _qq_connected_provider(self, *required: str) -> Any:
+        """Return the connected QQ provider without constructing a second one."""
+        connection = self._qq_connection_service
+        if connection is None:
+            bundle = self._built_sources.get(ChatSource.QQ)
+            connection = getattr(bundle, "connection", None)
+        factory = getattr(connection, "provider", None)
+        if not callable(factory):
+            raise FacadeError(
+                code="qq_mapping_unavailable",
+                public_message="QQ 尚未连接，无法验证消息映射。",
+            )
+        try:
+            provider = factory()
+        except Exception:
+            raise FacadeError(
+                code="qq_mapping_unavailable",
+                public_message="QQ 尚未连接，无法验证消息映射。",
+            ) from None
+        if any(not callable(getattr(provider, name, None)) for name in required):
+            raise FacadeError(
+                code="qq_mapping_unavailable",
+                public_message="当前 QQ 运行时不支持消息映射查询。",
+            )
+        return provider
+
+    def _qq_stored_pic_facts(self, session_id: str, message_id: str):
+        """Read one private session's stored PIC facts without touching media."""
+        from ..qq_db_adapter import extract_qq_pic_media_facts, load_qq_db_json
+
+        if not isinstance(session_id, str) or not session_id.startswith("private:"):
+            raise FacadeError(
+                code="qq_mapping_private_only",
+                public_message="消息映射验证仅支持当前 QQ 私聊。",
+            )
+        try:
+            service = self._require_service(ChatSource.QQ)
+            acquire = getattr(service, "acquired_session", None)
+            if not callable(acquire):
+                raise FacadeError(
+                    code="qq_mapping_unavailable",
+                    public_message="当前 QQ 数据来源不支持消息映射验证。",
+                )
+            with acquire(session_id) as acquisition:
+                payload = load_qq_db_json(acquisition.payload_path)
+                if payload is None:
+                    raise FacadeError(
+                        code="qq_mapping_payload_invalid",
+                        public_message="本次私聊数据不可用，未读取媒体。请重新分析后重试。",
+                    )
+                query = payload.get("query") if isinstance(payload.get("query"), Mapping) else {}
+                if query.get("session_type") != "private":
+                    raise FacadeError(
+                        code="qq_mapping_private_only",
+                        public_message="消息映射验证仅支持当前 QQ 私聊。",
+                    )
+                facts = extract_qq_pic_media_facts(payload, {message_id})
+        except FacadeError:
+            raise
+        except Exception:
+            raise FacadeError(
+                code="qq_mapping_snapshot_failed",
+                public_message="读取当前私聊的已入库媒体事实失败，未下载图片。请重新连接 QQ 后重试。",
+            ) from None
+        return facts
+
+    def fetch_qq_sticker_media(
+        self, data, *, media_key: str, session_id: str, network_consent: bool = False,
+        cancelled=lambda: False,
+    ):
+        """Fetch one user-selected QQ PIC material through the bridge.
+
+        A separate consent flag is required. The stored message facts are read
+        again, the kernel must uniquely confirm the same message, sender and PIC
+        element, and only that element is fetched. The bytes are validated and
+        returned as the digest-verified original or as a distinct trusted
+        preview. Nothing is written to disk and no other message is queried.
+        """
+        from .sticker_media import verify_fetched_media
+
+        if network_consent is not True:
+            raise FacadeError(
+                code="qq_media_consent_required",
+                public_message="需要通过 QQ 网络获取素材前单独确认。",
+            )
+        send = next((
+            item for item in getattr(data, "sends", ())
+            if item.media_key == media_key and item.source == "qq"
+            and item.conversation_type == "private"
+            and item.identity_basis == "qq_pic_45406_md5"
+            and isinstance(item.message_id, str) and item.message_id
+            and isinstance(item.content_md5, str) and re.fullmatch(r"[0-9a-f]{32}", item.content_md5)
+        ), None)
+        if send is None:
+            raise FacadeError(
+                code="qq_media_invalid_selection",
+                public_message="所选素材缺少可验证的 QQ 私聊图片依据，未获取媒体。",
+            )
+        if cancelled():
+            raise FacadeError(code="qq_media_cancelled", public_message="已取消，未获取媒体。")
+        facts = self._qq_stored_pic_facts(session_id, send.message_id)
+        if len(facts) != 1:
+            raise FacadeError(
+                code="qq_media_message_unconfirmed",
+                public_message="无法在本次私聊数据中唯一确认该素材对应的消息，未获取媒体。",
+            )
+        fact = facts[0]
+        custom = [element for element in fact.elements if element.is_custom_sticker]
+        if len(custom) != 1 or custom[0].content_md5 != send.content_md5:
+            raise FacadeError(
+                code="qq_media_element_unconfirmed",
+                public_message="该消息的图片元素与所选素材摘要不一致，未获取媒体。",
+            )
+        element = custom[0]
+        if (
+            fact.conversation_type != "private"
+            or not fact.peer_uid
+            or not element.segment_id
+            or not isinstance(fact.timestamp, int)
+            or isinstance(fact.timestamp, bool)
+        ):
+            raise FacadeError(
+                code="qq_media_element_unconfirmed",
+                public_message="该消息缺少可唯一确认的图片元素标识，未获取媒体。",
+            )
+        provider = self._qq_connected_provider("resolve_pic_message", "download_pic_media")
+        locator = {
+            "msg_id": fact.message_id,
+            "peer_uid": fact.peer_uid,
+            "expected_time": fact.timestamp,
+            "expected_md5": element.content_md5,
+            "expected_file_uuid": element.file_uuid,
+            "expected_self": fact.is_self,
+        }
+        try:
+            mapping = provider.resolve_pic_message(**locator, expected_segment_id=element.segment_id)
+        except Exception:
+            raise FacadeError(
+                code="qq_media_query_failed",
+                public_message="QQ 内核消息查询失败，未获取媒体。请确认 QQ 已登录后重试。",
+            ) from None
+        if not (
+            mapping.passed
+            and mapping.unique
+            and mapping.matched_pic_count == 1
+            and mapping.md5_matches
+            and mapping.segment_id_matches is True
+            and mapping.file_uuid_matches is not False
+        ):
+            raise FacadeError(
+                code="qq_media_mapping_rejected",
+                public_message="QQ 内核未能唯一确认这条消息的图片元素，未获取媒体。",
+            )
+        if cancelled():
+            raise FacadeError(code="qq_media_cancelled", public_message="已取消，未获取媒体。")
+        try:
+            raw = provider.download_pic_media(**locator, element_id=element.segment_id)
+        except Exception as error:
+            code, message = _QQ_MEDIA_STAGE_FAILURES.get(
+                getattr(error, "stage", None),
+                ("qq_media_fetch_failed",
+                 "QQ 未返回可用的图片内容，未展示。请确认 QQ 在线后重试。"),
+            )
+            raise FacadeError(code=code, public_message=message) from None
+        media = verify_fetched_media(
+            raw, media_key=media_key, expected_md5=element.content_md5)
+        if media.status not in {"available", "preview"}:
+            raise FacadeError(
+                code="qq_media_invalid_content",
+                public_message="QQ 返回的内容未通过图片验证，未展示。",
+            )
+        current = {item.media_key: item for item in getattr(data, "media", ())}
+        current[media_key] = media
+        return replace(data, media=tuple(current.values()))
 
     def __init__(
         self,

@@ -178,7 +178,6 @@ DOMAIN_MODULES = {
         "test_qq_napcat_runtime_bootstrap",
         "test_qq_napcat_upgrade",
         "test_qq_private_unknown_sender",
-        "test_qq_pic_probe",
         "test_qq_process_detection",
         "test_qq_process_ownership_recovery",
         "test_qq_process_registry",
@@ -233,6 +232,7 @@ DOMAIN_MODULES = {
         "test_report_package_catalog",
         "test_report_staging_recovery",
         "test_session_analysis_ownership",
+        "test_sticker_media_dialog",
     },
     "system": {
         "test_app_version",

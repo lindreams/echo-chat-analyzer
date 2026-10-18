@@ -22,7 +22,11 @@ from ..analysis.analyzers import (
 )
 from ..analysis.analyzers.expression_analyzer import iter_emoji_clusters
 from ..analysis.models import AnalysisReports, ExpressionReport
-from ..analysis.stickers import StickerData, collect_sticker_sends
+from ..analysis.stickers import (
+    StickerData,
+    collect_sticker_sends,
+    count_sticker_messages,
+)
 from ..presentation.builders import prepare_expression_report
 from ..analyzer import (
     WordSpeakerSummary,
@@ -179,10 +183,15 @@ class AnalysisApplicationService:
             if id(legacy) in kept_instances
         }
         with timed_stage("sticker_data"):
-            sticker_sends = collect_sticker_sends(rich_by_instance.values())
+            # Both collectors must describe one message set: the kept messages
+            # that still have Rich facts. Legacy-only messages stay uncounted
+            # rather than being reported as covered denominator.
+            sticker_scope = tuple(rich_by_instance.values())
+            sticker_sends = collect_sticker_sends(sticker_scope)
             stickers = StickerData(
                 sends=sticker_sends,
                 media=resolve_sticker_media(sticker_sends, roots=request.sticker_media_roots),
+                message_counts=count_sticker_messages(sticker_scope),
             )
         diagnostic_counts = AnalysisDiagnosticCounts(
             raw_message_count=outcome.processed_message_count,

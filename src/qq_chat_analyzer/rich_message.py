@@ -100,10 +100,15 @@ class RecallEvent:
 
 @dataclass(frozen=True, slots=True)
 class NonTextContent:
-    """One non-text occurrence with optional untrusted source metadata."""
+    """One non-text occurrence with optional untrusted source metadata.
+
+    Some sources expose sticker evidence on an image segment. The content stays
+    a non-text image fact for legacy statistics; sticker is separate provenance.
+    """
 
     kind: Literal["image", "unknown"]
     media: ImageReference | None = field(default=None, repr=False)
+    sticker: StickerIdentity | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.kind not in ("image", "unknown"):

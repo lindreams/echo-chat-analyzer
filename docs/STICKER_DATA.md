@@ -1,167 +1,151 @@
-# 表情包事实与原件数据通路
+# StickerData：发送事实、素材身份与媒体消费契约
 
-本轮是本地核心数据能力，不新增 UI、榜单、报告章节或数据库读取器。
-自动测试只使用虚构消息及程序生成的媒体；**尚未验证真实 QQ / 微信恢复**。
-源码与 Frozen 使用同一 Pillow 验证路径；正式 spec 收集 Pillow、WebP 原生模块及其
-包含第三方组件声明的许可证。使用上游 PyInstaller hooks，避免维护另一套编解码器。
-默认分析不加载解码器；仅有明确目录授权且内容 MD5 命中时解码，限定 PNG/JPEG/GIF/WebP
-解码入口（APNG 属于 PNG）。异常缺少解码器仍返回 `unsupported/decoder_unavailable`。
+## 当前能力与验收证据
 
-## 实际支持矩阵
+表情数据复用现役 QQ Direct DB / 微信分析链，不新增聊天数据来源。
+正常私聊分析后的“查看表情素材”提供分页目录、本地原件关联和单独授权的 QQ 原生获取。
+默认分析不联网、不扫描未授权目录、不加载图片解码器。
 
-| 来源 | 确认发送事实 | 素材身份 | 原件获取 |
-| --- | --- | --- | --- |
-| QQ Direct DB MFACE，`45002=11` 且有 `45600` | 支持，保留每个段的发送记录 | `qq-marketface:sha256:`，原始 bytes 的不透明派生值；不宣称解码了 emoji ID / MD5 | 未支持：`unsupported/original_digest_unproven`；`45812/45814` 只保存为不可信线索，不读取 |
-| QQ PIC，`45002=2` | 普通图片事实，**不进入已确认表情包发送集合** | 保存 `45406` 的 16 字节 raw MD5、`45418` 原图标志及 `45403/45812` 路径线索（若有） | 本轮不获取；尚无可靠自定义表情分类证据 |
-| 微信 Type 47，单一 emoji XML 且 md5 是 32 位十六进制 | 支持 | `wechat:md5:<lowercase>`；独立于旧表达展示 key | 显式指定可信根后，完整文件 MD5 相等且可验证解码才成功 |
-| 微信 Type 47，缺失 / 非法 / 多义 MD5、XML 不可安全解析 | 支持 | `identity_key=None`，逐次发送独立，不按 message_id 或标签归并 | `unsupported/original_digest_unproven` |
-| 微信 Type 3 | 不确认表情包 | 不猜测 | Adapter 仍按现有规则跳过；本轮未建立普通图片导入能力 |
+用户本轮报告：QQ 新鲜私聊的 9 种素材中，5 种原件已验证，3 种经 QQ 内核获取为可信预览，
+剩余 1 种受预算限制。这是用户在本机进行的真实验收，未向开发测试提供真实媒体；
+只覆盖所验收客户端版本与样本，不能外推为全量、跨版本或全部动画恢复。
+微信已有发送事实的用户验收，明文原件恢复仍待真实验收。
 
-QQ 缺少 `45600` 的 MFACE 段仍沿用 Adapter 原先的省略行为，本轮没有恢复该类发送事实。
-不透明 QQ key 只说明原始身份字节相同，不保证不同字节一定代表不同视觉素材，也不保证跨版本稳定。
-本地不存在、加密、未下载的微信原件不会被网络下载、缩略图或标签替代。
+| 来源 | 发送与身份 | 媒体能力与边界 |
+| --- | --- | --- |
+| QQ PIC，45002=2 且唯一 45003=1 | 确认自定义表情发送；可信 45406 raw MD5 建立 qq-pic:md5:<lowercase> 身份 | 支持授权目录离线原件关联、单独确认后的 QQ 内核获取；分别返回原件或可信预览 |
+| QQ PIC，普通图片、其他或重复 45003 | 保留原有图片事实，不进入已确认表情发送集合 | 不通过本功能获取，不按后缀、尺寸、动画推断表情 |
+| QQ MFACE，45002=11 且含 45600 | qq-marketface:sha256:<digest>，原始身份 bytes 的不透明身份 | unsupported/original_digest_unproven；尚无可靠原件摘要映射 |
+| 微信 Type 47 | 单一安全 emoji XML 中合法 MD5 建立 wechat:md5:<lowercase>；非法、多义或缺失时身份未知 | 仅支持用户授权目录内完整文件 MD5 匹配的明文原件；未实现内核或 CDN 获取 |
+| 微信 Type 3 | 当前 Adapter 按既有规则跳过，不确认表情发送 | 未建立普通图片导入能力 |
 
-## 消费契约
+QQ 的 45003=1 判据来自有限真实样本，不是所有 QQ 版本的通用协议保证。
+45424 只能否决冲突，不能单独授权身份；重复字段的不同摘要使身份未知。
+MFACE 缺少 45600 的段仍按原有 Adapter 省略，不能假定所有发送已覆盖。
+45812/45403 等路径仅是线索，不能提供读取权限或证明原件。
 
-`AnalysisApplicationService.execute(AnalysisRequestDTO(...))` 的
-`result.stickers: StickerData` 提供两个不可变元组：
+## 算法侧直接消费
 
-- `sends`：来源、会话及类型、sender_id、message_id、原始时间、统一 epoch_seconds、
-  Asia/Shanghai 的 chat_date、content_index、classification_basis、identity_basis、
-  identity_key、media_key、资源 MD5 和路径线索。未知发送者和时间保持未知。
-- `media`：每个 media_key 一个结果，包含 status / reason；成功时包含
-  verified_reference、SHA-256、实际 format、frame_count、animation_preserved、byte_count
-  及完整不可变 `original_bytes`。失败时没有可供冒充原件的字节或路径。
+`AnalysisApplicationService.execute(AnalysisRequestDTO(...))` 返回
+`AnalysisResultDTO.stickers: StickerData`；Facade 分析结果中路径为
+`outcome.result.stickers`。模型定义在 `analysis/stickers.py`。
+这是进程内的不可变数据，不进入现有 HTML / JSON 报告序列化。
 
-以 `media_key` 关联两个集合。`occurrence_id` 由本次过滤后消息序号和内容段序号组成，
-只在当前结果内唯一，**不是跨运行持久主键**。重复或缺失 message_id 不会合并发送。
-`identity_key=None` 时禁止按素材聚合；有 QQ opaque key 时须保留 identity_basis，
-不能当作已经校验的媒体哈希。成员按 source / conversation / sender_id 聚合，
-日期使用 chat_date；未知 sender_id 不能用昵称猜测。发送次数始终按 sends 逐次计算。
-
-统一链路为：ImportService 原有 Rich / 投影配对 → scope / smart / quality 过滤 →
-按存活投影实例选取 Rich → `collect_sticker_sends` → 应用层原件验证 → result.stickers。
-资源成功率不能决定发送是否保留。不能把 available 数量当作全部表情包数量。
-
-此通路不裁剪发送记录、不输出到 Echo JSON / HTML，不改变 ExpressionReport 的 sticker
-总量和旧 fallback key，也不把 sticker 展示文本送入词法统计。新数据及媒体字节、路径、
-身份默认不进入 repr / 日志。它仍然是敏感的内存数据，调用者不得随意序列化或上传。
-只有旧 ChatMessage 的来源没有本通路所需 Rich 事实，不能从文字占位符重建。
-
-## 关联证据与失败
-
-核心请求默认 `sticker_media_roots=()`：完全不发现或读取媒体。仅扫描显式授权的绝对本地根。
-Windows 微信既有 `wechat.json` 配置可增加 `sticker_media_roots` 路径数组，默认省略/空数组；
-Loader → 共享 ProviderFactory / Provider → ExportImportService → Facade → AnalysisRequestDTO
-传递同一授权，不新增数据库链路。它独立于 `data_root`，绝不据账号目录、消息路径、URL
-或安装位置推导扫描范围。配置不合法会报配置损坏；链接及文件安全在读取时再次验证。
-同数据根的常规设置保存保留授权，切换数据根及跨账号 Provider 探测副本清除旧授权。
-`AnalysisConfig.sticker_media_roots=None` 继承选中 Provider 的显式配置；传 `()` 关闭本次
-扫描，或传路径元组覆盖。本地文件分析也可直接传该元组，不发现用户配置或账号目录。
-文件名和扩展名均不参与匹配；先计算完整文件 MD5，与 Type 47 XML 的 MD5 比较。
-匹配后验证 PNG、JPEG、GIF、APNG、WebP 的真实格式和全部帧，保留原始字节、不转码。
-相同字节多份路径和多次发送仅保留一份媒体；同一 MD5 下不同字节视为歧义，拒绝任选。
-MD5 是来源提供的关联证据，不能提供抗恶意碰撞的密码学保证；SHA-256 用于原件完整性复验。
-
-| status | 含义 |
+| 字段 | 契约 |
 | --- | --- |
-| available | 完整扫描内唯一内容匹配，原件通过格式与帧验证 |
-| not_requested | 有可靠 MD5，但未指定可信根，未尝试获取 |
-| unsupported | 无可靠原件摘要，或缺少解码器；reason 区分，不猜测成功 |
-| missing | 在完整、成功的指定范围扫描内没有摘要匹配；不代表全机不存在 |
-| ambiguous | 同一 MD5 对应不同文件内容 |
-| invalid | 匹配字节不可验证为支持的图像格式 |
-| unsafe | 路径、reparse / symlink、特殊文件或文件稳定性检查失败 |
-| unreadable | 读取失败或目录不可读，不能认定缺失 |
-| limited | 文件、总读取量、目录项、深度、时间或解码预算耗尽，不能认定缺失 |
+| sends: tuple[StickerSend, ...] | 每个已确认内容段一条发送，重复发送不去重；一条消息含多个表情时保留多条 |
+| media: tuple[StickerMedia, ...] | 每个 media_key 一个结果；通过 key 关联 sends，不能按两个元组的位置对应 |
+| message_counts: StickerMessageCounts | self_messages / other_messages / unknown_messages；只读 total_messages 为三者之和 |
 
-默认上限：16 个根、4096 个目录项、8 层子目录、单文件 16 MiB、总读取 128 MiB；
-每个原件最多 128 帧、所有帧累计 32 Mi 像素；扫描使用 10 秒协作式截止时间。
-时间检查发生在目录项及原件解码之间，**不是可中断原生解码调用的硬超时**。
-内存保留受总读取预算约束的命中原件；解码还有额外像素缓冲。未命中文件同样计入预算。
-目录过大时应由用户选择更小的目录，不能绕过安全检查。
+sends 与分母使用同一份经过正式过滤、且仍有 Rich 事实的消息集合。
+分母包含该集合内的普通文本等非表情消息；一条消息只计一次，不能用表情发送次数代替分母。
+缺少 Rich 配对的旧消息不伪报为已覆盖。过滤继续走统一分析链。
 
-所有祖先及文件拒绝链接 / junction / reparse，拒绝相对根、`..`、UNC 根和特殊文件。
-Windows 在读字节前检查打开句柄的最终路径，持有禁止并发写入 / 删除的句柄，
-比较路径与句柄文件身份及读前读后元数据；POSIX 使用逐级 `O_NOFOLLOW` 目录描述符。
-扫描中断或不安全时，整个本次可解析媒体范围返回明确失败，不发布部分扫描的成功。
-不把获准根之外的相似文件、猜测文件或来源路径作为 fallback。
+每条 send 携带来源、会话与类型、发送者、is_self、消息 ID、原始时间、epoch_seconds、
+Asia/Shanghai 的 chat_date、content_index、分类与身份依据、identity_key、media_key、
+content_md5 和私有路径线索。未知身份、本人标记与时间保持未知。
+occurrence_id 和未知身份使用的 unresolved:<occurrence_id> 只在本分析结果内有效。
 
-verified_reference 仅是读取时来源证明；外部缓存随后可变动。消费原件时使用
-`original_bytes` 和 SHA-256，不把旧路径的存在当作持续有效的原件证明。
-不建立磁盘缓存、不跨分析保存媒体；本次结果随调用方释放，既有 payload 清理合同不变。
+可信身份归并规则：
 
-## 研究证据与缺口
+- 仅按非空 identity_key 归并；三个来源命名空间互不归并，不按名称、视觉相似或消息 ID 合并。
+- identity_key=None 的发送逐次独立，不能把全部未知身份合为一种素材。
+- MFACE 相同 key 只证明原始身份 bytes 相等，不证明已解码出资源 MD5，也不保证跨版本稳定。
+- is_self 直接来自来源标记，不能由昵称、频率或参与人数推断。False 在私聊中可解释为 TA，
+  群聊中只表示非本人，须同时检查 conversation_type。
+- MD5 是来源关联依据，不能提供抗恶意碰撞保证；SHA-256 描述实际取回字节的完整性。
 
-- 仓库历史研究：[QQ 表情准备度](research/2026-09-26-qq-direct-db-expression-data-readiness.md)。
-  该文提及的本地 reference 目录当前不存在；本轮没有寻找或读取私人研究资产。
-- 公开 [QQBackup schema](https://github.com/QQBackup/nt_msg_db_util/blob/317024ce2c5e3482fdf9f310a5a7159ab4927e34/msgdb/proto/c2c_40800.proto)
-  及 [字段说明](https://github.com/QQBackup/nt_msg_db_util/blob/317024ce2c5e3482fdf9f310a5a7159ab4927e34/db_docs/c2c_msg_table/40800.md)
-  支持 PIC 的 MD5 / 原图标志 / 路径语义、MFACE 类型和资源路径线索；没有给出可靠的
-  PIC 自定义表情判据，`45600` 仍是 bytes。通用媒体字段的说明不足以证明商城表情原件。
-- [QQChatExporter PR #518](https://github.com/shuakami/qq-chat-exporter/pull/518)
-  （合并提交 `ef1dae139a7598f49783ba5fc6c6feff6c438ee3`）使用 NapCat 原生 `picElement.picSubType`，
-  没有给出到 Direct DB 的字段映射；Echo 不重新接入已退休的 QCE 消息来源。
-  [NapCat 4.18.34 枚举](https://github.com/NapNeko/NapCatQQ/blob/v4.18.34/packages/napcat-core/types/msg.ts)
-  区分 `KNORMAL=0/KCUSTOM=1/KHOT=2`，不能将未来或其他值一律当普通图或自定义表情。
-  QQBackup 的 `45003` 是媒体类别（图片常见 1、语音 2、视频 7、文件 11），没有证据证明
-  等价于 picSubType；因此即使 `45003=1` 也不能确认自定义表情。
-  `45406` 的 raw MD5 与 `45424` 的 hex/旧 raw 编码分开解释：后者仅检查冲突，不能独立
-  授权原件关联。冲突或重复字段的不同摘要使 PIC 的 content_md5 未知，不能最后值胜出。
-  `45812` 是缓存位置线索，不证明是否原图，也不授予读取权限；`45418=1` 不提供表情分类。
-- 公开 [微信 Type 47 / MD5 说明](https://github.com/spacelan/wechat-emoticon/blob/0b9401cffe1d15b4c91df4f850b9132c3e9f3c17/README.md)
-  及 [MD5 消费源码](https://github.com/spacelan/wechat-emoticon/blob/0b9401cffe1d15b4c91df4f850b9132c3e9f3c17/index.js)
-  是历史协议佐证，不证明当前 Windows 微信缓存布局。本轮不声称已发现任何版本的
-  自动缓存定位规则；采用显式根与实际内容摘要验证，仍需用户进行真实原件验收。
-- 复核 Windows 4.x 的公开
-  [表情导出源码](https://github.com/Rikkkum/wx_emoji_windows/blob/774cefe741e84023081f664919a29e86e54d34b5/scripts/export/wxemoticon-js.mjs)：
-  该工具从 emoticon.db 提取 URL 后下载，并非 Type 47 消息到本地原件的可验证映射。
-  本轮不执行上游代码、不获取额外密钥、不读收藏表情库、不下载媒体；配置的目录必须已含
-  原始明文文件。加密缓存、重编码副本、只有缩略图的目录不会因名称相似而恢复成功。
-
-后续 QQ 原件支持需要证明 `45600` 中资源摘要的编码，或其他经过验证的原件摘要映射；
-仅有 local_path 不能证明文件是原图。PIC 分类需要 Direct DB 本身的可靠标记，
-不能用文件后缀、尺寸、动画或常用图片猜测。
-
-## 用户本机验收（本轮没有执行）
-
-使用已验证解释器及当前源码 PYTHONPATH。用户自行取得正式来源通路产生的本地
-`qq-db-json` / `wechat-db-json` payload，并显式挑选允许扫描的小目录。不要上传数据。
-可在本地 Python 中运行以下核心 API（替换为自己的路径，不将路径写进仓库）：
+算法可直接使用发送事实，媒体覆盖率应单独统计：
 
 ```python
 from collections import Counter
-from pathlib import Path
-from qq_chat_analyzer.application import AnalysisRequestDTO
-from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
 
-result = AnalysisApplicationService().execute(AnalysisRequestDTO(
-    input_path=Path("<本地来源导出文件>"),
-    output_directory=Path("<本次独立分析输出目录>"),
-    stopwords_path=Path("<本地停用词文件>"),
-    sticker_media_roots=(Path("<明确允许读取的绝对本地媒体目录>"),),
-))
-print("保留发送", len(result.stickers.sends))
-print("素材结果", dict(Counter(m.status for m in result.stickers.media)))
+data = outcome.result.stickers
+by_media = {item.media_key: item for item in data.media}
+known_sends = Counter(s.identity_key for s in data.sends if s.identity_key is not None)
+originals = {key: item for key, item in by_media.items() if item.status == "available"}
+previews = {key: item for key, item in by_media.items() if item.status == "preview"}
+message_denominator = data.message_counts.total_messages
 ```
 
-在既有 Windows 来源分析中可通过 `WeChatEnvironmentConfigWriter.save(replace(config,
-sticker_media_roots=(允许的绝对目录,)))` 保存授权，再使现有 ProviderFactory invalidate。
-仅本机操作，不修改密钥或运行时字段；常规用户配置默认没有媒体授权。也可在已有 Facade
-实例调用 `analyze_session(..., AnalysisConfig(sticker_media_roots=(允许的绝对目录,)))`，
-从 `outcome.result.stickers` 检查同一结果。本轮没有添加设置 UI 或报告展示。
+`build_sticker_catalog(sends, source=...)` 提供私聊素材的我／TA／未知次数及降序目录，
+复用上述身份，不是新的发送来源或算法排名口径。
 
-按发送者、会话、时间对照客户端中少量已知发送；重复发送应保留多条 send，但共用 media_key。
-对 available，用户在本机复算 `original_bytes` 的 MD5 与 send.content_md5、SHA-256 与
-media.sha256，并用本地图片工具逐帧检查原始动图。缺文件、改内容、缩略图、非法路径应
-明确失败，发送事实仍在；无 MD5 不能归并。QQ MFACE 当前应显示 unsupported，PIC / Type 3
-不得进入已确认集合。验收只适用于用户实际检查的来源版本、目录与样本，不能扩大为全量恢复。
+## 原件、预览和不可用状态
 
-## 交付与后续边界
+| status | 含义与消费要求 |
+| --- | --- |
+| available | 完整文件 MD5 与可信消息摘要相等，且支持格式的全部帧验证通过；可作为原件消费 |
+| preview | 仅来自已认证 QQ 原生获取：内核唯一确认消息、发送者和 PIC 元素，但字节 MD5 与消息摘要不符；可展示，不能算原件 |
+| not_requested | 有可靠摘要但未授权本地根，不表示已尝试获取 |
+| missing | 本次授权范围内无候选或无匹配；reason 区分 no_digest_name_match / digest_mismatch / no_digest_match，不表示全机不存在 |
+| unsupported | 摘要无法证明、解码器缺失或容器不支持，不能猜测成功 |
+| ambiguous | 同一 MD5 匹配到不同字节，拒绝任选 |
+| invalid / unsafe / unreadable | 图片无效、安全检查失败或读取失败，不提供可用字节 |
+| limited / cancelled | 预算不足或用户取消，不能解释为缺失 |
 
-虚构数据覆盖源码完整 Windows 来源编排与五种实际格式、动画字节保真、缺失/歧义/路径安全；
-正式 spec 隔离构建及独立 Frozen 编解码探针用于验证打包能力。这些都不等于真实客户端
-恢复验收，也不等于完整 Portable/Setup、QQ/微信原生运行时、安装升级及 GUI 人工验收。
-可开始消费 `sends/media` 的算法开发，但必须单独呈现事实范围、身份可信度和媒体覆盖率；
-QQ PIC 分类和 QQ MFACE 原件仍未支持。真实样本验收及明确不完整数据的展示规则确定前，
-不能宣称已具备 QQ/微信全量表情榜或正式原图展示能力。
+成功媒体包含实际格式、帧数、animation_preserved、字节数、SHA-256 和不可变字节。
+历史字段名 `original_bytes` 同时承载 available 与 preview，必须先检查 status；
+preview 的 reason=content_digest_mismatch，不能仅凭该字段有字节就宣称原件。
+支持 PNG、JPEG、GIF、APNG、WebP，保留实际取回字节，不转码、不裁成首帧。
+animation_preserved 表示取回内容本身包含多帧，不证明预览与未知原件的动画相同。
+verified_reference 仅是本地读取时的来源，不承诺外部缓存之后仍相同；消费已验证字节而非重新打开旧路径。
+
+`associate_sticker_media(data, media_keys=..., roots=..., source=...)` 和
+`ChatAnalyzerFacade.fetch_qq_sticker_media(..., network_consent=True)` 返回新的 StickerData，
+不修改发送事实或消息分母，调用方必须接住返回值。
+素材窗口富化结果保存在 `StickerMediaDialog.stickers`，不会自动回写原分析 outcome；
+算法需要媒体时应接收富化后的同一数据对象，不能假定旧 outcome 已被更新。
+QQ 获取失败以脱敏 FacadeError 返回，旧数据保持不变；错误码不能被转换为“全局缺失”。
+
+## 两条正式媒体路径
+
+离线目录关联保留为正式能力：无需 QQ 在线，适用于已下载原件和微信显式明文目录。
+QQ 目录发现只读取公共 INI 和有限目录元数据，候选账号及范围仍须用户确认；
+不推断当前账号、不扫描安装目录。QQ 只打开摘要命名或授权范围内精确路径线索命中的候选；
+微信显式目录允许改名原件。最终仍完整计算 MD5、检查歧义并解码全部帧。
+不恢复无任何可靠线索的 QQ 任意命名文件、加密缓存或商店资源。
+
+本地路径验证拒绝越界、UNC、符号链接、junction/reparse 和特殊文件。
+Windows 打开后检查句柄最终路径并排除并发写入/删除；POSIX 逐级使用 O_NOFOLLOW。
+读取完整性、读前后身份和元数据稳定性必须成立；未完整扫描不能发布该次范围的成功结论。
+
+QQ 原生获取是单独确认后的正式网络路径，只处理当前私聊所选的一条已确认 PIC 消息。
+Facade 重新获取该消息的存储事实，通过现有已认证桥接校验消息、时间、会话、发送者、
+MD5、fileUuid 和 elementId；下载操作再次定位唯一元素后调用原生下载。
+这两层身份检查均是正式安全机制，不能随诊断界面一起删除。
+桥接只传有界字节，不传本地路径或内核错误；文件类型、打开身份、路径复核、读前后句柄稳定性
+和完整读取检查保留。Windows 使用 BigInt ino，跨 lstat/fstat 不比较 dev，
+同 API 内仍比较 dev/ino；未知文件 ID 继续拒绝。
+消息身份已确认也不保证下载字节与消息摘要一致，因此必须保留原件／预览分级。
+媒体只在本次进程内保留，不增加 Echo 磁盘缓存；QQ 自身下载可能更新其缓存。
+
+## 产品限制：传输与解码预算
+
+这些预算本轮保持不变，触限不代表映射错误或资源不存在。
+
+| 限制 | 当前行为与产品影响 |
+| --- | --- |
+| QQ 单次传输 2 MiB | 桥接、Provider、字节验证器共同约束，超限不展示；这是传输上限，不是像素或动画复杂度上限 |
+| 单素材累计 32 × 1024 × 1024 像素、128 帧 | 全部帧解码，超限为 limited/decode_budget；小于 2 MiB 的高度压缩动图仍可能触限 |
+| 本地整批累计 64 × 1024 × 1024 像素、512 帧 | 多素材共享，超限为 limited/total_decode_budget |
+| 每页最多 32 个素材，本地跨页保留 128 MiB | 已验证原件复用，不按每次发送重复读取 |
+| 本地单文件 16 MiB、总读取 128 MiB | 与 QQ 网络传输 2 MiB 是不同边界，未命中的读取也消耗预算 |
+| 本地扫描目录项、深度和时间 | 默认 4096 项、8 层、10 秒协作式截止；QQ 定向遍历最多 100000 项，仅打开候选；未完成搜索不能认定缺失 |
+| QQ 每个桥接生命周期各 8 次身份查询和媒体获取 | 查询与获取分别有预算，不能据第九次失败判断资源不支持 |
+
+QQ Facade 当前把图片验证失败（包括 decode_budget）转为 qq_media_invalid_content 公共错误，
+不会将失败结果写回 media。因此该 UI 错误本身不能区分损坏与解码预算不足；
+若需要精确产品提示，须另行确认错误契约，不在本轮扩大修改。
+解码预算检查不是可强制中断原生解码调用的硬超时；提高帧数或像素会增加内存和耗时，
+不能为通过一个样本直接放宽。9 种素材中剩余 1 种只按用户报告记为受预算限制，不补作根因推断。
+
+## 清理结果与尚未验收边界
+
+已清退独立消息映射验证窗口、候选列表及展示 DTO、专属 GUI/Facade 测试和旧探针操作文档。
+原有 PIC-1、Top-1 实验脚本及接线的删除继续保留；产品只保留正常分页素材窗口。
+底层媒体定位事实、身份校验 RPC、本地扫描验证器及其安全回归保留。
+
+尚未验收：微信真实原件恢复、QQ MFACE 原件、全部 QQ 版本的 PIC 分类、全部格式与大动画、
+预算外素材、跨机器及本轮 Frozen/Setup 集成。历史打包或虚构解码测试不能替代这些验收。
+只对用户检查过的来源版本与样本报告成功；真实 QQ 和媒体最终验证由用户手动进行。

@@ -47,12 +47,17 @@ CLI ─────────────────────────�
 
 ## 3. 数据模型、Adapter 与统一分析链
 
-表情包数据复用同一 Rich / 投影配对及过滤链：Adapter 在 ExpressionContent 附带
-StickerIdentity，核心 `analysis/stickers.py` 提取逐次发送事实；应用层
-`application/sticker_media.py` 仅在显式可信根内验证有来源摘要的原件，结果通过
-`AnalysisResultDTO.stickers` 返回，不进入现有报告序列化。媒体读取不属于分析核心，
-不新增数据库入口、磁盘缓存或网络获取。支持边界与本机验收见
-[STICKER_DATA](docs/STICKER_DATA.md)。
+表情包数据复用同一 Rich / 投影配对及过滤链：Adapter 在 ExpressionContent 或非文本图片段附带
+StickerIdentity，核心 `analysis/stickers.py` 提取逐次发送事实，并按同一消息集合统计
+本人／对方／未知的消息分母；应用层 `application/sticker_media.py` 仅在显式可信根内验证
+有来源摘要的原件，结果通过 `AnalysisResultDTO.stickers` 返回，不进入现有报告序列化。
+正常私聊分析后的“查看表情素材”通过 Facade 按页授权并批量关联本地原件，
+复用同一 StickerData 与验证器；不额外获取聊天数据库。发送事实与媒体可用性独立，
+媒体只保留于受控内存消费方，详见 [素材契约](docs/STICKER_DATA.md)。
+本人身份只取来源 `is_self` 标记，不按昵称、频率或参与者数量推断。媒体读取不属于分析核心，
+不新增数据库入口或磁盘缓存；默认分析不发起网络请求。
+唯一的网络媒体路径是用户在素材窗口单独确认后，经既有已认证 QQ 桥接为当前私聊中
+一条已确认 PIC 消息取其唯一元素，传输与验证边界见 [STICKER_DATA](docs/STICKER_DATA.md)。
 
 ### 双消息模型
 

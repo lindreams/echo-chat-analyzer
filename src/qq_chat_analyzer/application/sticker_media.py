@@ -1,13 +1,21 @@
-"""Bounded, opt-in local original verification. Never uses network or source hints.
+"""Bounded, opt-in local original verification. Never uses network itself.
 
-Only a content MD5 explicitly extracted from WeChat type-47 XML authorizes a
-match. QQ cache paths and opaque identity bytes cannot prove an original. All
-paths and file contents are private; failures expose fixed reason codes only.
+Only a content MD5 explicitly extracted from WeChat type-47 XML or from the QQ
+PIC 45406 field authorizes a match. A file name or directory may only nominate
+a candidate inside a caller-approved root; the full bytes must still hash to
+the trusted digest and decode completely. QQ cache paths and opaque identity
+bytes cannot prove an original. All paths and file contents are private;
+failures expose fixed reason codes only.
+
+Bytes the authenticated QQ bridge already fetched are validated here as well:
+identity of the message and its unique PIC element is a precondition owned by
+the caller, never inferred from these bytes.
 """
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
+from dataclasses import replace
 from io import BytesIO
 import hashlib
 import os
@@ -17,7 +25,67 @@ import stat
 import time
 import warnings
 
-from ..analysis.stickers import StickerMedia, StickerSend
+from ..analysis.stickers import StickerData, StickerMedia, StickerSend
+
+
+STICKER_MEDIA_BATCH_SIZE = 32
+MAX_RETAINED_MEDIA_BYTES = 128 * 1024 * 1024
+# Mirrors the bridge transfer bound: one base64 field under the RPC cap.
+MAX_FETCHED_MEDIA_BYTES = 2 * 1024 * 1024
+
+
+def associate_sticker_media(
+    data: StickerData, *, media_keys: tuple[str, ...], roots: tuple[Path, ...] = (),
+    source: str, cancelled: Callable[[], bool] = lambda: False,
+    diagnostics: dict[str, int | bool] | None = None,
+) -> StickerData:
+    """Return the same sending facts with one bounded, explicitly selected batch.
+
+    All keys must belong to this source/result. Repeated sends and already
+    available originals do not cause repeated reads/decodes. Retained bytes
+    across batches share the same memory ceiling; no disk cache is created.
+    """
+    if diagnostics is not None:
+        diagnostics.clear()
+    keys = set(media_keys)
+    sends = {send.media_key: send for send in data.sends if send.source == source}
+    if source not in {"qq", "wechat"} or not keys.issubset(sends) or len(keys) > STICKER_MEDIA_BATCH_SIZE:
+        raise ValueError("invalid_sticker_batch")
+    if not keys or cancelled():
+        return data
+    media = {item.media_key: item for item in resolve_sticker_media(data.sends)}
+    media.update((item.media_key, item) for item in data.media)
+    # Keep all occurrences' path hints; the resolver still reads/decodes once
+    # per unique content. A later send need not carry the earlier cache path.
+    pending = tuple(send for send in data.sends if send.source == source
+                    and send.media_key in keys and not (
+        media[send.media_key].status == "available" and media[send.media_key].original_bytes))
+    if not pending:
+        return data
+    retained = sum(len(item.original_bytes or b"") for item in media.values())
+    options = {}
+    if source == "qq" and len(roots) > 16:
+        from .qq.qq_media_directories import qq_media_search_roots
+
+        options["authorized_scopes"] = roots
+        roots = qq_media_search_roots(roots)
+    results = resolve_sticker_media(
+        pending, roots=roots, targeted=source == "qq", digest_names_only=source == "qq",
+        cancelled=cancelled, max_total_bytes=max(0, MAX_RETAINED_MEDIA_BYTES - retained),
+        diagnostics=diagnostics,
+        **options)
+    if cancelled():
+        return data
+    media.update((item.media_key, item) for item in results)
+    return replace(data, media=tuple(media.values()))
+
+
+# Source/basis pairs whose content digest may authorize an original. Any other
+# evidence level (for example QQ MFACE opaque bytes) stays unsupported.
+_VERIFIABLE_MD5_BASES = frozenset({
+    ("wechat", "wechat_xml_md5"),
+    ("qq", "qq_pic_45406_md5"),
+})
 
 
 class _Rejected(Exception):
@@ -104,8 +172,13 @@ def _witness(info):
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def _inspect(raw: bytes, *, max_pixels: int, max_frames: int) -> tuple[str, int]:
+def _inspect(raw: bytes, *, max_pixels: int, max_frames: int,
+             budget: dict[str, int] | None = None) -> tuple[str, int]:
     """Validate all frames with bounded decompression, retaining original bytes."""
+    # Recognizable out-of-scope containers are not corrupt supported images.
+    # Do not load additional codecs just to identify them.
+    if raw.startswith((b"BM", b"II\x2a\x00", b"MM\x00\x2a")):
+        raise _Rejected("unsupported", "unsupported_format")
     # Keep decoding lazy so ordinary analysis never loads native image codecs.
     try:
         from PIL import Image, UnidentifiedImageError
@@ -131,6 +204,11 @@ def _inspect(raw: bytes, *, max_pixels: int, max_frames: int) -> tuple[str, int]
                     total_pixels += image.width * image.height
                     if count > max_frames or total_pixels > max_pixels:
                         raise _Rejected("limited", "decode_budget")
+                    if budget is not None:
+                        budget["pixels"] -= image.width * image.height
+                        budget["frames"] -= 1
+                        if budget["pixels"] < 0 or budget["frames"] < 0:
+                            raise _Rejected("limited", "total_decode_budget")
                     image.load()
                 # APNG can include a default image in addition to animation frames.
                 actual = "APNG" if fmt == "PNG" and image.get_format_mimetype() == "image/apng" else fmt
@@ -140,12 +218,48 @@ def _inspect(raw: bytes, *, max_pixels: int, max_frames: int) -> tuple[str, int]
         raise _Rejected("invalid", "invalid_image") from None
 
 
+def verify_fetched_media(
+    raw: bytes, *, media_key: str, expected_md5: str,
+    max_pixels: int = 32 * 1024 * 1024, max_frames: int = 128,
+) -> StickerMedia:
+    """Validate bytes fetched for one message whose PIC element was proved.
+
+    A digest equal to the message's own PIC digest is the verified original.
+    A different digest stays a distinct trusted preview: the kernel uniquely
+    proved message, sender and element, so the content is that send's media, but
+    it is not shown or counted as the digest-verified original. Anything that
+    fails the size, format or complete decode check yields no bytes at all.
+    """
+    if not isinstance(raw, (bytes, bytearray)) or not raw or len(raw) > MAX_FETCHED_MEDIA_BYTES:
+        return StickerMedia(media_key, "invalid", "invalid_size")
+    content = bytes(raw)
+    try:
+        fmt, frames = _inspect(content, max_pixels=max_pixels, max_frames=max_frames)
+    except _Rejected as failure:
+        return StickerMedia(media_key, failure.status, failure.reason)
+    verified = isinstance(expected_md5, str) and hashlib.md5(content).hexdigest() == expected_md5.lower()
+    return StickerMedia(
+        media_key, "available" if verified else "preview",
+        None if verified else "content_digest_mismatch",
+        sha256=hashlib.sha256(content).hexdigest(), format=fmt, frame_count=frames,
+        animation_preserved=frames > 1, byte_count=len(content), original_bytes=content,
+    )
+
+
 def resolve_sticker_media(
     sends: Iterable[StickerSend], *, roots: tuple[Path, ...] = (),
+    targeted: bool = False,
+    digest_names_only: bool = False,
+    authorized_scopes: tuple[Path, ...] | None = None,
+    cancelled: Callable[[], bool] = lambda: False,
     max_file_bytes: int = 16 * 1024 * 1024,
     max_total_bytes: int = 128 * 1024 * 1024,
-    max_entries: int = 4096, max_depth: int = 8,
+    max_entries: int = 4096, max_scan_entries: int = 100_000,
+    max_depth: int = 8,
     max_pixels: int = 32 * 1024 * 1024, max_frames: int = 128,
+    max_files: int = 4096,
+    max_total_pixels: int = 64 * 1024 * 1024, max_total_frames: int = 512,
+    diagnostics: dict[str, int | bool] | None = None,
 ) -> tuple[StickerMedia, ...]:
     """Return one media result per key; any incomplete search fails closed.
 
@@ -154,13 +268,38 @@ def resolve_sticker_media(
     SHA-256 contents for one MD5 are ambiguous, never arbitrarily selected.
     Total bytes/entries/depth include unmatched files; decoding has per-original
     pixel/frame limits. A 10-second cooperative deadline bounds traversal.
+
+    ``targeted`` is for a large client cache whose layout is unknown: the walk
+    is bounded by ``max_scan_entries``; only digest-named or exact QQ path-hint
+    candidates are opened. Names, directories and suffixes remain candidate
+    hints; the full-file MD5 and the decode must still agree. A tree no larger
+    than ``max_entries`` files keeps the complete read, so an explicitly
+    selected folder of renamed copies behaves exactly as before.
+    ``digest_names_only`` disables full-content fallback even in small caches;
+    the default preserves explicit folders of renamed copies. ``cancelled``
+    stops cooperatively between entries, reads and bounded decoding stages.
+    ``authorized_scopes`` restricts coalesced traversal roots to the original
+    approved directories. Only their ancestors may be enumerated to reach
+    them; siblings are skipped and never opened. Scope validation and all
+    traversal share one entry budget, deadline and byte budget.
+
+    QQ absolute local path hints may also nominate files encountered by this
+    authorized walk. Hints never add roots, bypass the whitelist or establish
+    content identity. Diagnostics contain aggregate counts/coverage only.
     """
-    unique = {send.media_key: send for send in sends}
+    occurrences = tuple(sends)
+    unique = {send.media_key: send for send in occurrences}
+    stats = dict(entries_seen=0, files_seen=0, candidate_files=0, files_read=0,
+                 name_candidates=0, path_candidates=0, content_matches=0,
+                 traversal_complete=False, all_files_checked=False, budget_exhausted=False)
+    if diagnostics is not None:
+        diagnostics.clear()
+        diagnostics.update(stats)
     results = {}
     wanted = {}
     for key, send in unique.items():
         digest = send.content_md5
-        if send.source != "wechat" or send.identity_basis != "wechat_xml_md5" or not digest:
+        if (send.source, send.identity_basis) not in _VERIFIABLE_MD5_BASES or not digest:
             results[key] = StickerMedia(key, "unsupported", "original_digest_unproven")
         elif not re.fullmatch("[0-9a-f]{32}", digest):
             results[key] = StickerMedia(key, "unsupported", "invalid_digest")
@@ -173,11 +312,36 @@ def resolve_sticker_media(
 
     originals: dict[str, tuple[bytes, str]] = {}
     ambiguous = set()
-    entries = total_bytes = 0
+    entries = total_bytes = files = 0
     deadline = time.monotonic() + 10
+    every: list[tuple[Path, Path]] = []
+    named: dict[str, list[tuple[Path, Path]]] = {digest: [] for digest in wanted}
+    decode_budget = {"pixels": max_total_pixels, "frames": max_total_frames}
+
+    def check_cancelled():
+        if cancelled():
+            raise _Rejected("cancelled", "user_cancelled")
+
     try:
+        check_cancelled()
         if len(roots) > 16:
             raise _Rejected("limited", "root_budget")
+        hints: dict[str, set[Path]] = {digest: set() for digest in wanted}
+        for send in occurrences:
+            check_cancelled()
+            if time.monotonic() > deadline:
+                raise _Rejected("limited", "scan_budget")
+            if (send.source != "qq" or send.identity_basis != "qq_pic_45406_md5"
+                    or send.content_md5 not in wanted):
+                continue
+            for value in send.local_paths:
+                # No filesystem access to source-provided paths here. Only
+                # exact matches encountered inside approved scopes nominate.
+                path = Path(value)
+                if (path.is_absolute() and ".." not in path.parts
+                        and not path.drive.startswith("\\\\") and "\x00" not in value):
+                    hints[send.content_md5].add(path)
+        limit = max_scan_entries if targeted else max_entries
         pending = []
         for supplied in roots:
             root = Path(supplied)
@@ -188,15 +352,41 @@ def resolve_sticker_media(
             if not root.is_dir():
                 raise _Rejected("unsafe", "invalid_root")
             pending.append((root, root, 0))
+        scopes = None
+        scope_ancestors = set()
+        if authorized_scopes is not None:
+            if not authorized_scopes:
+                raise _Rejected("unsafe", "invalid_scope")
+            scopes = set()
+            for supplied in authorized_scopes:
+                check_cancelled()
+                entries += 1
+                if entries > limit or time.monotonic() > deadline:
+                    raise _Rejected("limited", "scan_budget")
+                scope = Path(supplied)
+                if not scope.is_absolute() or ".." in scope.parts or scope.drive.startswith("\\\\"):
+                    raise _Rejected("unsafe", "invalid_scope")
+                if not any(scope.is_relative_to(root) for root, _, _ in pending):
+                    raise _Rejected("unsafe", "invalid_scope")
+                _no_links(scope)
+                if not scope.is_dir():
+                    raise _Rejected("unsafe", "invalid_scope")
+                scopes.add(scope)
+                scope_ancestors.update((scope, *scope.parents))
         while pending:
+            check_cancelled()
             directory, root, depth = pending.pop()
+            inside_scope = scopes is None or any(part in scopes for part in (directory, *directory.parents))
             _no_links(directory)
             with os.scandir(directory) as children:
                 for child in children:
+                    check_cancelled()
                     entries += 1
-                    if entries > max_entries or time.monotonic() > deadline:
+                    if entries > limit or time.monotonic() > deadline:
                         raise _Rejected("limited", "scan_budget")
                     path = Path(child.path)
+                    if not inside_scope and path not in scope_ancestors:
+                        continue
                     _no_links(path)
                     # Windows DirEntry.stat caches dev/ino as zero. Path.lstat
                     # supplies the real identity for comparison with fstat.
@@ -208,44 +398,92 @@ def resolve_sticker_media(
                         continue
                     if not stat.S_ISREG(info.st_mode):
                         raise _Rejected("unsafe", "not_regular_file")
-                    if info.st_size > max_file_bytes:
-                        raise _Rejected("limited", "file_byte_budget")
-                    if total_bytes + info.st_size > max_total_bytes:
-                        raise _Rejected("limited", "total_byte_budget")
-                    with _open_original(path, root) as stream:
-                        before = os.fstat(stream.fileno())
-                        # Windows Python's path stat and CRT fstat can report
-                        # different ctime meanings. Compare shared identity and
-                        # mtime across APIs; compare ctime only within each API.
-                        if _witness(before)[:4] != _witness(info)[:4]:
-                            raise _Rejected("unsafe", "file_changed")
-                        raw = stream.read(min(max_file_bytes, max_total_bytes - total_bytes) + 1)
-                        total_bytes += len(raw)
-                        if (len(raw) != before.st_size or len(raw) > max_file_bytes
-                                or total_bytes > max_total_bytes
-                                or _witness(os.fstat(stream.fileno())) != _witness(before)):
-                            raise _Rejected("unsafe", "file_changed")
-                        _no_links(path)
-                        if _witness(path.stat()) != _witness(info):
-                            raise _Rejected("unsafe", "file_changed")
-                    digest = hashlib.md5(raw).hexdigest()
-                    if digest in wanted:
-                        previous = originals.get(digest)
-                        if previous is not None and previous[0] != raw:
-                            ambiguous.add(digest)
-                        else:
-                            originals[digest] = (raw, str(path))
+                    if not inside_scope:
+                        raise _Rejected("unsafe", "scope_changed")
+                    files += 1
+                    if len(every) < max_entries:
+                        every.append((path, root))
+                    if targeted or digest_names_only:
+                        name = path.name.lower()
+                        name_match = path_match = False
+                        for digest in wanted:
+                            by_name, by_path = digest in name, path in hints[digest]
+                            if by_name or by_path:
+                                named[digest].append((path, root))
+                            name_match |= by_name
+                            path_match |= by_path
+                        stats["name_candidates"] += int(name_match)
+                        stats["path_candidates"] += int(path_match)
+
+        stats["traversal_complete"] = True
+        complete = targeted and not digest_names_only and files <= max_entries and len(every) == files
+        if (not targeted and not digest_names_only) or complete:
+            selected = every
+        else:
+            selected, seen = [], set()
+            for digest in wanted:
+                for item in named[digest]:
+                    if item[0] not in seen:
+                        seen.add(item[0])
+                        selected.append(item)
+        stats["candidate_files"] = len(selected)
+        if len(selected) > max_files:
+            raise _Rejected("limited", "file_count_budget")
+        for path, root in selected:
+            check_cancelled()
+            if time.monotonic() > deadline:
+                raise _Rejected("limited", "scan_budget")
+            _no_links(path)
+            info = path.lstat()
+            if info.st_size > max_file_bytes:
+                raise _Rejected("limited", "file_byte_budget")
+            if total_bytes + info.st_size > max_total_bytes:
+                raise _Rejected("limited", "total_byte_budget")
+            with _open_original(path, root) as stream:
+                check_cancelled()
+                before = os.fstat(stream.fileno())
+                # Windows Python's path stat and CRT fstat can report
+                # different ctime meanings. Compare shared identity and
+                # mtime across APIs; compare ctime only within each API.
+                if _witness(before)[:4] != _witness(info)[:4]:
+                    raise _Rejected("unsafe", "file_changed")
+                raw = stream.read(min(max_file_bytes, max_total_bytes - total_bytes) + 1)
+                total_bytes += len(raw)
+                if (len(raw) != before.st_size or len(raw) > max_file_bytes
+                        or total_bytes > max_total_bytes
+                        or _witness(os.fstat(stream.fileno())) != _witness(before)):
+                    raise _Rejected("unsafe", "file_changed")
+                _no_links(path)
+                if _witness(path.stat()) != _witness(info):
+                    raise _Rejected("unsafe", "file_changed")
+            digest = hashlib.md5(raw).hexdigest()
+            stats["files_read"] += 1
+            check_cancelled()
+            if digest in wanted:
+                previous = originals.get(digest)
+                if previous is not None and previous[0] != raw:
+                    ambiguous.add(digest)
+                else:
+                    originals[digest] = (raw, str(path))
         for digest, key in wanted.items():
             if digest in ambiguous:
                 results[key] = StickerMedia(key, "ambiguous", "digest_content_conflict")
             elif digest not in originals:
-                results[key] = StickerMedia(key, "missing", "no_digest_match")
+                # No name/path candidate is not proof of content absence.
+                # Keep the existing fixed reason code for callers.
+                no_name = (targeted or digest_names_only) and not complete and not named[digest]
+                results[key] = StickerMedia(
+                    key, "missing",
+                    "no_digest_name_match" if no_name else (
+                        "digest_mismatch" if digest_names_only else "no_digest_match"))
             else:
                 raw, reference = originals[digest]
                 try:
                     if time.monotonic() > deadline:
                         raise _Rejected("limited", "scan_budget")
-                    fmt, frames = _inspect(raw, max_pixels=max_pixels, max_frames=max_frames)
+                    fmt, frames = _inspect(raw, max_pixels=max_pixels, max_frames=max_frames,
+                                           budget=decode_budget)
+                    check_cancelled()
                     if time.monotonic() > deadline:
                         raise _Rejected("limited", "scan_budget")
                     results[key] = StickerMedia(
@@ -256,10 +494,17 @@ def resolve_sticker_media(
                     )
                 except _Rejected as failure:
                     results[key] = StickerMedia(key, failure.status, failure.reason)
+        stats["all_files_checked"] = len(selected) == files
     except (_Rejected, OSError, ValueError) as failure:
         status = failure.status if isinstance(failure, _Rejected) else "unreadable"
         reason = failure.reason if isinstance(failure, _Rejected) else "local_read_failed"
         # An incomplete search cannot rule out ambiguity or assert absence.
         for key in wanted.values():
             results[key] = StickerMedia(key, status, reason)
+    finally:
+        stats["entries_seen"], stats["files_seen"] = entries, files
+        stats["content_matches"] = len(originals)
+        stats["budget_exhausted"] = any(item.status == "limited" for item in results.values())
+        if diagnostics is not None:
+            diagnostics.update(stats)
     return tuple(results[key] for key in unique)
