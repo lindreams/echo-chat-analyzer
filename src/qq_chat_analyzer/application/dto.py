@@ -9,6 +9,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from ..analysis.models import AnalysisReports
+from ..analysis.stickers import StickerData
 from ..presentation.models import EchoReportView
 from .scope_filter import AnalysisScope
 
@@ -48,6 +49,7 @@ class AnalysisRequestDTO:
     )
     conversation_kind: str = "unknown"
     viewer_speaker_key: str | None = field(default=None, repr=False)
+    sticker_media_roots: tuple[Path, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,3 +94,4 @@ class AnalysisResultDTO:
         repr=False,
     )
     echo_report_view: EchoReportView | None = field(default=None, repr=False)
+    stickers: StickerData = field(default_factory=StickerData, repr=False)

@@ -359,6 +359,11 @@ class WeChatSetupService:
             db_key=config.db_key or existing.db_key,
             wcdb_cli_path=config.wcdb_cli_path or existing.wcdb_cli_path,
             wcdb_dll_path=config.wcdb_dll_path or existing.wcdb_dll_path,
+            sticker_media_roots=(
+                config.sticker_media_roots or (
+                    existing.sticker_media_roots if config.data_root == existing.data_root else ()
+                )
+            ),
         )
 
     def _probe_wechat_databases(self, provider: Any) -> list[Any]:
@@ -443,7 +448,10 @@ class WeChatSetupService:
         except Exception:
             existing = WeChatEnvironmentConfig()
         config = self._apply_default_runtime(
-            replace(existing, data_root=root)
+            replace(
+                existing, data_root=root,
+                sticker_media_roots=(existing.sticker_media_roots if root == existing.data_root else ()),
+            )
         )
         try:
             self._config_writer.save(config)

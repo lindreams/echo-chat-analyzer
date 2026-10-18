@@ -58,6 +58,20 @@ def _isolated_setup_service(tmp_path: Path, **overrides) -> WeChatSetupService:
     return WeChatSetupService(**defaults)
 
 
+def test_media_authority_survives_same_root_save_and_is_cleared_on_account_switch(tmp_path):
+    from dataclasses import replace
+    path = tmp_path / "config.json"
+    original = replace(_config(tmp_path), sticker_media_roots=(tmp_path / "originals",))
+    writer = WeChatEnvironmentConfigWriter(path)
+    loader = WeChatEnvironmentConfigLoader(path)
+    writer.save(original)
+    service = WeChatSetupService(config_loader=loader, config_writer=writer)
+    service.save_environment(WeChatEnvironmentConfig(data_root=original.data_root))
+    assert loader.load().sticker_media_roots == original.sticker_media_roots
+    service.save_environment(WeChatEnvironmentConfig(data_root=tmp_path / "different-account"))
+    assert loader.load().sticker_media_roots == ()
+
+
 class _StubConnectionService:
     def __init__(self, status: object) -> None:
         self._status = status

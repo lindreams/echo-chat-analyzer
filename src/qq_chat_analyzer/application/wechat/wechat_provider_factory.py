@@ -51,6 +51,7 @@ def default_provider_builder(config: WeChatEnvironmentConfig) -> Any:
         db_key=config.db_key,
         wcdb_cli_path=config.wcdb_cli_path,
         wcdb_dll_path=config.wcdb_dll_path,
+        sticker_media_roots=config.sticker_media_roots,
     )
 
 

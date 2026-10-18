@@ -1,5 +1,11 @@
 # Data Semantics
 
+表情包原件数据能力另见 [STICKER_DATA](docs/STICKER_DATA.md)：新通路保留来源确认的
+发送记录及独立媒体结果，经现有过滤后的 Rich 实例关联，不改变本页 ExpressionReport
+的旧 sticker 总量、候选裁剪或 fallback key。微信只有通过校验且无歧义的 XML MD5
+可在新通路归并素材；降级身份逐次独立。QQ MFACE 保留 opaque 身份，原件关联未证实；
+QQ PIC 不据动画或路径推断表情包，微信 Type 3 仍不进入已确认集合。
+
 本文定义现役消息身份、字段和统计语义；模块职责见 [ARCHITECTURE](ARCHITECTURE.md)。来源解析、核心统计和展示消费是不同环节，不能把展示规则写成来源事实。
 
 ## 1. 消息与身份
@@ -17,7 +23,7 @@ RichMessage 保存来源提取的结构化内容和关系；ChatMessage 是它�
 
 QQ 显示名由 remark、群名片、nickname 和安全 fallback 按会话上下文解析；名称改变不应拆分已有稳定 ID，同名不同 ID 不应合并。展示名缺失不能成为猜测账号的理由。
 
-QQ Direct DB 私聊的零值发送者可保留消息：sender_id=None、sender=""、is_self=None，不采用偶然附带的昵称作为参与者身份。它不进入成员画像、成员词语归属或参与者计数，仍参与全局消息量、时间、文本和表达统计；不推定为系统消息、本人或对方。群聊零值维持现有行为，不能把私聊规则无条件推广。缺失／无效到无法解析的原始记录仍可能被 Adapter 跳过，不等于所有未知输入都必定保留。
+QQ Direct DB 私聊与群聊的零值发送者均保留为未知身份：sender_id=None、sender=""、is_self=None，不采用偶然附带的昵称作为参与者身份。它不进入成员画像、成员词语或表达归属、参与者计数及表情素材的逐成员计数，仍参与全局消息量、时间、文本和表达统计；不推定为系统消息、本人或对方。缺失／无效到无法解析的原始记录仍可能被 Adapter 跳过，不等于所有未知输入都必定保留。
 
 ### conversation_type 与 is_self
 

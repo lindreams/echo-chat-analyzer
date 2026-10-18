@@ -8,7 +8,7 @@ databases, parse chat messages, or make any runtime decision.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -78,6 +78,7 @@ class WeChatEnvironmentConfig:
     db_key: str | None = None
     wcdb_cli_path: Path | None = None
     wcdb_dll_path: Path | None = None
+    sticker_media_roots: tuple[Path, ...] = field(default=(), repr=False)
 
 
 class WeChatEnvironmentConfigWriter:
@@ -112,6 +113,8 @@ class WeChatEnvironmentConfigWriter:
             "wcdb_cli_path": _stringify(config.wcdb_cli_path),
             "wcdb_dll_path": _stringify(config.wcdb_dll_path),
         }
+        if config.sticker_media_roots:
+            payload["sticker_media_roots"] = [str(path) for path in config.sticker_media_roots]
         body = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
         try:
             self._config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,6 +167,7 @@ class WeChatEnvironmentConfigLoader:
             db_key=_string_value(payload.get("db_key")),
             wcdb_cli_path=_path_value(payload.get("wcdb_cli_path")),
             wcdb_dll_path=_path_value(payload.get("wcdb_dll_path")),
+            sticker_media_roots=_media_roots(payload.get("sticker_media_roots", [])),
         )
 
     def load_or_default(self) -> WeChatEnvironmentConfig:
@@ -263,6 +267,21 @@ def _path_value(value: Any) -> Path | None:
 
 def _is_file(path: Path | None) -> bool:
     return path is not None and path.is_file()
+
+
+def _media_roots(value: Any) -> tuple[Path, ...]:
+    """Explicit local read authority; never derive it from account discovery."""
+    if not isinstance(value, list) or len(value) > 16:
+        raise WeChatConfigCorrupted()
+    paths = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise WeChatConfigCorrupted()
+        path = Path(item)
+        if not path.is_absolute() or ".." in path.parts or path.drive.startswith("\\\\"):
+            raise WeChatConfigCorrupted()
+        paths.append(path)
+    return tuple(paths)
 
 
 __all__ = [

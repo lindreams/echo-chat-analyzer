@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
+import binascii
 import json
 import re
 import time
@@ -21,8 +23,10 @@ class NapCatQQError(Exception):
     code = "napcat_qq_unavailable"
     public_message = "QQ local runtime is unavailable. Please finish QQ login and retry."
 
-    def __init__(self):
+    def __init__(self, rpc_error: str | None = None):
         super().__init__(self.public_message)
+        # The bridge's fixed error label, if it sent one. Never shown to users.
+        self.rpc_error = rpc_error
 
 
 class NapCatQQAuthRejected(NapCatQQError):
@@ -39,6 +43,26 @@ class NapCatQQAuthRejected(NapCatQQError):
 class NapCatQQWorkerGenerationChanged(NapCatQQError):
     code = "napcat_qq_worker_generation_changed"
     public_message = "QQ runtime restarted. Please reconnect explicitly."
+
+
+# Fixed stages a media fetch may fail at. The bridge owns these labels; only a
+# whitelisted one survives, so no path, message ID or kernel text can leak.
+_MEDIA_STAGES = frozenset({
+    "media_mapping_rejected", "media_message_query_failed", "media_api_unavailable",
+    "media_busy", "media_budget_exhausted", "media_download_timeout",
+    "media_download_failed", "media_path_invalid", "media_file_missing",
+    "media_open_failed", "media_file_type_rejected", "media_file_identity_changed",
+    "media_file_empty", "media_file_too_large", "media_read_incomplete",
+    "media_file_changed", "media_file_rejected",
+})
+
+
+class NapCatQQMediaStageError(NapCatQQError):
+    """One media fetch failed at a fixed, sanitised stage."""
+
+    def __init__(self, stage: str) -> None:
+        super().__init__()
+        self.stage = stage
 
 
 @dataclass(frozen=True)
@@ -77,8 +101,80 @@ class NapCatGroup:
     member_count: int | None
 
 
+@dataclass(frozen=True)
+class PicMessageMapping:
+    """Read-only message-element identity check used before a media fetch.
+
+    The result contains only booleans, counts and a fixed basis label. Real
+    message IDs, UIDs, digests, paths, URLs and element IDs never leave the
+    runtime bridge.
+    """
+
+    passed: bool
+    found: bool
+    unique: bool
+    msg_id_matches: bool
+    time_matches: bool
+    peer_matches: bool
+    sender_matches: bool | None
+    pic_element_count: int
+    matched_pic_count: int
+    segment_id_matches: bool | None
+    file_uuid_matches: bool | None
+    md5_matches: bool
+    match_basis: str
+
+
+_PROBE_BASES = frozenset({
+    "none", "md5", "segment_id", "file_uuid", "segment_id+md5",
+    "file_uuid+md5", "segment_id+file_uuid", "segment_id+file_uuid+md5",
+})
+
+
 def _text(value: Any) -> str:
     return value if isinstance(value, str) else ""
+
+
+MAX_PIC_MEDIA_BYTES = 2 * 1024 * 1024
+
+
+def _valid_pic_request(
+    *, msg_id: Any, peer_uid: Any, expected_time: Any, expected_md5: Any,
+    expected_file_uuid: Any, expected_segment_id: Any, expected_self: Any,
+    chat_type: Any = 1, expected_sender_uin: Any = None, expected_sender_uid: Any = None,
+) -> bool:
+    """Fixed private/group PIC locators shared by identity check and fetch."""
+    return (
+        type(chat_type) is int and chat_type in (1, 2)
+        and (
+            (chat_type == 1 and expected_sender_uin is None and expected_sender_uid is None)
+            or (chat_type == 2
+                and isinstance(expected_sender_uin, str)
+                and re.fullmatch(r"[1-9][0-9]{4,19}", expected_sender_uin) is not None
+                and (expected_sender_uid is None or (
+                    isinstance(expected_sender_uid, str)
+                    and re.fullmatch(r"u_[A-Za-z0-9_-]{10,64}", expected_sender_uid) is not None))
+                and expected_file_uuid is not None and expected_segment_id is not None)
+        )
+        and isinstance(msg_id, str)
+        and re.fullmatch(r"[1-9][0-9]{0,19}", msg_id) is not None
+        and isinstance(peer_uid, str)
+        and re.fullmatch(r"u_[A-Za-z0-9_-]{10,64}" if chat_type == 1 else r"[1-9][0-9]{4,19}", peer_uid) is not None
+        and isinstance(expected_time, int)
+        and not isinstance(expected_time, bool)
+        and 0 < expected_time <= 99_999_999_999
+        and isinstance(expected_md5, str)
+        and re.fullmatch(r"[0-9a-fA-F]{32}", expected_md5) is not None
+        and (expected_file_uuid is None or (
+            isinstance(expected_file_uuid, str)
+            and re.fullmatch(r"[A-Za-z0-9_.:+=\/-]{1,128}", expected_file_uuid) is not None
+            and ".." not in expected_file_uuid
+            and not expected_file_uuid.startswith("/")))
+        and (expected_segment_id is None or (
+            isinstance(expected_segment_id, str)
+            and re.fullmatch(r"[1-9][0-9]{0,19}", expected_segment_id) is not None))
+        and (expected_self is None or isinstance(expected_self, bool))
+    )
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -171,7 +267,9 @@ class NapCatQQProvider:
                 self._generation_changed = True
                 raise NapCatQQWorkerGenerationChanged()
             if status != 200 or not isinstance(value, dict) or value.get("ok") is not True:
-                raise NapCatQQError()
+                error = value.get("error") if isinstance(value, dict) else None
+                raise NapCatQQError(
+                    error if isinstance(error, str) and re.fullmatch(r"[a-z][a-z0-9_]{2,39}", error) else None)
             result = value["result"]
             if method == "Core.status":
                 if not isinstance(result, dict) or result.get("rpc_auth") != "bearer-v1":
@@ -194,7 +292,10 @@ class NapCatQQProvider:
             return result
         except (NapCatQQAuthRejected, NapCatQQWorkerGenerationChanged):
             raise
-        except (OSError, ValueError, KeyError, TypeError, NapCatQQError):
+        except NapCatQQError as error:
+            # Keep the bridge's fixed label; it is a whitelisted code only.
+            raise NapCatQQError(error.rpc_error) from None
+        except (OSError, ValueError, KeyError, TypeError):
             raise NapCatQQError() from None
 
     def status(self, *, timeout: float | None = None) -> NapCatStatus:
@@ -226,6 +327,175 @@ class NapCatQQProvider:
         if not isinstance(result, dict):
             raise NapCatQQError()
         return result
+
+    def resolve_pic_message(
+        self,
+        *,
+        msg_id: str,
+        peer_uid: str,
+        expected_time: int,
+        expected_md5: str,
+        expected_file_uuid: str | None = None,
+        expected_segment_id: str | None = None,
+        expected_self: bool | None = None,
+        chat_type: int = 1,
+        expected_sender_uin: str | None = None,
+        expected_sender_uid: str | None = None,
+        timeout: float | None = 8,
+    ) -> PicMessageMapping:
+        """Ask the runtime to map one DB message to its live PIC element.
+
+        This only calls ``MsgApi.getMsgsByMsgId`` through the fixed, read-only
+        bridge method. It never downloads media, reads a path/URL, queries any
+        other message, or retries with neighbouring IDs.
+        """
+        if not _valid_pic_request(
+            msg_id=msg_id, peer_uid=peer_uid, expected_time=expected_time,
+            expected_md5=expected_md5, expected_file_uuid=expected_file_uuid,
+            expected_segment_id=expected_segment_id, expected_self=expected_self,
+            chat_type=chat_type, expected_sender_uin=expected_sender_uin, expected_sender_uid=expected_sender_uid,
+        ):
+            raise NapCatQQError()
+        result = self._rpc(
+            "EchoMediaProbe.resolvePicMessage",
+            [{
+                "msgId": msg_id,
+                "chatType": chat_type,
+                "peerUid": peer_uid,
+                "expectedTime": expected_time,
+                "expectedMd5": expected_md5,
+                "expectedFileUuid": expected_file_uuid,
+                "expectedSegmentId": expected_segment_id,
+                "expectedSelf": expected_self,
+                **({"expectedSenderUin": expected_sender_uin, "expectedSenderUid": expected_sender_uid}
+                   if chat_type == 2 else {}),
+            }],
+            timeout=timeout,
+        )
+        bool_fields = (
+            "passed", "found", "unique", "msg_id_matches", "time_matches",
+            "peer_matches", "md5_matches",
+        )
+        count_fields = ("pic_element_count", "matched_pic_count")
+        if (
+            not isinstance(result, dict)
+            or any(not isinstance(result.get(key), bool) for key in bool_fields)
+            or any(type(result.get(key)) is not int or result[key] < 0 for key in count_fields)
+            or result["matched_pic_count"] > result["pic_element_count"]
+            or (result.get("sender_matches") is not None
+                and not isinstance(result.get("sender_matches"), bool))
+            or (result.get("segment_id_matches") is not None
+                and not isinstance(result.get("segment_id_matches"), bool))
+            or (result.get("file_uuid_matches") is not None
+                and not isinstance(result.get("file_uuid_matches"), bool))
+            or result.get("match_basis") not in _PROBE_BASES
+            or (result["unique"] and not result["found"])
+        ):
+            raise NapCatQQError()
+        # Recompute the verdict instead of trusting the bridge's own label.
+        passed = all((
+            result["unique"],
+            result["msg_id_matches"],
+            result["time_matches"],
+            result["peer_matches"],
+            result["matched_pic_count"] == 1,
+            result["md5_matches"],
+        )) and result["sender_matches"] is not False
+        if chat_type == 2:
+            passed = (passed and result["sender_matches"] is True
+                      and result["segment_id_matches"] is True and result["file_uuid_matches"] is True)
+        if result["passed"] is not passed:
+            raise NapCatQQError()
+        return PicMessageMapping(
+            passed=passed,
+            found=result["found"],
+            unique=result["unique"],
+            msg_id_matches=result["msg_id_matches"],
+            time_matches=result["time_matches"],
+            peer_matches=result["peer_matches"],
+            sender_matches=result["sender_matches"],
+            pic_element_count=result["pic_element_count"],
+            matched_pic_count=result["matched_pic_count"],
+            segment_id_matches=result["segment_id_matches"],
+            file_uuid_matches=result["file_uuid_matches"],
+            md5_matches=result["md5_matches"],
+            match_basis=result["match_basis"],
+        )
+
+    def download_pic_media(
+        self,
+        *,
+        msg_id: str,
+        peer_uid: str,
+        element_id: str,
+        expected_time: int,
+        expected_md5: str,
+        expected_file_uuid: str | None = None,
+        expected_self: bool | None = None,
+        chat_type: int = 1,
+        expected_sender_uin: str | None = None,
+        expected_sender_uid: str | None = None,
+        timeout: float | None = 25,
+    ) -> bytes:
+        """Fetch the bytes of one already located private/group PIC element.
+
+        The bridge re-locates the same message and requires the one PIC element
+        matching this element ID, digest and file UUID before asking QQ for the
+        media. Only bounded bytes return; the runtime's local path, URL, file
+        name and account IDs never cross the bridge.
+
+        The client deadline stays above the bridge's own 20 s media budget so a
+        timeout is reported by the bridge as a stage instead of being lost here.
+        """
+        if (
+            not _valid_pic_request(
+                msg_id=msg_id, peer_uid=peer_uid, expected_time=expected_time,
+                expected_md5=expected_md5, expected_file_uuid=expected_file_uuid,
+                expected_segment_id=element_id, expected_self=expected_self,
+                chat_type=chat_type, expected_sender_uin=expected_sender_uin, expected_sender_uid=expected_sender_uid,
+            )
+            or not isinstance(element_id, str)
+        ):
+            raise NapCatQQError()
+        try:
+            result = self._rpc(
+                "EchoMediaProbe.downloadPicMedia",
+                [{
+                    "msgId": msg_id,
+                    "chatType": chat_type,
+                    "peerUid": peer_uid,
+                    "elementId": element_id,
+                    "expectedTime": expected_time,
+                    "expectedMd5": expected_md5,
+                    "expectedFileUuid": expected_file_uuid,
+                    "expectedSelf": expected_self,
+                    **({"expectedSenderUin": expected_sender_uin, "expectedSenderUid": expected_sender_uid}
+                       if chat_type == 2 else {}),
+                }],
+                timeout=timeout,
+            )
+        except NapCatQQError as error:
+            stage = getattr(error, "rpc_error", None)
+            if stage in _MEDIA_STAGES:
+                raise NapCatQQMediaStageError(stage) from None
+            raise
+        if not isinstance(result, dict) or set(result) != {"size", "base64"}:
+            raise NapCatQQError()
+        size, encoded = result["size"], result["base64"]
+        if (
+            type(size) is not int
+            or not 0 < size <= MAX_PIC_MEDIA_BYTES
+            or not isinstance(encoded, str)
+            or len(encoded) != 4 * ((size + 2) // 3)
+        ):
+            raise NapCatQQError()
+        try:
+            content = base64.b64decode(encoded.encode("ascii"), validate=True)
+        except (binascii.Error, ValueError, UnicodeEncodeError):
+            raise NapCatQQError() from None
+        if len(content) != size or len(content) > MAX_PIC_MEDIA_BYTES:
+            raise NapCatQQError()
+        return content
 
     def snapshot_client(self, snapshot_root: str | Path) -> QQDirectSnapshotRuntimeClient:
         def transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:

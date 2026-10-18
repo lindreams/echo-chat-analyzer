@@ -284,8 +284,10 @@ class QQDatabaseProvider:
             conditions.append('"40050" <= ?')
             parameters.append(end_time)
 
+        locator_columns = ("40021", "40020") if table_name == _GROUP_MESSAGE_TABLE else ("40021",)
         query = (
             'SELECT "40001", "40027", "40030", "40033", "40050", "40800"'
+            f'{self._optional_columns(table_name, locator_columns, operation="materialize_session_payload")}'
             f'{self._group_sequence_selection() if table_name == _GROUP_MESSAGE_TABLE else ""} '
             f'FROM "{table_name}" '
             f"WHERE {' AND '.join(conditions)} "
@@ -304,6 +306,24 @@ class QQDatabaseProvider:
             if record is not None:
                 records.append(record)
         return records
+
+    def _optional_columns(
+        self,
+        table_name: str,
+        columns: tuple[str, ...],
+        *,
+        operation: str,
+    ) -> str:
+        """Select optional columns only when this schema has them."""
+        present = {
+            row["name"]
+            for row in self._query_rows(
+                f"PRAGMA table_info({table_name})",
+                operation=operation,
+                table_name=table_name,
+            )
+        }
+        return "".join(f', "{column}"' for column in columns if column in present)
 
     def _group_sequence_selection(self) -> str:
         """Read 40003 when present; older text-only schemas stay importable."""
@@ -527,6 +547,8 @@ def _session_record(row: sqlite3.Row, table_name: str) -> dict[str, Any] | None:
             "40033": row["40033"],
             "40050": row["40050"],
             **({"40003": row["40003"]} if "40003" in row.keys() else {}),
+            **({"40021": row["40021"]} if "40021" in row.keys() else {}),
+            **({"40020": row["40020"]} if "40020" in row.keys() else {}),
         },
         "message_blob": base64.b64encode(blob).decode("ascii"),
         "blob_encoding": "base64",

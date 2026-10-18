@@ -148,6 +148,11 @@ class WeChatExportImportService:
         """
         return self._provider.list_sessions()
 
+    def sticker_media_roots(self) -> tuple[Path, ...]:
+        """Use the same configured provider as exports; older providers opt out."""
+        accessor = getattr(self._provider, "sticker_media_roots", None)
+        return tuple(accessor()) if accessor is not None else ()
+
     def get_session_message_range(self, session_id: str) -> tuple[int, int] | None:
         """Normalize shard time aggregates using the shared timestamp rules."""
         epochs = [

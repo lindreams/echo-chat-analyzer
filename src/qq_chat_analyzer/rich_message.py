@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 
@@ -30,6 +30,30 @@ class TextContent:
 
 
 @dataclass(frozen=True, slots=True)
+class StickerIdentity:
+    """Source evidence, distinct from the legacy expression display key.
+
+    No identity means an occurrence must not be merged with another send.
+    Local paths are untrusted hints, never proof of an original resource.
+    """
+
+    classification_basis: str
+    identity_basis: str
+    identity_key: str | None = field(default=None, repr=False)
+    content_md5: str | None = field(default=None, repr=False)
+    local_paths: tuple[str, ...] = field(default=(), repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class ImageReference:
+    """PIC metadata; these fields do not classify an image as a sticker."""
+
+    content_md5: str | None = field(default=None, repr=False)
+    is_original: bool | None = None
+    local_paths: tuple[str, ...] = field(default=(), repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class ExpressionContent:
     """One source-neutral expression occurrence in a message."""
 
@@ -40,6 +64,7 @@ class ExpressionContent:
     position: int | None = None
     text_before: str | None = None
     text_after: str | None = None
+    sticker: StickerIdentity | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,9 +100,15 @@ class RecallEvent:
 
 @dataclass(frozen=True, slots=True)
 class NonTextContent:
-    """One bounded content occurrence, without resources or display text."""
+    """One non-text occurrence with optional untrusted source metadata.
+
+    Some sources expose sticker evidence on an image segment. The content stays
+    a non-text image fact for legacy statistics; sticker is separate provenance.
+    """
 
     kind: Literal["image", "unknown"]
+    media: ImageReference | None = field(default=None, repr=False)
+    sticker: StickerIdentity | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         if self.kind not in ("image", "unknown"):

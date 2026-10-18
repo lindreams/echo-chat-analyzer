@@ -42,6 +42,10 @@ datas.append((str(project_root / "scripts/windows_runtime_manifest.json"), "scri
 datas.append((str(project_root / "scripts/qq_napcat_runtime_pins.json"), "scripts"))
 datas += copy_metadata("qq-chat-analyzer")
 datas += copy_metadata("velopack")
+
+# Original verification is a desktop capability. Keep upstream codec hooks and
+# Pillow's bundled third-party notices rather than maintaining private codecs.
+datas += copy_metadata("pillow")
 datas.append((str(echo_icon), "assets/branding/echo"))
 datas.append((str(echo_favicon), "assets/branding/echo"))
 datas.append((str(echo_report_logo), "assets/branding/echo"))
@@ -51,7 +55,7 @@ datas.append((str(echo_qq_expression_assets), "frontend/echo_report/qq-emojis"))
 
 # Libraries that only the legacy CLI artifacts need. The desktop app writes
 # nothing but echo-report.json / echo-report.html, so its import graph never
-# reaches matplotlib, wordcloud, Pillow or pandas (nor pytest/pygments, which
+# reaches matplotlib, wordcloud or pandas (nor pytest/pygments, which
 # pandas.testing drags in). Excluding them keeps Echo.exe small; the source
 # install and the ``qqchat`` CLI keep the full dependency set.
 #
@@ -68,7 +72,6 @@ desktop_excludes = [
     "mpl_toolkits",
     "wordcloud",
     "pandas",
-    "PIL",
     "contourpy",
     "kiwisolver",
     "fontTools",

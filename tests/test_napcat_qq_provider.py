@@ -27,12 +27,67 @@ SERVER = """
 import {startBridge} from './bridge.mjs';
 import fs from 'node:fs';
 const config = JSON.parse(process.argv[2]);
+// File races and old Windows stat differences are confined to fictional files
+// in this server's test directory; no QQ or NapCat runtime is loaded.
+if(config.mediaRace) {
+  if(config.mediaRace==='junction') fs.symlinkSync(config.replacementPath,config.mediaPath,'junction');
+  const lstat=fs.promises.lstat.bind(fs.promises);
+  const open=fs.promises.open.bind(fs.promises);
+  fs.promises.lstat=async(p,options)=>{
+    const info=await lstat(p,options);
+    if(p===config.mediaPath && config.mediaRace==='windows-dev')
+      info.dev=typeof info.dev==='bigint' ? info.dev+1n : info.dev+1;
+    if(p===config.mediaPath && config.mediaRace==='rounded-inode')
+      info.ino=options?.bigint ? 9007199254740992n : Number(9007199254740992n);
+    if(p===config.mediaPath && config.mediaRace==='unknown-inode')
+      info.ino=options?.bigint ? 0n : 0;
+    return info;
+  };
+  let replaced=false;
+  const replace=async()=>{
+    if(replaced) return;
+    replaced=true;
+    await fs.promises.rename(config.mediaPath,config.mediaPath+'.old');
+    if(config.mediaRace==='swapped-link')
+      await fs.promises.symlink(config.replacementPath,config.mediaPath);
+    else await fs.promises.rename(config.replacementPath,config.mediaPath);
+  };
+  fs.promises.open=async(p,flags)=>{
+    if(p===config.mediaPath && ['before-open','swapped-link'].includes(config.mediaRace)) await replace();
+    const handle=await open(p,flags);
+    if(p!==config.mediaPath) return handle;
+    if(['rounded-inode','unknown-inode'].includes(config.mediaRace)) {
+      const stat=handle.stat.bind(handle);
+      handle.stat=async options=>{
+        const info=await stat(options);
+        info.ino=config.mediaRace==='unknown-inode' ? (options?.bigint ? 0n : 0)
+          : (options?.bigint ? 9007199254740993n : Number(9007199254740993n));
+        return info;
+      };
+    }
+    if(config.mediaRace==='during-read') {
+      const read=handle.read.bind(handle);
+      handle.read=async(...args)=>{const result=await read(...args);await replace();return result;};
+    }
+    return handle;
+  };
+}
 const mark = name => { if (config.marker) fs.appendFileSync(config.marker, name + '\\n'); };
 const info = fields => new Proxy(fields, {get(target, key) { mark('Core.status'); return target[key]; }});
 const core={dbPassphrase:'PRIVATE',selfInfo:info({uin:'12345678',uid:'u_self',nick:'Self',online:true,secret:'PRIVATE'}),apis:{
  DatabaseApi:{hasPassphrase:()=>true,decryptDatabase(){mark('decryptDatabase')}},
+ FileApi:{downloadMedia:async(...args)=>{mark('downloadMedia');if(config.expectedDownload && JSON.stringify(args.slice(0,4))!==JSON.stringify(config.expectedDownload)) throw new Error('wrong locator');return config.mediaPath ?? ''}},
  FriendApi:{getBuddyV2ExWithCate:async()=>{mark('listFriends');return [{buddyList:[{uin:'23456789',uid:'u_friend',coreInfo:{uin:'23456789',uid:'u_friend',nick:'Nick',remark:'Remark',secret:'PRIVATE'},secret:'PRIVATE'},{uid:'u_only'},{uin:'34567890'}]}]}},
- GroupApi:{getGroups:async()=>{mark('listGroups');return [{groupCode:'45678901',groupName:'Group',memberCount:3},{groupCode:'56789012'}]},getGroupMemberAll:async()=>{mark('getGroupMemberAll');return {result:{infos:new Map([['u_member',{uid:'u_member',uin:'23456789',nick:'Nick',cardName:'Card',secret:'PRIVATE'}]])}}}}
+ GroupApi:{getGroups:async()=>{mark('listGroups');return [{groupCode:'45678901',groupName:'Group',memberCount:3},{groupCode:'56789012'}]},getGroupMemberAll:async()=>{mark('getGroupMemberAll');return {result:{infos:new Map([['u_member',{uid:'u_member',uin:'23456789',nick:'Nick',cardName:'Card',secret:'PRIVATE'}]])}}}},
+ MsgApi:{getMsgsByMsgId:async(peer,ids)=>{
+   mark('getMsgsByMsgId');
+   const pic={elementType:2,elementId:'8000000000000000001',picElement:{md5HexStr:'AB'.repeat(16),fileUuid:'fictional-file-uuid',fileName:'PRIVATE.jpg'},...config.picOverrides};
+   const message={msgId:ids[0],msgSeq:'42',msgTime:'1760000001',chatType:peer.chatType,peerUid:peer.peerUid,senderUid:peer.peerUid,secret:'PRIVATE',elements:[pic,{elementType:1,elementId:'8000000000000000002',textElement:{content:'PRIVATE'}}],...config.messageOverrides};
+   if(config.duplicatePic) message.elements.push({...pic});
+   if(config.secondMessageOverrides && config.queried) Object.assign(message,config.secondMessageOverrides);
+   config.queried=true;
+   return {result:0,msgList:config.mode==='probe-duplicate'?[message,{...message}]:[message]};
+ }}
 }};
 let snapshot={
  acquire:async()=>{mark('acquire');return {ok:true,status:'ready',generation_id:'test-generation'}},
@@ -581,3 +636,342 @@ def test_bridge_refuses_an_absent_or_malformed_credential():
     )
     result=subprocess.run([node,"--input-type=module","-e",script],capture_output=True,timeout=10)
     assert result.returncode == 0, result.stderr.decode(errors="replace")
+
+
+# ------------------------------------------------------- message mapping probe
+
+_PROBE = {
+    "msg_id": "7000000000000000001",
+    "peer_uid": "u_fictionalpeer000000000000",
+    "expected_time": 1760000001,
+    "expected_md5": "ab" * 16,
+    "expected_file_uuid": "fictional-file-uuid",
+    "expected_segment_id": "8000000000000000001",
+    "expected_self": False,
+}
+_PROBE_WIRE = {
+    "msgId": _PROBE["msg_id"],
+    "chatType": 1,
+    "peerUid": _PROBE["peer_uid"],
+    "expectedTime": _PROBE["expected_time"],
+    "expectedMd5": _PROBE["expected_md5"],
+    "expectedFileUuid": _PROBE["expected_file_uuid"],
+    "expectedSegmentId": _PROBE["expected_segment_id"],
+    "expectedSelf": _PROBE["expected_self"],
+}
+
+
+def test_probe_maps_one_message_and_element_without_returning_private_values(runtime, tmp_path):
+    calls = tmp_path / "probe-calls.txt"
+    base = runtime(marker=calls)
+    mapping = provider(base).resolve_pic_message(**_PROBE)
+    assert mapping.passed
+    assert mapping.found and mapping.unique
+    assert mapping.msg_id_matches and mapping.time_matches and mapping.peer_matches
+    assert mapping.sender_matches is True
+    assert mapping.pic_element_count == 1 and mapping.matched_pic_count == 1
+    assert mapping.segment_id_matches is True
+    assert mapping.file_uuid_matches is True and mapping.md5_matches is True
+    assert mapping.match_basis == "segment_id+file_uuid+md5"
+    executed = calls.read_text()
+    assert "getMsgsByMsgId" in executed
+    assert "downloadMedia" not in executed
+
+    status, payload = request(base, "EchoMediaProbe.resolvePicMessage", [dict(_PROBE_WIRE)])
+    assert status == 200 and payload["ok"] is True
+    body = json.dumps(payload)
+    for private in (
+        _PROBE["msg_id"], _PROBE["peer_uid"], _PROBE["expected_segment_id"],
+        _PROBE["expected_md5"], _PROBE["expected_file_uuid"], "PRIVATE", ".jpg",
+    ):
+        assert private not in body
+
+
+def test_probe_reports_segment_mismatch_but_keeps_md5_mapping(runtime):
+    mapping = provider(runtime()).resolve_pic_message(
+        **{**_PROBE, "expected_segment_id": "8000000000000000002"})
+    assert mapping.passed
+    assert mapping.segment_id_matches is False
+    assert mapping.match_basis == "file_uuid+md5"
+
+
+def test_probe_rejects_wrong_md5_and_duplicate_message_results(runtime):
+    wrong = provider(runtime()).resolve_pic_message(
+        **{**_PROBE, "expected_md5": "cd" * 16})
+    assert not wrong.passed and wrong.matched_pic_count == 0
+
+    duplicate = provider(runtime("probe-duplicate")).resolve_pic_message(**_PROBE)
+    assert duplicate.found and not duplicate.unique and not duplicate.passed
+
+
+def test_probe_rejects_invalid_parameters_before_any_kernel_call(runtime, tmp_path):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    calls = tmp_path / "invalid-probe-calls.txt"
+    client = provider(runtime(marker=calls))
+    client.status()
+    invalid = (
+        {"msg_id": int(_PROBE["msg_id"])},
+        {"msg_id": "0"},
+        {"peer_uid": "u_short"},
+        {"peer_uid": "fictional-peer"},
+        {"expected_time": True},
+        {"expected_time": 0},
+        {"expected_md5": "zz" * 16},
+        {"expected_file_uuid": "../outside"},
+        {"expected_segment_id": "0"},
+        {"expected_self": "yes"},
+    )
+    for override in invalid:
+        with pytest.raises(module.NapCatQQError):
+            client.resolve_pic_message(**{**_PROBE, **override})
+    assert "getMsgsByMsgId" not in calls.read_text()
+
+
+# ------------------------------------------------------- bounded media fetch
+
+_MEDIA = {
+    "msg_id": _PROBE["msg_id"],
+    "peer_uid": _PROBE["peer_uid"],
+    "element_id": _PROBE["expected_segment_id"],
+    "expected_time": _PROBE["expected_time"],
+    "expected_md5": _PROBE["expected_md5"],
+    "expected_file_uuid": _PROBE["expected_file_uuid"],
+    "expected_self": _PROBE["expected_self"],
+}
+_MEDIA_WIRE = {
+    **{key: value for key, value in _PROBE_WIRE.items() if key != "expectedSegmentId"},
+    "elementId": _PROBE["expected_segment_id"],
+}
+
+
+_GROUP = {**_PROBE, "chat_type": 2, "peer_uid": "45678901",
+          "expected_sender_uin": "23456789", "expected_sender_uid": "u_fictionalmember000000"}
+_GROUP_WIRE = {**_PROBE_WIRE, "chatType": 2, "peerUid": "45678901",
+               "expectedSenderUin": "23456789", "expectedSenderUid": "u_fictionalmember000000"}
+
+
+@pytest.mark.parametrize("mine", [False, True])
+def test_group_pic_maps_sender_independently_of_peer_then_fetches(runtime, tmp_path, mine):
+    group = {**_GROUP, "expected_self": mine, "expected_sender_uin": "12345678" if mine else "23456789",
+             "expected_sender_uid": None if mine else _GROUP["expected_sender_uid"]}
+    raw = b"fictional-group-media"
+    path = tmp_path / "group.bin"
+    path.write_bytes(raw)
+    calls = tmp_path / "calls.txt"
+    client = provider(runtime(marker=calls, runtime_id=RUNTIME_ID, mediaPath=str(path),
+        messageOverrides={"senderUin": group["expected_sender_uin"],
+                          "senderUid": "u_self" if mine else group["expected_sender_uid"]},
+        expectedDownload=[_GROUP["msg_id"], 2, "45678901", _GROUP["expected_segment_id"]]))
+    mapping = client.resolve_pic_message(**group)
+    assert mapping.passed and mapping.sender_matches is True
+    assert "downloadMedia" not in calls.read_text()
+    fetch = {k: v for k, v in group.items() if k != "expected_segment_id"}
+    assert client.download_pic_media(**fetch, element_id=group["expected_segment_id"]) == raw
+    assert calls.read_text().splitlines().count("getMsgsByMsgId") == 2
+
+
+@pytest.mark.parametrize("override", [
+    {"messageOverrides": {"msgId": "8000000000000000009"}},
+    {"messageOverrides": {"chatType": 1}},
+    {"messageOverrides": {"peerUid": "56789012"}},
+    {"messageOverrides": {"peerUin": "56789012"}},
+    {"messageOverrides": {"peerUin": 45678901}},
+    {"messageOverrides": {"senderUin": "34567890"}},
+    {"messageOverrides": {"senderUid": "u_wrongmember00000000"}},
+    {"messageOverrides": {"msgTime": "1760000002"}},
+    {"picOverrides": {"elementId": "8000000000000000002"}},
+    {"picOverrides": {"elementType": 1}},
+    {"picOverrides": {"picElement": {"md5HexStr": "ab" * 16, "fileUuid": "other-uuid"}}},
+    {"picOverrides": {"picElement": {"md5HexStr": "cd" * 16, "fileUuid": "fictional-file-uuid"}}},
+    {"duplicatePic": True},
+    {"mode": "probe-duplicate"},
+])
+def test_group_mapping_mismatch_rejects_probe_and_direct_download(runtime, tmp_path, override):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    calls = tmp_path / "calls.txt"
+    config = {**override, "messageOverrides": {
+        "senderUin": "23456789", "senderUid": _GROUP["expected_sender_uid"], **override.get("messageOverrides", {})}}
+    client = provider(runtime(marker=calls, **config))
+    mapping = client.resolve_pic_message(**_GROUP)
+    assert not mapping.passed
+    fetch = {k: v for k, v in _GROUP.items() if k != "expected_segment_id"}
+    with pytest.raises(module.NapCatQQMediaStageError) as caught:
+        client.download_pic_media(**fetch, element_id=_GROUP["expected_segment_id"])
+    assert caught.value.stage == "media_mapping_rejected"
+    assert "downloadMedia" not in calls.read_text()
+
+
+def test_group_mapping_is_rechecked_before_download(runtime, tmp_path):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    calls = tmp_path / "calls.txt"
+    client = provider(runtime(marker=calls,
+        messageOverrides={"senderUin": "23456789", "senderUid": _GROUP["expected_sender_uid"]},
+        secondMessageOverrides={"senderUin": "34567890"}))
+    assert client.resolve_pic_message(**_GROUP).passed
+    fetch = {k: v for k, v in _GROUP.items() if k != "expected_segment_id"}
+    with pytest.raises(module.NapCatQQMediaStageError):
+        client.download_pic_media(**fetch, element_id=_GROUP["expected_segment_id"])
+    assert "downloadMedia" not in calls.read_text()
+
+
+@pytest.mark.parametrize("override", [
+    {"chatType": 3}, {"chatType": True}, {"peerUid": 45678901}, {"peerUid": "u_fictionalpeer0000000"},
+    {"expectedSenderUin": None}, {"expectedSenderUin": "0"},
+    {"expectedSenderUid": "u_short"}, {"expectedFileUuid": None}, {"expectedSegmentId": None},
+])
+def test_group_bridge_rejects_missing_or_invalid_identity_before_kernel(runtime, tmp_path, override):
+    calls = tmp_path / "calls.txt"
+    base = runtime(marker=calls)
+    status, _ = request(base, "EchoMediaProbe.resolvePicMessage", [{**_GROUP_WIRE, **override}])
+    assert status == 400
+    assert not calls.exists() or "getMsgsByMsgId" not in calls.read_text()
+
+
+def test_media_fetch_relocates_the_element_and_returns_only_bounded_bytes(runtime, tmp_path, monkeypatch):
+    raw = b"fictional-media-bytes" * 3
+    media_file = tmp_path / "fictional-media.bin"
+    media_file.write_bytes(raw)
+    calls = tmp_path / "media-calls.txt"
+    base = runtime(marker=calls, mediaPath=str(media_file))
+    client = provider(base)
+    assert client.download_pic_media(**_MEDIA) == raw
+    executed = calls.read_text().splitlines()
+    assert "getMsgsByMsgId" in executed and "downloadMedia" in executed
+
+    # The raw response carries bytes only: no path, file name or element ID.
+    status, payload = request(base, "EchoMediaProbe.downloadPicMedia", [dict(_MEDIA_WIRE)])
+    assert status == 200 and payload["ok"] is True
+    assert payload["result"]["size"] == len(raw)
+    body = json.dumps(payload)
+    for private in (str(media_file), "fictional-media.bin", _MEDIA["element_id"], _MEDIA["peer_uid"]):
+        assert private not in body
+
+
+def test_media_fetch_requires_the_kernel_to_uniquely_confirm_the_element(runtime, tmp_path):
+    media_file = tmp_path / "fictional-media.bin"
+    media_file.write_bytes(b"fictional-media-bytes")
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    for index, override in enumerate(({"expected_md5": "cd" * 16},
+                                      {"element_id": "8000000000000000002"})):
+        calls = tmp_path / f"rejected-{index}.txt"
+        client = provider(runtime(marker=calls, mediaPath=str(media_file)))
+        with pytest.raises(module.NapCatQQError):
+            client.download_pic_media(**{**_MEDIA, **override})
+        executed = calls.read_text()
+        assert "getMsgsByMsgId" in executed
+        assert "downloadMedia" not in executed
+
+
+@pytest.mark.parametrize("race,stage", [
+    ("windows-dev", None),
+    ("rounded-inode", "media_file_identity_changed"),
+    ("unknown-inode", "media_file_identity_changed"),
+    ("before-open", "media_file_identity_changed"),
+    ("during-read", "media_file_identity_changed"),
+    ("swapped-link", "media_file_type_rejected"),
+    ("symlink", "media_file_type_rejected"),
+    ("junction", "media_file_type_rejected"),
+])
+def test_media_file_identity_uses_exact_ids_and_rejects_path_swaps(runtime, tmp_path, race, stage):
+    import sys
+    if race == "windows-dev" and sys.platform != "win32":
+        pytest.skip("Only Windows permits cross-API device differences")
+    if race == "junction" and sys.platform != "win32":
+        pytest.skip("Windows directory reparse point")
+    if race == "swapped-link" and sys.platform != "win32":
+        stage = "media_open_failed"  # O_NOFOLLOW rejects before the second lstat.
+    raw = b"fictional-media-bytes"
+    target = tmp_path / "fictional.bin"
+    target.write_bytes(raw)
+    replacement = tmp_path / "replacement.bin"
+    replacement.write_bytes(b"different-media-bytes")
+    if race == "junction":
+        target.unlink()
+        replacement.unlink()
+        replacement.mkdir()
+    if race in {"symlink", "swapped-link"}:
+        link = tmp_path / "link.bin"
+        try:
+            link.symlink_to(replacement)
+        except OSError as error:
+            if getattr(error, "winerror", None) == 1314:
+                pytest.skip("Windows symlink privilege unavailable")
+            raise
+        if race == "symlink":
+            target = link
+        else:
+            link.unlink()
+    client = provider(runtime(mediaPath=str(target), mediaRace=race,
+                              replacementPath=str(replacement)))
+    if stage is None:
+        assert client.download_pic_media(**_MEDIA) == raw
+    else:
+        module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+        with pytest.raises(module.NapCatQQMediaStageError) as caught:
+            client.download_pic_media(**_MEDIA)
+        assert caught.value.stage == stage
+
+
+@pytest.mark.parametrize("kind,stage", [
+    ("oversized", "media_file_too_large"),
+    ("missing", "media_file_missing"),
+    ("directory", "media_file_type_rejected"),
+    ("empty_file", "media_file_empty"),
+    ("empty_path", "media_path_invalid"),
+])
+def test_media_fetch_reports_a_fixed_stage_for_each_local_rejection(runtime, tmp_path, kind, stage):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    target = tmp_path / kind
+    if kind == "oversized":
+        target.write_bytes(b"x" * (2 * 1024 * 1024 + 1))
+    elif kind == "directory":
+        target.mkdir()
+    elif kind == "empty_file":
+        target.write_bytes(b"")
+    media_path = "" if kind == "empty_path" else str(target)
+    base = runtime(mediaPath=media_path)
+    client = provider(base)
+    with pytest.raises(module.NapCatQQMediaStageError) as caught:
+        client.download_pic_media(**_MEDIA)
+    assert caught.value.stage == stage
+
+    # The same stage, and nothing else, crosses the bridge to any client.
+    status, payload = request(base, "EchoMediaProbe.downloadPicMedia", [dict(_MEDIA_WIRE)])
+    assert (status, payload) == (200, {"ok": False, "error": stage})
+    assert str(tmp_path) not in json.dumps(payload)
+
+
+def test_media_fetch_rejects_invalid_parameters_before_any_kernel_call(runtime, tmp_path):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    calls = tmp_path / "invalid-media-calls.txt"
+    media_file = tmp_path / "fictional-media.bin"
+    media_file.write_bytes(b"fictional-media-bytes")
+    client = provider(runtime(marker=calls, mediaPath=str(media_file)))
+    client.status()
+    invalid = (
+        {"element_id": "0"},
+        {"element_id": None},
+        {"element_id": "../outside"},
+        {"msg_id": _PROBE["msg_id"] + "0" * 20},
+        {"peer_uid": "u_short"},
+        {"expected_md5": "zz" * 16},
+        {"expected_self": "yes"},
+    )
+    for override in invalid:
+        with pytest.raises(module.NapCatQQError):
+            client.download_pic_media(**{**_MEDIA, **override})
+    assert "getMsgsByMsgId" not in calls.read_text()
+
+
+def test_media_fetch_wire_shape_cannot_be_widened(runtime, tmp_path):
+    media_file = tmp_path / "fictional-media.bin"
+    media_file.write_bytes(b"fictional-media-bytes")
+    calls = tmp_path / "widened-calls.txt"
+    base = runtime(marker=calls, mediaPath=str(media_file))
+    for extra in ({"path": "C:/fictional/secret"}, {"elementId": 1}, {"chatType": 2}):
+        status, payload = request(base, "EchoMediaProbe.downloadPicMedia", [{**_MEDIA_WIRE, **extra}])
+        assert status == 400 and payload == {"ok": False, "error": "invalid_params"}
+    missing = {key: value for key, value in _MEDIA_WIRE.items() if key != "elementId"}
+    status, payload = request(base, "EchoMediaProbe.downloadPicMedia", [missing])
+    assert status == 400 and payload == {"ok": False, "error": "invalid_params"}
+    assert not calls.exists() or "downloadMedia" not in calls.read_text()

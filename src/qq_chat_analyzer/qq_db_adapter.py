@@ -1,4 +1,4 @@
-"""Adapter for QQ DB text, expressions, group replies and mention facts.
+"""Adapter for QQ DB text, expressions, custom PIC stickers and reply facts.
 
 This module only interprets an already-materialized raw payload.  It does not
 open a QQ database or otherwise acquire source data.
@@ -10,8 +10,10 @@ import base64
 import binascii
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Any
 
 from .legacy_projection import project_legacy_messages
@@ -22,6 +24,8 @@ from .rich_message import (
     EXPRESSION_KIND_PLATFORM_FACE,
     EXPRESSION_KIND_STICKER,
     ExpressionContent,
+    ImageReference,
+    StickerIdentity,
     MentionRelation,
     NonTextContent,
     MessageRelation,
@@ -113,6 +117,140 @@ def is_qq_db_payload(payload: Mapping[str, Any] | None) -> bool:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class QQPicMediaElement:
+    """One PIC segment's locating facts; never a path, URL or display value."""
+
+    segment_id: str | None = field(default=None, repr=False)
+    file_uuid: str | None = field(default=None, repr=False)
+    content_md5: str | None = field(default=None, repr=False)
+    is_custom_sticker: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class QQPicMediaFact:
+    """One already-materialized PIC message, reduced to mapping inputs.
+
+    The media fetch uses these facts to revalidate one selected send. They do
+    not authorize a file read or network request by themselves.
+    """
+
+    message_id: str = field(repr=False)
+    timestamp: int | float | str = field(repr=False)
+    peer_uid: str | None = field(default=None, repr=False)
+    conversation_type: str = "unknown"
+    is_self: bool | None = None
+    elements: tuple[QQPicMediaElement, ...] = ()
+    conversation_id: str | None = field(default=None, repr=False)
+    group_id: str | None = field(default=None, repr=False)
+    sender_uin: str | None = field(default=None, repr=False)
+    sender_uid: str | None = field(default=None, repr=False)
+
+
+def extract_qq_pic_media_facts(
+    payload: Mapping[str, Any] | None,
+    message_ids: Collection[str] | None = None,
+) -> tuple[QQPicMediaFact, ...]:
+    """Return only requested PIC message facts from an existing payload.
+
+    The whole ``40800`` blob is already preserved by acquisition; this function
+    reads the locating fields the normal semantic model does not surface. It
+    never opens a database, follows a path or URL, reads media, or writes a
+    file. Message text, sender names, paths and URLs are never returned.
+    """
+    if not is_qq_db_payload(payload):
+        return ()
+    session_context = _session_context(payload)
+    if session_context is None:
+        return ()
+    conversation_type, conversation_id = session_context
+    self_uin = _self_uin(payload)
+    wanted = None if message_ids is None else {str(value) for value in message_ids}
+    facts: list[QQPicMediaFact] = []
+    for record in payload["records"]:
+        if not isinstance(record, Mapping):
+            continue
+        message_id = _stringify_identifier(record.get("record_id"))
+        if message_id is None or (wanted is not None and message_id not in wanted):
+            continue
+        fields = record.get("fields")
+        if not isinstance(fields, Mapping):
+            continue
+        timestamp = fields.get("40050")
+        if (
+            not isinstance(timestamp, (int, float, str))
+            or isinstance(timestamp, bool)
+            or record.get("blob_encoding") != "base64"
+            or not isinstance(record.get("message_blob"), str)
+        ):
+            continue
+        try:
+            decoded = base64.b64decode(record["message_blob"], validate=True)
+        except (binascii.Error, ValueError):
+            continue
+        elements: list[QQPicMediaElement] = []
+        for field_number, wire_type, value in _protobuf_fields(decoded):
+            if field_number != 40800 or wire_type != 2:
+                continue
+            segment = _protobuf_fields(value)
+            values = {(tag, wire): data for tag, wire, data in segment}
+            if values.get((45002, 0)) != 2:
+                continue
+            subtype = [item for tag, wire, item in segment if tag == 45003 and wire == 0]
+            segment_id = values.get((45001, 0))
+            file_uuid = _utf8_text(values.get((45503, 2)))
+            if conversation_type == "group":
+                # Repeated locating fields cannot silently pick the last value.
+                if sum(tag == 45001 for tag, _, _ in segment) != 1:
+                    segment_id = None
+                if sum(tag == 45503 for tag, _, _ in segment) != 1:
+                    file_uuid = None
+            elements.append(
+                QQPicMediaElement(
+                    segment_id=(
+                        str(segment_id)
+                        if isinstance(segment_id, int)
+                        and not isinstance(segment_id, bool)
+                        and segment_id > 0
+                        else None
+                    ),
+                    file_uuid=file_uuid,
+                    content_md5=_pic_digest(segment),
+                    is_custom_sticker=subtype == [1],
+                )
+            )
+        if not elements:
+            continue
+        group_id = _stringify_identifier(fields.get("40030"))
+        if not (
+            conversation_type == "group" and group_id
+            and re.fullmatch(r"[1-9][0-9]{4,19}", group_id)
+            and _stringify_identifier(fields.get("40021")) == group_id == conversation_id
+            and _record_in_session(record, payload["query"])
+        ):
+            group_id = None
+        facts.append(
+            QQPicMediaFact(
+                message_id=message_id,
+                timestamp=timestamp,
+                peer_uid=(
+                    _stringify_identifier(fields.get("40021"))
+                    or _utf8_text(fields.get("40021"))
+                ) if conversation_type == "private" else None,
+                conversation_type=conversation_type,
+                is_self=_resolve_is_self(fields.get("40033"), self_uin),
+                elements=tuple(elements),
+                conversation_id=conversation_id,
+                group_id=group_id,
+                sender_uin=canonical_qq_uin(fields.get("40033")) if conversation_type == "group" else None,
+                sender_uid=(
+                    _stringify_identifier(fields.get("40020")) or _utf8_text(fields.get("40020"))
+                ) if conversation_type == "group" else None,
+            )
+        )
+    return tuple(facts)
+
+
 def _parse_record(
     record: Any,
     session_context: tuple[str, str],
@@ -162,7 +300,7 @@ def _parse_record(
         ),
         conversation_kind=conversation_type,
     )
-    if conversation_type == "private" and canonical_qq_uin(fields.get("40033")) is None:
+    if canonical_qq_uin(fields.get("40033")) is None:
         # Preserve the record, but a zero-value sender cannot identify a person.
         # Do not let an incidental label become a fallback participant identity.
         sender_id = None
@@ -339,6 +477,33 @@ def _extract_semantics(
     return tuple(contents), tuple(relations), has_reply
 
 
+def _pic_digest(fields: tuple[tuple[int, int, int | bytes], ...]) -> str | None:
+    """Return one trustworthy PIC MD5, or ``None`` on missing conflict.
+
+    45406 is the raw 16-byte digest. 45424 has version-dependent encoding and
+    weaker documented semantics: it may veto conflicting evidence, but cannot
+    authorize a match alone. Repeated digest fields are ambiguous.
+    """
+    values = {(tag, wire): value for tag, wire, value in fields}
+    raw_md5 = values.get((45406, 2))
+    digest = raw_md5.hex() if isinstance(raw_md5, bytes) and len(raw_md5) == 16 else None
+    alternate = values.get((45424, 2))
+    if isinstance(alternate, bytes):
+        if len(alternate) == 16:
+            alternate_digest = alternate.hex()
+        else:
+            text = _utf8_text(alternate)
+            alternate_digest = (
+                text.lower() if text and re.fullmatch(r"[0-9a-fA-F]{32}", text) else None
+            )
+        if alternate_digest != digest:
+            digest = None
+    if any(len({value for tag, wire, value in fields if tag == digest_tag and wire == 2}) > 1
+           for digest_tag in (45406, 45424)):
+        digest = None
+    return digest
+
+
 def _content_from_segment(
     fields: tuple[tuple[int, int, int | bytes], ...], expression_position: int,
 ) -> RichContent | None:
@@ -348,7 +513,30 @@ def _content_from_segment(
         text = _utf8_text(values.get((45101, 2)))
         return TextContent(text) if text is not None else None
     if content_type == 2:
-        return NonTextContent("image")
+        raw_md5 = values.get((45406, 2))
+        digest = _pic_digest(fields)
+        paths = tuple(
+            text for tag in (45403, 45812)
+            if (text := _utf8_text(values.get((tag, 2))))
+        )
+        original = values.get((45418, 0))
+        media = ImageReference(
+            content_md5=digest,
+            is_original=bool(original) if original in (0, 1) else None,
+            local_paths=paths,
+        ) if raw_md5 is not None or paths or original is not None else None
+        # Only the observed Windows QQ value 45003=1 marks a custom sticker send.
+        # Ordinary images, unobserved values and repeated fields remain images.
+        subtype = [value for tag, wire, value in fields if tag == 45003 and wire == 0]
+        sticker = StickerIdentity(
+            classification_basis="qq_pic_45003_custom",
+            identity_basis="qq_pic_45406_md5" if digest else "unresolved",
+            # Separate namespace from qq-marketface and wechat:md5 identities.
+            identity_key=f"qq-pic:md5:{digest}" if digest else None,
+            content_md5=digest,
+            local_paths=paths,
+        ) if subtype == [1] else None
+        return NonTextContent("image", media=media, sticker=sticker)
     if content_type == 6:
         face_index = values.get((47601, 0))
         if not isinstance(face_index, int):
@@ -383,6 +571,13 @@ def _content_from_segment(
         display_text=label or fallback,
         source="qq",
         position=expression_position,
+        sticker=StickerIdentity(
+            classification_basis="qq_content_type_11",
+            identity_basis="qq_45600_sha256_opaque",
+            identity_key=key,
+            local_paths=tuple(text for tag in (45812, 45814)
+                              if (text := _utf8_text(values.get((tag, 2))))),
+        ) if kind == EXPRESSION_KIND_STICKER else None,
     )
 
 

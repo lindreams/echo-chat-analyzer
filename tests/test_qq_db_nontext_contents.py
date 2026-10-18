@@ -12,7 +12,10 @@ from qq_chat_analyzer.application.import_request import ImportRequest
 from qq_chat_analyzer.application.import_service import ImportService
 from qq_chat_analyzer.legacy_projection import project_legacy_messages
 from qq_chat_analyzer.providers.qq_database_provider import QQDatabaseProvider
-from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
+from qq_chat_analyzer.qq_db_adapter import (
+    extract_qq_pic_media_facts,
+    parse_qq_db_rich_messages,
+)
 from qq_chat_analyzer.rich_message import ExpressionContent, TextContent
 
 
@@ -98,3 +101,97 @@ def test_nontext_outside_scope_cannot_unlock_empty_text_report(tmp_path):
         scope=AnalysisScope.custom(datetime.fromtimestamp(1760000001).date(), datetime.fromtimestamp(1760000001).date())))
     assert result.status == AnalysisStatus.NO_VALID_TEXT
     assert result.artifacts == ()
+
+
+def _media_pic_segment(
+    *,
+    segment_id: int = 8000000000000000001,
+    md5: bytes = b"\xab" * 16,
+    alternate: bytes | None = None,
+    subtype: int = 1,
+) -> bytes:
+    segment = (
+        _scalar(45002, 2)
+        + _scalar(45001, segment_id)
+        + _bytes(45503, b"fictional-file-uuid")
+        + _bytes(45406, md5)
+        + _scalar(45003, subtype)
+    )
+    if alternate is not None:
+        segment += _bytes(45424, alternate)
+    return segment
+
+
+def test_pic_media_facts_expose_locators_without_private_values():
+    payload = _payload(_body(_media_pic_segment()), session_type="private")
+    record = payload["records"][0]
+    record["record_id"] = "7000000000000000001"
+    record["fields"].update({
+        "40021": "u_fictionalpeer000000000000",
+        "40033": "10002",
+        "40050": 1760000001,
+    })
+    payload["self"] = {"namespace": "qq_uin", "value": "10001"}
+
+    facts = extract_qq_pic_media_facts(payload, {"7000000000000000001"})
+
+    assert len(facts) == 1
+    fact = facts[0]
+    assert fact.message_id == "7000000000000000001"
+    assert fact.timestamp == 1760000001
+    assert fact.peer_uid == "u_fictionalpeer000000000000"
+    assert fact.conversation_type == "private"
+    assert fact.is_self is False
+    element = fact.elements[0]
+    assert element.segment_id == "8000000000000000001"
+    assert element.file_uuid == "fictional-file-uuid"
+    assert element.content_md5 == "ab" * 16
+    assert element.is_custom_sticker is True
+
+    rendered = repr(fact) + repr(element)
+    for private in (
+        "7000000000000000001", "8000000000000000001", "ab" * 16,
+        "fictional-file-uuid", "u_fictionalpeer",
+    ):
+        assert private not in rendered
+
+
+def test_pic_media_facts_keep_digest_conflict_and_filter_unselected_records():
+    conflict = _media_pic_segment(alternate=bytes.fromhex("cd" * 16))
+    ordinary = _media_pic_segment(segment_id=8000000000000000002, subtype=0)
+    payload = _payload(_body(conflict), _body(ordinary), session_type="private")
+    payload["records"][0]["record_id"] = "7000000000000000002"
+    payload["records"][1]["record_id"] = "7000000000000000003"
+
+    facts = extract_qq_pic_media_facts(payload, {"7000000000000000002"})
+
+    assert len(facts) == 1
+    assert facts[0].message_id == "7000000000000000002"
+    assert facts[0].elements[0].content_md5 is None
+    assert facts[0].elements[0].is_custom_sticker is True
+    assert extract_qq_pic_media_facts(
+        payload, {"7000000000000000003"})[0].elements[0].is_custom_sticker is False
+    assert extract_qq_pic_media_facts(payload, set()) == ()
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_group_pic_facts_keep_group_and_sender_separate(conflict):
+    payload = _payload(_body(_media_pic_segment()), session_type="group")
+    payload["query"]["session_object"] = "12345001"
+    payload["records"][0]["fields"].update({
+        "40021": "12345002" if conflict else "12345001", "40030": 12345001,
+        "40020": "u_fictionalmember000000", "40033": "10002"})
+    fact, = extract_qq_pic_media_facts(payload)
+    assert fact.group_id == (None if conflict else "12345001")
+    assert fact.sender_uin == "10002" and fact.sender_uid == "u_fictionalmember000000"
+    assert fact.conversation_id == "12345001" and fact.peer_uid is None
+
+
+@pytest.mark.parametrize("tag,value,field", [
+    (45001, 123, "segment_id"), (45503, b"other-file-uuid", "file_uuid"),
+])
+def test_group_pic_repeated_locator_cannot_select_the_last_value(tag, value, field):
+    duplicate = _scalar(tag, value) if isinstance(value, int) else _bytes(tag, value)
+    payload = _payload(_body(_media_pic_segment() + duplicate), session_type="group")
+    fact, = extract_qq_pic_media_facts(payload)
+    assert getattr(fact.elements[0], field) is None

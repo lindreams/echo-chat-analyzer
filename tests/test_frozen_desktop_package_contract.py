@@ -11,6 +11,7 @@ from pathlib import Path
 import hashlib
 import json
 import importlib.metadata
+import os
 import sys
 import tomllib
 
@@ -18,7 +19,7 @@ import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DIST_APP = PROJECT_ROOT / "dist" / "Echo"
+DIST_APP = Path(os.environ.get("ECHO_TEST_FROZEN_APP", PROJECT_ROOT / "dist" / "Echo"))
 INTERNAL = DIST_APP / "_internal"
 EXECUTABLE = DIST_APP / "Echo.exe"
 
@@ -99,6 +100,17 @@ def test_frozen_release_version_is_available_without_source_checkout() -> None:
     ]
     assert len(distributions) == 1
     assert distributions[0].version == project["project"]["version"]
+
+
+def test_frozen_package_retains_original_image_verification() -> None:
+    modules = _frozen_modules()
+    for name in ("qq_chat_analyzer.application.sticker_media", "PIL.Image",
+                 "PIL.PngImagePlugin", "PIL.JpegImagePlugin", "PIL.GifImagePlugin",
+                 "PIL.WebPImagePlugin"):
+        assert name in modules, name
+    assert list((INTERNAL / "PIL").glob("_imaging*.pyd"))
+    assert list((INTERNAL / "PIL").glob("_webp*.pyd"))
+    assert list(INTERNAL.glob("pillow-*.dist-info/licenses/LICENSE"))
 
 
 def _manifest() -> dict:
