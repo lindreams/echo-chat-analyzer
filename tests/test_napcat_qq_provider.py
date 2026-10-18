@@ -76,10 +76,18 @@ const mark = name => { if (config.marker) fs.appendFileSync(config.marker, name 
 const info = fields => new Proxy(fields, {get(target, key) { mark('Core.status'); return target[key]; }});
 const core={dbPassphrase:'PRIVATE',selfInfo:info({uin:'12345678',uid:'u_self',nick:'Self',online:true,secret:'PRIVATE'}),apis:{
  DatabaseApi:{hasPassphrase:()=>true,decryptDatabase(){mark('decryptDatabase')}},
- FileApi:{downloadMedia:async()=>{mark('downloadMedia');if(config.mediaError) throw new Error('fictional kernel failure');return config.mediaPath ?? ''}},
+ FileApi:{downloadMedia:async(...args)=>{mark('downloadMedia');if(config.expectedDownload && JSON.stringify(args.slice(0,4))!==JSON.stringify(config.expectedDownload)) throw new Error('wrong locator');if(config.mediaError) throw new Error('fictional kernel failure');return config.mediaPath ?? ''}},
  FriendApi:{getBuddyV2ExWithCate:async()=>{mark('listFriends');return [{buddyList:[{uin:'23456789',uid:'u_friend',coreInfo:{uin:'23456789',uid:'u_friend',nick:'Nick',remark:'Remark',secret:'PRIVATE'},secret:'PRIVATE'},{uid:'u_only'},{uin:'34567890'}]}]}},
  GroupApi:{getGroups:async()=>{mark('listGroups');return [{groupCode:'45678901',groupName:'Group',memberCount:3},{groupCode:'56789012'}]},getGroupMemberAll:async()=>{mark('getGroupMemberAll');return {result:{infos:new Map([['u_member',{uid:'u_member',uin:'23456789',nick:'Nick',cardName:'Card',secret:'PRIVATE'}]])}}}},
- MsgApi:{getMsgsByMsgId:async(peer,ids)=>{mark('getMsgsByMsgId');const message={msgId:ids[0],msgSeq:'42',msgTime:'1760000001',chatType:peer.chatType,peerUid:peer.peerUid,senderUid:peer.peerUid,secret:'PRIVATE',elements:[{elementType:2,elementId:'8000000000000000001',picElement:{md5HexStr:'AB'.repeat(16),fileUuid:'fictional-file-uuid',fileName:'PRIVATE.jpg'}},{elementType:1,elementId:'8000000000000000002',textElement:{content:'PRIVATE'}}]};return {result:0,msgList:config.mode==='probe-duplicate'?[message,{...message}]:[message]}}}
+ MsgApi:{getMsgsByMsgId:async(peer,ids)=>{
+   mark('getMsgsByMsgId');
+   const pic={elementType:2,elementId:'8000000000000000001',picElement:{md5HexStr:'AB'.repeat(16),fileUuid:'fictional-file-uuid',fileName:'PRIVATE.jpg'},...config.picOverrides};
+   const message={msgId:ids[0],msgSeq:'42',msgTime:'1760000001',chatType:peer.chatType,peerUid:peer.peerUid,senderUid:peer.peerUid,secret:'PRIVATE',elements:[pic,{elementType:1,elementId:'8000000000000000002',textElement:{content:'PRIVATE'}}],...config.messageOverrides};
+   if(config.duplicatePic) message.elements.push({...pic});
+   if(config.secondMessageOverrides && config.queried) Object.assign(message,config.secondMessageOverrides);
+   config.queried=true;
+   return {result:0,msgList:config.mode==='probe-duplicate'?[message,{...message}]:[message]};
+ }}
 }};
 let snapshot={
  acquire:async()=>{mark('acquire');return {ok:true,status:'ready',generation_id:'test-generation'}},
@@ -734,6 +742,89 @@ _MEDIA_WIRE = {
     **{key: value for key, value in _PROBE_WIRE.items() if key != "expectedSegmentId"},
     "elementId": _PROBE["expected_segment_id"],
 }
+
+
+_GROUP = {**_PROBE, "chat_type": 2, "peer_uid": "45678901",
+          "expected_sender_uin": "23456789", "expected_sender_uid": "u_fictionalmember000000"}
+_GROUP_WIRE = {**_PROBE_WIRE, "chatType": 2, "peerUid": "45678901",
+               "expectedSenderUin": "23456789", "expectedSenderUid": "u_fictionalmember000000"}
+
+
+@pytest.mark.parametrize("mine", [False, True])
+def test_group_pic_maps_sender_independently_of_peer_then_fetches(runtime, tmp_path, mine):
+    group = {**_GROUP, "expected_self": mine, "expected_sender_uin": "12345678" if mine else "23456789",
+             "expected_sender_uid": None if mine else _GROUP["expected_sender_uid"]}
+    raw = b"fictional-group-media"
+    path = tmp_path / "group.bin"
+    path.write_bytes(raw)
+    calls = tmp_path / "calls.txt"
+    client = provider(runtime(marker=calls, runtime_id=RUNTIME_ID, mediaPath=str(path),
+        messageOverrides={"senderUin": group["expected_sender_uin"],
+                          "senderUid": "u_self" if mine else group["expected_sender_uid"]},
+        expectedDownload=[_GROUP["msg_id"], 2, "45678901", _GROUP["expected_segment_id"]]))
+    mapping = client.resolve_pic_message(**group)
+    assert mapping.passed and mapping.sender_matches is True
+    assert "downloadMedia" not in calls.read_text()
+    fetch = {k: v for k, v in group.items() if k != "expected_segment_id"}
+    assert client.download_pic_media(**fetch, element_id=group["expected_segment_id"]) == raw
+    assert calls.read_text().splitlines().count("getMsgsByMsgId") == 2
+
+
+@pytest.mark.parametrize("override", [
+    {"messageOverrides": {"msgId": "8000000000000000009"}},
+    {"messageOverrides": {"chatType": 1}},
+    {"messageOverrides": {"peerUid": "56789012"}},
+    {"messageOverrides": {"peerUin": "56789012"}},
+    {"messageOverrides": {"peerUin": 45678901}},
+    {"messageOverrides": {"senderUin": "34567890"}},
+    {"messageOverrides": {"senderUid": "u_wrongmember00000000"}},
+    {"messageOverrides": {"msgTime": "1760000002"}},
+    {"picOverrides": {"elementId": "8000000000000000002"}},
+    {"picOverrides": {"elementType": 1}},
+    {"picOverrides": {"picElement": {"md5HexStr": "ab" * 16, "fileUuid": "other-uuid"}}},
+    {"picOverrides": {"picElement": {"md5HexStr": "cd" * 16, "fileUuid": "fictional-file-uuid"}}},
+    {"duplicatePic": True},
+    {"mode": "probe-duplicate"},
+])
+def test_group_mapping_mismatch_rejects_probe_and_direct_download(runtime, tmp_path, override):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    calls = tmp_path / "calls.txt"
+    config = {**override, "messageOverrides": {
+        "senderUin": "23456789", "senderUid": _GROUP["expected_sender_uid"], **override.get("messageOverrides", {})}}
+    client = provider(runtime(marker=calls, **config))
+    mapping = client.resolve_pic_message(**_GROUP)
+    assert not mapping.passed
+    fetch = {k: v for k, v in _GROUP.items() if k != "expected_segment_id"}
+    with pytest.raises(module.NapCatQQMediaStageError) as caught:
+        client.download_pic_media(**fetch, element_id=_GROUP["expected_segment_id"])
+    assert caught.value.stage == "media_mapping_rejected"
+    assert "downloadMedia" not in calls.read_text()
+
+
+def test_group_mapping_is_rechecked_before_download(runtime, tmp_path):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    calls = tmp_path / "calls.txt"
+    client = provider(runtime(marker=calls,
+        messageOverrides={"senderUin": "23456789", "senderUid": _GROUP["expected_sender_uid"]},
+        secondMessageOverrides={"senderUin": "34567890"}))
+    assert client.resolve_pic_message(**_GROUP).passed
+    fetch = {k: v for k, v in _GROUP.items() if k != "expected_segment_id"}
+    with pytest.raises(module.NapCatQQMediaStageError):
+        client.download_pic_media(**fetch, element_id=_GROUP["expected_segment_id"])
+    assert "downloadMedia" not in calls.read_text()
+
+
+@pytest.mark.parametrize("override", [
+    {"chatType": 3}, {"chatType": True}, {"peerUid": 45678901}, {"peerUid": "u_fictionalpeer0000000"},
+    {"expectedSenderUin": None}, {"expectedSenderUin": "0"},
+    {"expectedSenderUid": "u_short"}, {"expectedFileUuid": None}, {"expectedSegmentId": None},
+])
+def test_group_bridge_rejects_missing_or_invalid_identity_before_kernel(runtime, tmp_path, override):
+    calls = tmp_path / "calls.txt"
+    base = runtime(marker=calls)
+    status, _ = request(base, "EchoMediaProbe.resolvePicMessage", [{**_GROUP_WIRE, **override}])
+    assert status == 400
+    assert not calls.exists() or "getMsgsByMsgId" not in calls.read_text()
 
 
 def test_media_fetch_relocates_the_element_and_returns_only_bounded_bytes(runtime, tmp_path, monkeypatch):

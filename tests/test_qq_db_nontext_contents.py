@@ -172,3 +172,34 @@ def test_pic_media_facts_keep_digest_conflict_and_filter_unselected_records():
     assert extract_qq_pic_media_facts(
         payload, {"7000000000000000003"})[0].elements[0].is_custom_sticker is False
     assert extract_qq_pic_media_facts(payload, set()) == ()
+
+
+def test_group_number_is_never_extracted_as_private_peer_uid():
+    payload = _payload(_body(_media_pic_segment()), session_type="group")
+    payload["records"][0]["fields"].update({"40021": "12345001", "40030": 12345001})
+    fact, = extract_qq_pic_media_facts(payload)
+    assert fact.conversation_type == "group"
+    assert fact.peer_uid is None
+
+
+@pytest.mark.parametrize("conflict", [False, True])
+def test_group_pic_facts_keep_group_and_sender_separate(conflict):
+    payload = _payload(_body(_media_pic_segment()), session_type="group")
+    payload["query"]["session_object"] = "12345001"
+    payload["records"][0]["fields"].update({
+        "40021": "12345002" if conflict else "12345001", "40030": 12345001,
+        "40020": "u_fictionalmember000000", "40033": "10002"})
+    fact, = extract_qq_pic_media_facts(payload)
+    assert fact.group_id == (None if conflict else "12345001")
+    assert fact.sender_uin == "10002" and fact.sender_uid == "u_fictionalmember000000"
+    assert fact.conversation_id == "12345001" and fact.peer_uid is None
+
+
+@pytest.mark.parametrize("tag,value,field", [
+    (45001, 123, "segment_id"), (45503, b"other-file-uuid", "file_uuid"),
+])
+def test_group_pic_repeated_locator_cannot_select_the_last_value(tag, value, field):
+    duplicate = _scalar(tag, value) if isinstance(value, int) else _bytes(tag, value)
+    payload = _payload(_body(_media_pic_segment() + duplicate), session_type="group")
+    fact, = extract_qq_pic_media_facts(payload)
+    assert getattr(fact.elements[0], field) is None

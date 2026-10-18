@@ -496,7 +496,9 @@ class MainWindow(QMainWindow):
         stickers = getattr(getattr(outcome, "result", None), "stickers", None)
         available = (
             getattr(outcome, "source", None) in (ChatSource.QQ, ChatSource.WECHAT)
-            and getattr(getattr(outcome, "session", None), "session_type", None) == "private"
+            and (getattr(getattr(outcome, "session", None), "session_type", None) == "private"
+                 or (outcome.source == ChatSource.QQ
+                     and getattr(getattr(outcome, "session", None), "session_type", None) == "group"))
             and stickers is not None and bool(stickers.sends))
         self._sticker_button.setEnabled(available)
         self._sticker_button.setVisible(available)
@@ -515,9 +517,8 @@ class MainWindow(QMainWindow):
         dialog = StickerMediaDialog(
             outcome.result.stickers, facade=self._facade, source=outcome.source.value,
             conversation_label=getattr(session, "display_name", ""),
-            session_id=(
-                getattr(session, "session_id", None)
-                if getattr(session, "session_type", None) == "private" else None),
+            conversation_type=getattr(session, "session_type", "private"),
+            session_id=getattr(session, "session_id", None),
             executor=self._executor, parent=self)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         reference = weakref.ref(dialog)

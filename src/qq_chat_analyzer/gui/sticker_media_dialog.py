@@ -6,7 +6,7 @@ from pathlib import Path
 from threading import Event
 from typing import Any
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, Qt
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, Qt, QTimer, Slot
 from PySide6.QtGui import QMovie, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout,
@@ -26,6 +26,7 @@ _IMAGE_BOX = QSize(180, 180)
 _NO_MEDIA_TEXT = "原图暂不可用"
 _MOVIE_FORMATS = {"GIF": b"gif", "APNG": b"apng", "WEBP": b"webp"}
 _DISPLAYABLE = frozenset({"available", "preview"})
+_MIN_FRAME_INTERVAL_MS = 40
 
 
 def _is_available(media: StickerMedia | None) -> bool:
@@ -57,6 +58,9 @@ class _StickerCard(QFrame):
         self._empty_text = empty_text
         self._movie: QMovie | None = None
         self._buffer: QBuffer | None = None
+        self._playback_timer = QTimer(self)
+        self._playback_timer.setSingleShot(True)
+        self._playback_timer.timeout.connect(self._resume_movie)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 14, 14, 14)
         layout.setSpacing(8)
@@ -124,6 +128,7 @@ class _StickerCard(QFrame):
             buffer.deleteLater()
             return False
         movie = QMovie(buffer, QByteArray(movie_format), self)
+        movie.setCacheMode(QMovie.CacheMode.CacheNone)
         if not movie.isValid():
             movie.deleteLater()
             buffer.close()
@@ -139,10 +144,32 @@ class _StickerCard(QFrame):
             movie.setScaledSize(frame.size().scaled(
                 _IMAGE_BOX, Qt.AspectRatioMode.KeepAspectRatio))
         self._buffer, self._movie = buffer, movie
+        movie.frameChanged.connect(self._movie_frame_changed)
+        movie.error.connect(self._movie_failed)
         self.image.setText("")
         self.image.setMovie(movie)
         movie.start()
-        return True
+        return self._movie is movie
+
+    def _movie_frame_changed(self, _number: int) -> None:
+        movie = self._movie
+        if movie is not None and movie.nextFrameDelay() < _MIN_FRAME_INTERVAL_MS:
+            # Zero/very short delays must not turn an infinite loop into a hot
+            # GUI-thread decoder. Resume lazily, keeping QMovie's CacheNone.
+            movie.setPaused(True)
+            self._playback_timer.start(_MIN_FRAME_INTERVAL_MS)
+
+    def _resume_movie(self) -> None:
+        if self._movie is not None:
+            self._movie.setPaused(False)
+
+    @Slot()
+    def _movie_failed(self) -> None:
+        # Ignore the unused native enum in Qt, before PySide tries to convert it.
+        # Its converter may not be registered unless QImageReader was imported.
+        self.release_media()
+        self.image.setText(_NO_MEDIA_TEXT)
+        self.detail.setText("动画播放失败，已停止。")
 
     @staticmethod
     def _describe(media: StickerMedia) -> str:
@@ -164,6 +191,7 @@ class _StickerCard(QFrame):
     # -- lifecycle -------------------------------------------------------
     def release_media(self) -> None:
         """Stop playback and drop every decoded/encoded reference we hold."""
+        self._playback_timer.stop()
         self.image.clear()
         if self._movie is not None:
             self._movie.stop()
@@ -219,6 +247,7 @@ class StickerMediaDialog(QDialog):
 
     def __init__(self, stickers: StickerData, *, source: str = "qq",
                  conversation_label: str = "", session_id: str | None = None,
+                 conversation_type: str = "private",
                  executor: Callable[..., Any] | None = None,
                  facade=None, parent=None) -> None:
         super().__init__(parent)
@@ -226,24 +255,27 @@ class StickerMediaDialog(QDialog):
         self.resize(850, 620)
         self._stickers = stickers
         self._source = source
+        self._conversation_type = conversation_type
+        group = conversation_type == "group"
         self._session_id = session_id
         self._executor = executor or submit
         self._facade = facade or ChatAnalyzerFacade
         self._cancelled = Event()
         self._closed = self._resolving = False
         self._page = 0
-        self._entries = build_sticker_catalog(stickers.sends, source=source)
+        self._entries = build_sticker_catalog(
+            stickers.sends, source=source, conversation_type=conversation_type)
         self._media = {item.media_key: item for item in stickers.media}
         layout = QVBoxLayout(self)
         self.scope = QLabel(
-            f"当前私聊：{conversation_label or '未命名会话'}\n"
+            f"当前{'群聊' if group else '私聊'}：{conversation_label or '未命名会话'}\n"
             "仅本次分析范围内已确认的表情发送；不代表账号全局使用量。", self)
         self.scope.setTextFormat(Qt.TextFormat.PlainText)
         self.scope.setWordWrap(True)
         layout.addWidget(self.scope)
         known = sum(entry.identity_known for entry in self._entries)
         unresolved = sum(entry.count for entry in self._entries if not entry.identity_known)
-        unknown = sum(entry.unknown_count for entry in self._entries)
+        unknown = sum(entry.unknown_sender_count if group else entry.unknown_count for entry in self._entries)
         self.coverage = QLabel(
             f"表情发送 {sum(e.count for e in self._entries)} 次 · 可信独特素材 {known} 种 · "
             f"素材身份不明 {unresolved} 次 · 发送者未知 {unknown} 次", self)
@@ -252,12 +284,15 @@ class StickerMediaDialog(QDialog):
         layout.addWidget(self.coverage)
         counts = stickers.message_counts
         denominator = QLabel(
-            f"本次私聊消息分母：我 {counts.self_messages} / TA {counts.other_messages} / 未知 {counts.unknown_messages}",
+            (f"本次群聊消息分母：共 {counts.total_messages} 条（包括非表情消息）" if group else
+             f"本次私聊消息分母：我 {counts.self_messages} / TA {counts.other_messages} / 未知 {counts.unknown_messages}"),
             self)
         layout.addWidget(denominator)
         content = QHBoxLayout()
         self.table = QTableWidget(0, 6, self)
-        self.table.setHorizontalHeaderLabels(["素材类别", "我", "TA", "未知", "发送次数", "原件状态"])
+        self.table.setHorizontalHeaderLabels(
+            ["素材类别", "我", "其他成员合计", "本人归属未知", "发送次数", "原件状态"] if group else
+            ["素材类别", "我", "TA", "未知", "发送次数", "原件状态"])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -268,6 +303,16 @@ class StickerMediaDialog(QDialog):
         self.card = _StickerCard("真实原件预览", "请选择素材", self)
         content.addWidget(self.card)
         layout.addLayout(content, 1)
+        self.members = QPlainTextEdit(self)
+        self.members.setReadOnly(True)
+        self.members.setPlaceholderText("选择素材查看逐成员发送次数（按发送者 ID 区分）")
+        self.members.setMaximumHeight(120)
+        self.members.setVisible(group)
+        layout.addWidget(self.members)
+        self.send_selector = QComboBox(self)
+        self.send_selector.setToolTip("选择要通过 QQ 获取的具体发送记录；优先其他成员。")
+        self.send_selector.setVisible(group and source == "qq")
+        layout.addWidget(self.send_selector)
         paging = QHBoxLayout()
         self.previous_button = QPushButton("上一页", self)
         self.previous_button.clicked.connect(lambda: self._change_page(-1))
@@ -281,7 +326,8 @@ class StickerMediaDialog(QDialog):
         layout.addLayout(paging)
         self.status = QLabel(
             "未授权不会读取素材。每页最多32种，共用一次扫描；其他页需另行发起关联。"
-            "QQ 自定义表情选中后可单独确认，通过 QQ 获取该条消息的图片。", self)
+            + ("群聊可选择对应成员的发送记录，单独确认后复核身份；仅在全部匹配时通过 QQ 获取。" if group else
+               "QQ 自定义表情选中后可单独确认，通过 QQ 获取该条消息的图片。"), self)
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -292,7 +338,7 @@ class StickerMediaDialog(QDialog):
         actions.addWidget(self.media_button)
         self.fetch_button = QPushButton("通过 QQ 获取所选素材", self)
         self.fetch_button.setToolTip(
-            "仅对所选的一条已确认 QQ 私聊图片消息，经你单独确认后向 QQ 网络请求该图片元素。")
+            "仅对所选的一条已确认 QQ 图片消息，经你单独确认、内核身份复核通过后请求该图片元素。")
         self.fetch_button.setVisible(self._source == "qq")
         self.fetch_button.clicked.connect(self._fetch_selected_media)
         actions.addWidget(self.fetch_button)
@@ -341,6 +387,8 @@ class StickerMediaDialog(QDialog):
             self.table.setCurrentCell(0, 0)
         else:
             self.card.show_empty()
+            self.members.clear()
+            self.send_selector.clear()
         pages = max(1, (len(self._entries) + STICKER_MEDIA_BATCH_SIZE - 1) // STICKER_MEDIA_BATCH_SIZE)
         self.page_label.setText(f"第 {self._page + 1} / {pages} 页 · 共 {len(self._entries)} 项")
         self._update_buttons()
@@ -354,6 +402,23 @@ class StickerMediaDialog(QDialog):
         entry = self._selected_entry()
         if entry is not None:
             self.card.show_entry(entry, self._media.get(entry.media_key))
+            if self._conversation_type == "group":
+                lines = [f"{sender}：{count} 次" for sender, count in entry.member_counts]
+                if entry.unknown_sender_count:
+                    lines.append(f"发送者未知：{entry.unknown_sender_count} 次")
+                self.members.setPlainText(
+                    f"已确认成员 {len(entry.member_counts)} 人 · 发送 {entry.count} 次\n" + "\n".join(lines))
+                previous = self.send_selector.currentData()
+                self.send_selector.clear()
+                sends = [s for s in self._stickers.sends if s.media_key == entry.media_key
+                         and s.source == "qq" and s.conversation_type == "group"]
+                for index, send in enumerate(sends):
+                    self.send_selector.addItem(
+                        f"{'本人' if send.is_self is True else '成员'} {send.sender_id or '未知'}"
+                        f" · {send.chat_date or '日期未知'} · 发送记录 {index + 1}", send.occurrence_id)
+                preferred = next((s.occurrence_id for s in sends if s.is_self is False), None)
+                index = self.send_selector.findData(previous)
+                self.send_selector.setCurrentIndex(index if index >= 0 else max(0, self.send_selector.findData(preferred)))
         self._update_buttons()
 
     def _can_fetch(self, entry: StickerCatalogEntry | None) -> bool:
@@ -361,10 +426,12 @@ class StickerMediaDialog(QDialog):
         return (
             entry is not None
             and self._source == "qq"
+            and self._conversation_type in ("private", "group")
             and bool(self._session_id)
+            and (self._conversation_type != "group" or self.send_selector.currentData() is not None)
             and entry.identity_basis == "qq_pic_45406_md5"
             and entry.media_key.startswith("qq-pic:md5:")
-            and not _is_available(self._media.get(entry.media_key))
+            and (self._conversation_type == "group" or not _is_available(self._media.get(entry.media_key)))
         )
 
     def _update_buttons(self):
@@ -376,6 +443,7 @@ class StickerMediaDialog(QDialog):
             and not _is_available(self._media.get(entry.media_key))
             for entry in self._page_entries()))
         self.fetch_button.setEnabled(idle and self._can_fetch(self._selected_entry()))
+        self.send_selector.setEnabled(idle)
         self.cancel_button.setEnabled(self._resolving and not self._cancelled.is_set())
 
     def _choose_media_folder(self):
@@ -463,7 +531,8 @@ class StickerMediaDialog(QDialog):
         answer = QMessageBox.question(
             self, "确认通过 QQ 获取素材",
             "即将通过已登录的 QQ 客户端，从 QQ 网络下载本次所选的一条图片消息素材。\n"
-            "· 仅处理当前私聊中你选中的这一条已确认消息及其图片元素；\n"
+            f"· 仅处理当前{'群聊' if self._conversation_type == 'group' else '私聊'}中所选的一条发送记录及其图片元素；\n"
+            "· 先复核消息、会话、发送者与图片元素，未通过则不下载；\n"
             "· 不读取其他消息、其他会话或本机任意文件；\n"
             "· 取回内容只保留在本次窗口内存中，不写入磁盘、不进入报告；\n"
             "· 单次上限 2 MiB，超出或验证失败则不展示。\n\n"
@@ -488,10 +557,12 @@ class StickerMediaDialog(QDialog):
         self.status.setText("正在通过 QQ 获取所选素材：仅此一条已确认消息，不写入磁盘…")
         facade, data = self._facade, self._stickers
         session_id, key, cancelled = self._session_id, entry.media_key, self._cancelled
+        selection = ({"occurrence_id": self.send_selector.currentData()}
+                     if self._conversation_type == "group" else {})
         self._executor(
             lambda: facade.fetch_qq_sticker_media(
                 data, media_key=key, session_id=session_id,
-                network_consent=True, cancelled=cancelled.is_set),
+                network_consent=True, cancelled=cancelled.is_set, **selection),
             on_success=lambda result: self._network_resolved(result, key),
             on_error=self._media_failed,
             on_finished=self._media_finished)
@@ -542,9 +613,10 @@ class StickerMediaDialog(QDialog):
                 f"（名称 {diagnostics['name_candidates']}／路径 {diagnostics['path_candidates']}）"
                 f" · 已读 {diagnostics['files_read']} · {coverage} · {budget}。"))
 
-    def _media_failed(self, _code: str, public_message: str) -> None:
+    def _media_failed(self, code: str, public_message: str) -> None:
         if not self._closed and not self._cancelled.is_set():
-            self.status.setText(public_message)
+            self.status.setText(f"{public_message} [{code}]" if self._conversation_type == "group"
+                                and code.startswith(("qq_media_", "qq_mapping_")) else public_message)
 
     def _media_finished(self) -> None:
         self._resolving = False
@@ -573,6 +645,8 @@ class StickerMediaDialog(QDialog):
         self._closed = True
         self._cancelled.set()
         self.card.release_media()
+        self.members.clear()
+        self.send_selector.clear()
         self._media.clear()
         self._entries = ()
         self._stickers = StickerData()

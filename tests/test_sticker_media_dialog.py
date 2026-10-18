@@ -186,7 +186,8 @@ def qt_app():
 def gif_bytes(frames=3):
     from PIL import Image
 
-    pictures = [Image.new("P", (6, 5), color=index) for index in range(frames)]
+    pictures = [Image.new("RGB", (6, 5), ("red", "green", "blue")[index % 3])
+                for index in range(frames)]
     buffer = BytesIO()
     pictures[0].save(
         buffer, format="GIF", save_all=True, append_images=pictures[1:],
@@ -392,6 +393,9 @@ def test_paging_selects_only_current_batch(qt_app, tmp_path, monkeypatch, source
 def test_available_gif_plays_and_close_discards_media(qt_app):
     from PySide6.QtGui import QMovie
     raw = gif_bytes()
+    from PIL import Image
+    with Image.open(BytesIO(raw)) as container:
+        assert container.n_frames == 3
     dialog = dialog_for(StickerData(sends=(send(), send(), send()),
         media=(available_media(PIC_KEY, raw),),
         message_counts=StickerMessageCounts(self_messages=3)))
@@ -402,6 +406,98 @@ def test_available_gif_plays_and_close_discards_media(qt_app):
     dialog.close()
     assert dialog.card._movie is None and dialog.card._buffer is None
     assert not dialog.stickers.media and not dialog.stickers.sends
+
+
+def test_native_movie_error_is_handled_without_preimporting_qimagereader(tmp_path):
+    import subprocess
+    import textwrap
+
+    pytest.importorskip("PySide6")
+    # QImageReader imported by another Qt test registers its enum globally and
+    # hides this production failure. Exercise the native signal in a fresh Qt
+    # process, inheriting the test's isolated user directories.
+    script = textwrap.dedent("""
+        import sys
+        from io import BytesIO
+        from PIL import Image
+        from PySide6.QtCore import QCoreApplication, QEvent
+        from PySide6.QtWidgets import QApplication
+        from qq_chat_analyzer.gui.sticker_media_dialog import _StickerCard
+
+        errors = []
+        def uncaught(kind, value, tb):
+            if kind is AssertionError:
+                sys.__excepthook__(kind, value, tb)
+            else:
+                errors.append((kind.__name__, str(value)))
+        sys.excepthook = uncaught
+        app = QApplication([])
+        raw = BytesIO()
+        Image.new('RGB', (3, 2), 'red').save(
+            raw, format='GIF', save_all=True,
+            append_images=[Image.new('RGB', (3, 2), 'blue')], duration=40, loop=0)
+        card = _StickerCard('fictional', 'empty')
+        assert card._start_movie(raw.getvalue(), b'gif')
+        movie, buffer = card._movie, card._buffer
+        movie.stop()
+        buffer.setData(b'fictional-invalid-gif')
+        movie.setDevice(buffer)
+        movie.start()  # Qt emits its real QImageReader::ImageReaderError.
+        app.processEvents()
+        assert not errors, errors
+        assert card._movie is None and card._buffer is None
+        assert not card._playback_timer.isActive()
+        assert card.detail.text() == '动画播放失败，已停止。'
+        card.release_media()
+        card.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+        assert not errors, errors
+    """)
+    env = dict(os.environ, PYTHONPATH=str(PROJECT_ROOT / "src"), QT_QPA_PLATFORM="offscreen",
+               PYTHONIOENCODING="utf-8")
+    completed = subprocess.run(
+        [sys.executable, "-c", script], cwd=tmp_path, env=env,
+        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_verified_long_gif_actually_plays_past_frame_128_without_caching(qt_app):
+    import time
+    from PIL import Image
+    from PySide6.QtGui import QMovie, QImageReader
+    from qq_chat_analyzer.application.sticker_media import verify_fetched_media
+
+    stream = BytesIO()
+    images = [Image.new("RGB", (16, 12), "red" if index % 2 else "blue")
+              for index in range(140)]
+    images[0].save(stream, format="GIF", save_all=True, append_images=images[1:], duration=20, loop=0)
+    raw = stream.getvalue()
+    media = verify_fetched_media(raw, media_key=PIC_KEY, expected_md5=hashlib.md5(raw).hexdigest())
+    assert media.status == "available"
+    data = StickerData(sends=(send(),), media=(media,))
+    dialog = dialog_for(data)
+    try:
+        movie = dialog.card._movie
+        assert movie is not None and movie.cacheMode() == QMovie.CacheMode.CacheNone
+        seen = []
+        movie.frameChanged.connect(lambda number: seen.append((
+            number, movie.currentImage().pixelColor(0, 0).name(), time.monotonic())))
+        movie.setSpeed(1000)  # Exercise the refresh guard, not just the normal file delay.
+        deadline = time.monotonic() + 12
+        while not any(number >= 129 for number, _, _ in seen) and time.monotonic() < deadline:
+            qt_app.processEvents()
+            time.sleep(0.002)
+        assert any(number >= 129 for number, _, _ in seen)
+        assert len({color for _, color, _ in seen}) == 2
+        assert all(b[2] - a[2] >= 0.035 for a, b in zip(seen, seen[1:]))
+        assert dialog.stickers.sends is data.sends and dialog.stickers.media == (media,)
+        movie.error.emit(QImageReader.ImageReaderError.InvalidDataError)
+        assert dialog.card._movie is None and dialog.card._buffer is None
+        assert "动画播放失败" in dialog.card.detail.text()
+    finally:
+        dialog.close()
+    assert not dialog.card._playback_timer.isActive()
 
 
 @pytest.mark.parametrize("source", ["qq", "wechat"])
@@ -467,11 +563,16 @@ def test_main_window_material_action_in_frozen_sources(qt_app, monkeypatch):
     def outcome(source, session_type):
         return SimpleNamespace(source=source,
             session=SessionInfo(source, "fictional-session", "虚构会话", session_type),
-            result=SimpleNamespace(stickers=StickerData(sends=(send(source=source.value),))),
+            result=SimpleNamespace(stickers=StickerData(sends=(
+                send(source=source.value, conversation_type=session_type),))),
             report_path=None, report_directory=None)
     for source in (ChatSource.QQ, ChatSource.WECHAT):
         window.show_outcome(outcome(source, "group"))
-        assert not window._sticker_button.isEnabled()
+        assert window._sticker_button.isEnabled() == (source == ChatSource.QQ)
+        if source == ChatSource.QQ:
+            window._sticker_button.click()
+            assert "当前群聊" in window._sticker_media_dialog.scope.text()
+            assert window._sticker_media_dialog.card.count.text() == "发送 1 次"
         window.show_outcome(outcome(source, "private"))
         assert window._sticker_button.isEnabled() and window._sticker_media_dialog is None
         window._sticker_button.click()
@@ -485,6 +586,46 @@ def test_main_window_material_action_in_frozen_sources(qt_app, monkeypatch):
     dialog = window._sticker_media_dialog
     window.close()
     assert dialog._closed
+
+
+def test_group_material_dialog_selects_member_send_and_requires_consent(qt_app, monkeypatch):
+    from dataclasses import replace
+    from qq_chat_analyzer.gui.sticker_media_dialog import StickerMediaDialog
+    from qq_chat_analyzer.gui.workers import run_inline
+
+    base = send(conversation_type="group")
+    data = StickerData(sends=tuple(replace(base, sender_id=sender, is_self=index == 0,
+                                         occurrence_id=f"{index}:0", content_md5="a" * 32)
+                                  for index, sender in enumerate(("20002", "20002", "30003"))))
+    calls = []
+    class _Facade:
+        def fetch_qq_sticker_media(self, stickers, **kwargs):
+            calls.append(kwargs)
+            return replace(stickers, media=(replace(available_media(PIC_KEY, png_bytes()),
+                                                   format="PNG", frame_count=1, animation_preserved=False),))
+    dialog = StickerMediaDialog(data, source="qq", conversation_type="group", session_id="group:12345001",
+                                executor=run_inline, facade=_Facade())
+    try:
+        assert dialog.table.rowCount() == 1 and dialog.card.count.text() == "发送 3 次"
+        assert "20002：2 次" in dialog.members.toPlainText()
+        assert "30003：1 次" in dialog.members.toPlainText()
+        assert dialog.members.isReadOnly()
+        assert "TA" not in dialog.table.horizontalHeaderItem(2).text()
+        assert dialog.fetch_button.isEnabled()
+        assert dialog.send_selector.currentData() == "1:0"  # Prefer another member, even for shared materials.
+        monkeypatch.setattr(dialog, "_confirm_network_fetch", lambda *_: False)
+        dialog._fetch_selected_media()
+        assert not calls
+        monkeypatch.setattr(dialog, "_confirm_network_fetch", lambda *_: True)
+        dialog._fetch_selected_media()
+        assert calls[0]["occurrence_id"] == "1:0" and calls[0]["network_consent"] is True
+        assert not dialog.card.image.pixmap().isNull()
+        dialog.send_selector.setCurrentIndex(0)
+        dialog._fetch_selected_media()
+        assert calls[1]["occurrence_id"] == "0:0"  # The same material can also verify the self send.
+    finally:
+        dialog.close()
+    assert not dialog.members.toPlainText()
 
 
 def test_normal_executor_validates_off_gui_thread(qt_app, tmp_path, monkeypatch):

@@ -22,6 +22,7 @@ const PROBE_KEYS = new Set([
   'msgId', 'chatType', 'peerUid', 'expectedTime', 'expectedMd5',
   'expectedFileUuid', 'expectedSegmentId', 'expectedSelf',
 ]);
+const GROUP_PROBE_KEYS = new Set([...PROBE_KEYS, 'expectedSenderUin', 'expectedSenderUid']);
 const bounded = (promise, ms, timeoutError = () => new Error('probe_timeout')) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(timeoutError()), ms);
   Promise.resolve(promise).then(
@@ -34,10 +35,17 @@ const bounded = (promise, ms, timeoutError = () => new Error('probe_timeout')) =
 const probeRequest = value => {
   if (!object(value) || Array.isArray(value)) return false;
   const keys = Object.keys(value);
-  if (keys.length !== PROBE_KEYS.size || !keys.every(key => PROBE_KEYS.has(key))) return false;
+  const allowed = value.chatType === 2 ? GROUP_PROBE_KEYS : PROBE_KEYS;
+  if (keys.length !== allowed.size || !keys.every(key => allowed.has(key))) return false;
   if (typeof value.msgId !== 'string' || !DECIMAL_ID.test(value.msgId)) return false;
-  if (value.chatType !== 1) return false;
-  if (typeof value.peerUid !== 'string' || !PEER_UID.test(value.peerUid)) return false;
+  if (value.chatType !== 1 && value.chatType !== 2) return false;
+  if (typeof value.peerUid !== 'string') return false;
+  if (value.chatType === 1 ? !PEER_UID.test(value.peerUid) : !uin(value.peerUid)) return false;
+  if (value.chatType === 2 && (
+      typeof value.expectedSenderUin !== 'string' || !uin(value.expectedSenderUin) ||
+      (value.expectedSenderUid !== null && (typeof value.expectedSenderUid !== 'string' ||
+        !PEER_UID.test(value.expectedSenderUid))) ||
+      value.expectedFileUuid === null || value.expectedSegmentId === null)) return false;
   if (!Number.isSafeInteger(value.expectedTime) ||
       value.expectedTime < 1 || value.expectedTime > 99999999999) return false;
   if (typeof value.expectedMd5 !== 'string' || !MD5.test(value.expectedMd5)) return false;
@@ -69,18 +77,22 @@ const MEDIA_STAGES = new Set([
 ]);
 const mediaError = code => Object.assign(new Error(code), {code});
 const MEDIA_KEYS = new Set([...PROBE_KEYS].filter(key => key !== 'expectedSegmentId').concat('elementId'));
+const GROUP_MEDIA_KEYS = new Set([...MEDIA_KEYS, 'expectedSenderUin', 'expectedSenderUid']);
 // Same fixed request shape as the probe, with the verified element ID in the
 // place of the DB segment ID; both identify the same PIC element.
 const mediaRequest = value => {
   if (!object(value) || Array.isArray(value)) return false;
   const keys = Object.keys(value);
-  if (keys.length !== MEDIA_KEYS.size || !keys.every(key => MEDIA_KEYS.has(key))) return false;
+  const allowed = value.chatType === 2 ? GROUP_MEDIA_KEYS : MEDIA_KEYS;
+  if (keys.length !== allowed.size || !keys.every(key => allowed.has(key))) return false;
   if (typeof value.elementId !== 'string' || !DECIMAL_ID.test(value.elementId)) return false;
   return probeRequest({
     msgId: value.msgId, chatType: value.chatType, peerUid: value.peerUid,
     expectedTime: value.expectedTime, expectedMd5: value.expectedMd5,
     expectedFileUuid: value.expectedFileUuid, expectedSegmentId: value.elementId,
     expectedSelf: value.expectedSelf,
+    ...(value.chatType === 2 ? {expectedSenderUin: value.expectedSenderUin,
+      expectedSenderUid: value.expectedSenderUid} : {}),
   });
 };
 // NapCat returns a local cache path. Treat it as opaque: absolute, regular,
@@ -231,16 +243,29 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
     const message = messages[0];
     const msgIdMatches = text(message?.msgId) === value.msgId;
     const timeMatches = String(message?.msgTime ?? '') === String(value.expectedTime);
-    const peerMatches = text(message?.peerUid) === value.peerUid;
+    const peerMatches = text(message?.peerUid) === value.peerUid &&
+      (value.chatType !== 2 || (message.chatType === 2 &&
+        (message.peerUin === undefined || message.peerUin === '' || text(message.peerUin) === value.peerUid)));
     const senderUid = text(message?.senderUid);
     let senderMatches = null;
-    if (typeof value.expectedSelf === 'boolean') {
+    if (value.chatType === 2) {
+      senderMatches = text(message.senderUin) === value.expectedSenderUin &&
+        (value.expectedSenderUid === null || senderUid === value.expectedSenderUid);
+      if (typeof value.expectedSelf === 'boolean') {
+        const selfUin = uin(core.selfInfo?.uin);
+        senderMatches = senderMatches && selfUin !== '' &&
+          ((value.expectedSenderUin === selfUin) === value.expectedSelf);
+        const selfUid = text(core.selfInfo?.uid);
+        if (selfUid !== '') senderMatches = senderMatches && ((senderUid === selfUid) === value.expectedSelf);
+      }
+    } else if (typeof value.expectedSelf === 'boolean') {
       senderMatches = value.expectedSelf
         ? (text(core.selfInfo?.uid) !== '' && senderUid === text(core.selfInfo?.uid))
         : senderUid === value.peerUid;
     }
     const elements = Array.isArray(message?.elements) ? message.elements : [];
-    const pics = elements.filter(element => object(element) && object(element.picElement));
+    const pics = elements.filter(element => object(element) && object(element.picElement) &&
+      (value.chatType !== 2 || element.elementType === 2));
     const expectedMd5 = value.expectedMd5.toLowerCase();
     const candidates = pics.filter(element => {
       const pic = element.picElement;
@@ -248,8 +273,9 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       return value.expectedFileUuid === null || text(pic.fileUuid) === value.expectedFileUuid;
     });
     const matched = candidates.length === 1 ? candidates[0] : null;
-    const segmentIdMatches = matched !== null && value.expectedSegmentId !== null
-      ? text(matched.elementId) === value.expectedSegmentId : null;
+    const segmentId = value.expectedSegmentId ?? value.elementId ?? null;
+    const segmentIdMatches = matched !== null && segmentId !== null
+      ? text(matched.elementId) === segmentId : null;
     const fileUuidMatches = matched !== null && value.expectedFileUuid !== null
       ? text(matched.picElement?.fileUuid) === value.expectedFileUuid : null;
     const md5Matches = matched !== null &&
@@ -275,7 +301,9 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
     // Recompute the verdict instead of trusting the caller or a label.
     const passed = facts.unique && facts.msg_id_matches && facts.time_matches &&
       facts.peer_matches && facts.sender_matches !== false &&
-      facts.matched_pic_count === 1 && facts.md5_matches;
+      facts.matched_pic_count === 1 && facts.md5_matches &&
+      (value.chatType !== 2 || (facts.sender_matches === true &&
+        facts.segment_id_matches === true && facts.file_uuid_matches === true));
     return {...facts, passed};
   };
   let mediaCalls = 0;
@@ -299,6 +327,8 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       if (!facts.found || !facts.unique || !facts.msg_id_matches || !facts.time_matches ||
           !facts.peer_matches || facts.sender_matches === false ||
           facts.matched_pic_count !== 1 || !facts.md5_matches ||
+          (value.chatType === 2 && (facts.sender_matches !== true ||
+            facts.segment_id_matches !== true || facts.file_uuid_matches !== true)) ||
           element === null || text(element.elementId) !== value.elementId) {
         throw mediaError('media_mapping_rejected');
       }

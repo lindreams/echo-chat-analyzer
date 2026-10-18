@@ -141,6 +141,7 @@ def _create_private_pic_snapshot(path: Path, digest: bytes = b"\xab" * 16) -> No
                 f'''CREATE TABLE {table_name} (
                     "40001" INTEGER PRIMARY KEY,
                     "40021" TEXT,
+                    "40020" TEXT,
                     "40027" TEXT NOT NULL,
                     "40030" TEXT NOT NULL,
                     "40033" TEXT NOT NULL,
@@ -220,17 +221,87 @@ class _ProviderConnection:
 
 
 def _fetch_facade(tmp_path, *, digest: bytes, content: bytes, mapping_passed: bool = True,
-                  download_error: Exception | None = None):
+                  download_error: Exception | None = None, group_sender: str | None = None):
     snapshot_path = tmp_path / "plaintext-qq.db"
     _create_private_pic_snapshot(snapshot_path, digest=digest)
+    if group_sender is not None:
+        with sqlite3.connect(snapshot_path) as db:
+            db.execute('''INSERT INTO group_msg_table
+                ("40001", "40020", "40021", "40027", "40030", "40033", "40050", "40800")
+                SELECT "40001", ?, '12345001', 'group-partition', '12345001', ?, "40050", "40800"
+                FROM c2c_msg_table''', ("u_fictionalmember000000", group_sender))
     runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=snapshot_path)
     service = QQDirectDatabaseImportService(runtime_client=runtime)
     service.start()
     provider = _PicProvider(
         content, mapping_passed=mapping_passed, download_error=download_error)
     facade = ChatAnalyzerFacade(
-        qq_service=service, qq_connection_service=_ProviderConnection(provider))
+        qq_service=service, qq_connection_service=_ProviderConnection(provider),
+        analysis_service=AnalysisApplicationService(), stopwords_directory=Path(__file__).resolve().parents[1])
     return facade, provider, runtime
+
+
+@pytest.mark.parametrize("mine", [False, True])
+@pytest.mark.parametrize("original", [False, True])
+def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path, mine, original):
+    png = _fictional_png()
+    digest = hashlib.md5(png).hexdigest() if original else _PIC_KEY_BYTES.hex()
+    sender = "10086" if mine else "10087"
+    facade, provider, runtime = _fetch_facade(tmp_path, digest=bytes.fromhex(digest), content=png, group_sender=sender)
+    result = facade.analyze_session(ChatSource.QQ, "group:group-partition",
+                                   AnalysisConfig(output_directory=tmp_path / "report")).result
+    send, = result.stickers.sends
+    assert send.sender_id == sender and send.is_self is mine
+    data = facade.fetch_qq_sticker_media(result.stickers, media_key=send.media_key,
+                                       session_id="group:group-partition", network_consent=True, occurrence_id=send.occurrence_id)
+    assert data.sends is result.stickers.sends
+    media, = data.media
+    assert media.original_bytes == png and media.status == ("available" if original else "preview")
+    query, download = provider.calls
+    assert query[0] == "resolve" and download[0] == "download"
+    assert query[1]["chat_type"] == download[1]["chat_type"] == 2
+    assert query[1]["peer_uid"] == download[1]["peer_uid"] == "12345001"
+    assert query[1]["expected_sender_uin"] == sender
+    assert query[1]["expected_sender_uid"] == "u_fictionalmember000000"
+    assert runtime.acquired == runtime.cleaned
+
+
+@pytest.mark.parametrize("field,value,code", [
+    ("sender_matches", None, "sender"), ("file_uuid_matches", None, "uuid"),
+    ("segment_id_matches", False, "element"),
+])
+def test_group_facade_requires_each_identity_proof_even_with_passed_label(tmp_path, monkeypatch, field, value, code):
+    from dataclasses import replace
+    facade, provider, runtime = _fetch_facade(tmp_path, digest=_PIC_KEY_BYTES,
+                                            content=_fictional_png(), group_sender="10087")
+    data = facade.analyze_session(ChatSource.QQ, "group:group-partition",
+                                 AnalysisConfig(output_directory=tmp_path / "report")).result.stickers
+    resolve = provider.resolve_pic_message
+    monkeypatch.setattr(provider, "resolve_pic_message", lambda **kwargs: replace(resolve(**kwargs), **{field: value}))
+    with pytest.raises(FacadeError) as caught:
+        facade.fetch_qq_sticker_media(data, media_key=data.sends[0].media_key,
+                                     session_id="group:group-partition", network_consent=True)
+    assert caught.value.code == f"qq_media_group_{code}_unconfirmed"
+    assert [name for name, _ in provider.calls] == ["resolve"]
+    assert runtime.acquired == runtime.cleaned
+
+
+@pytest.mark.parametrize("changed", ["sender_id", "conversation_id", "timestamp", "is_self", "session"])
+def test_group_fetch_refuses_scope_or_analyzed_send_change_before_rpc(tmp_path, changed):
+    from dataclasses import replace
+    facade, provider, runtime = _fetch_facade(tmp_path, digest=_PIC_KEY_BYTES,
+                                            content=_fictional_png(), group_sender="10087")
+    data = facade.analyze_session(ChatSource.QQ, "group:group-partition",
+                                 AnalysisConfig(output_directory=tmp_path / "report")).result.stickers
+    changes = {"sender_id": "10088", "conversation_id": "12345002", "timestamp": 1760000002, "is_self": True}
+    session = "private:private-partition" if changed == "session" else "group:group-partition"
+    if changed != "session":
+        data = replace(data, sends=(replace(data.sends[0], **{changed: changes[changed]}),))
+    with pytest.raises(FacadeError) as caught:
+        facade.fetch_qq_sticker_media(data, media_key=data.sends[0].media_key, session_id=session, network_consent=True)
+    assert caught.value.code.startswith("qq_media_group_")
+    assert not provider.calls and all(m.original_bytes is None for m in data.media)
+    assert runtime.acquired == runtime.cleaned
 
 
 def test_fetched_pic_requires_separate_consent_then_reports_a_verified_original(tmp_path):
@@ -280,6 +351,48 @@ def test_digest_mismatch_stays_a_distinct_trusted_preview(tmp_path):
     media, = result.media
     assert (media.status, media.reason) == ("preview", "content_digest_mismatch")
     assert media.original_bytes == png and media.format == "PNG"
+
+
+def test_group_media_is_refused_before_acquisition_or_rpc(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    facade, provider, runtime = _fetch_facade(
+        tmp_path, digest=_PIC_KEY_BYTES, content=_fictional_png())
+    data = StickerData(sends=(replace(_pic_send(_PIC_KEY_BYTES.hex()), conversation_type="group"),))
+    monkeypatch.setattr(facade, "_qq_stored_pic_facts",
+                        lambda *_: pytest.fail("group media must not acquire a snapshot"))
+    with pytest.raises(FacadeError) as caught:
+        facade.fetch_qq_sticker_media(
+            data, media_key=data.sends[0].media_key, session_id="group:fictional", network_consent=True)
+    assert caught.value.code == "qq_media_invalid_selection"
+    assert not provider.calls and not runtime.cleaned and not data.media
+
+
+def test_group_fetched_gif_decode_limit_has_a_specific_public_error(tmp_path, monkeypatch):
+    from PIL import Image
+    from qq_chat_analyzer.application import sticker_media
+
+    monkeypatch.setattr(sticker_media, "MAX_DECODE_WORK", 64 * 1024)
+
+    stream = BytesIO()
+    images = [Image.new("RGB", (2, 2), "red" if index % 2 else "blue")
+              for index in range(129)]
+    images[0].save(stream, format="GIF", save_all=True, append_images=images[1:], duration=100)
+    raw = stream.getvalue()
+    facade, provider, runtime = _fetch_facade(
+        tmp_path, digest=hashlib.md5(raw).digest(), content=raw, group_sender="10086")
+    data = facade.analyze_session(
+        ChatSource.QQ, "group:group-partition",
+        AnalysisConfig(output_directory=tmp_path / "report")).result.stickers
+    with pytest.raises(FacadeError) as caught:
+        facade.fetch_qq_sticker_media(
+            data, media_key=data.sends[0].media_key,
+            session_id="group:group-partition", network_consent=True)
+    assert caught.value.code == "qq_media_decode_budget"
+    assert "解码安全预算" in caught.value.public_message
+    assert all(media.original_bytes is None for media in data.media)
+    assert [name for name, _ in provider.calls] == ["resolve", "download"]
+    assert runtime.acquired == runtime.cleaned
 
 
 @pytest.mark.parametrize("failure", ["mapping", "content"])

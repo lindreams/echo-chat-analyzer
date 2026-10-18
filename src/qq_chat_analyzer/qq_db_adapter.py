@@ -141,6 +141,10 @@ class QQPicMediaFact:
     conversation_type: str = "unknown"
     is_self: bool | None = None
     elements: tuple[QQPicMediaElement, ...] = ()
+    conversation_id: str | None = field(default=None, repr=False)
+    group_id: str | None = field(default=None, repr=False)
+    sender_uin: str | None = field(default=None, repr=False)
+    sender_uid: str | None = field(default=None, repr=False)
 
 
 def extract_qq_pic_media_facts(
@@ -159,7 +163,7 @@ def extract_qq_pic_media_facts(
     session_context = _session_context(payload)
     if session_context is None:
         return ()
-    conversation_type, _ = session_context
+    conversation_type, conversation_id = session_context
     self_uin = _self_uin(payload)
     wanted = None if message_ids is None else {str(value) for value in message_ids}
     facts: list[QQPicMediaFact] = []
@@ -194,6 +198,13 @@ def extract_qq_pic_media_facts(
                 continue
             subtype = [item for tag, wire, item in segment if tag == 45003 and wire == 0]
             segment_id = values.get((45001, 0))
+            file_uuid = _utf8_text(values.get((45503, 2)))
+            if conversation_type == "group":
+                # Repeated locating fields cannot silently pick the last value.
+                if sum(tag == 45001 for tag, _, _ in segment) != 1:
+                    segment_id = None
+                if sum(tag == 45503 for tag, _, _ in segment) != 1:
+                    file_uuid = None
             elements.append(
                 QQPicMediaElement(
                     segment_id=(
@@ -203,13 +214,21 @@ def extract_qq_pic_media_facts(
                         and segment_id > 0
                         else None
                     ),
-                    file_uuid=_utf8_text(values.get((45503, 2))),
+                    file_uuid=file_uuid,
                     content_md5=_pic_digest(segment),
                     is_custom_sticker=subtype == [1],
                 )
             )
         if not elements:
             continue
+        group_id = _stringify_identifier(fields.get("40030"))
+        if not (
+            conversation_type == "group" and group_id
+            and re.fullmatch(r"[1-9][0-9]{4,19}", group_id)
+            and _stringify_identifier(fields.get("40021")) == group_id == conversation_id
+            and _record_in_session(record, payload["query"])
+        ):
+            group_id = None
         facts.append(
             QQPicMediaFact(
                 message_id=message_id,
@@ -217,10 +236,16 @@ def extract_qq_pic_media_facts(
                 peer_uid=(
                     _stringify_identifier(fields.get("40021"))
                     or _utf8_text(fields.get("40021"))
-                ),
+                ) if conversation_type == "private" else None,
                 conversation_type=conversation_type,
                 is_self=_resolve_is_self(fields.get("40033"), self_uin),
                 elements=tuple(elements),
+                conversation_id=conversation_id,
+                group_id=group_id,
+                sender_uin=canonical_qq_uin(fields.get("40033")) if conversation_type == "group" else None,
+                sender_uid=(
+                    _stringify_identifier(fields.get("40020")) or _utf8_text(fields.get("40020"))
+                ) if conversation_type == "group" else None,
             )
         )
     return tuple(facts)
@@ -275,7 +300,7 @@ def _parse_record(
         ),
         conversation_kind=conversation_type,
     )
-    if conversation_type == "private" and canonical_qq_uin(fields.get("40033")) is None:
+    if canonical_qq_uin(fields.get("40033")) is None:
         # Preserve the record, but a zero-value sender cannot identify a person.
         # Do not let an incidental label become a fallback participant identity.
         sender_id = None

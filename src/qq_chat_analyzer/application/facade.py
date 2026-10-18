@@ -467,13 +467,13 @@ class ChatAnalyzerFacade:
         return provider
 
     def _qq_stored_pic_facts(self, session_id: str, message_id: str):
-        """Read one private session's stored PIC facts without touching media."""
+        """Read one selected session's stored PIC facts without touching media."""
         from ..qq_db_adapter import extract_qq_pic_media_facts, load_qq_db_json
 
-        if not isinstance(session_id, str) or not session_id.startswith("private:"):
+        if not isinstance(session_id, str) or not session_id.startswith(("private:", "group:")):
             raise FacadeError(
-                code="qq_mapping_private_only",
-                public_message="消息映射验证仅支持当前 QQ 私聊。",
+                code="qq_mapping_session_invalid",
+                public_message="消息映射验证需要当前 QQ 私聊或群聊。",
             )
         try:
             service = self._require_service(ChatSource.QQ)
@@ -488,27 +488,30 @@ class ChatAnalyzerFacade:
                 if payload is None:
                     raise FacadeError(
                         code="qq_mapping_payload_invalid",
-                        public_message="本次私聊数据不可用，未读取媒体。请重新分析后重试。",
+                        public_message="本次会话数据不可用，未读取媒体。请重新分析后重试。",
                     )
                 query = payload.get("query") if isinstance(payload.get("query"), Mapping) else {}
-                if query.get("session_type") != "private":
+                if query.get("session_type") != session_id.split(":", 1)[0]:
                     raise FacadeError(
-                        code="qq_mapping_private_only",
-                        public_message="消息映射验证仅支持当前 QQ 私聊。",
+                        code="qq_mapping_session_invalid",
+                        public_message="本次数据与选中会话不一致，未读取媒体。",
                     )
+                if session_id.startswith("group:") and query.get("internal_key") != session_id.split(":", 1)[1]:
+                    raise FacadeError(code="qq_media_group_scope_unconfirmed",
+                                      public_message="无法确认当前群聊范围，未下载图片。")
                 facts = extract_qq_pic_media_facts(payload, {message_id})
         except FacadeError:
             raise
         except Exception:
             raise FacadeError(
                 code="qq_mapping_snapshot_failed",
-                public_message="读取当前私聊的已入库媒体事实失败，未下载图片。请重新连接 QQ 后重试。",
+                public_message="读取当前会话的已入库媒体事实失败，未下载图片。请重新连接 QQ 后重试。",
             ) from None
         return facts
 
     def fetch_qq_sticker_media(
         self, data, *, media_key: str, session_id: str, network_consent: bool = False,
-        cancelled=lambda: False,
+        cancelled=lambda: False, occurrence_id: str | None = None,
     ):
         """Fetch one user-selected QQ PIC material through the bridge.
 
@@ -528,7 +531,8 @@ class ChatAnalyzerFacade:
         send = next((
             item for item in getattr(data, "sends", ())
             if item.media_key == media_key and item.source == "qq"
-            and item.conversation_type == "private"
+            and (occurrence_id is None or item.occurrence_id == occurrence_id)
+            and item.conversation_type in ("private", "group")
             and item.identity_basis == "qq_pic_45406_md5"
             and isinstance(item.message_id, str) and item.message_id
             and isinstance(item.content_md5, str) and re.fullmatch(r"[0-9a-f]{32}", item.content_md5)
@@ -536,17 +540,39 @@ class ChatAnalyzerFacade:
         if send is None:
             raise FacadeError(
                 code="qq_media_invalid_selection",
-                public_message="所选素材缺少可验证的 QQ 私聊图片依据，未获取媒体。",
+                public_message="所选素材缺少可验证的 QQ 图片依据，未获取媒体。",
             )
+        group = send.conversation_type == "group"
+        if group:
+            if occurrence_id is not None and sum(s.occurrence_id == occurrence_id for s in data.sends) != 1:
+                raise FacadeError(code="qq_media_group_message_unconfirmed",
+                                  public_message="无法在本次分析结果中唯一确认所选发送记录，未下载图片。")
+            if not (isinstance(session_id, str) and session_id.startswith("group:") and session_id[6:]):
+                raise FacadeError(code="qq_media_group_scope_unconfirmed",
+                                  public_message="所选素材与当前群聊范围不一致，未下载图片。")
+            if not all(isinstance(value, str) and re.fullmatch(r"[1-9][0-9]{4,19}", value)
+                       for value in (send.conversation_id, send.sender_id)):
+                raise FacadeError(code="qq_media_invalid_selection",
+                                  public_message="所选素材缺少可信群号或成员身份，未下载图片。")
         if cancelled():
             raise FacadeError(code="qq_media_cancelled", public_message="已取消，未获取媒体。")
         facts = self._qq_stored_pic_facts(session_id, send.message_id)
         if len(facts) != 1:
             raise FacadeError(
                 code="qq_media_message_unconfirmed",
-                public_message="无法在本次私聊数据中唯一确认该素材对应的消息，未获取媒体。",
+                public_message="无法在本次会话数据中唯一确认该素材对应的消息，未获取媒体。",
             )
         fact = facts[0]
+        if group:
+            for confirmed, code, message in (
+                (fact.conversation_type == "group" and fact.group_id == send.conversation_id
+                 and fact.conversation_id == send.conversation_id, "scope", "群号及会话范围"),
+                (fact.sender_uin == send.sender_id and fact.is_self is send.is_self, "sender", "发送者身份"),
+                (fact.timestamp == send.timestamp, "time", "消息时间"),
+            ):
+                if not confirmed:
+                    raise FacadeError(code=f"qq_media_group_{code}_unconfirmed",
+                                      public_message=f"群聊入库事实无法确认{message}，未下载图片。")
         custom = [element for element in fact.elements if element.is_custom_sticker]
         if len(custom) != 1 or custom[0].content_md5 != send.content_md5:
             raise FacadeError(
@@ -554,9 +580,12 @@ class ChatAnalyzerFacade:
                 public_message="该消息的图片元素与所选素材摘要不一致，未获取媒体。",
             )
         element = custom[0]
+        if group and not element.file_uuid:
+            raise FacadeError(code="qq_media_group_uuid_unconfirmed",
+                              public_message="群聊消息缺少唯一文件 UUID，未下载图片。")
         if (
-            fact.conversation_type != "private"
-            or not fact.peer_uid
+            fact.conversation_type != send.conversation_type
+            or not (fact.group_id if group else fact.peer_uid)
             or not element.segment_id
             or not isinstance(fact.timestamp, int)
             or isinstance(fact.timestamp, bool)
@@ -568,12 +597,14 @@ class ChatAnalyzerFacade:
         provider = self._qq_connected_provider("resolve_pic_message", "download_pic_media")
         locator = {
             "msg_id": fact.message_id,
-            "peer_uid": fact.peer_uid,
+            "peer_uid": fact.group_id if group else fact.peer_uid,
             "expected_time": fact.timestamp,
             "expected_md5": element.content_md5,
             "expected_file_uuid": element.file_uuid,
             "expected_self": fact.is_self,
         }
+        if group:
+            locator.update(chat_type=2, expected_sender_uin=fact.sender_uin, expected_sender_uid=fact.sender_uid)
         try:
             mapping = provider.resolve_pic_message(**locator, expected_segment_id=element.segment_id)
         except Exception:
@@ -581,6 +612,19 @@ class ChatAnalyzerFacade:
                 code="qq_media_query_failed",
                 public_message="QQ 内核消息查询失败，未获取媒体。请确认 QQ 已登录后重试。",
             ) from None
+        if group:
+            for confirmed, code, message in (
+                (mapping.found and mapping.unique and mapping.msg_id_matches, "message", "唯一消息及消息 ID"),
+                (mapping.peer_matches, "peer", "群身份及聊天类型"),
+                (mapping.sender_matches is True, "sender", "发送者身份"),
+                (mapping.time_matches, "time", "消息时间"),
+                (mapping.matched_pic_count == 1 and mapping.segment_id_matches is True, "element", "唯一 PIC 元素及元素 ID"),
+                (mapping.file_uuid_matches is True, "uuid", "文件 UUID"),
+                (mapping.md5_matches, "digest", "图片摘要"),
+            ):
+                if not confirmed:
+                    raise FacadeError(code=f"qq_media_group_{code}_unconfirmed",
+                                      public_message=f"QQ 内核未能确认群聊{message}，未下载图片。")
         if not (
             mapping.passed
             and mapping.unique
@@ -606,6 +650,11 @@ class ChatAnalyzerFacade:
             raise FacadeError(code=code, public_message=message) from None
         media = verify_fetched_media(
             raw, media_key=media_key, expected_md5=element.content_md5)
+        if (media.status, media.reason) == ("limited", "decode_budget"):
+            raise FacadeError(
+                code="qq_media_decode_budget",
+                public_message="QQ 返回的图片超过解码安全预算（画布、累计像素、逐帧工作量或验证耗时），未展示。",
+            )
         if media.status not in {"available", "preview"}:
             raise FacadeError(
                 code="qq_media_invalid_content",

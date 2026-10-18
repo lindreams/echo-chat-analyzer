@@ -32,6 +32,13 @@ STICKER_MEDIA_BATCH_SIZE = 32
 MAX_RETAINED_MEDIA_BYTES = 128 * 1024 * 1024
 # Mirrors the bridge transfer bound: one base64 field under the RPC cap.
 MAX_FETCHED_MEDIA_BYTES = 2 * 1024 * 1024
+# Decoding is sequential. Bound canvas memory independently from total work;
+# a fixed charge also bounds tiny-frame animations and per-frame bookkeeping.
+MAX_FRAME_PIXELS = 4 * 1024 * 1024
+DECODE_FRAME_COST = 64 * 1024
+MAX_DECODE_WORK = 64 * 1024 * 1024
+MAX_TOTAL_DECODE_WORK = 128 * 1024 * 1024
+MAX_DECODE_SECONDS = 2.0
 
 
 def associate_sticker_media(
@@ -172,9 +179,58 @@ def _witness(info):
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def _inspect(raw: bytes, *, max_pixels: int, max_frames: int,
+def _check_gif_canvas(raw: bytes, check_time: Callable[[], None]) -> None:
+    """Check block extents before a codec can allocate a disposal canvas.
+
+    This skips compressed sub-blocks; it does not decode LZW or replace Pillow's
+    complete frame validation. Later GIF frames may otherwise enlarge its canvas
+    during seek(), before the caller can inspect the new dimensions.
+    """
+    if len(raw) < 13:
+        raise _Rejected("invalid", "invalid_image")
+    width = int.from_bytes(raw[6:8], "little")
+    height = int.from_bytes(raw[8:10], "little")
+    if not width or not height:
+        raise _Rejected("invalid", "invalid_image")
+    packed = raw[10]
+    position = 13 + (3 * (2 << (packed & 7)) if packed & 128 else 0)
+    while position < len(raw):
+        check_time()
+        tag = raw[position]
+        position += 1
+        if tag == 0x3B:  # trailer
+            if width * height > MAX_FRAME_PIXELS:
+                raise _Rejected("limited", "decode_budget")
+            return
+        if tag == 0x2C:  # image descriptor and optional local palette
+            if position + 9 > len(raw):
+                break
+            x, y, w, h = (int.from_bytes(raw[position + i:position + i + 2], "little")
+                           for i in (0, 2, 4, 6))
+            if not w or not h or x + w > width or y + h > height:
+                raise _Rejected("invalid", "invalid_image")
+            packed = raw[position + 8]
+            position += 9 + (3 * (2 << (packed & 7)) if packed & 128 else 0)
+            position += 1  # LZW minimum code size; Pillow validates the raster.
+        elif tag == 0x21:  # extension label followed by data sub-blocks
+            position += 1
+        else:
+            break
+        while position < len(raw):
+            check_time()
+            size = raw[position]
+            position += 1
+            if not size:
+                break
+            position += size
+        else:
+            break
+    raise _Rejected("invalid", "invalid_image")
+
+
+def _inspect(raw: bytes, *, max_pixels: int, max_frames: int | None,
              budget: dict[str, int] | None = None) -> tuple[str, int]:
-    """Validate all frames with bounded decompression, retaining original bytes."""
+    """Validate sequentially without retaining decoded frames or a frame cache."""
     # Recognizable out-of-scope containers are not corrupt supported images.
     # Do not load additional codecs just to identify them.
     if raw.startswith((b"BM", b"II\x2a\x00", b"MM\x00\x2a")):
@@ -184,43 +240,65 @@ def _inspect(raw: bytes, *, max_pixels: int, max_frames: int,
         from PIL import Image, UnidentifiedImageError
     except ImportError:
         raise _Rejected("unsupported", "decoder_unavailable") from None
+    deadline = time.monotonic() + MAX_DECODE_SECONDS
+
+    def check_time() -> None:
+        # Cooperative: native codec calls cannot be forcibly interrupted here.
+        if time.monotonic() > deadline:
+            raise _Rejected("limited", "decode_budget")
+
     try:
+        if raw.startswith((b"GIF87a", b"GIF89a")):
+            _check_gif_canvas(raw, check_time)
         with warnings.catch_warnings():
             warnings.simplefilter("error", Image.DecompressionBombWarning)
             with Image.open(BytesIO(raw), formats=("PNG", "JPEG", "GIF", "WEBP")) as container:
                 if container.format not in {"PNG", "JPEG", "GIF", "WEBP"}:
                     raise _Rejected("invalid", "unsupported_format")
+                if container.width * container.height > MAX_FRAME_PIXELS:
+                    raise _Rejected("limited", "decode_budget")
                 container.verify()
+            check_time()
             with Image.open(BytesIO(raw), formats=("PNG", "JPEG", "GIF", "WEBP")) as image:
                 fmt = image.format
                 count = 0
                 total_pixels = 0
+                work = 0
                 while True:
+                    check_time()
                     try:
                         image.seek(count)
                     except EOFError:
                         break
                     count += 1
-                    total_pixels += image.width * image.height
-                    if count > max_frames or total_pixels > max_pixels:
+                    pixels = image.width * image.height
+                    total_pixels += pixels
+                    frame_work = pixels + DECODE_FRAME_COST
+                    work += frame_work
+                    if (pixels > MAX_FRAME_PIXELS or total_pixels > max_pixels
+                            or work > MAX_DECODE_WORK
+                            or (max_frames is not None and count > max_frames)):
                         raise _Rejected("limited", "decode_budget")
                     if budget is not None:
-                        budget["pixels"] -= image.width * image.height
-                        budget["frames"] -= 1
-                        if budget["pixels"] < 0 or budget["frames"] < 0:
+                        budget["pixels"] -= pixels
+                        budget["work"] -= frame_work
+                        if "frames" in budget:
+                            budget["frames"] -= 1
+                        if any(remaining < 0 for remaining in budget.values()):
                             raise _Rejected("limited", "total_decode_budget")
                     image.load()
+                    check_time()
                 # APNG can include a default image in addition to animation frames.
                 actual = "APNG" if fmt == "PNG" and image.get_format_mimetype() == "image/apng" else fmt
                 return "WebP" if actual == "WEBP" else actual, count
-    except (UnidentifiedImageError, OSError, ValueError, SyntaxError,
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError, IndexError, EOFError,
             Image.DecompressionBombError, Image.DecompressionBombWarning):
         raise _Rejected("invalid", "invalid_image") from None
 
 
 def verify_fetched_media(
     raw: bytes, *, media_key: str, expected_md5: str,
-    max_pixels: int = 32 * 1024 * 1024, max_frames: int = 128,
+    max_pixels: int = 32 * 1024 * 1024, max_frames: int | None = None,
 ) -> StickerMedia:
     """Validate bytes fetched for one message whose PIC element was proved.
 
@@ -256,9 +334,9 @@ def resolve_sticker_media(
     max_total_bytes: int = 128 * 1024 * 1024,
     max_entries: int = 4096, max_scan_entries: int = 100_000,
     max_depth: int = 8,
-    max_pixels: int = 32 * 1024 * 1024, max_frames: int = 128,
+    max_pixels: int = 32 * 1024 * 1024, max_frames: int | None = None,
     max_files: int = 4096,
-    max_total_pixels: int = 64 * 1024 * 1024, max_total_frames: int = 512,
+    max_total_pixels: int = 64 * 1024 * 1024, max_total_frames: int | None = None,
     diagnostics: dict[str, int | bool] | None = None,
 ) -> tuple[StickerMedia, ...]:
     """Return one media result per key; any incomplete search fails closed.
@@ -267,7 +345,8 @@ def resolve_sticker_media(
     I/O. MD5 is source linkage, not collision-resistant integrity: conflicting
     SHA-256 contents for one MD5 are ambiguous, never arbitrarily selected.
     Total bytes/entries/depth include unmatched files; decoding has per-original
-    pixel/frame limits. A 10-second cooperative deadline bounds traversal.
+    canvas/pixel/work/time limits and optional explicit frame limits. A 10-second
+    cooperative deadline bounds traversal.
 
     ``targeted`` is for a large client cache whose layout is unknown: the walk
     is bounded by ``max_scan_entries``; only digest-named or exact QQ path-hint
@@ -316,7 +395,9 @@ def resolve_sticker_media(
     deadline = time.monotonic() + 10
     every: list[tuple[Path, Path]] = []
     named: dict[str, list[tuple[Path, Path]]] = {digest: [] for digest in wanted}
-    decode_budget = {"pixels": max_total_pixels, "frames": max_total_frames}
+    decode_budget = {"pixels": max_total_pixels, "work": MAX_TOTAL_DECODE_WORK}
+    if max_total_frames is not None:
+        decode_budget["frames"] = max_total_frames
 
     def check_cancelled():
         if cancelled():

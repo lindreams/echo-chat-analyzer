@@ -283,6 +283,88 @@ def test_read_and_decode_budgets_fail_closed(tmp_path):
                    (tmp_path,), max_frames=1)[0].status == "limited"
 
 
+@pytest.mark.parametrize("frames,limits,accepted", [
+    (128, {}, True),
+    (129, {}, True),
+    (129, {"max_frames": 128}, False),
+    (3, {"max_pixels": 3 * 8 * 6}, True),
+    (3, {"max_pixels": 3 * 8 * 6 - 1}, False),
+])
+def test_local_and_fetched_gif_share_frame_and_canvas_pixel_limits(tmp_path, frames, limits, accepted):
+    from qq_chat_analyzer.application.sticker_media import verify_fetched_media
+
+    # Only one pixel changes: optimized GIF patches still need a full canvas.
+    images = []
+    for index in range(frames):
+        image = Image.new("RGB", (8, 6), "black")
+        image.putpixel((0, 0), (index + 1, 0, 0))
+        images.append(image)
+    stream = BytesIO()
+    images[0].save(stream, format="GIF", save_all=True, append_images=images[1:],
+                   optimize=True, duration=100, loop=0)
+    raw = stream.getvalue()
+    digest = hashlib.md5(raw).hexdigest()
+    (tmp_path / "fictional.gif").write_bytes(raw)
+    send = qq_pic(digest)
+    local, = resolve((send,), (tmp_path,), **limits)
+    fetched = verify_fetched_media(raw, media_key=send.media_key, expected_md5=digest, **limits)
+    for media in (local, fetched):
+        if accepted:
+            assert (media.status, media.reason) == ("available", None)
+            assert media.frame_count == frames and media.animation_preserved
+            assert media.original_bytes == raw and media.byte_count == len(raw)
+        else:
+            assert (media.status, media.reason) == ("limited", "decode_budget")
+            assert media.original_bytes is None
+
+
+@pytest.mark.parametrize("fmt", ["GIF", "PNG", "WEBP"])
+def test_long_animation_validates_without_changing_original_or_preview_identity(fmt):
+    from qq_chat_analyzer.application.sticker_media import verify_fetched_media
+
+    images = [Image.new("RGB", (16, 12), "red" if index % 2 else "blue")
+              for index in range(200)]
+    stream = BytesIO()
+    images[0].save(stream, format=fmt, save_all=True, append_images=images[1:], duration=40, loop=0)
+    raw = stream.getvalue()
+    for digest, status in ((hashlib.md5(raw).hexdigest(), "available"), ("a" * 32, "preview")):
+        media = verify_fetched_media(raw, media_key="fictional", expected_md5=digest)
+        assert media.status == status
+        assert media.original_bytes == raw and media.frame_count == 200
+        assert media.animation_preserved
+
+
+@pytest.mark.parametrize("limit", ["work", "canvas", "late_canvas", "time", "late_corruption"])
+def test_animation_resource_limits_and_late_corruption_fail_closed(tmp_path, monkeypatch, limit):
+    from qq_chat_analyzer.application import sticker_media
+
+    raw = image_bytes(animated=True)
+    if limit == "work":
+        monkeypatch.setattr(sticker_media, "MAX_DECODE_WORK", 64 * 1024)
+    elif limit == "canvas":
+        # Enormous declared canvas, with tiny compressed data; never allocate it.
+        raw = raw[:6] + (4096).to_bytes(2, "little") * 2 + raw[10:]
+    elif limit == "late_canvas":
+        descriptor = raw.rfind(b",")
+        assert raw[descriptor + 5:descriptor + 9] == b"\x03\x00\x02\x00"
+        raw = raw[:descriptor + 1] + b"\xff\x7f" + raw[descriptor + 3:]
+    elif limit == "time":
+        ticks = iter(range(1000))
+        monkeypatch.setattr(sticker_media.time, "monotonic", lambda: next(ticks) * 20)
+    else:
+        raw = raw[:-10]  # Damage the last frame, preserving a valid first frame.
+    if limit in {"canvas", "late_canvas"}:
+        monkeypatch.setattr(Image, "open", lambda *a, **kw: pytest.fail("invalid canvas reached decoder"))
+    digest = hashlib.md5(raw).hexdigest()
+    (tmp_path / "fictional.gif").write_bytes(raw)
+    send = qq_pic(digest)
+    fetched = sticker_media.verify_fetched_media(raw, media_key=send.media_key, expected_md5=digest)
+    assert fetched.status == ("invalid" if limit in {"late_corruption", "late_canvas"} else "limited")
+    assert fetched.original_bytes is None
+    local, = resolve((send,), (tmp_path,))
+    assert local.status in {"invalid", "limited"} and local.original_bytes is None
+
+
 def test_targeted_lookup_opens_only_digest_named_candidates_in_a_qq_tree(tmp_path, monkeypatch):
     from contextlib import contextmanager
 
@@ -822,6 +904,46 @@ def _private_payload(*blobs, senders):
     return payload
 
 
+def test_group_pic_catalog_keeps_members_shared_material_and_unknowns():
+    from qq_chat_analyzer.analysis.stickers import count_sticker_messages
+    from qq_chat_analyzer.application.sticker_catalog import build_sticker_catalog
+    from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
+
+    custom = _scalar(45002, 2) + _scalar(45003, 1) + _bytes(45406, b"\xab" * 16)
+    unresolved = _scalar(45002, 2) + _scalar(45003, 1)
+    ordinary = _scalar(45002, 2) + _scalar(45003, 0) + _bytes(45406, b"\xab" * 16)
+    payload = _payload(*map(_body, (
+        custom, custom, custom, custom, custom, ordinary, unresolved, unresolved, custom)))
+    payload["self"] = {"namespace": "qq_uin", "value": "10001"}
+    for record, sender in zip(payload["records"], (
+            "10001", "10001", "20002", "20002", "30003", "30003", "20002", "30003", 0)):
+        record["fields"]["40033"] = sender
+    messages, warnings = parse_qq_db_rich_messages(payload)
+    assert not warnings
+    sends = collect(messages)
+    assert len(sends) == 8
+    assert [(s.sender_id, s.is_self) for s in sends[:5]] == [
+        ("10001", True), ("10001", True), ("20002", False), ("20002", False), ("30003", False)]
+    assert sends[-1].sender_id is None and sends[-1].is_self is None
+    assert all(s.conversation_type == "group" and s.conversation_id == "fictional-room" for s in sends)
+    assert sends[0].message_id == "fictional-0" and sends[0].epoch_seconds == 1760000000
+    assert sends[0].content_md5 == "ab" * 16 and sends[0].chat_date is not None
+    entries = build_sticker_catalog(sends, source="qq", conversation_type="group")
+    shared, *unknown = entries
+    assert shared.count == 6
+    assert dict(shared.member_counts) == {"10001": 2, "20002": 2, "30003": 1}
+    assert shared.unknown_sender_count == 1
+    assert len(unknown) == 2 and all(not e.identity_known and e.count == 1 for e in unknown)
+    assert sum(sum(n for _, n in e.member_counts) + e.unknown_sender_count for e in entries) == 8
+    assert count_sticker_messages(messages).total_messages == 9
+    # Self identity being unavailable must not erase independently known members.
+    payload.pop("self")
+    messages, _ = parse_qq_db_rich_messages(payload)
+    shared = build_sticker_catalog(collect(messages), source="qq", conversation_type="group")[0]
+    assert dict(shared.member_counts) == {"10001": 2, "20002": 2, "30003": 1}
+    assert shared.unknown_count == 6 and shared.unknown_sender_count == 1
+
+
 def test_qq_private_send_identity_follows_source_self_marker_only():
     from qq_chat_analyzer.analysis.stickers import count_sticker_messages
     from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
@@ -998,7 +1120,8 @@ def test_batch_memory_ceiling_applies_across_pages(tmp_path, monkeypatch):
         "limited", "total_byte_budget")
 
 
-def test_global_decode_and_file_budgets_are_shared_by_materials(tmp_path):
+def test_global_decode_and_file_budgets_are_shared_by_materials(tmp_path, monkeypatch):
+    from qq_chat_analyzer.application import sticker_media
     from qq_chat_analyzer.application.sticker_media import resolve_sticker_media
     raws = (image_bytes("PNG"), image_bytes("GIF", animated=True))
     sends = tuple(qq_pic(hashlib.md5(raw).hexdigest()) for raw in raws)
@@ -1006,6 +1129,11 @@ def test_global_decode_and_file_budgets_are_shared_by_materials(tmp_path):
         (tmp_path / f"{send.content_md5}.dat").write_bytes(raw)
     items = resolve_sticker_media(sends, roots=(tmp_path,), targeted=True,
         digest_names_only=True, max_total_frames=1)
+    assert [item.status for item in items] == ["available", "limited"]
+    assert items[1].reason == "total_decode_budget" and items[1].original_bytes is None
+    monkeypatch.setattr(sticker_media, "MAX_TOTAL_DECODE_WORK", sticker_media.DECODE_FRAME_COST + 6)
+    items = resolve_sticker_media(sends, roots=(tmp_path,), targeted=True,
+        digest_names_only=True)
     assert [item.status for item in items] == ["available", "limited"]
     assert items[1].reason == "total_decode_budget" and items[1].original_bytes is None
     items = resolve_sticker_media(sends, roots=(tmp_path,), targeted=True,

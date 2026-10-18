@@ -141,13 +141,25 @@ MAX_PIC_MEDIA_BYTES = 2 * 1024 * 1024
 def _valid_pic_request(
     *, msg_id: Any, peer_uid: Any, expected_time: Any, expected_md5: Any,
     expected_file_uuid: Any, expected_segment_id: Any, expected_self: Any,
+    chat_type: Any = 1, expected_sender_uin: Any = None, expected_sender_uid: Any = None,
 ) -> bool:
-    """One private-chat PIC locator shape shared by identity check and fetch."""
+    """Fixed private/group PIC locators shared by identity check and fetch."""
     return (
-        isinstance(msg_id, str)
+        type(chat_type) is int and chat_type in (1, 2)
+        and (
+            (chat_type == 1 and expected_sender_uin is None and expected_sender_uid is None)
+            or (chat_type == 2
+                and isinstance(expected_sender_uin, str)
+                and re.fullmatch(r"[1-9][0-9]{4,19}", expected_sender_uin) is not None
+                and (expected_sender_uid is None or (
+                    isinstance(expected_sender_uid, str)
+                    and re.fullmatch(r"u_[A-Za-z0-9_-]{10,64}", expected_sender_uid) is not None))
+                and expected_file_uuid is not None and expected_segment_id is not None)
+        )
+        and isinstance(msg_id, str)
         and re.fullmatch(r"[1-9][0-9]{0,19}", msg_id) is not None
         and isinstance(peer_uid, str)
-        and re.fullmatch(r"u_[A-Za-z0-9_-]{10,64}", peer_uid) is not None
+        and re.fullmatch(r"u_[A-Za-z0-9_-]{10,64}" if chat_type == 1 else r"[1-9][0-9]{4,19}", peer_uid) is not None
         and isinstance(expected_time, int)
         and not isinstance(expected_time, bool)
         and 0 < expected_time <= 99_999_999_999
@@ -326,6 +338,9 @@ class NapCatQQProvider:
         expected_file_uuid: str | None = None,
         expected_segment_id: str | None = None,
         expected_self: bool | None = None,
+        chat_type: int = 1,
+        expected_sender_uin: str | None = None,
+        expected_sender_uid: str | None = None,
         timeout: float | None = 8,
     ) -> PicMessageMapping:
         """Ask the runtime to map one DB message to its live PIC element.
@@ -338,19 +353,22 @@ class NapCatQQProvider:
             msg_id=msg_id, peer_uid=peer_uid, expected_time=expected_time,
             expected_md5=expected_md5, expected_file_uuid=expected_file_uuid,
             expected_segment_id=expected_segment_id, expected_self=expected_self,
+            chat_type=chat_type, expected_sender_uin=expected_sender_uin, expected_sender_uid=expected_sender_uid,
         ):
             raise NapCatQQError()
         result = self._rpc(
             "EchoMediaProbe.resolvePicMessage",
             [{
                 "msgId": msg_id,
-                "chatType": 1,
+                "chatType": chat_type,
                 "peerUid": peer_uid,
                 "expectedTime": expected_time,
                 "expectedMd5": expected_md5,
                 "expectedFileUuid": expected_file_uuid,
                 "expectedSegmentId": expected_segment_id,
                 "expectedSelf": expected_self,
+                **({"expectedSenderUin": expected_sender_uin, "expectedSenderUid": expected_sender_uid}
+                   if chat_type == 2 else {}),
             }],
             timeout=timeout,
         )
@@ -383,6 +401,9 @@ class NapCatQQProvider:
             result["matched_pic_count"] == 1,
             result["md5_matches"],
         )) and result["sender_matches"] is not False
+        if chat_type == 2:
+            passed = (passed and result["sender_matches"] is True
+                      and result["segment_id_matches"] is True and result["file_uuid_matches"] is True)
         if result["passed"] is not passed:
             raise NapCatQQError()
         return PicMessageMapping(
@@ -411,9 +432,12 @@ class NapCatQQProvider:
         expected_md5: str,
         expected_file_uuid: str | None = None,
         expected_self: bool | None = None,
+        chat_type: int = 1,
+        expected_sender_uin: str | None = None,
+        expected_sender_uid: str | None = None,
         timeout: float | None = 25,
     ) -> bytes:
-        """Fetch the bytes of one already located private-chat PIC element.
+        """Fetch the bytes of one already located private/group PIC element.
 
         The bridge re-locates the same message and requires the one PIC element
         matching this element ID, digest and file UUID before asking QQ for the
@@ -428,6 +452,7 @@ class NapCatQQProvider:
                 msg_id=msg_id, peer_uid=peer_uid, expected_time=expected_time,
                 expected_md5=expected_md5, expected_file_uuid=expected_file_uuid,
                 expected_segment_id=element_id, expected_self=expected_self,
+                chat_type=chat_type, expected_sender_uin=expected_sender_uin, expected_sender_uid=expected_sender_uid,
             )
             or not isinstance(element_id, str)
         ):
@@ -437,13 +462,15 @@ class NapCatQQProvider:
                 "EchoMediaProbe.downloadPicMedia",
                 [{
                     "msgId": msg_id,
-                    "chatType": 1,
+                    "chatType": chat_type,
                     "peerUid": peer_uid,
                     "elementId": element_id,
                     "expectedTime": expected_time,
                     "expectedMd5": expected_md5,
                     "expectedFileUuid": expected_file_uuid,
                     "expectedSelf": expected_self,
+                    **({"expectedSenderUin": expected_sender_uin, "expectedSenderUid": expected_sender_uid}
+                       if chat_type == 2 else {}),
                 }],
                 timeout=timeout,
             )
