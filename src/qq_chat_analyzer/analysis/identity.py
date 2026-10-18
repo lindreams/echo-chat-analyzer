@@ -14,5 +14,5 @@ def stable_sender_key(message: ChatMessage) -> str:
 
 
 def is_chat_participant(message: ChatMessage) -> bool:
-    """Exclude unresolved private senders; retain existing group semantics."""
-    return message.conversation_type != "private" or bool(stable_sender_key(message).strip())
+    """Count only senders with a stable ID or a usable fallback name."""
+    return bool(stable_sender_key(message).strip())

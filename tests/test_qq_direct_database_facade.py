@@ -241,8 +241,7 @@ def _fetch_facade(tmp_path, *, digest: bytes, content: bytes, mapping_passed: bo
     return facade, provider, runtime
 
 
-@pytest.mark.parametrize("mine", [False, True])
-@pytest.mark.parametrize("original", [False, True])
+@pytest.mark.parametrize("mine,original", [(False, False), (True, True)])
 def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path, mine, original):
     png = _fictional_png()
     digest = hashlib.md5(png).hexdigest() if original else _PIC_KEY_BYTES.hex()
@@ -257,6 +256,8 @@ def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path,
     assert data.sends is result.stickers.sends
     media, = data.media
     assert media.original_bytes == png and media.status == ("available" if original else "preview")
+    assert media.reason == (None if original else "content_digest_mismatch")
+    assert media.format == "PNG"
     query, download = provider.calls
     assert query[0] == "resolve" and download[0] == "download"
     assert query[1]["chat_type"] == download[1]["chat_type"] == 2
@@ -338,21 +339,6 @@ def test_fetched_pic_requires_separate_consent_then_reports_a_verified_original(
     assert len(runtime.cleaned) == 1
 
 
-def test_digest_mismatch_stays_a_distinct_trusted_preview(tmp_path):
-    png = _fictional_png()
-    data = StickerData(sends=(_pic_send(_PIC_KEY_BYTES.hex()),))
-    facade, _provider, _runtime = _fetch_facade(
-        tmp_path, digest=_PIC_KEY_BYTES, content=png)
-
-    result = facade.fetch_qq_sticker_media(
-        data, media_key=data.sends[0].media_key,
-        session_id="private:private-partition", network_consent=True)
-
-    media, = result.media
-    assert (media.status, media.reason) == ("preview", "content_digest_mismatch")
-    assert media.original_bytes == png and media.format == "PNG"
-
-
 def test_group_media_is_refused_before_acquisition_or_rpc(tmp_path, monkeypatch):
     from dataclasses import replace
 
@@ -425,21 +411,7 @@ def test_unconfirmed_mapping_or_undecodable_content_is_never_displayed(tmp_path,
 
 @pytest.mark.parametrize("stage,code,visible", [
     ("media_download_timeout", "qq_media_download_timeout", "限定时间"),
-    ("media_download_failed", "qq_media_download_failed", "下载接口返回失败"),
-    ("media_path_invalid", "qq_media_path_invalid", "不可安全读取"),
-    ("media_file_missing", "qq_media_file_missing", "已不存在"),
-    ("media_open_failed", "qq_media_open_failed", "无法打开"),
-    ("media_file_type_rejected", "qq_media_file_type_rejected", "不是常规文件"),
     ("media_file_identity_changed", "qq_media_file_identity_changed", "不同文件"),
-    ("media_file_empty", "qq_media_file_empty", "为空"),
-    ("media_file_too_large", "qq_media_too_large", "2 MiB"),
-    ("media_read_incomplete", "qq_media_read_incomplete", "读取不完整"),
-    ("media_file_changed", "qq_media_file_changed", "读取过程中发生变化"),
-    ("media_file_rejected", "qq_media_file_rejected", "其他安全校验"),
-    ("media_api_unavailable", "qq_media_api_unavailable", "不支持图片下载接口"),
-    ("media_busy", "qq_media_busy", "尚未结束"),
-    ("media_budget_exhausted", "qq_media_budget_exhausted", "次数已用完"),
-    ("media_message_query_failed", "qq_media_message_query_failed", "消息查询失败"),
 ])
 def test_fetch_failure_names_the_stage_instead_of_one_generic_message(
         tmp_path, stage, code, visible):

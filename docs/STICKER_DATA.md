@@ -76,6 +76,8 @@ message_denominator = data.message_counts.total_messages
 显式传入 `conversation_type="group"` 提供群聊目录。两者均复用上述身份及既有次数降序，
 不是新的发送来源或算法排名口径。条目 `member_counts` 保留各 sender_id 的独立次数，
 `unknown_sender_count` 只表示缺少发送者身份，不能与 is_self 未知的 `unknown_count` 混淆。
+QQ Direct DB 私聊与群聊的零值发送者均按未知身份保留，不使用附带昵称归入真实成员；
+发送次数与消息分母仍计入未知方，素材目录计入 `unknown_sender_count`，不进入 `member_counts`。
 群聊 `other_count` 是所有非本人发送合计，不能解释为一个 TA；窗口选中素材后展示完整成员列表，
 可以选择、复制。同一素材跨成员只生成一个条目；未知素材仍按 occurrence_id 逐次独立。
 
@@ -90,7 +92,7 @@ message_denominator = data.message_counts.total_messages
 - 群聊 40800 使用与私聊共享的内容 schema，现有 PIC 的唯一 45003=1 分类、45406 摘要与冲突否决规则
   可以复用；这证明实现可复用，不等于所有客户端版本的分类已真实验收。
 - 原目录仅按 private 筛选，主窗口也只向私聊开放素材动作，窗口文案只有我／TA。
-  本轮增加显式会话类型选择、QQ 群聊入口和逐成员计数；0 值发送者保持未知，不作为成员归并。
+  本轮增加显式会话类型选择、QQ 群聊入口和逐成员计数；零值发送者的未知身份语义与私聊一致，见 [DATA_SEMANTICS](../DATA_SEMANTICS.md)。
 - [群表字段说明](https://github.com/QQBackup/nt_msg_db_util/blob/master/db_docs/group_msg_table/summary.md)
   区分本地会话键 40027、群号 40030／40021、发送者 QQ 40033、发送者 NT UID 40020。
   [群消息体说明](https://github.com/QQBackup/nt_msg_db_util/blob/master/db_docs/group_msg_table/40800.md)

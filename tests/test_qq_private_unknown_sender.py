@@ -118,16 +118,25 @@ def test_unknown_private_text_is_global_only_and_not_attributed_to_either_side(t
     )
 
 
-def test_group_zero_sender_retains_existing_behavior(tmp_path):
+def test_group_zero_sender_stays_unknown_without_member_attribution(tmp_path):
     imported, result = _analyze(tmp_path, session_type="group")
-    assert imported.messages[0].sender_id == "0"
-    assert imported.messages[0].sender == "Unreliable fictional label"
+    assert len(imported.messages) == len(imported.rich_messages) == 5
+    assert imported.messages[0].sender_id is None
+    assert imported.messages[0].sender == ""
     assert imported.messages[0].is_self is None
-    assert result.reports.user_profiles.speaker_count == 3
-    assert result.reports.conversations.conversations[0].speaker_count == 3
-    assert result.reports.conversation_sessions.sessions[0].participant_count == 3
+    assert not imported.messages[0].is_system
+    assert result.reports.activity.total_message_count == 5
+    profiles = result.reports.user_profiles
+    assert profiles.total_message_count == 5 and profiles.speaker_count == 2
+    assert {profile.speaker_key: profile.message_count for profile in profiles.profiles} == {
+        "100000001": 2, "100000002": 2,
+    }
+    conversation = result.reports.conversations.conversations[0]
+    assert conversation.message_count == 5 and conversation.speaker_count == 2
+    session = result.reports.conversation_sessions.sessions[0]
+    assert session.message_count == 5 and session.participant_count == 2
     assert result.reports.expression.expression_occurrence_count == 2
-    assert len(result.reports.expression.members) == 1
+    assert result.reports.expression.members == ()
 
 
 def test_three_valid_private_senders_remain_unavailable_instead_of_selecting_top_two(tmp_path):

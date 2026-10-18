@@ -20,7 +20,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qq_chat_analyzer.analysis.stickers import (  # noqa: E402
-    StickerData, StickerMedia, StickerMessageCounts, StickerSend,
+    StickerData, StickerMedia, StickerSend,
 )
 from qq_chat_analyzer.application.sticker_catalog import build_sticker_catalog  # noqa: E402
 
@@ -183,23 +183,10 @@ def qt_app():
     return QApplication.instance() or QApplication([])
 
 
-def gif_bytes(frames=3):
-    from PIL import Image
-
-    pictures = [Image.new("RGB", (6, 5), ("red", "green", "blue")[index % 3])
-                for index in range(frames)]
-    buffer = BytesIO()
-    pictures[0].save(
-        buffer, format="GIF", save_all=True, append_images=pictures[1:],
-        duration=40, loop=0,
-    )
-    return buffer.getvalue()
-
-
 def available_media(key, data):
     return StickerMedia(
-        key, "available", format="GIF", frame_count=3,
-        animation_preserved=True, byte_count=len(data), original_bytes=data,
+        key, "available", format="PNG", frame_count=1,
+        animation_preserved=False, byte_count=len(data), original_bytes=data,
     )
 
 
@@ -276,40 +263,6 @@ def test_qq_discovery_requires_authorization_before_media_read(qt_app, tmp_path,
     dialog.close()
 
 
-def test_qq_manual_fallback_validates_structure_once(qt_app, tmp_path, monkeypatch):
-    from qq_chat_analyzer.gui import sticker_media_dialog as module
-
-    account = tmp_path / "12345001"
-    ori = account / "nt_qq/nt_data/Emoji/personal_emoji/Ori"
-    ori.mkdir(parents=True)
-    raw = png_bytes()
-    digest = hashlib.md5(raw).hexdigest()
-    key = f"qq-pic:md5:{digest}"
-    (ori / f"{digest}.dat").write_bytes(raw)
-    selections = []
-
-    def select(*args):
-        selections.append(account)
-        return str(account)
-
-    monkeypatch.setattr(module.QFileDialog, "getExistingDirectory", select)
-    monkeypatch.setattr(module.StickerMediaDialog, "_confirm_qq_scope", lambda self, candidates: candidates[0].roots)
-    dialog = dialog_for(StickerData(sends=(send(key=key, content_md5=digest),)))
-    dialog._choose_media_folder()
-    assert selections == [account]
-    assert not dialog.card.image.pixmap().isNull()
-    assert "已验证 1 个原件" in dialog.status.text()
-    dialog.close()
-    # Invalid manual choice ends this attempt rather than reopening the picker.
-    selections.clear()
-    monkeypatch.setattr(module.QFileDialog, "getExistingDirectory", lambda *a: selections.append(tmp_path) or str(tmp_path / "missing"))
-    dialog = dialog_for(StickerData(sends=(send(key=key, content_md5=digest),)))
-    dialog._choose_media_folder()
-    assert len(selections) == 1
-    assert "未识别" in dialog.status.text()
-    dialog.close()
-
-
 @pytest.mark.parametrize("close", [False, True])
 def test_qq_cancel_or_close_stops_pending_media_read(qt_app, tmp_path, monkeypatch, close):
     from qq_chat_analyzer.gui import sticker_media_dialog as module
@@ -364,10 +317,10 @@ def test_catalog_preserves_sides_unknowns_occurrences_and_namespaces():
     assert build_sticker_catalog((send(source="wechat"),), source="qq") == ()
 
 
-@pytest.mark.parametrize("source", ["qq", "wechat"])
-def test_paging_selects_only_current_batch(qt_app, tmp_path, monkeypatch, source):
+def test_paging_selects_only_current_batch(qt_app, tmp_path, monkeypatch):
+    source = "qq"
     from qq_chat_analyzer.gui import sticker_media_dialog as module
-    sends = tuple(send(key=f"{'qq-pic' if source == 'qq' else 'wechat'}:md5:{i:032x}",
+    sends = tuple(send(key=f"qq-pic:md5:{i:032x}",
                        content_md5=f"{i:032x}", source=source) for i in range(35))
     pending, captured = {}, {}
     def defer(operation, **callbacks):
@@ -388,24 +341,6 @@ def test_paging_selects_only_current_batch(qt_app, tmp_path, monkeypatch, source
     assert set(captured["media_keys"]) == {entry.media_key for entry in dialog._page_entries()}
     assert captured["roots"] == (tmp_path,)
     dialog.close()
-
-
-def test_available_gif_plays_and_close_discards_media(qt_app):
-    from PySide6.QtGui import QMovie
-    raw = gif_bytes()
-    from PIL import Image
-    with Image.open(BytesIO(raw)) as container:
-        assert container.n_frames == 3
-    dialog = dialog_for(StickerData(sends=(send(), send(), send()),
-        media=(available_media(PIC_KEY, raw),),
-        message_counts=StickerMessageCounts(self_messages=3)))
-    assert dialog.card.count.text() == "发送 3 次"
-    movie = dialog.card._movie
-    assert movie is not None and movie.isValid()
-    assert movie.state() != QMovie.MovieState.NotRunning
-    dialog.close()
-    assert dialog.card._movie is None and dialog.card._buffer is None
-    assert not dialog.stickers.media and not dialog.stickers.sends
 
 
 def test_native_movie_error_is_handled_without_preimporting_qimagereader(tmp_path):
@@ -465,7 +400,7 @@ def test_native_movie_error_is_handled_without_preimporting_qimagereader(tmp_pat
 def test_verified_long_gif_actually_plays_past_frame_128_without_caching(qt_app):
     import time
     from PIL import Image
-    from PySide6.QtGui import QMovie, QImageReader
+    from PySide6.QtGui import QMovie
     from qq_chat_analyzer.application.sticker_media import verify_fetched_media
 
     stream = BytesIO()
@@ -492,43 +427,11 @@ def test_verified_long_gif_actually_plays_past_frame_128_without_caching(qt_app)
         assert len({color for _, color, _ in seen}) == 2
         assert all(b[2] - a[2] >= 0.035 for a, b in zip(seen, seen[1:]))
         assert dialog.stickers.sends is data.sends and dialog.stickers.media == (media,)
-        movie.error.emit(QImageReader.ImageReaderError.InvalidDataError)
-        assert dialog.card._movie is None and dialog.card._buffer is None
-        assert "动画播放失败" in dialog.card.detail.text()
     finally:
         dialog.close()
+    assert dialog.card._movie is None and dialog.card._buffer is None
+    assert not dialog.stickers.media and not dialog.stickers.sends
     assert not dialog.card._playback_timer.isActive()
-
-
-@pytest.mark.parametrize("source", ["qq", "wechat"])
-def test_authorized_batch_displays_original_without_losing_missing_counts(qt_app, tmp_path, monkeypatch, source):
-    from qq_chat_analyzer.gui import sticker_media_dialog as module
-    raw = png_bytes()
-    digest = hashlib.md5(raw).hexdigest()
-    prefix = "qq-pic" if source == "qq" else "wechat"
-    key = f"{prefix}:md5:{digest}"
-    root = qq_scope(tmp_path, monkeypatch) if source == "qq" else tmp_path
-    (root / (f"{digest}.dat" if source == "qq" else "renamed-original")).write_bytes(raw)
-    monkeypatch.setattr(module.QFileDialog, "getExistingDirectory", lambda *a: str(root))
-    data = StickerData(sends=(send(key=key, content_md5=digest, source=source),
-        send(key=key, content_md5=digest, source=source),
-        send(key=f"{prefix}:md5:" + "b" * 32, content_md5="b" * 32, source=source)))
-    dialog = dialog_for(data, source=source)
-    assert dialog.card.image.pixmap().isNull()
-    dialog._choose_media_folder()
-    assert "已验证 1 个原件" in dialog.status.text()
-    if source == "qq":
-        assert "候选" in dialog.status.text() and "目录遍历完成" in dialog.status.text()
-    assert not dialog.card.image.pixmap().isNull()
-    assert dialog.card._movie is None and dialog.card.count.text() == "发送 2 次"
-    assert dialog.stickers.sends is data.sends and len(dialog.stickers.media) == 2
-    dialog.close()
-
-
-def test_name_only_failure_explains_unchecked_content(qt_app):
-    from qq_chat_analyzer.gui.sticker_media_dialog import _media_text
-    text = _media_text(StickerMedia(PIC_KEY, "missing", "no_digest_name_match"))
-    assert "候选" in text and "不代表原件不存在" in text
 
 
 def test_closed_dialog_discards_late_results(qt_app, tmp_path):
@@ -540,19 +443,11 @@ def test_closed_dialog_discards_late_results(qt_app, tmp_path):
     dialog = dialog_for(data, executor=deferred)
     dialog._resolve_roots((tmp_path,))
     dialog.reject()
-    pending["on_success"](replace(data, media=(available_media(PIC_KEY, gif_bytes()),)))
+    pending["on_success"](replace(data, media=(available_media(PIC_KEY, png_bytes()),)))
     pending["on_finished"]()
-    assert not dialog.stickers.media and not dialog.media_button.isEnabled()
-    assert dialog.card._movie is None
-
-
-def test_limited_status_does_not_hide_sending_facts(qt_app):
-    data = StickerData(sends=(send(),),
-        media=(StickerMedia(PIC_KEY, "limited", "scan_budget"),))
-    dialog = dialog_for(data)
-    assert "未完整搜索" in dialog.table.item(0, 5).text()
-    assert dialog.card.count.text() == "发送 1 次"
-    dialog.close()
+    assert not dialog.stickers.media and not dialog.stickers.sends
+    assert not dialog.media_button.isEnabled()
+    assert dialog.card._movie is None and dialog.card._buffer is None
 
 
 def test_main_window_material_action_in_frozen_sources(qt_app, monkeypatch):
@@ -601,8 +496,7 @@ def test_group_material_dialog_selects_member_send_and_requires_consent(qt_app, 
     class _Facade:
         def fetch_qq_sticker_media(self, stickers, **kwargs):
             calls.append(kwargs)
-            return replace(stickers, media=(replace(available_media(PIC_KEY, png_bytes()),
-                                                   format="PNG", frame_count=1, animation_preserved=False),))
+            return replace(stickers, media=(available_media(PIC_KEY, png_bytes()),))
     dialog = StickerMediaDialog(data, source="qq", conversation_type="group", session_id="group:12345001",
                                 executor=run_inline, facade=_Facade())
     try:

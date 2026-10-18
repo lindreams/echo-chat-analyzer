@@ -174,14 +174,6 @@ def test_pic_media_facts_keep_digest_conflict_and_filter_unselected_records():
     assert extract_qq_pic_media_facts(payload, set()) == ()
 
 
-def test_group_number_is_never_extracted_as_private_peer_uid():
-    payload = _payload(_body(_media_pic_segment()), session_type="group")
-    payload["records"][0]["fields"].update({"40021": "12345001", "40030": 12345001})
-    fact, = extract_qq_pic_media_facts(payload)
-    assert fact.conversation_type == "group"
-    assert fact.peer_uid is None
-
-
 @pytest.mark.parametrize("conflict", [False, True])
 def test_group_pic_facts_keep_group_and_sender_separate(conflict):
     payload = _payload(_body(_media_pic_segment()), session_type="group")

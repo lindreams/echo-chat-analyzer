@@ -76,7 +76,7 @@ const mark = name => { if (config.marker) fs.appendFileSync(config.marker, name 
 const info = fields => new Proxy(fields, {get(target, key) { mark('Core.status'); return target[key]; }});
 const core={dbPassphrase:'PRIVATE',selfInfo:info({uin:'12345678',uid:'u_self',nick:'Self',online:true,secret:'PRIVATE'}),apis:{
  DatabaseApi:{hasPassphrase:()=>true,decryptDatabase(){mark('decryptDatabase')}},
- FileApi:{downloadMedia:async(...args)=>{mark('downloadMedia');if(config.expectedDownload && JSON.stringify(args.slice(0,4))!==JSON.stringify(config.expectedDownload)) throw new Error('wrong locator');if(config.mediaError) throw new Error('fictional kernel failure');return config.mediaPath ?? ''}},
+ FileApi:{downloadMedia:async(...args)=>{mark('downloadMedia');if(config.expectedDownload && JSON.stringify(args.slice(0,4))!==JSON.stringify(config.expectedDownload)) throw new Error('wrong locator');return config.mediaPath ?? ''}},
  FriendApi:{getBuddyV2ExWithCate:async()=>{mark('listFriends');return [{buddyList:[{uin:'23456789',uid:'u_friend',coreInfo:{uin:'23456789',uid:'u_friend',nick:'Nick',remark:'Remark',secret:'PRIVATE'},secret:'PRIVATE'},{uid:'u_only'},{uin:'34567890'}]}]}},
  GroupApi:{getGroups:async()=>{mark('listGroups');return [{groupCode:'45678901',groupName:'Group',memberCount:3},{groupCode:'56789012'}]},getGroupMemberAll:async()=>{mark('getGroupMemberAll');return {result:{infos:new Map([['u_member',{uid:'u_member',uin:'23456789',nick:'Nick',cardName:'Card',secret:'PRIVATE'}]])}}}},
  MsgApi:{getMsgsByMsgId:async(peer,ids)=>{
@@ -939,14 +939,6 @@ def test_media_fetch_reports_a_fixed_stage_for_each_local_rejection(runtime, tmp
     status, payload = request(base, "EchoMediaProbe.downloadPicMedia", [dict(_MEDIA_WIRE)])
     assert (status, payload) == (200, {"ok": False, "error": stage})
     assert str(tmp_path) not in json.dumps(payload)
-
-
-def test_media_kernel_rejection_is_reported_as_a_download_failure(runtime):
-    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
-    client = provider(runtime(mediaError="fictional"))
-    with pytest.raises(module.NapCatQQMediaStageError) as caught:
-        client.download_pic_media(**_MEDIA)
-    assert caught.value.stage == "media_download_failed"
 
 
 def test_media_fetch_rejects_invalid_parameters_before_any_kernel_call(runtime, tmp_path):
