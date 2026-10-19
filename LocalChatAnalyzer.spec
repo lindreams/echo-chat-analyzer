@@ -10,11 +10,14 @@ Output: dist/Echo/Echo.exe
 from pathlib import Path
 from importlib.metadata import version
 import tomllib
+import runpy
 
 from PyInstaller.utils.hooks import copy_metadata
 
 
 project_root = Path(SPEC).resolve().parent
+sqlite_build = runpy.run_path(str(project_root / "scripts/bootstrap_sqlite_runtime.py"))
+sqlite_dll = sqlite_build["verify_dll"](project_root / "runtime/sqlite/sqlite3.dll")
 release_version = tomllib.loads(
     (project_root / "pyproject.toml").read_text(encoding="utf-8")
 )["project"]["version"]
@@ -40,6 +43,7 @@ echo_qq_expression_assets = project_root / "frontend/echo_report/qq-emojis"
 datas = [(str(path), ".") for path in resources]
 datas.append((str(project_root / "scripts/windows_runtime_manifest.json"), "scripts"))
 datas.append((str(project_root / "scripts/qq_napcat_runtime_pins.json"), "scripts"))
+datas.append((str(project_root / "scripts/sqlite_runtime_pins.json"), "scripts"))
 datas += copy_metadata("qq-chat-analyzer")
 datas += copy_metadata("velopack")
 datas.append((str(echo_icon), "assets/branding/echo"))
@@ -83,7 +87,7 @@ desktop_excludes = [
 a = Analysis(
     ["desktop_entry.py"],
     pathex=[str(project_root / "src")],
-    binaries=[],
+    binaries=[(str(sqlite_dll), ".")],
     datas=datas,
     hiddenimports=[],
     hookspath=[],
@@ -93,6 +97,7 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+sqlite_build["verify_frozen_binaries"](a.binaries)
 # The upstream jieba hook collects all data independently of module excludes.
 # Ordinary lcut uses dict.txt and the Python HMM; only Paddle uses lac_small.
 # Installation provenance can contain a builder's local source path. Runtime
@@ -132,6 +137,7 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=True,
-    upx_exclude=[],
+    # Preserve the official DLL bytes used by the release pin.
+    upx_exclude=["sqlite3.dll"],
     name="Echo",
 )

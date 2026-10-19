@@ -113,13 +113,14 @@ def test_quick_check_distinguishes_access_from_corruption(tmp_path, caplog, kind
     with caplog.at_level('WARNING', logger='qq_chat_analyzer.desktop.qq_database'):
         assert QQDatabaseProvider.quick_check(path) != 'ok'
     assert f'category={category}' in caplog.text
-    if kind == 'btree' and sqlite3.sqlite_version == '3.50.4':
+    if kind == 'btree' and sqlite3.sqlite_version in ('3.50.4', '3.54.1'):
         assert 'integrity_kind=btree' in caplog.text
     assert str(tmp_path) not in caplog.text
     assert 'private-snapshot' not in caplog.text
     assert 'fictional private content' not in caplog.text
 
 
+@pytest.mark.parametrize("version", ["3.50.4", "3.54.1"])
 @pytest.mark.parametrize("message, kind", [
     ("*** in database main ***\nFragmentation of 0 bytes reported as 61 on page 2", "btree"),
     ("*** in database main ***\nTree 2 page 2 cell 0: overflow list length is 1 but should be 3", "overflow"),
@@ -130,18 +131,18 @@ def test_quick_check_distinguishes_access_from_corruption(tmp_path, caplog, kind
     ("PRIVATE_PATH/overflow btree rowid=123", "unknown"),
     ("unable to validate the inverted index for FTS4 table main.PRIVATE_TABLE: SQL logic error\nPRIVATE_CONTEXT", "unknown"),
 ])
-def test_quick_check_logs_only_fixed_classification(tmp_path, monkeypatch, caplog, message, kind):
+def test_quick_check_logs_only_fixed_classification(tmp_path, monkeypatch, caplog, message, kind, version):
     connection = MagicMock()
     connection.execute.return_value.fetchone.return_value = (message,)
     monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: connection)
-    monkeypatch.setattr(sqlite3, "sqlite_version", "3.50.4")
+    monkeypatch.setattr(sqlite3, "sqlite_version", version)
 
     with caplog.at_level("WARNING", logger="qq_chat_analyzer.desktop.qq_database"):
         assert QQDatabaseProvider.quick_check(tmp_path / "PRIVATE_PATH.db") == "failed"
 
     assert [record.getMessage() for record in caplog.records] == [
         "QQ snapshot quick_check result=failed category=integrity "
-        f"integrity_kind={kind} sqlite_version=3.50.4 classifier_version=1"
+        f"integrity_kind={kind} sqlite_version={version} classifier_version=1"
     ]
     assert not any(record.exc_info or record.stack_info for record in caplog.records)
     connection.execute.assert_called_once_with("PRAGMA quick_check(1)")
@@ -154,7 +155,7 @@ def test_quick_check_unknown_versions_and_private_exception_stay_closed(tmp_path
         "unable to validate the inverted index for FTS4 table main.PRIVATE_TABLE: SQL logic error",
     )
     monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: connection)
-    for version, safe_version in [("3.54.1", "3.54.1"), ("PRIVATE_PATH", "unknown")]:
+    for version, safe_version in [("3.54.2", "3.54.2"), ("PRIVATE_PATH", "unknown")]:
         caplog.clear()
         monkeypatch.setattr(sqlite3, "sqlite_version", version)
         assert QQDatabaseProvider.quick_check(tmp_path / "PRIVATE_PATH.db") == "failed"

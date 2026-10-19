@@ -217,6 +217,29 @@ checks; Fast tests do not replace the required focused integration validation.
 
 ### 4.1 Frozen onedir build
 
+Frozen Windows x64 uses the official SQLite **3.54.1** DLL independently of the
+builder's Python SQLite. Provision it with the verified interpreter before the
+first build:
+
+```powershell
+& $EchoPython scripts/bootstrap_sqlite_runtime.py
+# Or reuse the exact official ZIP without downloading again:
+& $EchoPython scripts/bootstrap_sqlite_runtime.py --archive <official-sqlite-zip>
+```
+
+`scripts/sqlite_runtime_pins.json` records the official URL, release source ID,
+archive size/SHA3-256 and extracted DLL SHA256. The bootstrap verifies the flat
+archive and AMD64 PE image and writes only `runtime/sqlite/sqlite3.dll`; it never
+changes Python or a virtual environment and refuses to overwrite a different
+existing DLL. The spec explicitly supplies this DLL to PyInstaller, verifies the
+collected binary table, and ships the pins. The Windows wrapper verifies the
+output DLL even for `-RuntimeOnly`; missing/mismatched SQLite fails the build.
+The original Python `_sqlite3.pyd` stays paired with its Python interpreter.
+After a Python or SQLite upgrade, revalidate that pair's API operations in an
+isolated process and confirm a Frozen launch's `sqlite_version` startup field
+and loaded DLL path/hash. Ordinary source tests still use Python's own SQLite
+unless an isolated test process explicitly selects the new DLL.
+
 Use the validated environment from section 3.2, the target project's `.venv`
 PyInstaller and exact `build` extra pins. Do not build with an unpinned toolchain.
 The build consumes `LocalChatAnalyzer.spec` and

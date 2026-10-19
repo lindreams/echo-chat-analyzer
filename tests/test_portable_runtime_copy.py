@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import struct
+import sys
 from pathlib import Path
 
 import pytest
@@ -148,7 +149,26 @@ def _fictional_runtime(
     # Run a temporary build-script copy with fictional, pinned artifacts.
     scripts = project_root / "scripts"
     shutil.copy2(BUILD_SCRIPT, scripts / BUILD_SCRIPT.name)
+    # RuntimeOnly now validates the already-frozen SQLite input. Use the same
+    # verified test interpreter and validator with fictional PE bytes/pins.
+    script = scripts / BUILD_SCRIPT.name
+    script.write_text(script.read_text(encoding="utf-8-sig").replace(
+        '$VenvPython = Join-Path $ProjectRoot ".venv\\Scripts\\python.exe"',
+        "$VenvPython = '" + sys.executable.replace("'", "''") + "'"), encoding="utf-8")
+    shutil.copy2(PROJECT_ROOT / "scripts/bootstrap_sqlite_runtime.py", scripts)
     import hashlib
+
+    sqlite = bytearray(256)
+    sqlite[:2] = b"MZ"
+    struct.pack_into("<I", sqlite, 60, 128)
+    sqlite[128:132] = b"PE\0\0"
+    struct.pack_into("<H", sqlite, 132, 0x8664)
+    sqlite_path = project_root / "dist/Echo/_internal/sqlite3.dll"
+    sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    sqlite_path.write_bytes(sqlite)
+    (scripts / "sqlite_runtime_pins.json").write_text(json.dumps({
+        "dllSha256": hashlib.sha256(sqlite).hexdigest(),
+    }))
 
     def digest(relative):
         path = runtime / "qq-napcat-candidate" / relative
@@ -223,6 +243,17 @@ def test_runtime_only_build_copies_complete_wechat_node_module(
     )
 
 
+def test_runtime_only_rejects_changed_sqlite_before_copying(tmp_path: Path) -> None:
+    _fictional_runtime(tmp_path)
+    sqlite = tmp_path / "dist/Echo/_internal/sqlite3.dll"
+    sqlite.write_bytes(b"fictional unpinned DLL")
+    completed = _copy_runtime(tmp_path)
+    assert completed.returncode != 0
+    assert "Frozen SQLite DLL failed its release pin" in completed.stderr + completed.stdout
+    assert sqlite.read_bytes() == b"fictional unpinned DLL"
+    assert not (tmp_path / "dist/Echo/runtime").exists()
+
+
 def test_build_ships_complete_copyright_materials(tmp_path: Path) -> None:
     _fictional_runtime(tmp_path)
     completed = _copy_runtime(tmp_path)
@@ -246,7 +277,7 @@ def test_build_rejects_incomplete_copyright_materials(tmp_path: Path, relative: 
     assert completed.returncode != 0
     assert "Required release copyright file is missing or empty" in completed.stderr + completed.stdout
     assert relative in (completed.stderr + completed.stdout).replace("\\", "/")
-    assert not (tmp_path / "dist/Echo").exists()
+    assert not (tmp_path / "dist/Echo/runtime").exists()
 
 
 def test_runtime_build_ships_wx_key_msvc_runtime_dependencies(
