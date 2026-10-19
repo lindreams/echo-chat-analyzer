@@ -30,6 +30,7 @@ from ..analysis.stickers import (
     count_sticker_messages,
 )
 from ..presentation.builders import prepare_expression_report
+from ..presentation.stickers import assemble_sticker_assets
 from ..analyzer import (
     WordSpeakerSummary,
     count_word_speakers,
@@ -151,6 +152,33 @@ class AnalysisApplicationService:
             with self._lifecycle_lock:
                 self._active -= 1
 
+    def export_sticker_report(
+        self, result: AnalysisResultDTO, stickers: StickerData, output_directory: Path,
+    ) -> AnalysisResultDTO:
+        """Reassemble retained display facts; never re-read or re-analyze a source."""
+        with self._lifecycle_lock:
+            if self._closing:
+                raise AnalysisServiceClosing()
+            self._active += 1
+        try:
+            view = result.echo_report_view
+            original = result.stickers
+            known_keys = {send.media_key for send in original.sends}
+            if (view is None
+                    or stickers.sends is not original.sends
+                    or stickers.message_counts != original.message_counts
+                    or any(item.media_key not in known_keys for item in stickers.media)
+                    or len({item.media_key for item in stickers.media}) != len(stickers.media)):
+                raise ValueError("invalid_sticker_report_data")
+            with timed_stage("report_view_assets"):
+                if view.stickers is not None:
+                    view = replace(view, stickers=assemble_sticker_assets(view.stickers, stickers.media))
+            _write_echo_view(view, output_directory)
+            return replace(result, stickers=stickers, echo_report_view=view, artifacts=_ECHO_ARTIFACTS)
+        finally:
+            with self._lifecycle_lock:
+                self._active -= 1
+
     def _execute(self, request: AnalysisRequestDTO) -> AnalysisResultDTO:
         _validate_request(request)
         with timed_stage("import"):
@@ -190,9 +218,11 @@ class AnalysisApplicationService:
             # rather than being reported as covered denominator.
             sticker_scope = tuple(rich_by_instance.values())
             sticker_sends = collect_sticker_sends(sticker_scope)
+            with timed_stage("sticker_media_resolve"):
+                sticker_media = resolve_sticker_media(sticker_sends, roots=request.sticker_media_roots)
             stickers = StickerData(
                 sends=sticker_sends,
-                media=resolve_sticker_media(sticker_sends, roots=request.sticker_media_roots),
+                media=sticker_media,
                 message_counts=count_sticker_messages(sticker_scope),
             )
         diagnostic_counts = AnalysisDiagnosticCounts(
@@ -293,6 +323,7 @@ class AnalysisApplicationService:
                         conversation_kind=conversation_type,
                         expression_source=outcome.result.platform,
                         sticker_media=stickers.media,
+                        write=request.export_echo_report,
                     )
             except (OSError, ValueError):
                 raise ArtifactGenerationFailed() from None
@@ -314,10 +345,10 @@ class AnalysisApplicationService:
             raise
 
         _LOGGER.info(
-            "[analysis] echo artifacts exported echo_view=%s "
-            "conversation_type=%s",
+            "[analysis] echo view prepared echo_view=%s conversation_type=%s exported=%s",
             echo_report_view is not None,
             conversation_type,
+            request.export_echo_report,
         )
         return AnalysisResultDTO(
             status=status,
@@ -328,7 +359,7 @@ class AnalysisApplicationService:
                 WordFrequencyDTO(word=word, count=count)
                 for word, count in ranked_words
             ),
-            artifacts=(*legacy_artifacts, *_ECHO_ARTIFACTS),
+            artifacts=(*legacy_artifacts, *(_ECHO_ARTIFACTS if request.export_echo_report else ())),
             reports=reports,
             echo_report_view=echo_report_view,
             stickers=stickers,
@@ -431,6 +462,8 @@ def _build_reports(
                 messages,
                 rich_by_instance=rich_by_instance,
             )
+    with timed_stage("sticker_aggregation"):
+        sticker_reports = aggregate_stickers(stickers or StickerData(), (rich_by_instance or {}).values())
     return AnalysisReports(
         activity=activity,
         user_profiles=user_profiles,
@@ -438,7 +471,7 @@ def _build_reports(
         conversation_sessions=conversation_sessions,
         distinctive_words=distinctive_words,
         private_language=private_language,
-        stickers=aggregate_stickers(stickers or StickerData(), (rich_by_instance or {}).values()),
+        stickers=sticker_reports,
         expression=prepare_expression_report(
             expression,
             expression_source=(
@@ -640,22 +673,32 @@ def _export_echo_artifacts(
     conversation_kind: str,
     expression_source: str | None,
     sticker_media: tuple[StickerMedia, ...] = (),
+    write: bool = True,
 ) -> EchoReportView:
     """Write the Echo JSON and self-contained HTML report artifacts."""
     output_directory = request.output_directory
-    view = build_echo_report_view(
-        reports,
-        viewer_speaker_key=viewer_speaker_key,
-        conversation_kind=conversation_kind,
-        expression_source=expression_source,
-        sticker_media=sticker_media,
-    )
-    export_echo_report_json(
-        view,
-        str(output_directory / _ECHO_ARTIFACT_FILENAMES["echo_report_json"]),
-    )
-    export_echo_report_html(
-        view,
-        str(output_directory / _ECHO_ARTIFACT_FILENAMES["echo_report_html"]),
-    )
+    with timed_stage("report_view_assets"):
+        view = build_echo_report_view(
+            reports,
+            viewer_speaker_key=viewer_speaker_key,
+            conversation_kind=conversation_kind,
+            expression_source=expression_source,
+            sticker_media=sticker_media,
+        )
+    if write:
+        _write_echo_view(view, output_directory)
     return view
+
+
+def _write_echo_view(view: EchoReportView, output_directory: Path) -> None:
+    """Shared JSON/HTML export for analysis and explicitly enriched snapshots."""
+    with timed_stage("report_json_export"):
+        export_echo_report_json(
+            view,
+            str(output_directory / _ECHO_ARTIFACT_FILENAMES["echo_report_json"]),
+        )
+    with timed_stage("report_html_export"):
+        export_echo_report_html(
+            view,
+            str(output_directory / _ECHO_ARTIFACT_FILENAMES["echo_report_html"]),
+        )

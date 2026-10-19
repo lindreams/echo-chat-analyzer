@@ -344,7 +344,7 @@ class StubFacade:
             action_hint="",
         )
 
-    def analyze_session(self, source, session_id, config=None, progress=None, on_phase=None):
+    def analyze_session(self, source, session_id, config=None, progress=None, on_phase=None, cancelled=lambda: False):
         self.analyze_session_calls.append((source, session_id, config))
         if on_phase is not None:
             from qq_chat_analyzer.application.analysis_phase import AnalysisPhase
@@ -1516,7 +1516,7 @@ def test_processing_cancel_returns_while_real_worker_is_still_blocked(qt_app, so
     window, facade, _, panel = _window_with_running_fictional_analysis(qt_app, _facade_module().ChatSource(source_name))
     window.cancel_analysis()
     entered, release, returned = threading.Event(), threading.Event(), threading.Event()
-    def analyze_session(source, session_id, config=None, progress=None, on_phase=None):
+    def analyze_session(source, session_id, config=None, progress=None, on_phase=None, cancelled=lambda: False):
         on_phase(AnalysisPhase.READING)
         entered.set()
         release.wait(5)
@@ -1602,7 +1602,7 @@ def test_processing_real_worker_delivers_typed_phases_on_gui_thread(qt_app, sour
     gui_thread = threading.get_ident()
     published_from = []
     received = []
-    def analyze_session(source, session_id, config=None, progress=None, on_phase=None):
+    def analyze_session(source, session_id, config=None, progress=None, on_phase=None, cancelled=lambda: False):
         published_from.append(threading.get_ident())
         on_phase(AnalysisPhase.READING)
         progress("旧字符串仍可传递")

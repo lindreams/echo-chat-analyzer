@@ -381,6 +381,10 @@ def test_metadata_failure_keeps_retained_scratch_and_creates_no_package(
 
 
 class _StubAnalysisService:
+    def export_sticker_report(self, result, stickers, output_directory):
+        # Package/retention tests supply fictional files in their writer stub.
+        return result
+
     def __init__(self, result=None, error=None):
         self._result = result
         self._error = error

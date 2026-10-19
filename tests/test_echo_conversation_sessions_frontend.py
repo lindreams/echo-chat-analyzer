@@ -61,6 +61,7 @@ class FakeNode {
   constructor(id) {
     this.id = id || "";
     this.textContent = "";
+    this.value = "";
     this.hidden = false;
     this.children = [];
     this.className = "";
@@ -194,9 +195,26 @@ def test_sticker_empty_unknown_and_group_visibility(tmp_path):
     rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=unknown)
     assert not rendered["sticker-rankings"]["hidden"]
     assert rendered["sticker-dynamic"]["hidden"]
-    assert "2" in rendered["sticker-note"]["text"]
+    assert rendered["sticker-total"]["text"] == "2 次"
+    assert "sticker-note" not in rendered
     rendered = _render_frontend(tmp_path, kind="group", sessions=None, stickers=unknown)
     assert rendered["stickers"]["hidden"] and rendered["sticker-toc"]["hidden"]
+
+
+def test_small_sticker_sample_keeps_counts_without_diagnostic_notices(tmp_path):
+    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
+    chapter = echo_report_to_dict(build_echo_report_view(None, conversation_kind="private"))["stickers"]
+    chapter.update(total_send_count=5, unique_material_count=5, covered_message_count=5)
+    rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=chapter)
+    assert rendered["sticker-total"]["text"] == "5 次"
+    assert not rendered["sticker-rankings"]["hidden"]
+    assert rendered["sticker-empty"]["hidden"]
+    assert not rendered["sticker-fields"]["hidden"]
+    chapter["total_send_count"] = 0
+    rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=chapter)
+    assert "没有表情包发送" in rendered["sticker-empty"]["text"]
+    assert rendered["sticker-fields"]["hidden"]
+    assert rendered["sticker-rankings"]["hidden"]
 
 
 @pytest.mark.parametrize("known_sender", [True, False])
@@ -389,7 +407,7 @@ def _find_chromium() -> str | None:
 
 @pytest.mark.slow_integration
 @pytest.mark.parametrize("kind", ["private", "group"])
-def test_sticker_chapter_is_one_offline_desktop_page_with_expandable_rankings(tmp_path, kind):
+def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path, kind):
     width = 1280
     from dataclasses import replace
     import hashlib
@@ -407,7 +425,8 @@ def test_sticker_chapter_is_one_offline_desktop_page_with_expandable_rankings(tm
     preview = verify_fetched_media(raw, media_key="second", expected_md5="0" * 32)
     report = StickerConversationReport(
         "qq", "fiction-room", kind, 102, 97, 1, 2,
-        members=(StickerParticipant("a", True, 60, 50), StickerParticipant("b", False, 40, 45)),
+        members=(StickerParticipant("a", True, 60, 50), StickerParticipant("b", False, 40, 45),
+                 *((StickerParticipant("c", None, 0, 7),) if kind == "group" else ())),
         materials=(
             StickerMaterialUsage("first", "first", 36, (("a", 20), ("b", 15)), 1),
             StickerMaterialUsage("second", "second", 20, (("a", 10), ("b", 10))),
@@ -419,8 +438,9 @@ def test_sticker_chapter_is_one_offline_desktop_page_with_expandable_rankings(tm
                                   sticker_media=(original, preview, replace(original, media_key="mine", status="unsafe")))
     view = replace(view, total_message_count=120)  # Include all three qualification notes at full display density.
     chapter = echo_report_to_dict(view)["stickers"]
-    assert len(chapter["assets"]) == 2  # Even retained bytes cannot override a failed status.
-    assert {asset["status"] for asset in chapter["assets"].values()} == {"available", "preview"}
+    images = [asset for asset in chapter["assets"].values() if asset["data_uri"]]
+    assert len(images) == 2  # Even retained bytes cannot override a failed status.
+    assert {asset["status"] for asset in images} == {"available", "preview"}
     output = export_echo_report_html(view, tmp_path / "echo-stickers.html")
     source = output.read_text(encoding="utf-8")
     probe = r'''<style>.page:not(#stickers) { display:none !important; }</style><script>
@@ -428,18 +448,18 @@ def test_sticker_chapter_is_one_offline_desktop_page_with_expandable_rankings(tm
       setTimeout(function () {
         const sheet = document.getElementById("stickers");
         const rect = sheet.getBoundingClientRect();
-        const note = document.getElementById("sticker-note").getBoundingClientRect();
         const image = sheet.querySelector("img");
         const result = {
           visible: !sheet.hidden, count: document.querySelectorAll("#stickers.page").length,
           width: rect.width, height: rect.height,
-          fits: note.bottom < rect.bottom - 45,
           tops: sheet.querySelectorAll("#sticker-members .sticker-top-list li").length,
           offline: Array.from(sheet.querySelectorAll("img")).every(x => x.src.startsWith("data:image/")),
           loaded: image && image.complete && image.naturalWidth > 0,
           missing: sheet.querySelectorAll(".sticker-image:not(.has-image)").length,
           overflow: document.documentElement.scrollWidth > window.innerWidth,
-          preview: sheet.textContent.includes("可信预览")
+          preview: sheet.textContent.includes("预览"),
+          diagnostics: /可靠成员|已知|未知|素材 \d|招牌|资格|阈值|排序口径|身份判定/.test(sheet.innerText),
+          imageWidth: sheet.querySelector(".sticker-image").getBoundingClientRect().width
         };
         const memberList = sheet.querySelector("#sticker-members .sticker-top-list");
         const button = sheet.querySelector("#sticker-members .sticker-expand");
@@ -448,13 +468,35 @@ def test_sticker_chapter_is_one_offline_desktop_page_with_expandable_rankings(tm
         result.expanded = [...memberList.children].map(x => [x.dataset.assetKey, Number(x.dataset.count)]);
         result.expected = member.top_materials.map(x => [x.asset_key, x.count]);
         result.expandedState = button.getAttribute("aria-expanded");
+        const positions = [...memberList.children].map(x => x.getBoundingClientRect());
+        result.memberRows = [...new Set(positions.map(x => Math.round(x.top)))].length;
+        result.memberColumns = positions.filter(x => Math.round(x.top) === Math.round(positions[0].top)).length;
+        result.memberImageWidths = [...memberList.querySelectorAll(".sticker-image")].map(x => x.getBoundingClientRect().width);
         button.click();
         result.collapsed = memberList.children.length;
-        const picker = document.getElementById("sticker-member-select");
         if (window.ECHO_DATA.stickers.conversation_kind === "group") {
-          picker.value = "1"; picker.dispatchEvent(new Event("change"));
-          result.selectedCount = Number(sheet.querySelector("#sticker-members li").dataset.count);
-          result.expectedSelected = window.ECHO_DATA.stickers.members[1].top_materials[0].count;
+          const boxes = [...document.querySelectorAll("#sticker-member-options input")];
+          boxes[1].click(); boxes[2].click();
+          result.comparedMembers = sheet.querySelectorAll(".sticker-member").length;
+          result.noRate = [...sheet.querySelectorAll(".sticker-member")][2].innerText;
+          const search = document.getElementById("sticker-member-search");
+          search.value = window.ECHO_DATA.stickers.members[1].label;
+          search.dispatchEvent(new Event("input"));
+          result.searchCount = document.querySelectorAll("#sticker-member-options input").length;
+          result.searchChecked = document.querySelector("#sticker-member-options input").checked;
+          search.value = ""; search.dispatchEvent(new Event("input"));
+          result.retainedSelections = [...document.querySelectorAll("#sticker-member-options input")].filter(x => x.checked).length;
+          const rankings = document.getElementById("sticker-group-rankings");
+          const blocks = [...rankings.children];
+          const bounds = () => blocks.map(x => ({top:x.getBoundingClientRect().top, width:x.getBoundingClientRect().width}));
+          result.defaultGroupBounds = bounds();
+          blocks[1].querySelector("button").click();
+          result.sharedExpandedBounds = bounds();
+          blocks[0].querySelector("button").click();
+          result.bothExpandedBounds = bounds();
+          blocks[1].querySelector("button").click();
+          result.totalExpandedBounds = bounds();
+          result.pickerBorder = getComputedStyle(document.getElementById("sticker-member-picker")).borderBottomWidth;
         }
         image.src = "data:image/png;base64,broken";
         setTimeout(function () {
@@ -479,15 +521,81 @@ def test_sticker_chapter_is_one_offline_desktop_page_with_expandable_rankings(tm
     assert match is not None
     rendered = json.loads(html.unescape(match.group(1)))
     assert rendered["visible"] and rendered["count"] == 1
-    assert rendered["fits"] and not rendered["overflow"]
+    assert not rendered["overflow"] and not rendered["diagnostics"]
+    assert rendered["imageWidth"] >= 100
     assert rendered["tops"] == (6 if kind == "private" else 3)
     assert rendered["expanded"] == rendered["expected"] and len(rendered["expanded"]) == 10
     assert rendered["expandedState"] == "true" and rendered["collapsed"] == 3
+    assert rendered["memberColumns"] == 5 and rendered["memberRows"] == 2
+    assert all(110 <= value <= 120 for value in rendered["memberImageWidths"])
     if kind == "group":
-        assert rendered["selectedCount"] == rendered["expectedSelected"]
+        assert rendered["comparedMembers"] == 3
+        assert rendered["searchCount"] == 1 and rendered["searchChecked"]
+        assert rendered["retainedSelections"] == 3
+        assert "共发送 7 次" in rendered["noRate"] and "每 100" not in rendered["noRate"]
+        default, shared, both, total = (rendered[key] for key in (
+            "defaultGroupBounds", "sharedExpandedBounds", "bothExpandedBounds", "totalExpandedBounds"))
+        assert default[0]["top"] == default[1]["top"]
+        assert shared[1]["top"] < shared[0]["top"] and total[0]["top"] < total[1]["top"]
+        assert both[0]["top"] < both[1]["top"]
+        assert all(pair[0]["width"] == pair[1]["width"] > default[0]["width"] for pair in (shared, both, total))
+        assert rendered["pickerBorder"] == "0px"
     assert rendered["loaded"] and rendered["offline"] and rendered["missing"] >= 2
     assert rendered["brokenFallback"] and rendered["preview"]
-    assert rendered["width"] == 1040 and rendered["height"] == 980
+    assert rendered["width"] == 1040 and rendered["height"] >= 980
+
+
+@pytest.mark.slow_integration
+@pytest.mark.parametrize("kind", ["private", "group"])
+def test_saved_qq_media_report_loads_actual_images_offline(tmp_path, kind, caplog):
+    import hashlib
+    from test_qq_direct_database_facade import _fetch_facade
+    from test_sticker_data import image_bytes
+    from qq_chat_analyzer.application.facade import AnalysisConfig, ChatSource
+
+    chromium = _find_chromium()
+    if chromium is None:
+        pytest.skip("no local Chromium available")
+    caplog.set_level("INFO")
+    raw = image_bytes("GIF", animated=True) if kind == "group" else image_bytes("PNG")
+    digest = b"\xab" * 16 if kind == "group" else hashlib.md5(raw).digest()
+    facade, _, _ = _fetch_facade(tmp_path, digest=digest, content=raw,
+                                group_sender="10087" if kind == "group" else None)
+    session_id = "group:group-partition" if kind == "group" else "private:private-partition"
+    outcome = facade.analyze_session(ChatSource.QQ, session_id, AnalysisConfig(output_directory=tmp_path / "initial"))
+    # Normal generation is final: no material dialog, manual fetch or second export.
+    source = outcome.report_path.read_text(encoding="utf-8")
+    probe = r'''<style>.page:not(#stickers) {display:none !important;}</style>
+    <script>window.addEventListener("load", function () {setTimeout(function () {
+      const chapter = document.getElementById("stickers"); chapter.scrollIntoView();
+      const images = [...chapter.querySelectorAll("img")];
+      const result = {loaded: images.length > 0 && images.every(x => x.complete && x.naturalWidth > 0),
+        offline: images.every(x => x.src.startsWith("data:image/")),
+        states: Object.values(window.ECHO_DATA.stickers.assets).map(x => x.status),
+        preview: chapter.textContent.includes("预览"), count: window.ECHO_DATA.stickers.total_send_count};
+      const pre = document.createElement("pre"); pre.id = "saved-media-probe";
+      pre.hidden = true; pre.textContent = JSON.stringify(result); document.body.appendChild(pre);
+    }, 500);});</script>'''
+    page = tmp_path / "saved-media-probe.html"
+    page.write_text(source.replace("</body>", probe + "</body>"), encoding="utf-8")
+    browser = _run_browser([
+        chromium, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+        "--no-default-browser-check", "--disable-background-networking",
+        "--host-resolver-rules=MAP * ~NOTFOUND", f"--user-data-dir={tmp_path / 'browser-profile'}",
+        "--virtual-time-budget=2000", "--window-size=1280,1100",
+        f"--screenshot={tmp_path / 'saved-media.png'}", "--dump-dom", page.as_uri(),
+    ])
+    assert browser.returncode == 0
+    match = re.search(r'<pre id="saved-media-probe" hidden="">(.*?)</pre>', browser.stdout.decode("utf-8"), re.S)
+    assert match is not None
+    rendered = json.loads(html.unescape(match.group(1)))
+    assert rendered["loaded"] and rendered["offline"] and rendered["count"] == 1
+    assert rendered["states"] == (["preview"] if kind == "group" else ["available"])
+    assert rendered["preview"] == (kind == "group")
+    timing = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[analysis-timing]")]
+    assert any("stage=sticker_report_export " in line for line in timing)
+    assert all(str(tmp_path) not in line for line in timing)
+    (tmp_path / "timings.json").write_text(json.dumps(timing, indent=2), encoding="utf-8")
 
 
 def _run_browser(command: list[str]) -> subprocess.CompletedProcess:

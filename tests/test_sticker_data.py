@@ -3,6 +3,7 @@ from io import BytesIO
 import hashlib
 import json
 import os
+import re
 import sys
 
 import pytest
@@ -1024,7 +1025,7 @@ def test_decode_finishing_after_deadline_cannot_publish_success(tmp_path, monkey
     assert item.original_bytes is None
 
 
-def test_batch_association_reuses_one_scan_and_preserves_send_facts(tmp_path, monkeypatch):
+def test_batch_association_reuses_one_scan_and_preserves_send_facts(tmp_path, monkeypatch, caplog):
     from qq_chat_analyzer.analysis.stickers import StickerData, StickerMessageCounts
     from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
     from qq_chat_analyzer.application import sticker_media
@@ -1048,16 +1049,23 @@ def test_batch_association_reuses_one_scan_and_preserves_send_facts(tmp_path, mo
 
     monkeypatch.setattr(sticker_media.os, "scandir", scan)
     monkeypatch.setattr(sticker_media, "_inspect", inspect)
+    caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
     result = ChatAnalyzerFacade.associate_sticker_media(
         data, media_keys=tuple(dict.fromkeys(s.media_key for s in sends)),
         roots=(tmp_path,), source="qq")
     assert result.sends is data.sends and result.message_counts is data.message_counts
     assert {m.original_bytes for m in result.media} == set(raws)
     assert scans == [tmp_path] and len(decodes) == 2
-    again = ChatAnalyzerFacade.associate_sticker_media(
-        result, media_keys=tuple(m.media_key for m in result.media),
-        roots=(tmp_path,), source="qq")
+    timing_lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[analysis-timing]")]
+    assert len(timing_lines) == 1
+    assert re.fullmatch(r"\[analysis-timing\] stage=sticker_media_associate elapsed_ms=\d+", timing_lines[0])
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="qq_chat_analyzer.desktop.analysis_diagnostics"):
+        again = ChatAnalyzerFacade.associate_sticker_media(
+            result, media_keys=tuple(m.media_key for m in result.media),
+            roots=(tmp_path,), source="qq")
     assert again == result and scans == [tmp_path] and len(decodes) == 2
+    assert not [r for r in caplog.records if r.getMessage().startswith("[analysis-timing]")]
 
 
 def test_batch_rejects_oversized_selection_before_io(tmp_path, monkeypatch):

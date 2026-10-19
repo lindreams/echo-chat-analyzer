@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from io import BytesIO
 import hashlib
+import re
 import sqlite3
 from pathlib import Path
 import pytest
@@ -15,6 +16,7 @@ from qq_chat_analyzer.application.facade import (
     ChatAnalyzerFacade,
     ChatSource,
     FacadeError,
+    SessionInfo,
 )
 from qq_chat_analyzer.application.qq.qq_direct_database_import_service import (
     QQDirectDatabaseImportService,
@@ -220,6 +222,300 @@ class _ProviderConnection:
         return self._provider
 
 
+@pytest.mark.parametrize("kind", ["private", "group"])
+@pytest.mark.parametrize("original", [True, False])
+def test_authorized_media_reaches_new_report_without_reacquiring_chat(tmp_path, monkeypatch, kind, original):
+    import base64
+    import json
+    from dataclasses import replace
+    from qq_chat_analyzer.application.scope_filter import AnalysisScopeMode
+
+    raw = _fictional_png()
+    digest = hashlib.md5(raw).digest() if original else _PIC_KEY_BYTES
+    facade, provider, runtime = _fetch_facade(tmp_path, digest=digest, content=raw,
+                                             group_sender="10087" if kind == "group" else None)
+    session_id = "group:group-partition" if kind == "group" else "private:private-partition"
+    outcome = facade.analyze_session(ChatSource.QQ, session_id, AnalysisConfig(
+        output_directory=tmp_path / "initial-report", scope_mode=AnalysisScopeMode.CUSTOM,
+        start_time="2025-10-09", end_time="2025-10-09"))
+    old_html = outcome.report_path.read_bytes()
+    old_metadata = json.loads((outcome.report_directory / "metadata.json").read_text(encoding="utf-8"))
+    target, = facade.sticker_report_targets(outcome)
+    media = facade.fetch_qq_sticker_media(outcome.result.stickers, media_key=target.media_key,
+        session_id=session_id, network_consent=True)
+    monkeypatch.setattr(runtime, "acquire", lambda: pytest.fail("re-export must use retained statistics"))
+    exported = facade.export_sticker_report(outcome, media)
+    assert exported.report_path != outcome.report_path
+    assert outcome.report_path.read_bytes() == old_html
+    assert exported.result.reports is outcome.result.reports
+    assert exported.result.stickers.sends is outcome.result.stickers.sends
+    payload = json.loads((exported.report_directory / "echo-report.json").read_text(encoding="utf-8"))
+    asset, = payload["stickers"]["assets"].values()
+    assert base64.b64decode(asset["data_uri"].split(",", 1)[1]) == raw
+    assert asset["status"] == ("available" if original else "preview")
+    assert asset["data_uri"].encode("ascii") in exported.report_path.read_bytes()
+    metadata = json.loads((exported.report_directory / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["analysis_scope"] == old_metadata["analysis_scope"]
+    assert "2025-10-09" in json.dumps(metadata["analysis_scope"])
+    with pytest.raises(FacadeError):
+        facade.export_sticker_report(outcome, replace(media, sends=()))
+    from qq_chat_analyzer.analysis.stickers import StickerMedia
+    with pytest.raises(FacadeError):
+        facade.export_sticker_report(outcome, replace(media, media=(StickerMedia("foreign", "not_requested"),)))
+    monkeypatch.setattr("qq_chat_analyzer.application.facade.package_echo_report",
+                        lambda *a, **k: (_ for _ in ()).throw(OSError("PRIVATE_EXPORT_FAILURE")))
+    with pytest.raises(FacadeError) as failed:
+        facade.export_sticker_report(outcome, media)
+    assert "PRIVATE" not in failed.value.public_message
+    assert outcome.report_path.read_bytes() == old_html
+    facade._analysis_service.shutdown()
+    with pytest.raises(FacadeError) as closing:
+        facade.export_sticker_report(outcome, media)
+    assert closing.value.code == "application_closing"
+    from qq_chat_analyzer.resources import user_data_dir
+    assert not list((user_data_dir() / "transient").glob("chat-analyzer-output-*"))
+
+
+@pytest.mark.parametrize("kind,local", [("private", False), ("group", False), ("group", True)])
+def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monkeypatch, kind, local):
+    import base64
+    import json
+    from qq_chat_analyzer.presentation import echo_serializer
+
+    raw = _fictional_png()
+    digest = hashlib.md5(raw).digest()
+    facade, provider, runtime = _fetch_facade(tmp_path, digest=digest, content=raw,
+                                             group_sender="10087" if kind == "group" else None)
+    roots = tmp_path / "approved-originals"
+    roots.mkdir()
+    if local:
+        (roots / f"{digest.hex()}.png").write_bytes(raw)
+    exports = []
+    original = echo_serializer.export_echo_report_html
+
+    def export(view, path):
+        exports.append(view)
+        assert any(a.data_uri for a in view.stickers.assets)
+        return original(view, path)
+
+    monkeypatch.setattr("qq_chat_analyzer.application.analysis_service.export_echo_report_html", export)
+    progress = []
+    outcome = facade.analyze_session(ChatSource.QQ, f"{kind}:{kind}-partition",
+                                    AnalysisConfig(output_directory=tmp_path / "output",
+                                                   sticker_media_roots=(roots,)), progress=progress.append)
+    assert len(exports) == 1
+    assert len(runtime.acquired) == 1  # Same acquired payload for stats and media identity.
+    assert len(provider.calls) == (0 if local else 2)
+    chapter = json.loads((outcome.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]
+    asset, = chapter["assets"].values()
+    assert asset["status"] == "available"
+    assert base64.b64decode(asset["data_uri"].split(",", 1)[1]) == raw
+    assert asset["data_uri"] in outcome.report_path.read_text(encoding="utf-8")
+    assert "正在获取表情包素材..." in progress
+
+
+@pytest.mark.parametrize("limit", ["none", "requests", "bridge", "time", "transport", "cancel"])
+def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
+    tmp_path, monkeypatch, caplog, limit,
+):
+    import json
+    from threading import Event
+    from PIL import Image
+    from qq_chat_analyzer.application import facade as module
+    from qq_chat_analyzer.providers.napcat_qq_provider import NapCatQQError, NapCatQQMediaStageError
+
+    raw = _fictional_png()
+    initial = hashlib.md5(raw).digest()
+    facade, provider, runtime = _fetch_facade(tmp_path, digest=initial, content=raw, group_sender="10087")
+    by_digest = {}
+    with sqlite3.connect(tmp_path / "plaintext-qq.db") as db:
+        seed, = db.execute('SELECT "40800" FROM group_msg_table').fetchone()
+        db.execute('DELETE FROM group_msg_table')
+        for index in range(12):
+            stream = BytesIO()
+            Image.new("RGB", (3, 2), (index * 20, 50, 80)).save(stream, format="PNG")
+            content = stream.getvalue()
+            digest = hashlib.md5(content).digest()
+            by_digest[digest.hex()] = content
+            for member in ("10086", "10087"):
+                db.execute('''INSERT INTO group_msg_table
+                    ("40001", "40020", "40021", "40027", "40030", "40033", "40050", "40800")
+                    VALUES (?, 'u_fictionalmember000000', '12345001', 'group-partition', '12345001', ?, ?, ?)''',
+                    (201 + index * 2 + (member == "10087"), member, 1760000001 + index,
+                     seed.replace(initial, digest)))
+    cancelled = Event()
+    clock = [0.0]
+    monkeypatch.setattr(module, "_monotonic", lambda: clock[0])
+    if limit == "requests":
+        monkeypatch.setattr(module, "QQ_REPORT_MEDIA_TARGET_LIMIT", 3)
+    downloads = []
+    if limit == "bridge":
+        resolve = provider.resolve_pic_message
+        def limited_resolve(**locator):
+            if len(downloads) == 3:
+                raise NapCatQQError("media_budget_exhausted")
+            return resolve(**locator)
+        monkeypatch.setattr(provider, "resolve_pic_message", limited_resolve)
+
+    def download(**locator):
+        digest = locator["expected_md5"]
+        downloads.append(digest)
+        if limit == "transport":
+            raise NapCatQQMediaStageError("media_transport_timeout")
+        if limit == "cancel":
+            cancelled.set()
+        elif limit == "time":
+            clock[0] = 26.0 if len(downloads) == 1 else 60.0
+        if len(downloads) == 2:
+            raise NapCatQQMediaStageError("media_download_timeout")
+        return by_digest[digest]
+
+    monkeypatch.setattr(provider, "download_pic_media", download)
+    output = tmp_path / "output"
+    historical = tmp_path / "historical.html"
+    historical.write_bytes(b"fictional old report")
+    caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.facade")
+    if limit == "cancel":
+        with pytest.raises(FacadeError) as caught:
+            facade.analyze_session(ChatSource.QQ, "group:group-partition",
+                                   AnalysisConfig(output_directory=output), cancelled=cancelled.is_set)
+        assert caught.value.code == "analysis_cancelled" and len(downloads) == 1
+        assert not (output / "echo-report.html").exists()
+    else:
+        progress = []
+        outcome = facade.analyze_session(ChatSource.QQ, "group:group-partition",
+                                         AnalysisConfig(output_directory=output), progress=progress.append)
+        chapter = json.loads((outcome.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]
+        assert chapter["total_send_count"] == 24 and chapter["unique_material_count"] == 12
+        targets = facade.sticker_report_targets(outcome)
+        assert len(targets) >= 10  # Includes the Top 10 expansion, beyond the initial three.
+        expected = {"none": len(targets), "requests": 3, "bridge": 3, "time": 2, "transport": 1}[limit]
+        assert len(downloads) == len(set(downloads)) == expected
+        if limit == "requests":
+            assert len([text for text in progress if text.startswith("正在获取表情包素材（")]) == 3
+        if limit not in {"time", "transport"}:
+            assert {"available", "failed"} <= {a["status"] for a in chapter["assets"].values()}
+        limited = sum(a["status"] == "limited" for a in chapter["assets"].values())
+        assert limited == (len(targets) - expected if limit != "none" else 0)
+        assert len(downloads) < len(by_digest)  # Unselected sends never trigger recovery.
+        lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[sticker-report-media")]
+        assert len(lines) == 2 and all(str(tmp_path) not in line and "u_fiction" not in line for line in lines)
+        details = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[sticker-media-")]
+        results = [line for line in details if line.startswith("[sticker-media-result]")]
+        assert [int(re.search(r"target=(\d+)", line)[1]) for line in results] == list(range(1, len(targets) + 1))
+        assert all(str(tmp_path) not in line and "u_fiction" not in line and
+                   not any(digest in line for digest in by_digest) for line in details)
+        if expected >= 2:
+            assert any("code=qq_media_download_timeout" in line for line in results)
+        if limit == "time":
+            assert any("stage=not_requested code=report_media_time_budget" in line for line in results)
+        if limit == "transport":
+            assert any("code=report_media_inflight_unknown" in line for line in results)
+            assert not any("code=embedded" in line for line in details)
+        else:
+            assert any("code=embedded" in line for line in details)
+    assert runtime.acquired == runtime.cleaned and len(runtime.acquired) == 1
+    assert historical.read_bytes() == b"fictional old report"
+
+
+@pytest.mark.slow_integration
+@pytest.mark.parametrize("kind", ["private", "group"])
+@pytest.mark.parametrize("scenario", ["slow", "timeout", "failed", "cancel"])
+def test_formal_generate_keeps_gui_live_during_media(tmp_path, monkeypatch, kind, scenario):
+    """A blocked media RPC must not stop GUI timers, progress or cancellation."""
+    import os
+    import threading
+    import time
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    pytest.importorskip("PySide6")
+    from PySide6.QtCore import QEventLoop, QTimer
+    from PySide6.QtWidgets import QApplication
+    from qq_chat_analyzer.gui.main_window import MainWindow
+    from qq_chat_analyzer.gui import workers
+    from qq_chat_analyzer.application import sticker_media
+    from qq_chat_analyzer.providers.napcat_qq_provider import NapCatQQMediaStageError
+
+    app = QApplication.instance() or QApplication([])
+    raw = _fictional_png()
+    facade, provider, runtime = _fetch_facade(
+        tmp_path, digest=hashlib.md5(raw).digest(), content=raw,
+        group_sender="10087" if kind == "group" else None)
+    entered, release = threading.Event(), threading.Event()
+    stages = []
+    download = provider.download_pic_media
+
+    def slow_download(**locator):
+        stages.append(("download", threading.current_thread() is threading.main_thread()))
+        entered.set()
+        assert release.wait(3), "GUI did not release the fictional request"
+        if scenario in {"timeout", "failed"}:
+            raise NapCatQQMediaStageError("media_download_timeout" if scenario == "timeout" else "media_download_failed")
+        return download(**locator)
+
+    verify = sticker_media.verify_fetched_media
+    def checked_verify(*args, **kwargs):
+        stages.append(("decode", threading.current_thread() is threading.main_thread()))
+        return verify(*args, **kwargs)
+    export = facade._require_analysis_service().export_sticker_report
+    def checked_export(*args, **kwargs):
+        stages.append(("assembly", threading.current_thread() is threading.main_thread()))
+        return export(*args, **kwargs)
+    monkeypatch.setattr(provider, "download_pic_media", slow_download)
+    monkeypatch.setattr(sticker_media, "verify_fetched_media", checked_verify)
+    monkeypatch.setattr(facade._require_analysis_service(), "export_sticker_report", checked_export)
+    window = MainWindow(facade)
+    window.show()
+    monkeypatch.setattr(window, "open_echo_report", lambda: None)
+    panel = window.qq_workspace.session_panel
+    panel.populate_sessions([SessionInfo(source=ChatSource.QQ, session_id=f"{kind}:{kind}-partition",
+                                        display_name="Fictional chat", message_count=1)])
+    panel._session_list.setCurrentRow(0)
+    outcomes, errors, progress = [], [], []
+    panel.analysis_succeeded.connect(outcomes.append)
+    panel.analysis_failed.connect(lambda *args: errors.append(args))
+    panel.status_changed.connect(progress.append)
+    beats, live_copy, cancelled = [], [], []
+    loop = QEventLoop()
+    timer = QTimer()
+    timer.setInterval(10)
+    deadline = time.monotonic() + 8
+    def tick():
+        if entered.is_set() and not release.is_set():
+            beats.append(time.monotonic())
+            live_copy.append(window.processing_page.status_label.text())
+            if len(beats) >= 5:
+                if scenario == "cancel":
+                    window.processing_page.cancel_button.click()
+                    cancelled.append(not panel._analysis_running)
+                release.set()
+        if (entered.is_set() and workers.is_idle()) or time.monotonic() > deadline:
+            loop.quit()
+    timer.timeout.connect(tick)
+    timer.start()
+    try:
+        panel._analyze_button.click()
+        loop.exec()
+    finally:
+        release.set()
+        timer.stop()
+        panel.cancel_analysis()
+        workers.QThreadPool.globalInstance().waitForDone(3000)
+        window.processing_page.stop()
+        window.deleteLater()
+    assert len(beats) >= 5 and not any(main for _, main in stages)
+    assert any("1/1" in text for text in live_copy)
+    assert not errors
+    assert runtime.acquired == runtime.cleaned
+    if scenario == "cancel":
+        assert cancelled == [True] and not outcomes
+        assert not any(name == "assembly" for name, _ in stages)
+    else:
+        assert len(outcomes) == 1
+        assert any(name == "assembly" for name, _ in stages)
+        asset, = outcomes[0].echo_report_view.stickers.assets
+        assert asset.status == ("available" if scenario == "slow" else "failed")
+
+
 def _fetch_facade(tmp_path, *, digest: bytes, content: bytes, mapping_passed: bool = True,
                   download_error: Exception | None = None, group_sender: str | None = None):
     snapshot_path = tmp_path / "plaintext-qq.db"
@@ -242,7 +538,7 @@ def _fetch_facade(tmp_path, *, digest: bytes, content: bytes, mapping_passed: bo
 
 
 @pytest.mark.parametrize("mine,original", [(False, False), (True, True)])
-def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path, mine, original):
+def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path, mine, original, caplog):
     png = _fictional_png()
     digest = hashlib.md5(png).hexdigest() if original else _PIC_KEY_BYTES.hex()
     sender = "10086" if mine else "10087"
@@ -251,6 +547,9 @@ def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path,
                                    AnalysisConfig(output_directory=tmp_path / "report")).result
     send, = result.stickers.sends
     assert send.sender_id == sender and send.is_self is mine
+    provider.calls.clear()  # The initial report now restores automatically; inspect this manual retry only.
+    caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
+    caplog.clear()
     data = facade.fetch_qq_sticker_media(result.stickers, media_key=send.media_key,
                                        session_id="group:group-partition", network_consent=True, occurrence_id=send.occurrence_id)
     assert data.sends is result.stickers.sends
@@ -265,6 +564,10 @@ def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path,
     assert query[1]["expected_sender_uin"] == sender
     assert query[1]["expected_sender_uid"] == "u_fictionalmember000000"
     assert runtime.acquired == runtime.cleaned
+    timing_lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[analysis-timing]")]
+    assert len(timing_lines) == 2
+    assert all(re.fullmatch(r"\[analysis-timing\] stage=sticker_media_(download|verify) elapsed_ms=\d+", line)
+               for line in timing_lines)
 
 
 @pytest.mark.parametrize("field,value,code", [
@@ -277,6 +580,7 @@ def test_group_facade_requires_each_identity_proof_even_with_passed_label(tmp_pa
                                             content=_fictional_png(), group_sender="10087")
     data = facade.analyze_session(ChatSource.QQ, "group:group-partition",
                                  AnalysisConfig(output_directory=tmp_path / "report")).result.stickers
+    provider.calls.clear()
     resolve = provider.resolve_pic_message
     monkeypatch.setattr(provider, "resolve_pic_message", lambda **kwargs: replace(resolve(**kwargs), **{field: value}))
     with pytest.raises(FacadeError) as caught:
@@ -294,6 +598,8 @@ def test_group_fetch_refuses_scope_or_analyzed_send_change_before_rpc(tmp_path, 
                                             content=_fictional_png(), group_sender="10087")
     data = facade.analyze_session(ChatSource.QQ, "group:group-partition",
                                  AnalysisConfig(output_directory=tmp_path / "report")).result.stickers
+    provider.calls.clear()
+    retained_media = data.media
     changes = {"sender_id": "10088", "conversation_id": "12345002", "timestamp": 1760000002, "is_self": True}
     session = "private:private-partition" if changed == "session" else "group:group-partition"
     if changed != "session":
@@ -301,7 +607,7 @@ def test_group_fetch_refuses_scope_or_analyzed_send_change_before_rpc(tmp_path, 
     with pytest.raises(FacadeError) as caught:
         facade.fetch_qq_sticker_media(data, media_key=data.sends[0].media_key, session_id=session, network_consent=True)
     assert caught.value.code.startswith("qq_media_group_")
-    assert not provider.calls and all(m.original_bytes is None for m in data.media)
+    assert not provider.calls and data.media == retained_media
     assert runtime.acquired == runtime.cleaned
 
 
@@ -370,6 +676,7 @@ def test_group_fetched_gif_decode_limit_has_a_specific_public_error(tmp_path, mo
     data = facade.analyze_session(
         ChatSource.QQ, "group:group-partition",
         AnalysisConfig(output_directory=tmp_path / "report")).result.stickers
+    provider.calls.clear()
     with pytest.raises(FacadeError) as caught:
         facade.fetch_qq_sticker_media(
             data, media_key=data.sends[0].media_key,

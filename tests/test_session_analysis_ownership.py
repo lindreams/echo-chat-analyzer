@@ -112,7 +112,7 @@ def test_queued_old_callbacks_cannot_reach_retry_ui(
 ):
     outcome = object()
 
-    def analyze(*args, progress, on_phase):
+    def analyze(*args, progress, on_phase, cancelled=lambda: False):
         if event == "error":
             raise FacadeError(code="fiction-old", public_message="fiction-old")
         if event == "progress":

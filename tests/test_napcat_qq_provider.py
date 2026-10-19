@@ -72,6 +72,7 @@ if(config.mediaRace) {
     return handle;
   };
 }
+if(config.clockFile) Object.defineProperty(performance,'now',{value:()=>Number(fs.readFileSync(config.clockFile,'utf8'))});
 const mark = name => { if (config.marker) fs.appendFileSync(config.marker, name + '\\n'); };
 const info = fields => new Proxy(fields, {get(target, key) { mark('Core.status'); return target[key]; }});
 const core={dbPassphrase:'PRIVATE',selfInfo:info({uin:'12345678',uid:'u_self',nick:'Self',online:true,secret:'PRIVATE'}),apis:{
@@ -941,6 +942,27 @@ def test_media_fetch_reports_a_fixed_stage_for_each_local_rejection(runtime, tmp
     assert str(tmp_path) not in json.dumps(payload)
 
 
+def test_report_bridge_budget_is_bounded_and_recovers_without_restart(runtime, tmp_path):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    clock = tmp_path / "fictional-clock.txt"
+    clock.write_text("1000")
+    media = tmp_path / "fictional-media.bin"
+    media.write_bytes(b"fictional-media")
+    client = provider(runtime(mediaPath=str(media), clockFile=str(clock)))
+    for _ in range(64):
+        assert client.resolve_pic_message(**_PROBE).passed
+        assert client.download_pic_media(**_MEDIA) == b"fictional-media"
+    with pytest.raises(module.NapCatQQError) as query:
+        client.resolve_pic_message(**_PROBE)
+    assert query.value.rpc_error == "media_budget_exhausted"
+    with pytest.raises(module.NapCatQQMediaStageError) as fetch:
+        client.download_pic_media(**_MEDIA)
+    assert fetch.value.stage == "media_budget_exhausted"
+    clock.write_text("61001")
+    assert client.resolve_pic_message(**_PROBE).passed
+    assert client.download_pic_media(**_MEDIA) == b"fictional-media"
+
+
 def test_media_fetch_rejects_invalid_parameters_before_any_kernel_call(runtime, tmp_path):
     module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
     calls = tmp_path / "invalid-media-calls.txt"
@@ -975,3 +997,24 @@ def test_media_fetch_wire_shape_cannot_be_widened(runtime, tmp_path):
     status, payload = request(base, "EchoMediaProbe.downloadPicMedia", [missing])
     assert status == 400 and payload == {"ok": False, "error": "invalid_params"}
     assert not calls.exists() or "downloadMedia" not in calls.read_text()
+
+
+@pytest.mark.parametrize("failure,stage", [
+    ("timeout", "media_transport_timeout"),
+    ("oversized", "media_transport_limit"),
+    ("invalid", "media_transport_invalid"),
+])
+def test_media_transport_failures_are_distinct_and_sanitized(runtime, monkeypatch, failure, stage):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    client = provider(runtime())
+    client.status()
+    def response(*args):
+        if failure == "timeout":
+            raise TimeoutError("PRIVATE C:/fictional/path")
+        size = 2 * 1024 * 1024 + 1 if failure == "oversized" else 3
+        return 200, json.dumps({"ok": True, "result": {"size": size, "base64": "!bad"}})
+    monkeypatch.setattr(client, "_request", response)
+    with pytest.raises(module.NapCatQQMediaStageError) as caught:
+        client.download_pic_media(**_MEDIA)
+    assert caught.value.stage == stage
+    assert "PRIVATE" not in str(caught.value)

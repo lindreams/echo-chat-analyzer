@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import sys
+from time import monotonic
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from ..application.facade import AnalysisPhase
@@ -16,6 +18,7 @@ _COPY = {
     AnalysisPhase.READING: ("正在读取聊天记录", "正在从本机读取所选会话，请稍候。"),
     AnalysisPhase.ANALYZING_REPORT: ("正在分析与生成报告", "正在整理消息并生成分析报告，请稍候。"),
 }
+_LOGGER = logging.getLogger("qq_chat_analyzer.desktop.processing")
 
 
 def system_reduced_motion() -> bool:
@@ -42,6 +45,13 @@ class ProcessingPage(QWidget):
         self.setObjectName("processingPage")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._running = False
+        self._diagnostic_stage = "reading"
+        self._last_pulse = monotonic()
+        self._max_gap_ms = 0
+        self._pulse_count = 0
+        self._pulse_timer = QTimer(self)
+        self._pulse_timer.setInterval(250)
+        self._pulse_timer.timeout.connect(self._pulse)
         self.phase = AnalysisPhase.READING
         self.setStyleSheet(f"""
             QWidget#processingPage {{ background: {COLOR_PAPER}; }}
@@ -93,6 +103,10 @@ class ProcessingPage(QWidget):
 
     def start(self) -> None:
         self._running = True
+        self._diagnostic_stage = "reading"
+        self._last_pulse = monotonic()
+        self._max_gap_ms = self._pulse_count = 0
+        self._pulse_timer.start()
         self.phase = AnalysisPhase.READING
         self.status_label.setText(_COPY[self.phase][0])
         self.subtitle_label.setText(_COPY[self.phase][1])
@@ -102,13 +116,37 @@ class ProcessingPage(QWidget):
         if not self._running or not isinstance(phase, AnalysisPhase) or phase is self.phase:
             return
         self.phase = phase
+        self._diagnostic_stage = "analysis" if phase is AnalysisPhase.ANALYZING_REPORT else "reading"
         self.status_label.setText(_COPY[phase][0])
         self.subtitle_label.setText(_COPY[phase][1])
         self.animation.set_phase(phase)
 
     def stop(self) -> None:
+        if self._running:
+            self._pulse()
+            _LOGGER.info("[analysis-gui] stage=%s samples=%d max_gap_ms=%d",
+                         self._diagnostic_stage, self._pulse_count, self._max_gap_ms)
         self._running = False
+        self._pulse_timer.stop()
         self.animation.stop()
+
+    def _pulse(self) -> None:
+        """Measure actual event-loop gaps; never pump events to hide blocking."""
+        now = monotonic()
+        gap_ms = max(0, round((now - self._last_pulse) * 1000))
+        self._last_pulse = now
+        self._max_gap_ms = max(self._max_gap_ms, gap_ms)
+        self._pulse_count += 1
+        if gap_ms >= 1000:
+            _LOGGER.info("[analysis-gui-stall] stage=%s gap_ms=%d", self._diagnostic_stage, gap_ms)
+
+    def set_report_progress(self, message: str) -> None:
+        if (self._running and self.phase is AnalysisPhase.ANALYZING_REPORT
+                and (message in {"正在分析表情包...", "正在获取表情包素材...", "正在生成报告..."}
+                     or message.startswith("正在获取表情包素材（"))):
+            self.status_label.setText(message.rstrip("."))
+            self._diagnostic_stage = ("media" if message.startswith("正在获取表情包素材") else
+                                      "export" if message == "正在生成报告..." else "analysis")
 
     def set_reduced_motion(self, reduced: bool) -> None:
         self.animation.set_reduced_motion(reduced)

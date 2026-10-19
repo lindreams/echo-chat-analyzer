@@ -1,12 +1,13 @@
-"""Normal, opt-in local sticker material viewer; never writes a report."""
+"""Opt-in material recovery and explicit export through the application facade."""
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from threading import Event
 from typing import Any
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, Qt, QTimer, Slot
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, QSize, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import QMovie, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout,
@@ -19,6 +20,7 @@ from ..application.facade import ChatAnalyzerFacade
 from ..application.qq.qq_media_directories import QQMediaDirectories
 from ..application.sticker_catalog import StickerCatalogEntry, build_sticker_catalog
 from ..application.sticker_media import STICKER_MEDIA_BATCH_SIZE
+from ..presentation.models import EchoStickerItem
 from .theme import COLOR_MUTED, FONT_SIZE_SMALL
 from .workers import submit
 
@@ -44,6 +46,7 @@ def _media_text(media: StickerMedia | None) -> str:
         "limited": "未完整搜索（预算受限）", "unsupported": "暂无可靠原件支持",
         "invalid": "图片验证失败", "unsafe": "不安全路径，未读取",
         "ambiguous": "内容存在歧义", "cancelled": "已取消",
+        "failed": "获取失败",
     }
     return labels.get(media.status, "原件不可用") + (
         f" · {media.reason}" if media.reason else "")
@@ -245,9 +248,13 @@ class _QQMediaScopeDialog(QDialog):
 class StickerMediaDialog(QDialog):
     """Paged catalog and one controlled in-memory batch at a time."""
 
+    report_exported = Signal(object)
+
     def __init__(self, stickers: StickerData, *, source: str = "qq",
                  conversation_label: str = "", session_id: str | None = None,
                  conversation_type: str = "private",
+                 report_targets: tuple[EchoStickerItem, ...] | None = None,
+                 export_report: Callable[[StickerData], Any] | None = None,
                  executor: Callable[..., Any] | None = None,
                  facade=None, parent=None) -> None:
         super().__init__(parent)
@@ -263,8 +270,15 @@ class StickerMediaDialog(QDialog):
         self._cancelled = Event()
         self._closed = self._resolving = False
         self._page = 0
+        self._report_targets = ({item.media_key: item.label for item in report_targets}
+                                if source == "qq" and report_targets is not None else None)
+        self._export_report = export_report if self._report_targets is not None else None
         self._entries = build_sticker_catalog(
             stickers.sends, source=source, conversation_type=conversation_type)
+        all_entries = self._entries
+        if self._report_targets is not None:
+            by_key = {entry.media_key: entry for entry in self._entries}
+            self._entries = tuple(by_key[key] for key in self._report_targets if key in by_key)
         self._media = {item.media_key: item for item in stickers.media}
         layout = QVBoxLayout(self)
         self.scope = QLabel(
@@ -273,15 +287,20 @@ class StickerMediaDialog(QDialog):
         self.scope.setTextFormat(Qt.TextFormat.PlainText)
         self.scope.setWordWrap(True)
         layout.addWidget(self.scope)
-        known = sum(entry.identity_known for entry in self._entries)
-        unresolved = sum(entry.count for entry in self._entries if not entry.identity_known)
-        unknown = sum(entry.unknown_sender_count if group else entry.unknown_count for entry in self._entries)
+        known = sum(entry.identity_known for entry in all_entries)
+        unresolved = sum(entry.count for entry in all_entries if not entry.identity_known)
+        unknown = sum(entry.unknown_sender_count if group else entry.unknown_count for entry in all_entries)
         self.coverage = QLabel(
-            f"表情发送 {sum(e.count for e in self._entries)} 次 · 可信独特素材 {known} 种 · "
+            f"表情发送 {sum(e.count for e in all_entries)} 次 · 可信独特素材 {known} 种 · "
             f"素材身份不明 {unresolved} 次 · 发送者未知 {unknown} 次", self)
         self.coverage.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.coverage.setWordWrap(True)
         layout.addWidget(self.coverage)
+        if self._report_targets is not None:
+            note = QLabel(f"本报告需要 {len(self._entries)} 种素材（含 Top 10 与招牌，已去重）。"
+                          "恢复结果先保留在内存；点击“保存素材到新报告”才写入报告，旧报告保留。", self)
+            note.setWordWrap(True)
+            layout.addWidget(note)
         counts = stickers.message_counts
         denominator = QLabel(
             (f"本次群聊消息分母：共 {counts.total_messages} 条（包括非表情消息）" if group else
@@ -342,6 +361,11 @@ class StickerMediaDialog(QDialog):
         self.fetch_button.setVisible(self._source == "qq")
         self.fetch_button.clicked.connect(self._fetch_selected_media)
         actions.addWidget(self.fetch_button)
+        self.export_button = QPushButton("保存素材到新报告", self)
+        self.export_button.setVisible(self._export_report is not None)
+        self.export_button.setToolTip("将报告所需的已授权图片保存为新报告；统计和旧报告保持原样。")
+        self.export_button.clicked.connect(self._save_report)
+        actions.addWidget(self.export_button)
         self.cancel_button = QPushButton("取消查找", self)
         self.cancel_button.clicked.connect(self._cancel_search)
         self.cancel_button.setEnabled(False)
@@ -379,6 +403,8 @@ class StickerMediaDialog(QDialog):
                     "wechat_xml_md5": "微信 Type 47"}.get(entry.identity_basis, "身份不明")
             if entry.media_key.startswith("qq-marketface:"):
                 kind = "QQ MFACE"
+            if self._report_targets is not None:
+                kind = f"{self._report_targets[entry.media_key]} · {kind}"
             values = (kind, entry.self_count, entry.other_count, entry.unknown_count,
                       entry.count, _media_text(self._media.get(entry.media_key)))
             for column, value in enumerate(values):
@@ -445,6 +471,9 @@ class StickerMediaDialog(QDialog):
         self.fetch_button.setEnabled(idle and self._can_fetch(self._selected_entry()))
         self.send_selector.setEnabled(idle)
         self.cancel_button.setEnabled(self._resolving and not self._cancelled.is_set())
+        self.export_button.setEnabled(idle and self._export_report is not None and any(
+            self._media.get(key) is not None and self._media[key].status not in {"not_requested", "unsupported"}
+            for key in (self._report_targets or ())))
 
     def _choose_media_folder(self):
         if self._closed or self._resolving:
@@ -534,8 +563,10 @@ class StickerMediaDialog(QDialog):
             f"· 仅处理当前{'群聊' if self._conversation_type == 'group' else '私聊'}中所选的一条发送记录及其图片元素；\n"
             "· 先复核消息、会话、发送者与图片元素，未通过则不下载；\n"
             "· 不读取其他消息、其他会话或本机任意文件；\n"
-            "· 取回内容只保留在本次窗口内存中，不写入磁盘、不进入报告；\n"
-            "· 单次上限 2 MiB，超出或验证失败则不展示。\n\n"
+            + ("· 内容先保留在本次窗口内存；仅在点击“保存素材到新报告”后写入报告；\n"
+               if self._export_report is not None else
+               "· 取回内容只保留在本次窗口内存中，不写入磁盘、不进入报告；\n")
+            + "· 单次上限 2 MiB，超出或验证失败则不展示。\n\n"
             "继续并允许本次网络获取？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -564,8 +595,38 @@ class StickerMediaDialog(QDialog):
                 data, media_key=key, session_id=session_id,
                 network_consent=True, cancelled=cancelled.is_set, **selection),
             on_success=lambda result: self._network_resolved(result, key),
-            on_error=self._media_failed,
+            on_error=lambda code, message: self._network_failed(key, code, message),
             on_finished=self._media_finished)
+
+    def _network_failed(self, key: str, code: str, message: str) -> None:
+        if self._closed or self._cancelled.is_set():
+            return
+        # Retain only fixed failure categories; never put exception text or
+        # locators into report data. A failed retry cannot erase a valid image.
+        if not _is_available(self._media.get(key)):
+            from ..application.sticker_media import qq_media_failure
+            self._media[key] = qq_media_failure(key, code)
+            self._stickers = replace(self._stickers, media=tuple(self._media.values()))
+            self._render()
+        self._media_failed(code, message)
+
+    def _save_report(self) -> None:
+        if not self.export_button.isEnabled():
+            return
+        self._cancelled = Event()
+        self._resolving = True
+        self._update_buttons()
+        self.cancel_button.setEnabled(False)
+        self.status.setText("正在将已授权素材保存到新报告，旧报告保留…")
+        export, data = self._export_report, self._stickers
+        self._executor(lambda: export(data), on_success=self._report_saved,
+                       on_error=self._media_failed, on_finished=self._media_finished)
+
+    def _report_saved(self, outcome) -> None:
+        if not self._closed:
+            # Publishing an explicitly requested snapshot cannot be undone by
+            # a late cancel. It remains in local history even if this closes.
+            self.report_exported.emit(outcome)
 
     def _network_resolved(self, data: StickerData, key: str) -> None:
         if self._closed or self._cancelled.is_set():
@@ -615,8 +676,7 @@ class StickerMediaDialog(QDialog):
 
     def _media_failed(self, code: str, public_message: str) -> None:
         if not self._closed and not self._cancelled.is_set():
-            self.status.setText(f"{public_message} [{code}]" if self._conversation_type == "group"
-                                and code.startswith(("qq_media_", "qq_mapping_")) else public_message)
+            self.status.setText(public_message)
 
     def _media_finished(self) -> None:
         self._resolving = False
@@ -650,5 +710,7 @@ class StickerMediaDialog(QDialog):
         self._media.clear()
         self._entries = ()
         self._stickers = StickerData()
+        self._export_report = None
+        self._report_targets = None
         self.table.setRowCount(0)
         self._update_buttons()

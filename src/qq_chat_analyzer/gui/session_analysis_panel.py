@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from threading import Event
 from datetime import datetime
 from typing import Any
 
@@ -279,6 +280,7 @@ class SessionAnalysisPanel(QWidget):
         self._analysis_running = False
         self._analysis_task: Any = None
         self._analysis_operation: object | None = None
+        self._analysis_cancel: Event | None = None
         self._range_request: object | None = None
         self._sessions_ready = False
         self._selected_source: ChatSource | None = None
@@ -678,12 +680,15 @@ class SessionAnalysisPanel(QWidget):
         config = self.build_config()
         if not self._update_date_range_validation():
             return
+        cancel_event = Event()
+        self._analysis_cancel = cancel_event
         operation = lambda report: self._facade.analyze_session(
             source,
             session_id,
             config,
             progress=report,
             on_phase=report,
+            **({"cancelled": cancel_event.is_set} if source is ChatSource.QQ else {}),
         )
         identity = object()
         self._analysis_operation = identity
@@ -696,6 +701,8 @@ class SessionAnalysisPanel(QWidget):
         """Cancel the active analysis and restore selection controls."""
         if not self._analysis_running:
             return
+        if self._analysis_cancel is not None:
+            self._analysis_cancel.set()
         # Invalidate before cancellation: already queued Qt signals and the
         # deferred submission can still arrive after this operation ends.
         self._analysis_operation = None
@@ -703,6 +710,7 @@ class SessionAnalysisPanel(QWidget):
         if callable(cancel):
             cancel()
         self._analysis_task = None
+        self._analysis_cancel = None
         self._set_busy(False)
         self.status_changed.emit(_ANALYSIS_CANCELLED)
 
@@ -755,6 +763,7 @@ class SessionAnalysisPanel(QWidget):
             return
         self._analysis_operation = None
         self._analysis_task = None
+        self._analysis_cancel = None
         self._set_busy(False)
 
     def _handle_success(self, identity: object, outcome: Any) -> None:

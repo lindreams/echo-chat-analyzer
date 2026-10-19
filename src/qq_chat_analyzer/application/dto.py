@@ -50,6 +50,8 @@ class AnalysisRequestDTO:
     conversation_kind: str = "unknown"
     viewer_speaker_key: str | None = field(default=None, repr=False)
     sticker_media_roots: tuple[Path, ...] = field(default=(), repr=False)
+    # QQ generation prepares its view first, then writes once after media recovery.
+    export_echo_report: bool = True
 
 
 @dataclass(frozen=True, slots=True)

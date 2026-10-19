@@ -232,8 +232,12 @@ class NapCatQQProvider:
             with response:
                 data = response.read(8 * 1024 * 1024 + 1)
                 if len(data) > 8 * 1024 * 1024:
-                    raise NapCatQQError()
+                    raise NapCatQQError("transport_limit")
                 return response.status, data.decode("utf-8")
+        except TimeoutError:
+            raise NapCatQQError("transport_timeout") from None
+        except urllib.error.URLError as error:
+            raise NapCatQQError("transport_timeout" if isinstance(error.reason, TimeoutError) else None) from None
         except (OSError, ValueError):
             raise NapCatQQError() from None
 
@@ -295,6 +299,8 @@ class NapCatQQProvider:
         except NapCatQQError as error:
             # Keep the bridge's fixed label; it is a whitelisted code only.
             raise NapCatQQError(error.rpc_error) from None
+        except TimeoutError:
+            raise NapCatQQError("transport_timeout") from None
         except (OSError, ValueError, KeyError, TypeError):
             raise NapCatQQError() from None
 
@@ -476,25 +482,29 @@ class NapCatQQProvider:
             )
         except NapCatQQError as error:
             stage = getattr(error, "rpc_error", None)
+            if stage in {"transport_timeout", "transport_limit"}:
+                raise NapCatQQMediaStageError("media_" + stage) from None
             if stage in _MEDIA_STAGES:
                 raise NapCatQQMediaStageError(stage) from None
             raise
         if not isinstance(result, dict) or set(result) != {"size", "base64"}:
-            raise NapCatQQError()
+            raise NapCatQQMediaStageError("media_transport_invalid")
         size, encoded = result["size"], result["base64"]
+        if type(size) is int and size > MAX_PIC_MEDIA_BYTES:
+            raise NapCatQQMediaStageError("media_transport_limit")
         if (
             type(size) is not int
             or not 0 < size <= MAX_PIC_MEDIA_BYTES
             or not isinstance(encoded, str)
             or len(encoded) != 4 * ((size + 2) // 3)
         ):
-            raise NapCatQQError()
+            raise NapCatQQMediaStageError("media_transport_invalid")
         try:
             content = base64.b64decode(encoded.encode("ascii"), validate=True)
         except (binascii.Error, ValueError, UnicodeEncodeError):
-            raise NapCatQQError() from None
+            raise NapCatQQMediaStageError("media_transport_invalid") from None
         if len(content) != size or len(content) > MAX_PIC_MEDIA_BYTES:
-            raise NapCatQQError()
+            raise NapCatQQMediaStageError("media_transport_invalid")
         return content
 
     def snapshot_client(self, snapshot_root: str | Path) -> QQDirectSnapshotRuntimeClient:

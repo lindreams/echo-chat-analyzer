@@ -454,6 +454,7 @@ class MainWindow(QMainWindow):
         connection status must neither overwrite it nor duplicate the
         connection copy up here.
         """
+        self.processing_page.set_report_progress(message)
         if self._status_label.isVisibleTo(self):
             return
         self._status_label.setText(message)
@@ -478,6 +479,14 @@ class MainWindow(QMainWindow):
             self._set_status_message(_REPORT_UNSAVED)
         else:
             self._set_status_message(_ANALYSIS_COMPLETED)
+        view = getattr(outcome, "echo_report_view", None)
+        chapter = getattr(view, "stickers", None)
+        if getattr(outcome, "source", None) is ChatSource.QQ and chapter and chapter.assets:
+            from collections import Counter
+            counts = Counter(asset.status for asset in chapter.assets)
+            shown = counts["available"] + counts["preview"]
+            self._set_status_message(
+                f"{self._status_label.text()} · 表情包图片 {shown}/{len(chapter.assets)}（发送统计已保留）")
         outcome_key = (
             id(outcome),
             str(getattr(outcome, "report_path", "")),
@@ -514,17 +523,29 @@ class MainWindow(QMainWindow):
         from .sticker_media_dialog import StickerMediaDialog
 
         session = getattr(outcome, "session", None)
+        report_targets = None
+        export_report = None
+        if outcome.source is ChatSource.QQ and getattr(outcome, "echo_report_view", None) is not None:
+            report_targets = self._facade.sticker_report_targets(outcome)
+            export_report = lambda data: self._facade.export_sticker_report(outcome, data)
         dialog = StickerMediaDialog(
             outcome.result.stickers, facade=self._facade, source=outcome.source.value,
             conversation_label=getattr(session, "display_name", ""),
             conversation_type=getattr(session, "session_type", "private"),
             session_id=getattr(session, "session_id", None),
+            report_targets=report_targets, export_report=export_report,
             executor=self._executor, parent=self)
+        dialog.report_exported.connect(lambda updated: self._accept_sticker_report(outcome, updated))
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
         reference = weakref.ref(dialog)
         dialog.destroyed.connect(lambda *_: self._clear_sticker_media_dialog(reference))
         self._sticker_media_dialog = dialog
         dialog.show()
+
+    def _accept_sticker_report(self, original, updated) -> None:
+        if self._current_outcome is not original:
+            return
+        self.show_outcome(updated)
 
 
     def _clear_sticker_media_dialog(self, reference) -> None:

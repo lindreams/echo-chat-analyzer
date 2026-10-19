@@ -116,7 +116,8 @@ def test_private_stickers_reach_actual_json_and_html_from_filtered_rich_chain(tm
     assert [[x["count"] for x in m["top_materials"]] for m in chapter["members"]] == [[2, 2, 1], [2, 1]]
     assert chapter["shared_material_count"] == 1 and chapter["shared_materials"] == []
     assert [m["exclusive_material_count"] for m in chapter["members"]] == [2, 1]
-    assert chapter["assets"] == {}
+    assert len(chapter["assets"]) == 4
+    assert all(a["status"] == "unsupported" and not a["data_uri"] for a in chapter["assets"].values())
     assert result.reports.stickers[0].total_send_count == 8
     source = (tmp_path / "private-output/echo-report.html").read_text(encoding="utf-8")
     match = re.search(r"window\.ECHO_DATA = (\{.*?\});", source, re.S)
@@ -202,6 +203,8 @@ def test_analysis_logs_each_timing_stage_without_private_content(
         "import", "scope_filter", "smart_profile", "message_quality_filter",
         "text_analysis", "ExpressionAnalyzer.preflight", "word_ranking", "sticker_data",
         "report_build", "artifact_export", "total",
+        "sticker_media_resolve", "sticker_aggregation", "report_view_assets",
+        "report_json_export", "report_html_export",
         "ActivityAnalyzer", "UserProfileAnalyzer",
         "ConversationAnalyzer",
         "conversation_sessions", "DistinctiveWordAnalyzer",
@@ -215,6 +218,8 @@ def test_analysis_logs_each_timing_stage_without_private_content(
     assert actual == expected
     assert all(re.search(r"elapsed_ms=\d+", line) for line in timing_lines)
     assert all("Fictional-" not in line for line in timing_lines)
+    assert all(re.fullmatch(r"\[analysis-timing\] stage=[A-Za-z_.]+ elapsed_ms=\d+", line)
+               for line in timing_lines)
 
 
 def test_execute_attaches_every_report_to_the_result(tmp_path: Path) -> None:

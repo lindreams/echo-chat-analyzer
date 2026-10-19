@@ -41,6 +41,19 @@ MAX_TOTAL_DECODE_WORK = 128 * 1024 * 1024
 MAX_DECODE_SECONDS = 2.0
 
 
+def qq_media_failure(media_key: str, code: str) -> StickerMedia:
+    """Fixed shared failure categories; no private provider text enters reports."""
+    if code == "qq_media_time_budget":
+        return StickerMedia(media_key, "limited", "report_media_time_budget")
+    if code in {"qq_media_budget_exhausted", "qq_media_too_large", "qq_media_decode_budget", "qq_media_transport_limit"}:
+        return StickerMedia(media_key, "limited", "media_resource_budget")
+    if code in {"qq_media_mapping_rejected", "qq_media_element_unconfirmed", "qq_media_message_unconfirmed"} or code.startswith("qq_media_group_"):
+        return StickerMedia(media_key, "failed", "message_mapping_unconfirmed")
+    if code == "qq_media_file_missing":
+        return StickerMedia(media_key, "missing", "media_file_missing")
+    return StickerMedia(media_key, "failed", "media_fetch_failed")
+
+
 def associate_sticker_media(
     data: StickerData, *, media_keys: tuple[str, ...], roots: tuple[Path, ...] = (),
     source: str, cancelled: Callable[[], bool] = lambda: False,

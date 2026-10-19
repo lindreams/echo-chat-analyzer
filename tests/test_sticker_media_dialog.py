@@ -483,6 +483,197 @@ def test_main_window_material_action_in_frozen_sources(qt_app, monkeypatch):
     assert dialog._closed
 
 
+@pytest.mark.parametrize("kind", ["private", "group"])
+@pytest.mark.parametrize("network", [False, True])
+def test_formal_gui_saves_authorized_media_into_new_report(qt_app, tmp_path, monkeypatch, kind, network):
+    import base64
+    import json
+    from test_gui import _main_window
+    from test_qq_direct_database_facade import _fetch_facade
+    from qq_chat_analyzer.application.facade import AnalysisConfig, ChatSource
+
+    raw = png_bytes()
+    digest = hashlib.md5(raw).digest()
+    facade, provider, runtime = _fetch_facade(tmp_path, digest=digest, content=raw,
+                                             group_sender="10087" if kind == "group" else None)
+    session_id = "group:group-partition" if kind == "group" else "private:private-partition"
+    outcome = facade.analyze_session(ChatSource.QQ, session_id,
+                                    AnalysisConfig(output_directory=tmp_path / "report"))
+    assert len(provider.calls) == 2  # Foreground generation already restored the report target.
+    provider.calls.clear()
+    old_html = outcome.report_path.read_bytes()
+    window = _main_window(qt_app, facade)
+    opened = []
+    window._report_opener = lambda path: opened.append(path) or True
+    window.show_outcome(outcome)
+    window._sticker_button.click()
+    dialog = window._sticker_media_dialog
+    assert dialog.table.rowCount() == 1
+    assert "素材 01" in dialog.table.item(0, 0).text()
+    assert not provider.calls  # Opening the advanced viewer makes no further requests.
+    assert dialog.export_button.isEnabled()
+    if network:
+        monkeypatch.setattr(dialog, "_confirm_network_fetch", lambda *_: False)
+        dialog.fetch_button.click()
+        assert not provider.calls and dialog.export_button.isEnabled()
+        monkeypatch.setattr(dialog, "_confirm_network_fetch", lambda *_: True)
+        dialog.fetch_button.click()
+        assert len(provider.calls) == (2 if kind == "group" else 0)  # Private available originals need no retry.
+    else:
+        ori = qq_scope(tmp_path, monkeypatch)
+        (ori / f"{digest.hex()}.png").write_bytes(raw)
+        dialog.media_button.click()
+        assert not provider.calls
+    assert outcome.report_path.read_bytes() == old_html
+    assert dialog.export_button.isEnabled()
+    acquired = list(runtime.acquired)
+    dialog.export_button.click()
+    assert runtime.acquired == acquired  # Save does not query QQ again.
+    updated = window._current_outcome
+    assert updated is not outcome and updated.result.reports is outcome.result.reports
+    assert updated.report_path != outcome.report_path and outcome.report_path.read_bytes() == old_html
+    assets = json.loads((updated.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]["assets"]
+    asset, = assets.values()
+    assert base64.b64decode(asset["data_uri"].split(",", 1)[1]) == raw
+    assert asset["data_uri"].encode("ascii") in updated.report_path.read_bytes()
+    assert opened[-1] == updated.report_path.resolve()
+    assert dialog._closed
+    window.close()
+
+
+@pytest.mark.parametrize("kind,fmt,local,preview,cancel", [
+    ("private", "PNG", False, False, False), ("group", "GIF", False, True, False),
+    ("private", "PNG", True, False, False), ("group", "WEBP", True, False, False),
+    ("group", "GIF", False, False, True),
+])
+def test_generate_button_opens_only_final_embedded_report(
+    qt_app, tmp_path, monkeypatch, kind, fmt, local, preview, cancel,
+):
+    import base64
+    import json
+    from test_gui import _main_window
+    from test_sticker_data import image_bytes
+    from test_qq_direct_database_facade import _fetch_facade
+    from qq_chat_analyzer.application.facade import AnalysisConfig, ChatSource
+    from qq_chat_analyzer.gui.workers import run_inline
+    from PySide6.QtWidgets import QMessageBox
+
+    # The local PNG case is APNG; all animated fixtures have red and blue frames.
+    raw = image_bytes(fmt, animated=fmt != "PNG" or local)
+    digest = b"\xab" * 16 if preview else hashlib.md5(raw).digest()
+    facade, provider, runtime = _fetch_facade(
+        tmp_path, digest=digest, content=raw, group_sender="10087" if kind == "group" else None)
+    roots = tmp_path / "trusted-originals"
+    roots.mkdir()
+    if local:
+        (roots / f"{digest.hex()}.{fmt.lower()}").write_bytes(raw)
+    config = AnalysisConfig(output_directory=tmp_path / "generated", sticker_media_roots=(roots,))
+    window = _main_window(qt_app, facade)
+    opened = []
+    window._report_opener = lambda path: opened.append(path) or True
+    panel = window.qq_workspace.session_panel
+    panel.configure(facade, ChatSource.QQ, run_inline)
+    panel.populate_sessions([s for s in facade.list_sessions(ChatSource.QQ) if s.session_type == kind])
+    panel._session_list.setCurrentRow(0)
+    monkeypatch.setattr(panel, "build_config", lambda: config)
+    runtime.acquired.clear()
+    runtime.cleaned.clear()
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: pytest.fail("unexpected consent dialog"))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_a, **_k: pytest.fail("unexpected report failure"))
+    if cancel:
+        download = provider.download_pic_media
+        def cancel_during_download(**locator):
+            window.processing_page.cancel_button.click()
+            return download(**locator)
+        monkeypatch.setattr(provider, "download_pic_media", cancel_during_download)
+    panel._analyze_button.click()
+    for _ in range(4):
+        qt_app.processEvents()
+    outcome = window._current_outcome
+    if cancel:
+        assert outcome is None and not opened and not panel._analysis_running
+        assert "取消" in window._status_label.text()
+        assert not (tmp_path / "generated/echo-report.html").exists()
+        assert len(provider.calls) == 2 and runtime.acquired == runtime.cleaned
+        window.close()
+        return
+    assert outcome is not None and opened == [outcome.report_path.resolve()]
+    assert window._sticker_media_dialog is None
+    assert runtime.acquired == runtime.cleaned and len(runtime.acquired) == 1
+    assert len(provider.calls) == (0 if local else 2)
+    asset, = json.loads((outcome.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]["assets"].values()
+    assert asset["status"] == ("preview" if preview else "available")
+    assert base64.b64decode(asset["data_uri"].split(",", 1)[1]) == raw
+    assert asset["data_uri"] in outcome.report_path.read_text(encoding="utf-8")
+    assert "表情包图片 1/1" in window._status_label.text()
+    assert "预算受限" not in window._status_label.text()
+    window.close()
+
+
+def test_failed_mapping_keeps_statistics_and_can_save_failure_state(qt_app, tmp_path, monkeypatch):
+    import json
+    from test_gui import _main_window
+    from test_qq_direct_database_facade import _fetch_facade
+    from qq_chat_analyzer.application.facade import AnalysisConfig, ChatSource
+
+    raw = png_bytes()
+    facade, provider, _ = _fetch_facade(tmp_path, digest=hashlib.md5(raw).digest(), content=raw,
+                                       mapping_passed=False, group_sender="10087")
+    outcome = facade.analyze_session(ChatSource.QQ, "group:group-partition",
+                                    AnalysisConfig(output_directory=tmp_path / "report"))
+    provider.calls.clear()  # Inspect the explicit advanced retry separately.
+    window = _main_window(qt_app, facade)
+    window._report_opener = lambda _: True
+    window.show_outcome(outcome)
+    window._sticker_button.click()
+    dialog = window._sticker_media_dialog
+    monkeypatch.setattr(dialog, "_confirm_network_fetch", lambda *_: True)
+    dialog.fetch_button.click()
+    assert [call[0] for call in provider.calls] == ["resolve"]  # Rejected mapping never downloads.
+    assert dialog.export_button.isEnabled()
+    assert dialog.stickers.sends is outcome.result.stickers.sends
+    dialog.export_button.click()
+    updated = window._current_outcome
+    assert updated.result.reports is outcome.result.reports
+    chapter = json.loads((updated.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]
+    asset, = chapter["assets"].values()
+    assert asset["status"] == "failed" and asset["reason"] == "message_mapping_unconfirmed"
+    assert not asset["data_uri"] and chapter["total_send_count"] == 1
+    window.close()
+
+
+def test_closed_material_dialog_ignores_late_export_result(qt_app, tmp_path, monkeypatch):
+    from dataclasses import replace
+    from test_gui import _main_window
+    from test_qq_direct_database_facade import _fetch_facade
+    from qq_chat_analyzer.application.facade import AnalysisConfig, ChatSource
+
+    raw = png_bytes()
+    facade, _, _ = _fetch_facade(tmp_path, digest=hashlib.md5(raw).digest(), content=raw)
+    outcome = facade.analyze_session(ChatSource.QQ, "private:private-partition",
+                                    AnalysisConfig(output_directory=tmp_path / "report"))
+    window = _main_window(qt_app, facade)
+    window._report_opener = lambda _: True
+    window.show_outcome(outcome)
+    window._sticker_button.click()
+    dialog = window._sticker_media_dialog
+    monkeypatch.setattr(dialog, "_confirm_network_fetch", lambda *_: True)
+    dialog.fetch_button.click()
+    pending = {}
+    dialog._executor = lambda operation, **callbacks: pending.update(operation=operation, **callbacks)
+    dialog.export_button.click()
+    assert not dialog.cancel_button.isEnabled()
+    newer = replace(outcome)
+    window.show_outcome(newer)
+    saved = pending["operation"]()
+    pending["on_success"](saved)
+    pending["on_finished"]()
+    assert saved.report_path.is_file()  # The explicitly requested snapshot remains in history.
+    assert window._current_outcome is newer and dialog._closed
+    assert not dialog.stickers.sends and dialog._export_report is None
+    window.close()
+
+
 def test_group_material_dialog_selects_member_send_and_requires_consent(qt_app, monkeypatch):
     from dataclasses import replace
     from qq_chat_analyzer.gui.sticker_media_dialog import StickerMediaDialog

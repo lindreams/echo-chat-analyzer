@@ -7,7 +7,7 @@ computes statistics: every number is copied from an already-built report.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,6 +222,8 @@ class EchoStickerItem:
     reliable_member_count: int = 0
     unknown_sender_count: int = 0
     signature: EchoStickerSignature | None = None
+    # Private in-process linkage for explicit recovery; never serialized.
+    media_key: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -233,6 +235,7 @@ class EchoStickerMember:
     top_materials: tuple[EchoStickerItem, ...] = ()
     exclusive_material_count: int | None = None
     signature: EchoStickerItem | None = None
+    unique_material_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,6 +243,7 @@ class EchoStickerAsset:
     key: str
     data_uri: str
     status: str
+    reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

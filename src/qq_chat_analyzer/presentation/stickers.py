@@ -2,13 +2,59 @@
 from __future__ import annotations
 
 import base64
+from collections import Counter
+from dataclasses import replace
 
 from ..analysis.stickers import StickerConversationReport, StickerMaterialUsage, StickerMedia, StickerHabit
 from .models import EchoStickerAsset, EchoStickerItem, EchoStickerMember, EchoStickers, EchoStickerSignature
 
 
 TOP_MATERIAL_LIMIT = 10
+REPORT_STICKER_BYTE_BUDGET = 16 * 1024 * 1024
 SHARED_RANKING_MIN_MATERIALS = 3  # Experimental UI rule; does not alter aggregate counts.
+
+
+def sticker_report_targets(chapter: EchoStickers | None) -> tuple[EchoStickerItem, ...]:
+    """Exactly the selected Top 10/signature union, once per reliable material."""
+    if chapter is None or not chapter.available:
+        return ()
+    # Global/shared leaders must get a chance before a large member long tail
+    # consumes the foreground request budget. This changes acquisition order,
+    # never a ranking or a member's qualification.
+    items = list(chapter.total_top_materials) + list(chapter.shared_materials)
+    for member in chapter.members:
+        if member.signature is not None:
+            items.append(member.signature)
+    for rank in range(TOP_MATERIAL_LIMIT):
+        for member in chapter.members:
+            if rank < len(member.top_materials):
+                items.append(member.top_materials[rank])
+    return tuple({item.media_key: item for item in items if item.media_key}.values())
+
+
+def assemble_sticker_assets(chapter: EchoStickers, media: tuple[StickerMedia, ...]) -> EchoStickers:
+    """Use the same targets for recovery and export; retain fixed failure states."""
+    by_key = {item.media_key: item for item in media}
+    remaining_bytes = REPORT_STICKER_BYTE_BUDGET
+    mime_types = {"PNG": "image/png", "APNG": "image/png", "JPEG": "image/jpeg",
+                  "GIF": "image/gif", "WEBP": "image/webp"}
+    assets = []
+    for target in sticker_report_targets(chapter):
+        original = by_key.get(target.media_key)
+        status, reason, uri = "not_requested", "no_media_requested", ""
+        if original is not None:
+            status, reason = original.status, original.reason
+            if status in {"available", "preview"}:
+                raw, mime = original.original_bytes, mime_types.get((original.format or "").upper())
+                if not raw or not mime:
+                    status, reason = "unsupported", "report_image_unavailable"
+                elif len(raw) > remaining_bytes:
+                    status, reason = "limited", "report_asset_budget"
+                else:
+                    remaining_bytes -= len(raw)
+                    uri = f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+        assets.append(EchoStickerAsset(target.asset_key, uri, status, reason))
+    return replace(chapter, assets=tuple(assets))
 
 
 def build_echo_stickers(
@@ -39,29 +85,37 @@ def build_echo_stickers(
         # All reliable IDs remain distinct, including members without self markers.
         sides = sorted(report.members, key=lambda member: (-bool(report.signature(member.sender_id)),
                                                          -member.send_count, member.sender_id))
-        aliases = {member.sender_id: f"成员 {index:02d}" for index, member in
-                   enumerate(sorted(report.members, key=lambda member: member.sender_id), 1)}
-        self_members = [member for member in sides if member.is_self is True]
-        member_labels = []
-        for member in sides:
-            name = (member_names or {}).get(member.sender_id)
-            label = aliases[member.sender_id]
-            if name and name != member.sender_id:
-                label = f"{name} · {label}"
-            if member.is_self is True and len(self_members) == 1:
-                label = "我"
-            member_labels.append(label)
+        names = {member.sender_id: (member_names or {}).get(member.sender_id, "").strip()
+                 for member in sides}
+        names = {sender: name for sender, name in names.items() if name and name != sender}
+        name_counts = Counter(names.values())
+        ordinals = Counter()
+        labels_by_sender = {}
+        reserved = set(names.values())
+        for member in sorted(sides, key=lambda member: member.sender_id):
+            name = names.get(member.sender_id)
+            if name and name_counts[name] == 1:
+                label = name
+            else:
+                base = name or "未命名成员"
+                ordinals[base] += 1
+                label = f"{base}（{ordinals[base]}）"
+                while label in reserved:
+                    ordinals[base] += 1
+                    label = f"{base}（{ordinals[base]}）"
+            reserved.add(label)
+            labels_by_sender[member.sender_id] = label
+        member_labels = [labels_by_sender[member.sender_id] for member in sides]
     labels = {item.identity_key: f"素材 {index:02d}" for index, item in
               enumerate(sorted(report.materials, key=lambda item: item.identity_key), 1)}
     asset_keys = {key: f"sticker:{index}" for index, key in enumerate(labels, 1)}
-    selected_media = {}
 
     def item_view(item: StickerMaterialUsage, count: int, *, shared: bool = False, habit: StickerHabit | None = None) -> EchoStickerItem:
         key = asset_keys[item.identity_key]
-        selected_media[key] = item.media_key
         counts = dict(item.member_counts)
         return EchoStickerItem(
             label=labels[item.identity_key], asset_key=key, count=count,
+            media_key=item.media_key,
             side_counts=tuple(counts.get(side.sender_id, 0) for side in sides) if shared and private else (),
             reliable_member_count=item.reliable_member_count, unknown_sender_count=item.unknown_sender_count,
             signature=EchoStickerSignature(
@@ -88,6 +142,7 @@ def build_echo_stickers(
             top_materials=tuple(personal_item(item, count) for item, count in ranked[:TOP_MATERIAL_LIMIT]),
             exclusive_material_count=exclusive_count,
             signature=signature_view,
+            unique_material_count=len(ranked),
         ))
     shared = report.shared_ranking(tuple(side.sender_id for side in sides)) if private and all(sides) else (
         report.shared_ranking() if not private else ())
@@ -95,35 +150,16 @@ def build_echo_stickers(
         item_view(item, count, shared=True) for item, count in shared[:TOP_MATERIAL_LIMIT]
     ) if len(shared) >= SHARED_RANKING_MIN_MATERIALS else ()
     total_views = tuple(item_view(item, count) for item, count in report.ranking()[:TOP_MATERIAL_LIMIT]) if not private else ()
-    assets = []
-    by_key = {item.media_key: item for item in media}
-    # Bound exported bytes, independently of statistical eligibility. Media
-    # failures and images omitted by this size budget leave counts intact.
-    remaining_bytes = 16 * 1024 * 1024
-    mime_types = {
-        "PNG": "image/png", "APNG": "image/png", "JPEG": "image/jpeg",
-        "GIF": "image/gif", "WEBP": "image/webp",
-    }
-    for key, media_key in selected_media.items():
-        original = by_key.get(media_key)
-        if original is None or original.status not in {"available", "preview"}:
-            continue
-        raw, mime = original.original_bytes, mime_types.get(original.format)
-        if not raw or not mime or len(raw) > remaining_bytes:
-            continue
-        remaining_bytes -= len(raw)
-        assets.append(EchoStickerAsset(
-            key, f"data:{mime};base64," + base64.b64encode(raw).decode("ascii"), original.status,
-        ))
-    return EchoStickers(
+    chapter = EchoStickers(
         available=True, total_send_count=report.total_send_count,
         unique_material_count=len(report.materials), unknown_identity_count=report.unknown_identity_count,
         unattributed_send_count=report.total_send_count - sum(side.send_count for side in sides if side),
         covered_message_count=report.message_count, members=tuple(members),
         shared_material_count=None if private and not all(sides) and report.total_send_count else len(shared),
-        shared_materials=shared_views, assets=tuple(assets),
+        shared_materials=shared_views,
         conversation_kind=conversation_kind, total_top_materials=total_views,
         exclusive_material_count=report.exclusive_material_count(),
         per_hundred_messages=100 * report.total_send_count / report.message_count if report.message_count else None,
         shared_ranking_min_materials=SHARED_RANKING_MIN_MATERIALS,
     )
+    return assemble_sticker_assets(chapter, media)

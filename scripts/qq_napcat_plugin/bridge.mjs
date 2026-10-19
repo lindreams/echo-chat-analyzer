@@ -12,7 +12,19 @@ const uin = value => /^[1-9][0-9]{4,19}$/.test(identifier(value)) ? identifier(v
 const object = value => value !== null && typeof value === 'object';
 const generation = value => typeof value === 'string' && value.length > 0 && value.length <= 128 &&
   value === value.trim() && value !== '.' && value !== '..' && !/[\\/\x00]/.test(value);
-const MAX_PROBE_CALLS = 8;
+const MAX_PROBE_CALLS = 64;
+const MEDIA_WINDOW_MS = 60000;
+// Rolling per-bridge limits recover with time; no reset RPC or client-supplied quota.
+const callWindow = maximum => {
+  const started = [];
+  return () => {
+    const now = performance.now();
+    while (started.length && started[0] <= now - MEDIA_WINDOW_MS) started.shift();
+    if (started.length >= maximum) return false;
+    started.push(now);
+    return true;
+  };
+};
 const PROBE_TIMEOUT_MS = 8000;
 const DECIMAL_ID = /^[1-9][0-9]{0,19}$/;
 const PEER_UID = /^u_[A-Za-z0-9_-]{10,64}$/;
@@ -59,11 +71,11 @@ const probeRequest = value => {
   return value.expectedSelf === null || typeof value.expectedSelf === 'boolean';
 };
 
-// One bounded media fetch per bridge lifetime window. The transport is a single
+// Serial, rate-bounded media fetches. The transport is a single
 // base64 field under the client's 8 MiB response cap, so the file itself is
 // capped and never streamed through a second channel.
 const MAX_MEDIA_BYTES = 2 * 1024 * 1024;
-const MAX_MEDIA_CALLS = 8;
+const MAX_MEDIA_CALLS = 64;
 const MEDIA_TIMEOUT_MS = 20000;
 // Fixed, sanitised stage codes. Only these may cross the bridge; anything else
 // is reported as the generic operation failure so no path or kernel message leaks.
@@ -293,10 +305,9 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       match_basis: bases.length ? bases.join('+') : 'none', element: matched,
     };
   };
-  let probeCalls = 0;
+  const allowProbe = callWindow(MAX_PROBE_CALLS);
   const probePicMessage = async value => {
-    if (probeCalls >= MAX_PROBE_CALLS) throw new Error('probe_budget_exhausted');
-    probeCalls += 1;
+    if (!allowProbe()) throw mediaError('media_budget_exhausted');
     const {element, ...facts} = await inspectPicMessage(value);
     // Recompute the verdict instead of trusting the caller or a label.
     const passed = facts.unique && facts.msg_id_matches && facts.time_matches &&
@@ -306,17 +317,16 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
         facts.segment_id_matches === true && facts.file_uuid_matches === true));
     return {...facts, passed};
   };
-  let mediaCalls = 0;
+  const allowMedia = callWindow(MAX_MEDIA_CALLS);
   let mediaBusy = false;
   // The only media read path. It re-locates the same message and the one PIC
   // element matching the recorded element ID, digest and file UUID, then asks
   // QQ for that element only. Bytes leave bounded; the local path never does.
   const downloadPicMedia = async value => {
     if (mediaBusy) throw mediaError('media_busy');
-    if (mediaCalls >= MAX_MEDIA_CALLS) throw mediaError('media_budget_exhausted');
+    if (!allowMedia()) throw mediaError('media_budget_exhausted');
     mediaBusy = true;
     try {
-      mediaCalls += 1;
       let facts;
       try {
         facts = await inspectPicMessage(value);
