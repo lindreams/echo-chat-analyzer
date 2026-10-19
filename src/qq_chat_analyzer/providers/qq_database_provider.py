@@ -530,12 +530,13 @@ def _safe_sqlite_version() -> str:
 def _integrity_failure_kind(message: object, version: str) -> str:
     """Classify reviewed formats, never infer the damaged page or a root cause.
 
-    Reviewed against SQLite version-3.50.4: src/btree.c, src/pragma.c and
-    ext/fts3/fts3.c. New versions and unusual identifiers fail to unknown.
+    Reviewed against SQLite version-3.50.4 and version-3.54.1: src/btree.c,
+    src/pragma.c and ext/fts3/fts3.c. These six formats are unchanged; unreviewed
+    versions and unusual identifiers fail to unknown.
     In particular, the FTS4 format also describes genuine validation failures:
     matching it cannot establish the contentless-FTS4 upstream false positive.
     """
-    if version != "3.50.4" or not isinstance(message, str) or len(message) > 4096:
+    if version not in ("3.50.4", "3.54.1") or not isinstance(message, str) or len(message) > 4096:
         return "unknown"
     structural = r"\*\*\* in database main \*\*\*\n"
     identifier = r"[A-Za-z0-9_]+"

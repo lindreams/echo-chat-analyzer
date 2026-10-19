@@ -10,6 +10,7 @@ message, never a traceback.
 from __future__ import annotations
 
 import logging
+import sqlite3
 import sys
 import traceback
 from datetime import datetime
@@ -81,9 +82,10 @@ def log_startup(version: str) -> None:
     """Record one startup line with version and timestamp."""
     logger = logging.getLogger(LOGGER_NAME)
     logger.info(
-        "Echo started version=%s python=%s platform=%s at %s",
+        "Echo started version=%s python=%s sqlite_version=%s platform=%s at %s",
         version,
         sys.version.split()[0],
+        sqlite3.sqlite_version,
         sys.platform,
         datetime.now().isoformat(timespec="seconds"),
     )
