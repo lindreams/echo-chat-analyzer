@@ -297,7 +297,7 @@ class StickerMediaDialog(QDialog):
         self.coverage.setWordWrap(True)
         layout.addWidget(self.coverage)
         if self._report_targets is not None:
-            note = QLabel(f"本报告需要 {len(self._entries)} 种素材（含 Top 10 与招牌，已去重）。"
+            note = QLabel(f"本报告需要 {len(self._entries)} 种素材（含各榜单与招牌，已去重）。"
                           "恢复结果先保留在内存；点击“保存素材到新报告”才写入报告，旧报告保留。", self)
             note.setWordWrap(True)
             layout.addWidget(note)

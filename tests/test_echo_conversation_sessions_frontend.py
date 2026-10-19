@@ -406,8 +406,10 @@ def _find_chromium() -> str | None:
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize("kind", ["private", "group"])
-def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path, kind):
+@pytest.mark.parametrize("kind,senders,limit", [
+    ("private", 2, 10), ("group", 3, 10), ("group", 10, 5), ("group", 100, 3),
+])
+def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path, kind, senders, limit):
     width = 1280
     from dataclasses import replace
     import hashlib
@@ -424,9 +426,9 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
     original = verify_fetched_media(raw, media_key="first", expected_md5=hashlib.md5(raw).hexdigest())
     preview = verify_fetched_media(raw, media_key="second", expected_md5="0" * 32)
     report = StickerConversationReport(
-        "qq", "fiction-room", kind, 102, 97, 1, 2,
+        "qq", "fiction-room", kind, 102, 97 + 7 * (senders - 2), 1 + 7 * (senders - 2), 2,
         members=(StickerParticipant("a", True, 60, 50), StickerParticipant("b", False, 40, 45),
-                 *((StickerParticipant("c", None, 0, 7),) if kind == "group" else ())),
+                 *(StickerParticipant(f"c{i:03}", None, 0, 7) for i in range(senders - 2))),
         materials=(
             StickerMaterialUsage("first", "first", 36, (("a", 20), ("b", 15)), 1),
             StickerMaterialUsage("second", "second", 20, (("a", 10), ("b", 10))),
@@ -464,7 +466,9 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
         const memberList = sheet.querySelector("#sticker-members .sticker-top-list");
         const button = sheet.querySelector("#sticker-members .sticker-expand");
         const member = window.ECHO_DATA.stickers.members[0];
-        button.click();
+        result.expandHidden = button.hidden;
+        result.expandLabel = button.textContent;
+        if (!button.hidden) { button.click(); }
         result.expanded = [...memberList.children].map(x => [x.dataset.assetKey, Number(x.dataset.count)]);
         result.expected = member.top_materials.map(x => [x.asset_key, x.count]);
         result.expandedState = button.getAttribute("aria-expanded");
@@ -472,10 +476,11 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
         result.memberRows = [...new Set(positions.map(x => Math.round(x.top)))].length;
         result.memberColumns = positions.filter(x => Math.round(x.top) === Math.round(positions[0].top)).length;
         result.memberImageWidths = [...memberList.querySelectorAll(".sticker-image")].map(x => x.getBoundingClientRect().width);
-        button.click();
+        if (!button.hidden) { button.click(); }
         result.collapsed = memberList.children.length;
         if (window.ECHO_DATA.stickers.conversation_kind === "group") {
           const boxes = [...document.querySelectorAll("#sticker-member-options input")];
+          result.pickerCount = boxes.length;
           boxes[1].click(); boxes[2].click();
           result.comparedMembers = sheet.querySelectorAll(".sticker-member").length;
           result.noRate = [...sheet.querySelectorAll(".sticker-member")][2].innerText;
@@ -494,6 +499,7 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
           result.sharedExpandedBounds = bounds();
           blocks[0].querySelector("button").click();
           result.bothExpandedBounds = bounds();
+          result.groupExpandedCounts = blocks.map(x => x.querySelectorAll("li").length);
           blocks[1].querySelector("button").click();
           result.totalExpandedBounds = bounds();
           result.pickerBorder = getComputedStyle(document.getElementById("sticker-member-picker")).borderBottomWidth;
@@ -524,11 +530,18 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
     assert not rendered["overflow"] and not rendered["diagnostics"]
     assert rendered["imageWidth"] >= 100
     assert rendered["tops"] == (6 if kind == "private" else 3)
-    assert rendered["expanded"] == rendered["expected"] and len(rendered["expanded"]) == 10
-    assert rendered["expandedState"] == "true" and rendered["collapsed"] == 3
-    assert rendered["memberColumns"] == 5 and rendered["memberRows"] == 2
+    assert rendered["expanded"] == rendered["expected"] and len(rendered["expanded"]) == limit
+    assert rendered["expandHidden"] == (limit == 3)
+    if limit > 3:
+        assert rendered["expandLabel"] == f"展开 Top {limit}"
+    assert rendered["expandedState"] == ("true" if limit > 3 else "false")
+    assert rendered["collapsed"] == 3
+    assert rendered["memberColumns"] == min(limit, 5)
+    assert rendered["memberRows"] == (2 if limit == 10 else 1)
     assert all(110 <= value <= 120 for value in rendered["memberImageWidths"])
     if kind == "group":
+        assert rendered["pickerCount"] == senders
+        assert rendered["groupExpandedCounts"] == [10, 10]
         assert rendered["comparedMembers"] == 3
         assert rendered["searchCount"] == 1 and rendered["searchChecked"]
         assert rendered["retainedSelections"] == 3

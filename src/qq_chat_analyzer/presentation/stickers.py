@@ -15,7 +15,7 @@ SHARED_RANKING_MIN_MATERIALS = 3  # Experimental UI rule; does not alter aggrega
 
 
 def sticker_report_targets(chapter: EchoStickers | None) -> tuple[EchoStickerItem, ...]:
-    """Exactly the selected Top 10/signature union, once per reliable material."""
+    """The selected rankings/signature union, once per reliable material."""
     if chapter is None or not chapter.available:
         return ()
     # Global/shared leaders must get a chance before a large member long tail
@@ -25,7 +25,8 @@ def sticker_report_targets(chapter: EchoStickers | None) -> tuple[EchoStickerIte
     for member in chapter.members:
         if member.signature is not None:
             items.append(member.signature)
-    for rank in range(TOP_MATERIAL_LIMIT):
+    member_limit = max((len(member.top_materials) for member in chapter.members), default=0)
+    for rank in range(member_limit):
         for member in chapter.members:
             if rank < len(member.top_materials):
                 items.append(member.top_materials[rank])
@@ -75,6 +76,10 @@ def build_echo_stickers(
     # Never combine multiple participants into one private side. A source must
     # reliably establish both sender identity and self marker for attribution.
     private = conversation_kind == "private"
+    member_limit = TOP_MATERIAL_LIMIT
+    if not private:
+        sending_members = sum(member.send_count > 0 for member in report.members)
+        member_limit = 3 if sending_members >= 100 else 5 if sending_members >= 10 else 10
     sides = []
     if private:
         for own in (True, False):
@@ -139,7 +144,7 @@ def build_echo_stickers(
         members.append(EchoStickerMember(
             label=label, send_count=side.send_count, message_count=side.message_count,
             per_hundred_messages=side.per_hundred_messages,
-            top_materials=tuple(personal_item(item, count) for item, count in ranked[:TOP_MATERIAL_LIMIT]),
+            top_materials=tuple(personal_item(item, count) for item, count in ranked[:member_limit]),
             exclusive_material_count=exclusive_count,
             signature=signature_view,
             unique_material_count=len(ranked),

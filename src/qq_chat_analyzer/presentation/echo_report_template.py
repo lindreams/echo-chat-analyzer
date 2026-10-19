@@ -1648,7 +1648,7 @@ document.documentElement.classList.add("js-ready");
       function render() {
         container.classList.toggle("is-expanded", expanded);
         list.textContent = "";
-        items.slice(0, expanded ? 10 : 3).forEach(function (item, index) {
+        items.slice(0, expanded ? items.length : 3).forEach(function (item, index) {
           var entry = document.createElement("li");
           entry.dataset.assetKey = item.asset_key;
           entry.dataset.count = item.count;
@@ -1676,7 +1676,7 @@ document.documentElement.classList.add("js-ready");
           }
           list.appendChild(entry);
         });
-        button.textContent = expanded ? "收起至 Top 3" : "展开 Top " + Math.min(10, items.length);
+        button.textContent = expanded ? "收起至 Top 3" : "展开 Top " + items.length;
         button.setAttribute("aria-expanded", String(expanded));
       }
       button.addEventListener("click", function () { expanded = !expanded; render(); });

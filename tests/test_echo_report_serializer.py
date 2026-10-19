@@ -71,6 +71,52 @@ def test_group_report_budget_reaches_global_leaders_before_member_long_tail():
     assert len(sticker_report_targets(chapter)) == 50
 
 
+@pytest.mark.parametrize("kind,senders,limit", [
+    ("private", 2, 10), ("group", 1, 10), ("group", 9, 10),
+    ("group", 10, 5), ("group", 99, 5), ("group", 100, 3),
+])
+def test_member_top_limit_uses_scoped_sticker_senders_and_bounds_media_targets(kind, senders, limit):
+    from qq_chat_analyzer.analysis.stickers import (
+        StickerConversationReport, StickerMaterialUsage, StickerParticipant, StickerHabit,
+    )
+    from qq_chat_analyzer.presentation.stickers import sticker_report_targets
+
+    # Inactive conversation members must not move the 9/10 or 99/100 boundary.
+    members = tuple(StickerParticipant(f"m{i:03}", i == 0, 200, 184) for i in range(senders))
+    if kind == "group":
+        members += tuple(StickerParticipant(f"idle-{i}", None, 1, 0) for i in range(110))
+    materials = tuple(StickerMaterialUsage(f"own-{i:03}-{rank:02}", f"own-{i:03}-{rank:02}",
+                                           20 - rank, ((f"m{i:03}", 20 - rank),))
+                      for i in range(senders) for rank in range(12))
+    materials += tuple(StickerMaterialUsage(f"shared-{rank}", f"shared-{rank}", senders,
+                                            tuple((f"m{i:03}", 1) for i in range(senders)))
+                       for rank in range(10))
+    report = StickerConversationReport(
+        "qq", "fiction-room", kind, senders * 200, senders * 184, 0, 0,
+        members=members, materials=materials,
+        habits=(StickerHabit("m000", "own-000-11", 9, 9, 4, 35, 4, .2,
+                             "2025-01-01", "2025-02-05", ()),),
+    )
+    chapter = build_echo_report_view(analysis_models.AnalysisReports(stickers=(report,)),
+                                     conversation_kind=kind).stickers
+    active = [member for member in chapter.members if member.send_count > 0]
+    assert len(active) == senders
+    assert all([item.count for item in member.top_materials] == list(range(20, 20 - limit, -1))
+               for member in active)
+    assert all(member.unique_material_count == 22 and member.send_count == 184 for member in active)
+    assert chapter.unique_material_count == senders * 12 + 10
+    assert len(chapter.total_top_materials) == (10 if kind == "group" else 0)
+    assert len(chapter.shared_materials) == (10 if senders > 1 else 0)
+    expected = {f"own-{i:03}-{rank:02}" for i in range(senders) for rank in range(limit)}
+    if senders > 1:
+        expected.update(f"shared-{rank}" for rank in range(10))
+    expected.add("own-000-11")  # Preserve the existing separate signature contract.
+    targets = sticker_report_targets(chapter)
+    assert {item.media_key for item in targets} == expected
+    assert len(targets) == len(expected) == len(chapter.assets)
+    assert {asset.key for asset in chapter.assets} == {item.asset_key for item in targets}
+
+
 @pytest.mark.parametrize("encoded_format,verified_format,mime", [
     ("GIF", "GIF", "image/gif"),
     ("PNG", "APNG", "image/png"),
