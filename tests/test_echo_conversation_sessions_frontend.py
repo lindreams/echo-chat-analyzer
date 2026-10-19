@@ -65,9 +65,12 @@ class FakeNode {
     this.children = [];
     this.className = "";
     this.style = { setProperty: function () {} };
-    this.classList = { add: function () {} };
+    this.classList = { add: function () {}, toggle: function () {} };
+    this.dataset = {};
   }
   appendChild(child) { this.children.push(child); return child; }
+  addEventListener() {}
+  setAttribute() {}
 }
 
 const ids = JSON.parse(process.env.ECHO_NODE_IDS);
@@ -141,6 +144,7 @@ def _render_frontend(
     kind: str,
     sessions: dict[str, object] | None,
     expression_culture: dict[str, object] | None = None,
+    stickers: dict[str, object] | None = None,
 ) -> dict[str, dict[str, object]]:
     payload = {
         "conversation": {"kind": kind, "name": "", "time_span": ""},
@@ -153,6 +157,7 @@ def _render_frontend(
         "activity": {"hourly": [], "weekday": []},
         "members": [],
         "expression_culture": expression_culture,
+        "stickers": stickers,
     }
     if sessions is not None:
         payload["conversation_sessions"] = sessions
@@ -176,6 +181,22 @@ def _render_frontend(
         env=environment,
     )
     return json.loads(completed.stdout)
+
+
+def test_sticker_empty_unknown_and_group_visibility(tmp_path):
+    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
+
+    empty = echo_report_to_dict(build_echo_report_view(None, conversation_kind="private"))["stickers"]
+    rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=empty)
+    assert not rendered["stickers"]["hidden"] and not rendered["sticker-empty"]["hidden"]
+    assert rendered["sticker-rankings"]["hidden"] and rendered["sticker-dynamic"]["hidden"]
+    unknown = dict(empty, total_send_count=2, unknown_identity_count=2, unattributed_send_count=2)
+    rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=unknown)
+    assert not rendered["sticker-rankings"]["hidden"]
+    assert rendered["sticker-dynamic"]["hidden"]
+    assert "2" in rendered["sticker-note"]["text"]
+    rendered = _render_frontend(tmp_path, kind="group", sessions=None, stickers=unknown)
+    assert rendered["stickers"]["hidden"] and rendered["sticker-toc"]["hidden"]
 
 
 @pytest.mark.parametrize("known_sender", [True, False])
@@ -364,6 +385,109 @@ def _find_chromium() -> str | None:
         (path for path in candidates if Path(path).is_file() or shutil.which(path)),
         None,
     )
+
+
+@pytest.mark.slow_integration
+@pytest.mark.parametrize("kind", ["private", "group"])
+def test_sticker_chapter_is_one_offline_desktop_page_with_expandable_rankings(tmp_path, kind):
+    width = 1280
+    from dataclasses import replace
+    import hashlib
+    from qq_chat_analyzer.analysis.models import AnalysisReports
+    from qq_chat_analyzer.analysis.stickers import StickerConversationReport, StickerMaterialUsage, StickerParticipant
+    from qq_chat_analyzer.application.sticker_media import verify_fetched_media
+    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
+    from test_sticker_data import image_bytes
+
+    chromium = _find_chromium()
+    if chromium is None:
+        pytest.skip("no local Chromium available")
+    raw = image_bytes("PNG")
+    original = verify_fetched_media(raw, media_key="first", expected_md5=hashlib.md5(raw).hexdigest())
+    preview = verify_fetched_media(raw, media_key="second", expected_md5="0" * 32)
+    report = StickerConversationReport(
+        "qq", "fiction-room", kind, 102, 97, 1, 2,
+        members=(StickerParticipant("a", True, 60, 50), StickerParticipant("b", False, 40, 45)),
+        materials=(
+            StickerMaterialUsage("first", "first", 36, (("a", 20), ("b", 15)), 1),
+            StickerMaterialUsage("second", "second", 20, (("a", 10), ("b", 10))),
+            StickerMaterialUsage("mine", "mine", 10, (("a", 10),)),
+            StickerMaterialUsage("theirs", "theirs", 10, (("b", 10),)),
+        ) + tuple(StickerMaterialUsage(f"extra-{i:02d}", f"extra-{i:02d}", 2, (("a", 1), ("b", 1))) for i in range(10)),
+    )
+    view = build_echo_report_view(AnalysisReports(stickers=(report,)), conversation_kind=kind,
+                                  sticker_media=(original, preview, replace(original, media_key="mine", status="unsafe")))
+    view = replace(view, total_message_count=120)  # Include all three qualification notes at full display density.
+    chapter = echo_report_to_dict(view)["stickers"]
+    assert len(chapter["assets"]) == 2  # Even retained bytes cannot override a failed status.
+    assert {asset["status"] for asset in chapter["assets"].values()} == {"available", "preview"}
+    output = export_echo_report_html(view, tmp_path / "echo-stickers.html")
+    source = output.read_text(encoding="utf-8")
+    probe = r'''<style>.page:not(#stickers) { display:none !important; }</style><script>
+    window.addEventListener("load", function () {
+      setTimeout(function () {
+        const sheet = document.getElementById("stickers");
+        const rect = sheet.getBoundingClientRect();
+        const note = document.getElementById("sticker-note").getBoundingClientRect();
+        const image = sheet.querySelector("img");
+        const result = {
+          visible: !sheet.hidden, count: document.querySelectorAll("#stickers.page").length,
+          width: rect.width, height: rect.height,
+          fits: note.bottom < rect.bottom - 45,
+          tops: sheet.querySelectorAll("#sticker-members .sticker-top-list li").length,
+          offline: Array.from(sheet.querySelectorAll("img")).every(x => x.src.startsWith("data:image/")),
+          loaded: image && image.complete && image.naturalWidth > 0,
+          missing: sheet.querySelectorAll(".sticker-image:not(.has-image)").length,
+          overflow: document.documentElement.scrollWidth > window.innerWidth,
+          preview: sheet.textContent.includes("可信预览")
+        };
+        const memberList = sheet.querySelector("#sticker-members .sticker-top-list");
+        const button = sheet.querySelector("#sticker-members .sticker-expand");
+        const member = window.ECHO_DATA.stickers.members[0];
+        button.click();
+        result.expanded = [...memberList.children].map(x => [x.dataset.assetKey, Number(x.dataset.count)]);
+        result.expected = member.top_materials.map(x => [x.asset_key, x.count]);
+        result.expandedState = button.getAttribute("aria-expanded");
+        button.click();
+        result.collapsed = memberList.children.length;
+        const picker = document.getElementById("sticker-member-select");
+        if (window.ECHO_DATA.stickers.conversation_kind === "group") {
+          picker.value = "1"; picker.dispatchEvent(new Event("change"));
+          result.selectedCount = Number(sheet.querySelector("#sticker-members li").dataset.count);
+          result.expectedSelected = window.ECHO_DATA.stickers.members[1].top_materials[0].count;
+        }
+        image.src = "data:image/png;base64,broken";
+        setTimeout(function () {
+          result.brokenFallback = image.hidden && !image.parentNode.classList.contains("has-image");
+          const node = document.createElement("pre");
+          node.id = "sticker-probe"; node.textContent = JSON.stringify(result);
+          node.hidden = true; window.parent.document.body.appendChild(node);
+        }, 300);
+      }, 800);
+    });</script>'''
+    page = source.replace("</body>", probe + "</body>")
+    output.write_text(page, encoding="utf-8")
+    result = _run_browser([
+        chromium, "--headless=new", "--disable-gpu", "--no-sandbox",
+        "--no-first-run", "--no-default-browser-check", "--hide-scrollbars",
+        f"--user-data-dir={tmp_path / 'sticker-browser'}", "--disable-background-networking",
+        "--host-resolver-rules=MAP * ~NOTFOUND", "--virtual-time-budget=2500",
+        f"--window-size={width},1200", f"--screenshot={tmp_path / 'stickers.png'}", "--dump-dom", output.as_uri(),
+    ])
+    assert result.returncode == 0, result.stderr
+    match = re.search(r'<pre id="sticker-probe" hidden="">(.*?)</pre>', result.stdout.decode("utf-8"), re.S)
+    assert match is not None
+    rendered = json.loads(html.unescape(match.group(1)))
+    assert rendered["visible"] and rendered["count"] == 1
+    assert rendered["fits"] and not rendered["overflow"]
+    assert rendered["tops"] == (6 if kind == "private" else 3)
+    assert rendered["expanded"] == rendered["expected"] and len(rendered["expanded"]) == 10
+    assert rendered["expandedState"] == "true" and rendered["collapsed"] == 3
+    if kind == "group":
+        assert rendered["selectedCount"] == rendered["expectedSelected"]
+    assert rendered["loaded"] and rendered["offline"] and rendered["missing"] >= 2
+    assert rendered["brokenFallback"] and rendered["preview"]
+    assert rendered["width"] == 1040 and rendered["height"] == 980
 
 
 def _run_browser(command: list[str]) -> subprocess.CompletedProcess:

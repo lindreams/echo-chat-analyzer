@@ -38,6 +38,107 @@ def collect(messages):
     return collect_sticker_sends(messages)
 
 
+def test_report_aggregation_preserves_scope_identity_and_real_send_counts():
+    from dataclasses import replace
+    from qq_chat_analyzer.analysis.stickers import StickerData, aggregate_stickers
+    from qq_chat_analyzer.rich_message import (
+        ExpressionContent, RichMessage, SenderIdentity, StickerIdentity,
+    )
+
+    def message(sender, own, *keys, room="fiction-room", source="qq", kind="private"):
+        return RichMessage(
+            message_id="duplicate", source=source, conversation_id=room,
+            conversation_type=kind, sender=SenderIdentity(sender, "同名"),
+            is_self=own, timestamp=1760000000, message_type="text",
+            contents=tuple(ExpressionContent("sticker", "unused", sticker=StickerIdentity(
+                "fictional", "fictional", key)) for key in keys),
+        )
+
+    messages = [
+        message("a", True, "shared", "shared", "mine"), message("a", True),
+        message("b", False, "shared", "theirs", None),
+        message(None, None, "mine", None), message("c", None, "third"),
+        message("a", True, "shared", room="another-room"),
+        message("a", True, "shared", source="wechat"),
+        message("a", True, "shared", room=None),
+        message("a", True, "shared", kind="group"),
+    ]
+    reports = aggregate_stickers(StickerData(sends=collect(messages)), messages)
+    report = next(r for r in reports if r.source == "qq" and r.conversation_id == "fiction-room")
+    assert (report.total_send_count, report.message_count, report.unknown_identity_count) == (9, 5, 2)
+    assert report.unknown_sender_count == 2
+    assert len(report.members) == 3  # No two-person assumption; unknown sender is not a member.
+    members = {m.sender_id: m for m in report.members}
+    assert (members["a"].send_count, members["a"].message_count, members["a"].per_hundred_messages) == (3, 2, 150.0)
+    assert members["b"].per_hundred_messages == 300.0
+    assert members["c"].is_self is None
+    materials = {m.identity_key: m for m in report.materials}
+    assert set(materials) == {"shared", "mine", "theirs", "third"}
+    assert materials["shared"].member_counts == (("a", 2), ("b", 1))
+    assert (materials["mine"].count, materials["mine"].unknown_sender_count) == (2, 1)
+    assert len(reports) == 5
+    assert all(r.total_send_count == 1 for r in reports if r is not report)
+    assert next(r for r in reports if r.conversation_id is None).materials == ()
+    # Missing denominator is unknown, not a fabricated zero rate.
+    without_messages, = aggregate_stickers(StickerData(sends=collect(messages[:1])), ())
+    assert without_messages.members[0].per_hundred_messages is None
+    # A conflicting self marker cannot assign a participant to either side.
+    conflicting = [messages[0], replace(messages[0], is_self=False)]
+    conflict, = aggregate_stickers(StickerData(sends=collect(conflicting)), conflicting)
+    assert conflict.members[0].is_self is None
+
+
+def test_sticker_full_rankings_distinguish_group_totals_shared_and_members():
+    from dataclasses import replace
+    from qq_chat_analyzer.analysis.stickers import StickerData, aggregate_stickers
+    base = qq_pic("a" * 32)
+    sends = []
+    for member, key, count in (("a", "shared", 3), ("b", "shared", 8),
+                               (None, "shared", 20), ("c", "solo", 50),
+                               ("a", "tie-z", 3), ("a", "tie-a", 3),
+                               ("a", None, 2)):
+        sends.extend(replace(base, sender_id=member, identity_key=key,
+                             conversation_type="group") for _ in range(count))
+    report, = aggregate_stickers(StickerData(sends=tuple(sends)), ())
+    assert [(m.identity_key, n) for m, n in report.ranking()] == [
+        ("solo", 50), ("shared", 31), ("tie-a", 3), ("tie-z", 3)]
+    assert [(m.identity_key, n) for m, n in report.shared_ranking()] == [("shared", 11)]
+    assert report.shared_ranking(("a", "a")) == ()
+    assert [m.identity_key for m, n in report.ranking("a")] == ["shared", "tie-a", "tie-z"]
+    assert report.materials[0].reliable_member_count == 2
+    assert report.exclusive_material_count() == 3
+    assert report.exclusive_material_count("a") == 2
+    member = next(m for m in report.members if m.sender_id == "a")
+    assert member.send_count == 11 and member.per_hundred_messages is None
+
+
+def test_sticker_signature_requires_repetition_and_keeps_low_frequency_and_iso_years():
+    from dataclasses import replace
+    from qq_chat_analyzer.analysis.stickers import StickerData, aggregate_stickers
+    base = qq_pic("a" * 32)
+    sends = []
+    cases = {
+        ("a", "burst"): ["2025-01-01"] * 30,
+        ("a", "signature"): ["2024-12-29", "2025-01-05", "2025-01-12", "2025-02-02"],
+        ("b", "quiet"): ["2024-01-03", "2024-07-03", "2025-01-01", "2025-07-02"],
+        ("b", "endpoints"): ["2024-01-01", "2025-12-31"],
+        ("c", "missing"): [None, "invalid", "2025-01-01", None],
+    }
+    for (member, key), dates in cases.items():
+        sends.extend(replace(base, sender_id=member, identity_key=key, chat_date=day)
+                     for day in dates)
+    report, = aggregate_stickers(StickerData(sends=tuple(sends)), ())
+    habits = {(h.sender_id, h.identity_key): h for h in report.habits}
+    signature = habits["a", "signature"]
+    assert (signature.send_count, signature.date_count, signature.span_days, signature.week_count) == (4, 4, 35, 4)
+    assert signature.share == pytest.approx(4 / 34) and signature.qualified
+    assert habits["b", "quiet"].week_count == 4 and habits["b", "quiet"].qualified
+    assert not habits["a", "burst"].qualified
+    assert not habits["b", "endpoints"].qualified
+    assert not habits["c", "missing"].qualified
+    assert habits["c", "missing"].dated_send_count == 1
+
+
 def resolve(sends, roots=(), **limits):
     from qq_chat_analyzer.application.sticker_media import resolve_sticker_media
     return resolve_sticker_media(sends, roots=roots, **limits)
@@ -565,6 +666,8 @@ def test_qq_stickers_follow_message_scope_with_duplicate_ids(tmp_path, monkeypat
     assert result.stickers.sends[0].identity_key == (
         "qq-marketface:sha256:" + hashlib.sha256(b"kept").hexdigest())
     assert len(result.stickers.media) == 1
+    assert result.reports.stickers[0].total_send_count == 1
+    assert len(result.reports.stickers[0].materials) == 1
 
 
 def test_media_roots_reject_traversal_links_and_relative_paths(tmp_path):

@@ -76,14 +76,20 @@ ECHO_REPORT_HTML_SKELETON = r"""
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">07</span>
         </a>
-        <div class="toc-row is-future">
+        <a class="toc-row" id="sticker-toc" href="#stickers" hidden>
           <span class="toc-number">06</span>
+          <span class="toc-copy"><strong>表情包</strong><small>发送次数与双方常用素材</small></span>
+          <span class="toc-leader" aria-hidden="true"></span>
+          <span class="toc-page">08</span>
+        </a>
+        <div class="toc-row is-future">
+          <span class="toc-number">07</span>
           <span class="toc-copy"><strong>互动关系</strong><small>未来章节</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">—</span>
         </div>
         <div class="toc-row is-future">
-          <span class="toc-number">07</span>
+          <span class="toc-number">08</span>
           <span class="toc-copy"><strong>AI 尾声</strong><small>未来章节</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">—</span>
@@ -260,14 +266,42 @@ ECHO_REPORT_HTML_SKELETON = r"""
       <span class="page-number">07</span>
     </section>
 
+    <section class="page chapter sticker-chapter" id="stickers" aria-labelledby="sticker-title" hidden>
+      <header class="chapter-header">
+        <span class="chapter-number">06</span>
+        <div><p class="folio">STICKERS</p><h2 id="sticker-title">表情包</h2></div>
+      </header>
+      <p class="chapter-intro">有些回应，交给一张图。</p>
+      <dl class="sticker-fields">
+        <div><dt>总发送次数</dt><dd id="sticker-total"></dd></div>
+        <div><dt>可靠识别的素材</dt><dd id="sticker-unique"></dd></div>
+      </dl>
+      <p class="sticker-sets" id="sticker-sets"></p>
+      <p class="sticker-empty" id="sticker-empty" hidden></p>
+      <div class="sticker-group-rankings" id="sticker-group-rankings" hidden></div>
+      <div id="sticker-rankings">
+        <div class="sticker-section-heading"><h3>个人常用与招牌</h3><small>按各自实际发送次数排列 · 招牌为实验候选</small></div>
+        <label id="sticker-member-picker" hidden>查看成员 <select id="sticker-member-select" aria-label="查看成员的常用与招牌"></select></label>
+        <div class="sticker-members" id="sticker-members"></div>
+      </div>
+      <div class="sticker-dynamic" id="sticker-dynamic" hidden>
+        <div id="sticker-shared" hidden>
+          <h3 id="sticker-shared-title">我们共同最常用</h3>
+          <div id="sticker-shared-list"></div>
+        </div>
+      </div>
+      <p class="sticker-note" id="sticker-note"></p>
+      <span class="page-number">08</span>
+    </section>
+
     <section class="page future" id="future" aria-labelledby="future-title">
       <header class="page-header"><p class="folio">UNWRITTEN</p><h2 id="future-title">尚未展开的部分</h2><p>有些痕迹，将在之后的章节中继续被看见。</p></header>
       <div class="future-list">
-        <div><span>06</span><h3>互动关系</h3><p>交流方向与回应方式。</p></div>
-        <div><span>07</span><h3>AI 尾声</h3><p>基于报告内容形成的回望。</p></div>
+        <div><span>07</span><h3>互动关系</h3><p>交流方向与回应方式。</p></div>
+        <div><span>08</span><h3>AI 尾声</h3><p>基于报告内容形成的回望。</p></div>
       </div>
       <footer class="end-mark"><a href="#cover">回到封面 ↑</a><span>余音 Echo · <b data-current-year>2026</b></span></footer>
-      <span class="page-number">08</span>
+      <span class="page-number">09</span>
     </section>
   </main>
 
@@ -503,6 +537,66 @@ h1, h2, h3, p { margin-top: 0; }
 .language-word-list li {
   color: var(--ink);
   font: 400 22px/1.4 var(--serif);
+}
+
+.sticker-chapter { overflow: visible; }
+.sticker-chapter [hidden] { display: none !important; }
+.sticker-chapter .chapter-intro { margin: 10px 0 14px; }
+.sticker-sets { color: var(--muted); font-size: 12px; margin: 0 0 18px; line-height: 1.8; }
+.sticker-group-rankings { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; border-bottom: 1px solid var(--rule); padding-bottom: 16px; margin-bottom: 16px; }
+.sticker-group-rankings h4 { margin: 0 0 10px; font: 18px var(--serif); }
+.sticker-group .sticker-members { grid-template-columns: 1fr; }
+#sticker-member-picker { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 12px; color: var(--muted); }
+#sticker-member-select { max-width: 100%; padding: 5px 8px; background: var(--paper); color: var(--ink); border: 1px solid var(--rule); font: inherit; }
+.sticker-expand { background: none; border: 0; border-bottom: 1px solid var(--rule); color: var(--accent); font: 12px var(--sans); padding: 4px 0; margin-top: 8px; cursor: pointer; }
+.sticker-signature { margin: 8px 0 0; color: var(--accent); font-size: 11px; line-height: 1.7; }
+.sticker-signature-extra { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+.sticker-signature-extra .sticker-image { width: 42px; flex: 0 0 42px; }
+.sticker-signature-extra p { margin: 0; }
+.sticker-signature-empty { font-size: 11px; color: var(--muted); margin: 10px 0 0; }
+.sticker-detail { color: var(--muted); font-size: 10px; line-height: 1.6; display: block; margin-top: 4px; }
+.sticker-fields { display: grid; grid-template-columns: 1fr 1fr; margin: 0 0 18px; border-bottom: 1px solid var(--rule); }
+.sticker-fields > div { padding: 0 0 14px; }
+.sticker-fields dt { color: var(--muted); font-size: 13px; }
+.sticker-fields dd { margin: 6px 0 0; font-size: 28px; line-height: 1.2; }
+.sticker-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.sticker-section-heading h3, .sticker-dynamic h3 { margin: 0; font-size: 20px; font-weight: 500; }
+.sticker-section-heading small { color: var(--muted); font-size: 12px; }
+.sticker-members { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+.sticker-member { min-width: 0; }
+.sticker-member + .sticker-member { border-left: 1px solid var(--rule); padding-left: 28px; }
+.sticker-member h4 { margin: 0 0 6px; font: 500 20px/1.3 var(--serif); overflow-wrap: anywhere; }
+.sticker-member h4 strong { color: var(--accent); font-weight: 400; }
+.sticker-rate { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+.sticker-top-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; padding: 0; list-style: none; }
+.sticker-group-rankings .sticker-image, #sticker-shared-list .sticker-image { max-width: 48px; }
+.sticker-top-list li { min-width: 0; display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 0 8px; align-content: start; }
+.sticker-top-list .sticker-rank { grid-column: 1 / -1; }
+.sticker-top-list .sticker-image { grid-column: 1; grid-row: 2 / 4; max-width: 56px; align-self: start; }
+.sticker-top-list .sticker-label, .sticker-top-list .sticker-count { grid-column: 2; margin-top: 0; }
+.sticker-top-list .sticker-detail, .sticker-top-list .sticker-preview, .sticker-top-list .sticker-signature { grid-column: 1 / -1; }
+.sticker-image { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 1; background: var(--canvas); color: var(--faint); }
+.sticker-placeholder { font: 12px/1.4 var(--sans); }
+.sticker-image.has-image .sticker-placeholder { display: none; }
+.sticker-image img { position: absolute; width: 100%; height: 100%; object-fit: contain; }
+.sticker-rank { display: block; color: var(--accent); font: 12px/1 var(--serif); margin-bottom: 6px; }
+.sticker-label { display: block; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.sticker-count { display: block; margin-top: 4px; font: 18px/1.3 var(--serif); }
+.sticker-preview { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; }
+.sticker-member-empty, .sticker-empty { color: var(--muted); font: 14px/1.8 var(--serif); }
+.sticker-empty { margin: 36px 0; }
+.sticker-dynamic { display: flex; gap: 32px; border-top: 1px solid var(--rule); margin-top: 22px; padding-top: 16px; }
+.sticker-dynamic[hidden] { display: none; }
+.sticker-dynamic > div { flex: 1; min-width: 0; }
+.sticker-dynamic h3 { font-size: 17px; margin-bottom: 10px; }
+.sticker-note { margin: 16px 0 0; color: var(--muted); font-size: 11px; line-height: 1.9; }
+@media (min-width: 721px) {
+  .sticker-chapter { padding: 44px 82px 64px; }
+  .sticker-chapter .chapter-header { padding-bottom: 16px; }
+  .sticker-chapter .chapter-header h2 { font-size: 52px; }
+  .sticker-chapter .chapter-intro { margin: 6px 0 10px; }
+  .sticker-fields { margin-bottom: 12px; }
+  .sticker-sets { margin-bottom: 12px; }
 }
 
 .expression-chapter .chapter-intro { margin: 0 0 44px; }
@@ -840,6 +934,11 @@ h1, h2, h3, p { margin-top: 0; }
   .member-list.mode-group .voice-words li { font-size: 20px; }
   .member-list.mode-group .voice-words li::after { margin-left: 12px; }
   .expression-fields { grid-template-columns: 1fr; }
+  .sticker-members { grid-template-columns: 1fr; gap: 28px; }
+  .sticker-member + .sticker-member { border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); padding-top: 24px; }
+  .sticker-section-heading { display: block; }
+  .sticker-section-heading h3 { margin-bottom: 8px; }
+  .sticker-dynamic { flex-direction: column; gap: 24px; }
   .expression-fields div,
   .expression-fields div:last-child {
     min-height: auto;
@@ -1483,6 +1582,218 @@ document.documentElement.classList.add("js-ready");
       entry.appendChild(nearby);
     }
     list.appendChild(entry);
+  }
+
+  var stickers = data && data.stickers;
+  var hasStickers = Boolean(conversation && stickers && stickers.available && stickers.conversation_kind === conversation.kind &&
+    (conversation.kind === "private" || conversation.kind === "group"));
+  setHidden("stickers", !hasStickers);
+  setHidden("sticker-toc", !hasStickers);
+  if (hasStickers) {
+    var stickerAssets = stickers.assets || {};
+    var stickerGroup = stickers.conversation_kind === "group";
+    document.getElementById("stickers").classList.toggle("sticker-group", stickerGroup);
+    setText("sticker-total", formatCount(stickers.total_send_count) + " 次");
+    setText("sticker-unique", formatCount(stickers.unique_material_count) + " 种");
+    var noSends = stickers.total_send_count === 0;
+    setHidden("sticker-empty", !noSends);
+    setText("sticker-empty", stickers.covered_message_count ? "这段记录里暂无表情包发送。" : "暂无可用的表情包记录，当前消息未提供可关联的表情包事实。");
+    setHidden("sticker-rankings", noSends);
+
+    function stickerImage(item) {
+      var frame = document.createElement("div");
+      frame.className = "sticker-image";
+      var fallback = document.createElement("span");
+      fallback.className = "sticker-placeholder";
+      fallback.textContent = "无图";
+      frame.appendChild(fallback);
+      var asset = stickerAssets[item.asset_key];
+      if (asset && (asset.status === "available" || asset.status === "preview") &&
+          /^data:image\/(png|jpeg|gif|webp);base64,/.test(asset.data_uri || "")) {
+        var image = document.createElement("img");
+        image.alt = item.label;
+        image.addEventListener("error", function () {
+          image.hidden = true;
+          frame.classList.remove("has-image");
+        });
+        image.src = asset.data_uri;
+        frame.classList.add("has-image");
+        frame.appendChild(image);
+      }
+      return frame;
+    }
+
+    function signatureText(item) {
+      var evidence = item.signature;
+      return "招牌候选 · " + evidence.date_count + " 个日期 / " + evidence.week_count +
+        " 个自然周 · 跨 " + evidence.span_days + " 天";
+    }
+
+    function stickerRanking(container, items, kind, signature) {
+      var expanded = false;
+      var list = document.createElement("ol");
+      list.className = "sticker-top-list";
+      container.appendChild(list);
+      var extra = document.createElement("div");
+      container.appendChild(extra);
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "sticker-expand";
+      button.setAttribute("aria-expanded", "false");
+      button.hidden = items.length <= 3;
+      container.appendChild(button);
+      function render() {
+        list.textContent = "";
+        var shown = items.slice(0, expanded ? 10 : 3);
+        shown.forEach(function (item, index) {
+          var entry = document.createElement("li");
+          entry.dataset.assetKey = item.asset_key;
+          entry.dataset.count = item.count;
+          var rank = document.createElement("span");
+          rank.className = "sticker-rank";
+          rank.textContent = String(index + 1).padStart(2, "0");
+          entry.appendChild(rank);
+          entry.appendChild(stickerImage(item));
+          var label = document.createElement("span");
+          label.className = "sticker-label";
+          label.textContent = item.label;
+          entry.appendChild(label);
+          var count = document.createElement("strong");
+          count.className = "sticker-count";
+          count.textContent = formatCount(item.count) + " 次";
+          entry.appendChild(count);
+          var detail = document.createElement("small");
+          detail.className = "sticker-detail";
+          if (kind === "private-shared") {
+            detail.textContent = "我 " + item.side_counts[0] + " + TA " + item.side_counts[1];
+          } else if (kind === "group-shared") {
+            detail.textContent = item.reliable_member_count + " 名可靠成员共用";
+          } else if (kind === "group-total") {
+            detail.textContent = item.reliable_member_count + " 名可靠成员 · 已知 " +
+              (item.count - item.unknown_sender_count) + " / 未知 " + item.unknown_sender_count + " 次";
+          }
+          entry.appendChild(detail);
+          var asset = stickerAssets[item.asset_key];
+          if (asset && asset.status === "preview") {
+            var preview = document.createElement("small");
+            preview.className = "sticker-preview";
+            preview.textContent = "可信预览";
+            entry.appendChild(preview);
+          }
+          if (item.signature) {
+            var evidence = document.createElement("p");
+            evidence.className = "sticker-signature";
+            evidence.textContent = signatureText(item);
+            evidence.title = item.signature.first_date + "—" + item.signature.last_date;
+            entry.appendChild(evidence);
+          }
+          list.appendChild(entry);
+        });
+        extra.textContent = "";
+        if (signature && !shown.some(function (item) { return item.asset_key === signature.asset_key; })) {
+          extra.className = "sticker-signature-extra";
+          extra.appendChild(stickerImage(signature));
+          var copy = document.createElement("p");
+          copy.className = "sticker-signature";
+          copy.textContent = signature.label + " · " + signature.count + " 次 · " + signatureText(signature);
+          copy.title = signature.signature.first_date + "—" + signature.signature.last_date;
+          extra.appendChild(copy);
+        } else { extra.className = ""; }
+        button.textContent = expanded ? "收起至 Top 3" : "展开 Top " + Math.min(10, items.length);
+        button.setAttribute("aria-expanded", String(expanded));
+      }
+      button.addEventListener("click", function () { expanded = !expanded; render(); });
+      render();
+    }
+
+    var stickerMembers = document.getElementById("sticker-members");
+    var allStickerMembers = stickers.members || [];
+    function renderStickerMembers(selectedIndex) {
+      stickerMembers.textContent = "";
+      var selected = stickerGroup ? allStickerMembers.slice(selectedIndex, selectedIndex + 1) : allStickerMembers;
+      selected.forEach(function (member) {
+        var article = document.createElement("article");
+        article.className = "sticker-member";
+        var heading = document.createElement("h4");
+        heading.textContent = member.label + "最常用 · ";
+        var count = document.createElement("strong");
+        count.textContent = member.send_count === null ? "身份未确认" : formatCount(member.send_count) + " 次";
+        heading.appendChild(count);
+        article.appendChild(heading);
+        var rate = document.createElement("p");
+        rate.className = "sticker-rate";
+        rate.textContent = member.per_hundred_messages === null ? "使用强度暂不可计算" :
+          "每 100 条消息发送 " + formatAverage(member.per_hundred_messages) + " 次";
+        article.appendChild(rate);
+        var top = member.top_materials || [];
+        if (!top.length) {
+          var empty = document.createElement("p");
+          empty.className = "sticker-member-empty";
+          empty.textContent = member.send_count === null ? "发送者身份不足，暂不生成排名。" : "暂无可可靠归属的素材排名。";
+          article.appendChild(empty);
+        } else {
+          stickerRanking(article, top, "personal", member.signature);
+        }
+        if (!member.signature) {
+          var noSignature = document.createElement("p");
+          noSignature.className = "sticker-signature-empty";
+          noSignature.textContent = "招牌暂缺：长期重复使用与个人代表性证据不足。";
+          article.appendChild(noSignature);
+        }
+        stickerMembers.appendChild(article);
+      });
+    }
+    renderStickerMembers(0);
+    setHidden("sticker-member-picker", !stickerGroup || !allStickerMembers.length || noSends);
+    var memberSelect = document.getElementById("sticker-member-select");
+    memberSelect.textContent = "";
+    allStickerMembers.forEach(function (member, index) {
+      var option = document.createElement("option");
+      option.value = index;
+      option.textContent = member.label + " · " + formatCount(member.send_count) + " 次" + (member.signature ? " · 有招牌候选" : "");
+      memberSelect.appendChild(option);
+    });
+    memberSelect.addEventListener("change", function () { renderStickerMembers(Number(memberSelect.value)); });
+    var shared = stickers.shared_materials || [];
+    var sharedList = document.getElementById("sticker-shared-list");
+    if (sharedList) { sharedList.textContent = ""; }
+    if (!stickerGroup && shared.length) { stickerRanking(sharedList, shared, "private-shared"); }
+    setHidden("sticker-shared", stickerGroup || !shared.length);
+    setHidden("sticker-dynamic", stickerGroup || !shared.length);
+    var groupRankings = document.getElementById("sticker-group-rankings");
+    groupRankings.textContent = "";
+    setHidden("sticker-group-rankings", !stickerGroup || noSends);
+    if (stickerGroup) {
+      [["全群最常用", stickers.total_top_materials || [], "group-total"],
+       ["群内共同最常用", shared, "group-shared"]].forEach(function (definition) {
+        if (!definition[1].length) { return; }
+        var block = document.createElement("div");
+        var title = document.createElement("h4");
+        title.textContent = definition[0];
+        block.appendChild(title);
+        stickerRanking(block, definition[1], definition[2]);
+        groupRankings.appendChild(block);
+      });
+    }
+    var setCopy = stickerGroup ? "至少两名可靠成员共用 " + stickers.shared_material_count + " 种 · 单一可靠成员独用 " + stickers.exclusive_material_count + " 种" :
+      "双方共同使用 " + (stickers.shared_material_count === null ? "暂不可确认" : stickers.shared_material_count + " 种") + " · " + allStickerMembers.map(function (member) {
+        return "仅" + member.label + "使用 " + (member.exclusive_material_count === null ? "暂不可确认" : member.exclusive_material_count + " 种");
+      }).join(" · ");
+    if (stickerGroup) {
+      setCopy += " · 全群每百条消息 " + (stickers.per_hundred_messages === null ? "暂不可计算" : formatAverage(stickers.per_hundred_messages) + " 次");
+    }
+    setText("sticker-sets", setCopy);
+    var notes = [];
+    if (stickers.unknown_identity_count) { notes.push(formatCount(stickers.unknown_identity_count) + " 次素材身份未知，其中发送者可靠的部分仍计入成员发送量与强度，不参与素材去重和排行"); }
+    if (stickers.unattributed_send_count) { notes.push(formatCount(stickers.unattributed_send_count) + " 次发送暂不能归属" + (stickerGroup ? "可靠成员" : "双方")); }
+    if (stickers.covered_message_count < (overview ? overview.total_message_count : 0)) {
+      notes.push("强度分母仅覆盖可关联的 " + formatCount(stickers.covered_message_count) + " 条消息");
+    }
+    notes.push("强度＝100 × 发送次数 / 对应消息数；同一消息可含多次发送");
+    notes.push("仅描述本会话可识别素材，独用排除未知发送者；无图不影响计数");
+    if (!shared.length) { notes.push(stickers.shared_material_count === null ? "双方可靠身份不足，暂不能判断共同使用" : "共同素材不足 " + stickers.shared_ranking_min_materials + " 种，仅展示种类数"); }
+    notes.push("招牌为实验候选，不代表整个群体");
+    setText("sticker-note", notes.join("。") + "。");
   }
 
   var expressionCulture = data && data.expression_culture;

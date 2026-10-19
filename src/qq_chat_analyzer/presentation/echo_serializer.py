@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 from ..resources import resource_path
@@ -19,6 +20,8 @@ from .models import (
     EchoLanguageProfile,
     EchoMemberCard,
     EchoReportView,
+    EchoStickers,
+    EchoStickerItem,
 )
 from .expression_assets import (
     expression_asset_data_uri,
@@ -26,7 +29,7 @@ from .expression_assets import (
 )
 
 
-ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.7"
+ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.8"
 
 
 def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
@@ -63,10 +66,52 @@ def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
         "expression_culture": _expression_culture_to_dict(
             view.expression_culture
         ),
+        "stickers": _stickers_to_dict(view.stickers),
         "members": [
             _member_to_dict(member, view.expression_source)
             for member in view.members
         ],
+    }
+
+
+def _sticker_item_to_dict(item: EchoStickerItem) -> dict[str, object]:
+    return {
+        "label": item.label,
+        "count": item.count,
+        "asset_key": item.asset_key,
+        "side_counts": list(item.side_counts),
+        "reliable_member_count": item.reliable_member_count,
+        "unknown_sender_count": item.unknown_sender_count,
+        "signature": asdict(item.signature) if item.signature else None,
+    }
+
+
+def _stickers_to_dict(chapter: EchoStickers | None) -> dict[str, object] | None:
+    if chapter is None:
+        return None
+    return {
+        "available": chapter.available,
+        "total_send_count": chapter.total_send_count,
+        "unique_material_count": chapter.unique_material_count,
+        "unknown_identity_count": chapter.unknown_identity_count,
+        "unattributed_send_count": chapter.unattributed_send_count,
+        "covered_message_count": chapter.covered_message_count,
+        "members": [{
+            "label": member.label, "send_count": member.send_count,
+            "message_count": member.message_count, "per_hundred_messages": member.per_hundred_messages,
+            "top_materials": [_sticker_item_to_dict(item) for item in member.top_materials],
+            "exclusive_material_count": member.exclusive_material_count,
+            "signature": _sticker_item_to_dict(member.signature) if member.signature else None,
+        } for member in chapter.members],
+        "shared_material_count": chapter.shared_material_count,
+        "shared_materials": [_sticker_item_to_dict(item) for item in chapter.shared_materials],
+        "assets": {asset.key: {"data_uri": asset.data_uri, "status": asset.status} for asset in chapter.assets},
+        "unavailable_reason": chapter.unavailable_reason,
+        "conversation_kind": chapter.conversation_kind,
+        "total_top_materials": [_sticker_item_to_dict(item) for item in chapter.total_top_materials],
+        "exclusive_material_count": chapter.exclusive_material_count,
+        "per_hundred_messages": chapter.per_hundred_messages,
+        "shared_ranking_min_materials": chapter.shared_ranking_min_materials,
     }
 
 

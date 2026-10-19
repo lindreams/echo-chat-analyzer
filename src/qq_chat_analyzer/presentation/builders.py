@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import replace
 from itertools import islice
 from ..identity_names import resolve_member_names
+from ..analysis.stickers import StickerMedia
+from .stickers import build_echo_stickers
 
 from ..analysis.models import (
     AnalysisReports,
@@ -658,6 +660,7 @@ def build_echo_report_view(
     conversation_kind: str = "unknown",
     title: str = ECHO_REPORT_TITLE,
     expression_source: str | None = None,
+    sticker_media: tuple[StickerMedia, ...] = (),
 ) -> EchoReportView:
     """Build an Echo report, highlighting only an explicitly supplied key."""
     reports = reports or AnalysisReports()
@@ -726,6 +729,10 @@ def build_echo_report_view(
             expression_source=expression_source,
         ),
         expression_source=expression_source,
+        stickers=build_echo_stickers(
+            reports.stickers, sticker_media, conversation_kind=conversation_kind,
+            member_names={member.speaker_key: member.display_name for member in members},
+        ),
         empty_description="" if has_data else EMPTY_DESCRIPTION,
         active_days=(reports.activity.active_days if reports.activity else 0),
         average_messages_per_active_day=(

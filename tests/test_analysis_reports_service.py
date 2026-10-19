@@ -92,6 +92,85 @@ def _request(application, tmp_path: Path, input_path: Path):
     )
 
 
+def test_private_stickers_reach_actual_json_and_html_from_filtered_rich_chain(tmp_path):
+    application = _application_module()
+    path = tmp_path / "fictional-stickers.json"
+    records = [
+        qq_db_record(sender_id=sender, message_id=f"fiction-{index}",
+                     timestamp=1760000000 + index * 60,
+                     stickers=tuple((key, "untrusted-label") for key in keys))
+        for index, (sender, keys) in enumerate([
+            ("100000001", ("shared", "shared", "mine")),
+            ("100000001", ("mine",)), ("100000001", ("once",)),
+            ("100000002", ("shared", "theirs")),
+            ("100000002", ("theirs",)),
+        ])
+    ]
+    path.write_text(json.dumps(qq_db_payload(records, session_type="private", self_uin="100000001")), encoding="utf-8")
+    result = application.AnalysisApplicationService().execute(_request(application, tmp_path, path))
+    payload = json.loads((tmp_path / "private-output/echo-report.json").read_text(encoding="utf-8"))
+    chapter = payload["stickers"]
+    assert (chapter["total_send_count"], chapter["unique_material_count"]) == (8, 4)
+    assert [(m["send_count"], m["message_count"]) for m in chapter["members"]] == [(5, 3), (3, 2)]
+    assert [m["per_hundred_messages"] for m in chapter["members"]] == pytest.approx([500 / 3, 150])
+    assert [[x["count"] for x in m["top_materials"]] for m in chapter["members"]] == [[2, 2, 1], [2, 1]]
+    assert chapter["shared_material_count"] == 1 and chapter["shared_materials"] == []
+    assert [m["exclusive_material_count"] for m in chapter["members"]] == [2, 1]
+    assert chapter["assets"] == {}
+    assert result.reports.stickers[0].total_send_count == 8
+    source = (tmp_path / "private-output/echo-report.html").read_text(encoding="utf-8")
+    match = re.search(r"window\.ECHO_DATA = (\{.*?\});", source, re.S)
+    assert json.loads(match.group(1))["stickers"] == chapter
+    assert "untrusted-label" not in json.dumps(chapter)
+
+
+@pytest.mark.parametrize("kind", ["private", "group"])
+def test_sticker_complete_rankings_and_signatures_reach_exported_artifacts(tmp_path, kind):
+    from datetime import datetime, timedelta, timezone
+    application = _application_module()
+    records = []
+    dates = ("2024-12-29", "2025-01-05", "2025-01-12", "2025-02-02")
+    # Identical private boards are legitimate. A third member changes only group boards.
+    for member in ("100000001", "100000002"):
+        for index in range(12):
+            for occurrence in range(12 - index):
+                day = dates[occurrence % 4] if index == 3 else dates[0]
+                records.append(qq_db_record(sender_id=member, message_id=f"fiction-{len(records)}",
+                    timestamp=int(datetime.fromisoformat(day).replace(tzinfo=timezone(timedelta(hours=8))).timestamp()),
+                    stickers=((f"material-{index:02d}", "fictional"),)))
+    if kind == "group":
+        records.append(qq_db_record(sender_id="100000003", message_id="solo",
+                                    stickers=tuple(("solo", "fictional") for _ in range(50))))
+        records.append(qq_db_record(sender_id="0", message_id="unknown",
+                                    stickers=tuple(("material-00", "fictional") for _ in range(30))))
+    path = tmp_path / "fictional.json"
+    path.write_text(json.dumps(qq_db_payload(records, session_type=kind, self_uin="100000001")), encoding="utf-8")
+    result = application.AnalysisApplicationService().execute(_request(application, tmp_path, path))
+    raw, = result.reports.stickers
+    chapter = json.loads((tmp_path / "private-output/echo-report.json").read_text(encoding="utf-8"))["stickers"]
+    assert chapter["available"] and chapter["shared_material_count"] == 12
+    assert [x["count"] for x in chapter["shared_materials"]] == list(range(24, 4, -2))
+    mine, peer = chapter["members"][:2]
+    assert [x["count"] for x in mine["top_materials"]] == list(range(12, 2, -1))
+    assert mine["top_materials"] == peer["top_materials"]
+    assert mine["signature"]["count"] == 9  # Rank four, not the single-day Top 1.
+    assert mine["signature"]["signature"]["week_count"] == 4
+    assert [x["count"] for x in mine["top_materials"]] == [n for _, n in raw.ranking("100000001")][:10]
+    if kind == "group":
+        assert [x["count"] for x in chapter["total_top_materials"][:2]] == [54, 50]
+        assert chapter["total_top_materials"][0]["unknown_sender_count"] == 30
+        assert chapter["total_top_materials"][0]["reliable_member_count"] == 2
+        assert chapter["unattributed_send_count"] == 30
+        solo = chapter["members"][2]
+        assert (solo["send_count"], solo["message_count"], solo["per_hundred_messages"]) == (50, 1, 5000)
+        assert solo["signature"] is None
+    else:
+        assert [x["asset_key"] for x in mine["top_materials"]] == [x["asset_key"] for x in chapter["shared_materials"]]
+    source = (tmp_path / "private-output/echo-report.html").read_text(encoding="utf-8")
+    embedded = json.loads(re.search(r"window\.ECHO_DATA = (\{.*?\});", source, re.S).group(1))
+    assert embedded["stickers"] == chapter
+
+
 @pytest.mark.parametrize("legacy_outputs", [False, True])
 def test_analysis_logs_each_timing_stage_without_private_content(
     tmp_path: Path, caplog: pytest.LogCaptureFixture,
@@ -237,7 +316,7 @@ def test_execute_generates_echo_report_json_artifact(tmp_path: Path) -> None:
     report_path = output_directory / "echo-report.json"
     assert report_path.is_file()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "echo-report.v0.7"
+    assert payload["schema_version"] == "echo-report.v0.8"
 
 
 def test_report_boundary_does_not_retain_full_expression_candidates() -> None:
@@ -402,7 +481,7 @@ def test_new_report_metadata_records_corrected_expression_semantics(tmp_path):
         result=result, source="wechat", scope=AnalysisScope.all(),
         generated_at=datetime(2026, 10, 16, tzinfo=timezone.utc),
     )
-    assert metadata["analysis_revision"] == "echo-analysis.v6"
+    assert metadata["analysis_revision"] == "echo-analysis.v8"
 
 
 @pytest.mark.parametrize("source", ["wechat", "qq"])

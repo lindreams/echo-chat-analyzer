@@ -202,6 +202,67 @@ class EchoConversationSessions:
 
 
 @dataclass(frozen=True, slots=True)
+class EchoStickerSignature:
+    send_count: int
+    dated_send_count: int
+    date_count: int
+    span_days: int
+    week_count: int
+    share: float
+    first_date: str | None
+    last_date: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class EchoStickerItem:
+    label: str
+    count: int
+    asset_key: str
+    side_counts: tuple[int, ...] = ()
+    reliable_member_count: int = 0
+    unknown_sender_count: int = 0
+    signature: EchoStickerSignature | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EchoStickerMember:
+    label: str
+    send_count: int | None = None
+    message_count: int | None = None
+    per_hundred_messages: float | None = None
+    top_materials: tuple[EchoStickerItem, ...] = ()
+    exclusive_material_count: int | None = None
+    signature: EchoStickerItem | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EchoStickerAsset:
+    key: str
+    data_uri: str
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
+class EchoStickers:
+    available: bool
+    total_send_count: int = 0
+    unique_material_count: int = 0
+    unknown_identity_count: int = 0
+    unattributed_send_count: int = 0
+    covered_message_count: int = 0
+    members: tuple[EchoStickerMember, ...] = ()
+    shared_material_count: int | None = 0
+    shared_materials: tuple[EchoStickerItem, ...] = ()
+    assets: tuple[EchoStickerAsset, ...] = ()
+    unavailable_reason: str = ""
+    conversation_kind: str = "private"
+    total_top_materials: tuple[EchoStickerItem, ...] = ()
+    exclusive_material_count: int = 0
+    per_hundred_messages: float | None = None
+    shared_ranking_min_materials: int = 3
+
+
+@dataclass(frozen=True, slots=True)
 class EchoReportView:
     """Display-only payload for Echo Report v0.1 Phase A."""
 
@@ -219,6 +280,7 @@ class EchoReportView:
     language_profile: EchoLanguageProfile | None = None
     expression_culture: EchoExpressionCulture | None = None
     expression_source: str | None = None
+    stickers: EchoStickers | None = None
     empty_description: str = ""
     active_days: int = 0
     average_messages_per_active_day: float = 0.0

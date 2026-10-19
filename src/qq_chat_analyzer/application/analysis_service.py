@@ -24,6 +24,8 @@ from ..analysis.analyzers.expression_analyzer import iter_emoji_clusters
 from ..analysis.models import AnalysisReports, ExpressionReport
 from ..analysis.stickers import (
     StickerData,
+    StickerMedia,
+    aggregate_stickers,
     collect_sticker_sends,
     count_sticker_messages,
 )
@@ -247,6 +249,7 @@ class AnalysisApplicationService:
                     rich_by_instance=rich_by_instance,
                     expression_report=expression_report,
                     expression_source=outcome.result.platform,
+                    stickers=stickers,
                 )
             if ranked_words and self._legacy_word_artifacts is not None:
                 with timed_stage("word_speaker_analysis"):
@@ -289,6 +292,7 @@ class AnalysisApplicationService:
                         ),
                         conversation_kind=conversation_type,
                         expression_source=outcome.result.platform,
+                        sticker_media=stickers.media,
                     )
             except (OSError, ValueError):
                 raise ArtifactGenerationFailed() from None
@@ -385,6 +389,7 @@ def _build_reports(
     rich_by_instance: Mapping[int, RichMessage] | None = None,
     expression_report: ExpressionReport | None = None,
     expression_source: str | None = None,
+    stickers: StickerData | None = None,
 ) -> AnalysisReports:
     """Run every extended analyzer over the messages kept for analysis.
 
@@ -433,6 +438,7 @@ def _build_reports(
         conversation_sessions=conversation_sessions,
         distinctive_words=distinctive_words,
         private_language=private_language,
+        stickers=aggregate_stickers(stickers or StickerData(), (rich_by_instance or {}).values()),
         expression=prepare_expression_report(
             expression,
             expression_source=(
@@ -633,6 +639,7 @@ def _export_echo_artifacts(
     viewer_speaker_key: str | None,
     conversation_kind: str,
     expression_source: str | None,
+    sticker_media: tuple[StickerMedia, ...] = (),
 ) -> EchoReportView:
     """Write the Echo JSON and self-contained HTML report artifacts."""
     output_directory = request.output_directory
@@ -641,6 +648,7 @@ def _export_echo_artifacts(
         viewer_speaker_key=viewer_speaker_key,
         conversation_kind=conversation_kind,
         expression_source=expression_source,
+        sticker_media=sticker_media,
     )
     export_echo_report_json(
         view,

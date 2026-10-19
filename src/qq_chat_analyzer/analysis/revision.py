@@ -20,4 +20,8 @@
 # v6: Unicode 18.0 official emoji sequences, explicit presentation selectors,
 # and keycap-safe lexical masking replace broad Unicode block heuristics.
 # Member expression context counts and nearby words use that member's messages.
-ANALYSIS_REVISION = "echo-analysis.v6"
+# v7: separate scoped sticker aggregates retain unknown sends and reliable
+# material/member identities, with message denominators from the kept Rich scope.
+# v8: full sticker frequency ordering and experimental per-member longitudinal
+# signature evidence (calendar dates and ISO year/week), shared by conversation kinds.
+ANALYSIS_REVISION = "echo-analysis.v8"

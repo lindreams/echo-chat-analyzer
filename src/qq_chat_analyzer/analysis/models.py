@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .conversation_sessions import ConversationSessionReport
+from .stickers import StickerConversationReport
 
 
 UNKNOWN_CONVERSATION_NAME = "\u672a\u77e5\u4f1a\u8bdd"
@@ -234,6 +235,7 @@ class AnalysisReports:
     distinctive_words: DistinctiveWordReport | None = None
     private_language: PrivateLanguageReport | None = None
     expression: ExpressionReport | None = None
+    stickers: tuple[StickerConversationReport, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
