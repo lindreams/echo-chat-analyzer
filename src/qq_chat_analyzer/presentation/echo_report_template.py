@@ -78,7 +78,7 @@ ECHO_REPORT_HTML_SKELETON = r"""
         </a>
         <a class="toc-row" id="sticker-toc" href="#stickers" hidden>
           <span class="toc-number">06</span>
-          <span class="toc-copy"><strong>表情包</strong><small>发送次数与双方常用素材</small></span>
+          <span class="toc-copy"><strong>表情包</strong><small>那些常用的表情包，和我们独有的习惯。</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">08</span>
         </a>
@@ -90,7 +90,7 @@ ECHO_REPORT_HTML_SKELETON = r"""
         </div>
         <div class="toc-row is-future">
           <span class="toc-number">08</span>
-          <span class="toc-copy"><strong>AI 尾声</strong><small>未来章节</small></span>
+          <span class="toc-copy"><strong>余音</strong><small>让那些反复出现的词，成为最后的回响。</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">—</span>
         </div>
@@ -298,7 +298,7 @@ ECHO_REPORT_HTML_SKELETON = r"""
       <header class="page-header"><p class="folio">UNWRITTEN</p><h2 id="future-title">尚未展开的部分</h2><p>有些痕迹，将在之后的章节中继续被看见。</p></header>
       <div class="future-list">
         <div><span>07</span><h3>互动关系</h3><p>交流方向与回应方式。</p></div>
-        <div><span>08</span><h3>AI 尾声</h3><p>基于报告内容形成的回望。</p></div>
+        <div><span>08</span><h3>余音</h3><p>未来将以聊天词云，为 Echo Report 留下最后的回响。</p></div>
       </div>
       <footer class="end-mark"><a href="#cover">回到封面 ↑</a><span>余音 Echo · <b data-current-year>2026</b></span></footer>
       <span class="page-number">09</span>
