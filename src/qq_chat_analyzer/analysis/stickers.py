@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 from ..rich_message import ExpressionContent, NonTextContent, RichMessage
+from ..media_content import StoredMedia
 from .timestamps import to_chat_datetime, to_epoch_seconds
 
 
@@ -46,9 +47,9 @@ class StickerMedia:
     message and PIC element the kernel uniquely confirmed while its bytes do not
     match the message digest: displayable, never claimed as the original.
     Immutable original_bytes outlive temporary payloads and external cache
-    changes. No copies are written to disk. Consumers must check status before
-    using bytes; verified_reference is provenance at read time, not a promise
-    that an external file remains unchanged.
+    changes. QQ report media may instead own a temporary byte snapshot.
+    Consumers must check status before using bytes; verified_reference is
+    provenance at read time, not a promise that an external file remains unchanged.
     """
 
     media_key: str = field(repr=False)
@@ -61,6 +62,7 @@ class StickerMedia:
     animation_preserved: bool | None = None
     byte_count: int | None = None
     original_bytes: bytes | None = field(default=None, repr=False)
+    stored: StoredMedia | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

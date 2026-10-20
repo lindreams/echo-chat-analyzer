@@ -81,8 +81,6 @@ from .scope_filter import AnalysisScope, AnalysisScopeMode, resolve_scope
 
 _LOGGER = logging.getLogger("qq_chat_analyzer.desktop.facade")
 # One foreground report, serial requests, no retries or lifetime lockout.
-QQ_REPORT_MEDIA_TARGET_LIMIT = 32
-QQ_REPORT_MEDIA_SECONDS = 60.0
 _ANALYSIS_OUTPUT_NAME = re.compile(r"chat-analyzer-output-[0-9a-f]{8}\Z")
 
 
@@ -417,9 +415,11 @@ _QQ_MEDIA_STAGE_FAILURES = {
         "qq_media_file_empty",
         "QQ 返回的图片文件为空（0 字节），未展示。",
     ),
+    "media_cancelled": ("qq_media_cancelled", "已取消，未保存媒体。"),
+    "media_transfer_invalid": ("qq_media_transfer_invalid", "图片分块传输未完整通过验证，未展示。"),
     "media_file_too_large": (
         "qq_media_too_large",
-        "取回的图片超过 2 MiB 上限，未展示。",
+        "取回的图片超过 32 MiB 上限，未展示。",
     ),
     "media_read_incomplete": (
         "qq_media_read_incomplete",
@@ -438,7 +438,6 @@ _QQ_MEDIA_STAGE_FAILURES = {
 
 class ChatAnalyzerFacade:
     """Coordinate sources, analysis, and presentation behind one surface."""
-
 
     @staticmethod
     def associate_sticker_media(data, *, media_keys, roots=(), source, cancelled=lambda: False,
@@ -480,7 +479,6 @@ class ChatAnalyzerFacade:
                 public_message="当前 QQ 运行时不支持消息映射查询。",
             )
         return provider
-
 
     def _fetch_qq_pic(
         self, data, *, media_key: str, session_id: str, stored_facts, provider,
@@ -622,12 +620,14 @@ class ChatAnalyzerFacade:
             )
         if cancelled():
             raise FacadeError(code="qq_media_cancelled", public_message="已取消，未获取媒体。")
-        timeout = remaining(25)
+        # Download RPC includes the repeated 8-second identity query before
+        # QQ's 120-second native operation, plus transport/file-open margin.
+        timeout = remaining(135)
         on_stage("kernel_download")
         try:
             with timed_stage("sticker_media_download"):
                 raw = provider.download_pic_media(**locator, element_id=element.segment_id,
-                                                  **({"timeout": timeout} if deadline is not None else {}))
+                                                  cancelled=cancelled, timeout=timeout)
         except Exception as error:
             code, message = _QQ_MEDIA_STAGE_FAILURES.get(
                 getattr(error, "stage", None),
@@ -641,7 +641,9 @@ class ChatAnalyzerFacade:
         on_stage("decode")
         with timed_stage("sticker_media_verify"):
             media = verify_fetched_media(
-                raw, media_key=media_key, expected_md5=element.content_md5)
+                raw, media_key=media_key, expected_md5=element.content_md5, cancelled=cancelled)
+        if media.status == "cancelled":
+            raise FacadeError(code="qq_media_cancelled", public_message="已取消，未保存媒体。")
         if (media.status, media.reason) == ("limited", "decode_budget"):
             raise FacadeError(
                 code="qq_media_decode_budget",
@@ -661,7 +663,8 @@ class ChatAnalyzerFacade:
         """Recover only this retained view's targets from its still-owned payload."""
         from collections import Counter, defaultdict
         from ..analysis.stickers import StickerMedia
-        from ..presentation.stickers import sticker_report_targets, REPORT_STICKER_BYTE_BUDGET
+        from ..presentation.stickers import sticker_report_targets
+        from ..media_content import StoredMedia
         from ..qq_db_adapter import extract_qq_pic_media_facts, load_qq_db_json
         from .sticker_media import qq_media_failure
 
@@ -672,7 +675,6 @@ class ChatAnalyzerFacade:
             return data
         batch = batch or uuid4().hex[:12]
         started_at = _perf_counter()
-        deadline = _monotonic() + QQ_REPORT_MEDIA_SECONDS
         attempts = query_calls = download_calls = completed = 0
         def check_cancel():
             closing = self._sources_closing.is_set()
@@ -690,146 +692,164 @@ class ChatAnalyzerFacade:
         for send in data.sends:
             if send.source == "qq" and send.identity_basis == "qq_pic_45406_md5":
                 sends.setdefault(send.media_key, send)
+        owned_media = []
+        def retain(item):
+            try:
+                stored = StoredMedia(item.original_bytes)
+            except OSError:
+                raise FacadeError(code="qq_media_storage_failed",
+                                  public_message="表情素材临时存储写入失败，请检查磁盘空间。") from None
+            owned_media.append(stored)
+            return replace(item, stored=stored, original_bytes=None)
+
         keys = tuple(target.media_key for target in targets if target.media_key in sends)
         target_order = {target.media_key: index for index, target in enumerate(targets, 1)}
-        with timed_stage("sticker_report_media"):
-            _report_progress(progress, "正在获取表情包素材...")
-            check_cancel()
-            # No discovery: use only caller/source-owned, previously trusted scopes.
-            if roots:
-                _LOGGER.info("[sticker-media-local] batch=%s state=start main_thread=%s", batch,
-                             threading.current_thread() is threading.main_thread())
-                for offset in range(0, len(keys), 32):
-                    check_cancel()
-                    if _monotonic() >= deadline:
-                        break
-                    try:
-                        data = self.associate_sticker_media(
-                            data, media_keys=keys[offset:offset + 32], roots=roots, source="qq",
-                            cancelled=lambda: stopped() or _monotonic() >= deadline)
-                    except FacadeError:
-                        # A rejected local scope does not authorize a broader scan.
-                        # The separately verified QQ element may still be fetched.
-                        check_cancel()
-                _LOGGER.info("[sticker-media-local] batch=%s state=finished", batch)
-            check_cancel()
-            media = {item.media_key: item for item in data.media}
-            completed = sum(item.status in {"available", "preview"} and bool(item.original_bytes)
-                            for item in media.values())
-            pending = tuple(key for key in keys if not (
-                key in media and media[key].status in {"available", "preview"} and media[key].original_bytes))
-            facts_by_message = defaultdict(list)
-            pending_keys = set(pending)
-            provider, setup_failure = None, None
-            for target in targets:
-                disposition = ("pending" if target.media_key in pending_keys else
-                               "local" if target.media_key in keys else "unsupported")
-                _LOGGER.info("[sticker-media-plan] batch=%s target=%d disposition=%s", batch,
-                             target_order[target.media_key], disposition)
-            if pending:
-                try:
-                    # Reuse exactly the payload just analyzed, never reacquire a snapshot.
-                    with timed_stage("sticker_report_identity"):
-                        payload = load_qq_db_json(payload_path)
-                        query = payload.get("query", {}) if payload else {}
-                        kind, internal_key = session.session_id.split(":", 1)
-                        if query.get("session_type") != kind or query.get("internal_key") != internal_key:
-                            setup_failure = "report_scope_unconfirmed"
-                        eligible = pending[:QQ_REPORT_MEDIA_TARGET_LIMIT]
-                        for fact in extract_qq_pic_media_facts(payload, {sends[key].message_id for key in eligible}):
-                            facts_by_message[fact.message_id].append(fact)
-                        del payload
-                except Exception:
-                    setup_failure = "report_payload_unavailable"
-                if setup_failure is None:
-                    try:
-                        provider = self._qq_connected_provider("resolve_pic_message", "download_pic_media")
-                    except FacadeError:
-                        setup_failure = "report_media_source_unavailable"
-            retained = sum(len(media[key].original_bytes or b"") for key in keys if key in media
-                           and media[key].status in {"available", "preview"})
-            exhausted = False
-            inflight_unknown = False
-            for key in pending:
-                ordinal = target_order[key]
+        try:
+            with timed_stage("sticker_report_media"):
+                _report_progress(progress, "正在获取表情包素材...")
                 check_cancel()
-                item_started = _perf_counter()
-                current_stage = "not_requested"
-                stage_started = item_started
-                def trace(stage):
-                    nonlocal current_stage, stage_started, query_calls, download_calls
-                    query_calls += stage == "kernel_query"
-                    download_calls += stage == "kernel_download"
-                    now = _perf_counter()
-                    _LOGGER.info("[sticker-media-stage] batch=%s target=%d stage=%s elapsed_ms=%d next=%s main_thread=%s",
-                                 batch, ordinal, current_stage, max(0, round((now - stage_started) * 1000)),
-                                 stage, threading.current_thread() is threading.main_thread())
-                    current_stage, stage_started = stage, now
-                reason = None
-                if inflight_unknown:
-                    reason = "report_media_inflight_unknown"
-                elif attempts >= QQ_REPORT_MEDIA_TARGET_LIMIT or exhausted:
-                    reason = "report_media_request_budget"
-                elif _monotonic() >= deadline:
-                    reason = "report_media_time_budget"
-                elif retained >= REPORT_STICKER_BYTE_BUDGET:
-                    reason = "report_asset_budget"
-                if reason:
-                    media[key] = StickerMedia(key, "limited", reason)
-                    code = reason
-                elif setup_failure:
-                    media[key] = StickerMedia(key, "failed", setup_failure)
-                    code = setup_failure
-                else:
-                    attempts += 1
-                    _report_progress(progress, f"正在获取表情包素材（{attempts}/{min(len(pending), QQ_REPORT_MEDIA_TARGET_LIMIT)}）...")
-                    try:
-                        recovered = self._fetch_qq_pic(
-                            replace(data, media=tuple(media.values())), media_key=key,
-                            session_id=session.session_id, occurrence_id=sends[key].occurrence_id,
-                            stored_facts=tuple(facts_by_message[sends[key].message_id]),
-                            provider=provider, cancelled=stopped, deadline=deadline, on_stage=trace)
-                        item = next(item for item in recovered.media if item.media_key == key)
-                        media[key] = item
-                        retained += len(item.original_bytes or b"")
-                        completed += 1
-                        code = item.status
-                    except FacadeError as error:
-                        code = error.code
-                        _LOGGER.info("[sticker-media-result] batch=%s target=%d stage=%s code=%s elapsed_ms=%d",
-                                     batch, ordinal, current_stage, code, max(0, round((_perf_counter() - item_started) * 1000)))
+                # No discovery: use only caller/source-owned, previously trusted scopes.
+                if roots:
+                    _LOGGER.info("[sticker-media-local] batch=%s state=start main_thread=%s", batch,
+                                 threading.current_thread() is threading.main_thread())
+                    for offset in range(0, len(keys), 32):
                         check_cancel()
-                        exhausted = error.code == "qq_media_budget_exhausted"
-                        # A client timeout does not prove that the remote QQ
-                        # download stopped. Do not turn the remaining batch
-                        # into a burst of overlapping requests/busy failures.
-                        inflight_unknown = (current_stage == "kernel_download" and
-                                            error.code in {"qq_media_transport_timeout", "qq_media_busy"})
-                        media[key] = (StickerMedia(key, "limited", "report_media_request_budget")
-                                      if exhausted else qq_media_failure(key, error.code))
-                        continue
-                _LOGGER.info("[sticker-media-result] batch=%s target=%d stage=%s code=%s elapsed_ms=%d",
-                             batch, ordinal, current_stage, code, max(0, round((_perf_counter() - item_started) * 1000)))
-            check_cancel()
-            data = replace(data, media=tuple(media.values()))
-        # Fixed categories/counts only; never log locators, paths, bytes or exception text.
-        counts = Counter(media[t.media_key].status if t.media_key in media else "not_requested" for t in targets)
-        _LOGGER.info("[sticker-report-media] targets=%d attempts=%d available=%d preview=%d limited=%d missing=%d failed=%d unsupported=%d not_requested=%d",
-                     len(targets), attempts, counts["available"], counts["preview"], counts["limited"],
-                     counts["missing"], sum(counts[s] for s in ("failed", "invalid", "unsafe", "unreadable", "ambiguous")),
-                     counts["unsupported"], counts["not_requested"])
-        reasons = Counter(media[t.media_key].reason for t in targets if t.media_key in media)
-        _LOGGER.info("[sticker-media-batch] batch=%s targets=%d eligible=%d attempts=%d completed=%d elapsed_ms=%d",
-                     batch, len(targets), len(keys), attempts, counts["available"] + counts["preview"],
-                     max(0, round((_perf_counter() - started_at) * 1000)))
-        _LOGGER.info("[sticker-media-calls] batch=%s queries=%d downloads=%d", batch, query_calls, download_calls)
-        _LOGGER.info("[sticker-report-media-failures] mapping=%d source=%d fetch=%d resource_budget=%d request_budget=%d time_budget=%d asset_budget=%d",
-                     reasons["message_mapping_unconfirmed"], sum(reasons[r] for r in
-                         ("report_media_source_unavailable", "report_payload_unavailable", "report_scope_unconfirmed")),
-                     reasons["media_fetch_failed"], reasons["media_resource_budget"],
-                     reasons["report_media_request_budget"], reasons["report_media_time_budget"],
-                     reasons["report_asset_budget"])
-        return data
+                        try:
+                            data = self.associate_sticker_media(
+                                data, media_keys=keys[offset:offset + 32], roots=roots, source="qq",
+                                cancelled=stopped)
+                        except FacadeError:
+                            # A rejected local scope does not authorize a broader scan.
+                            # The separately verified QQ element may still be fetched.
+                            check_cancel()
+                    _LOGGER.info("[sticker-media-local] batch=%s state=finished", batch)
+                check_cancel()
+                media = {item.media_key: item for item in data.media}
+                for key, item in tuple(media.items()):
+                    if item.status in {"available", "preview"} and item.original_bytes:
+                        media[key] = retain(item)
+                completed = sum(item.status in {"available", "preview"} and bool(item.original_bytes or item.stored)
+                                for item in media.values())
+                pending = tuple(key for key in keys if not (
+                    key in media and media[key].status in {"available", "preview"} and (media[key].original_bytes or media[key].stored)))
+                facts_by_message = defaultdict(list)
+                pending_keys = set(pending)
+                provider, setup_failure = None, None
+                for target in targets:
+                    disposition = ("pending" if target.media_key in pending_keys else
+                                   "local" if target.media_key in keys else "unsupported")
+                    _LOGGER.info("[sticker-media-plan] batch=%s target=%d disposition=%s", batch,
+                                 target_order[target.media_key], disposition)
+                if pending:
+                    try:
+                        # Reuse exactly the payload just analyzed, never reacquire a snapshot.
+                        with timed_stage("sticker_report_identity"):
+                            payload = load_qq_db_json(payload_path)
+                            query = payload.get("query", {}) if payload else {}
+                            kind, internal_key = session.session_id.split(":", 1)
+                            if query.get("session_type") != kind or query.get("internal_key") != internal_key:
+                                setup_failure = "report_scope_unconfirmed"
+                            eligible = pending
+                            for fact in extract_qq_pic_media_facts(payload, {sends[key].message_id for key in eligible}):
+                                facts_by_message[fact.message_id].append(fact)
+                            del payload
+                    except Exception:
+                        setup_failure = "report_payload_unavailable"
+                    if setup_failure is None:
+                        try:
+                            provider = self._qq_connected_provider("resolve_pic_message", "download_pic_media")
+                        except FacadeError:
+                            setup_failure = "report_media_source_unavailable"
+                index = 0
+                while index < len(pending):
+                    key = pending[index]
+                    ordinal = target_order[key]
+                    check_cancel()
+                    item_started = _perf_counter()
+                    current_stage = "not_requested"
+                    stage_started = item_started
+                    def trace(stage):
+                        nonlocal current_stage, stage_started, query_calls, download_calls
+                        query_calls += stage == "kernel_query"
+                        download_calls += stage == "kernel_download"
+                        now = _perf_counter()
+                        _LOGGER.info("[sticker-media-stage] batch=%s target=%d stage=%s elapsed_ms=%d next=%s main_thread=%s",
+                                     batch, ordinal, current_stage, max(0, round((now - stage_started) * 1000)),
+                                     stage, threading.current_thread() is threading.main_thread())
+                        current_stage, stage_started = stage, now
+                    if setup_failure:
+                        media[key] = StickerMedia(key, "failed", setup_failure)
+                        code = setup_failure
+                    else:
+                        attempts += 1
+                        _report_progress(progress, f"正在获取表情包素材（{index + 1}/{len(pending)}）...")
+                        try:
+                            wait_ready = getattr(provider, "wait_media_ready", None)
+                            if callable(wait_ready):
+                                trace("waiting_bridge")
+                                wait_ready(cancelled=stopped)
+                                check_cancel()
+                            recovered = self._fetch_qq_pic(
+                                replace(data, media=tuple(media.values())), media_key=key,
+                                session_id=session.session_id, occurrence_id=sends[key].occurrence_id,
+                                stored_facts=tuple(facts_by_message[sends[key].message_id]),
+                                provider=provider, cancelled=stopped, on_stage=trace)
+                            item = next(item for item in recovered.media if item.media_key == key)
+                            if item.original_bytes:
+                                item = retain(item)
+                            media[key] = item
+                            del recovered
+                            completed += 1
+                            code = item.status
+                        except Exception as cause:
+                            if isinstance(cause, FacadeError):
+                                error = cause
+                            else:
+                                stage = getattr(cause, "stage", None)
+                                code, message = _QQ_MEDIA_STAGE_FAILURES.get(stage,
+                                    ("qq_media_fetch_failed", "QQ 图片获取失败，发送统计已保留。"))
+                                error = FacadeError(code=code, public_message=message)
+                            code = error.code
+                            check_cancel()
+                            if error.code in {"qq_media_budget_exhausted", "qq_media_busy"} and callable(wait_ready):
+                                _LOGGER.info("[sticker-media-wait] batch=%s target=%d code=%s", batch, ordinal, code)
+                                # The next pass waits for the same bridge; no target
+                                # is abandoned and no native download overlaps.
+                                continue
+                            _LOGGER.info("[sticker-media-result] batch=%s target=%d stage=%s code=%s elapsed_ms=%d",
+                                         batch, ordinal, current_stage, code, max(0, round((_perf_counter() - item_started) * 1000)))
+                            media[key] = qq_media_failure(key, error.code)
+                            index += 1
+                            continue
+                    _LOGGER.info("[sticker-media-result] batch=%s target=%d stage=%s code=%s elapsed_ms=%d",
+                                 batch, ordinal, current_stage, code, max(0, round((_perf_counter() - item_started) * 1000)))
+                    index += 1
+                check_cancel()
+                data = replace(data, media=tuple(media.values()))
+            # Fixed categories/counts only; never log locators, paths, bytes or exception text.
+            counts = Counter(media[t.media_key].status if t.media_key in media else "not_requested" for t in targets)
+            _LOGGER.info("[sticker-report-media] targets=%d attempts=%d available=%d preview=%d limited=%d missing=%d failed=%d unsupported=%d not_requested=%d",
+                         len(targets), attempts, counts["available"], counts["preview"], counts["limited"],
+                         counts["missing"], sum(counts[s] for s in ("failed", "invalid", "unsafe", "unreadable", "ambiguous")),
+                         counts["unsupported"], counts["not_requested"])
+            reasons = Counter(media[t.media_key].reason for t in targets if t.media_key in media)
+            _LOGGER.info("[sticker-media-batch] batch=%s targets=%d eligible=%d attempts=%d completed=%d elapsed_ms=%d",
+                         batch, len(targets), len(keys), attempts, counts["available"] + counts["preview"],
+                         max(0, round((_perf_counter() - started_at) * 1000)))
+            _LOGGER.info("[sticker-media-calls] batch=%s queries=%d downloads=%d", batch, query_calls, download_calls)
+            _LOGGER.info("[sticker-report-media-failures] mapping=%d source=%d fetch=%d resource_budget=%d request_budget=%d time_budget=%d asset_budget=%d",
+                         reasons["message_mapping_unconfirmed"], sum(reasons[r] for r in
+                             ("report_media_source_unavailable", "report_payload_unavailable", "report_scope_unconfirmed")),
+                         counts["failed"], sum(reasons[r] for r in
+                             ("qq_media_too_large", "qq_media_decode_budget", "qq_media_transport_limit")),
+                         reasons["report_media_request_budget"], reasons["report_media_time_budget"],
+                         reasons["report_asset_budget"])
+            return data
+        except BaseException:
+            for stored in owned_media:
+                stored.close()
+            raise
+
 
     def __init__(
         self,
@@ -1543,6 +1563,7 @@ class ChatAnalyzerFacade:
             _cleanup_stale_analysis_outputs(user_data_dir() / "transient")
             self._scratch_recovery_done = True
         output_directory, temporary_output = _create_output_directory(config)
+        prepared_qq_media = None
         try:
             if cancelled():
                 raise FacadeError(code="analysis_cancelled", public_message="分析已取消。")
@@ -1587,6 +1608,7 @@ class ChatAnalyzerFacade:
                 media_batch = uuid4().hex[:12]
                 stickers = self._prepare_qq_report_media(
                     result, input_path, session, media_roots, progress, cancelled, batch=media_batch)
+                prepared_qq_media = stickers
                 _report_progress(progress, "正在生成报告...")
                 if cancelled():
                     raise FacadeError(code="analysis_cancelled", public_message="分析已取消。")
@@ -1594,13 +1616,17 @@ class ChatAnalyzerFacade:
                              threading.current_thread() is threading.main_thread())
                 try:
                     with _translated_errors(source), timed_stage("sticker_report_export"):
-                        result = analysis_service.export_sticker_report(result, stickers, output_directory)
+                        result = analysis_service.export_sticker_report(result, stickers, output_directory,
+                            cancelled=lambda: cancelled() or self._sources_closing.is_set())
                 except Exception:
+                    if cancelled() or self._sources_closing.is_set():
+                        raise FacadeError(code="analysis_cancelled", public_message="分析已取消。") from None
                     _LOGGER.info("[sticker-media-export] batch=%s state=failed code=report_assembly_failed", media_batch)
                     raise
                 chapter = result.echo_report_view.stickers
                 for ordinal, asset in enumerate(chapter.assets if chapter is not None else (), 1):
-                    assembly = ("embedded" if asset.data_uri else
+                    assembly = ("external_file" if asset.content is not None else
+                                "embedded" if asset.data_uri else
                                 "report_asset_budget" if asset.reason == "report_asset_budget" else
                                 "report_image_unavailable" if asset.reason == "report_image_unavailable" else "upstream_unavailable")
                     _LOGGER.info("[sticker-media-asset] batch=%s target=%d code=%s", media_batch, ordinal, assembly)
@@ -1627,6 +1653,7 @@ class ChatAnalyzerFacade:
                             reports_root=self._report_package_catalog.reports_root,
                             metadata=metadata,
                             now=report_generated_at.astimezone(),
+                            cancelled=lambda: cancelled() or self._sources_closing.is_set(),
                         )
                     report_path = report_directory / ECHO_REPORT_HTML_NAME
                 except Exception:
@@ -1635,6 +1662,8 @@ class ChatAnalyzerFacade:
                         "packaged; keeping the generated report in place.",
                         exc_info=True,
                     )
+            if cancelled() or self._sources_closing.is_set():
+                raise FacadeError(code="analysis_cancelled", public_message="分析已取消。")
             _LOGGER.info(
                 "[facade] analysis outcome ready report_path=%s "
                 "report_directory=%s echo_view=%s",
@@ -1662,6 +1691,10 @@ class ChatAnalyzerFacade:
             _report_progress(progress, "分析完成")
             self._replace_retained_output(temporary_output)
         except BaseException:
+            if prepared_qq_media is not None:
+                for media in prepared_qq_media.media:
+                    if media.stored is not None:
+                        media.stored.close()
             if temporary_output is not None:
                 temporary_output.cleanup()
             raise

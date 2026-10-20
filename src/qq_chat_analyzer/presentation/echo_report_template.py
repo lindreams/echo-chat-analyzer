@@ -1612,8 +1612,10 @@ document.documentElement.classList.add("js-ready");
       fallback.textContent = "图片暂不可用";
       frame.appendChild(fallback);
       var asset = stickerAssets[item.asset_key];
+      if (asset) fallback.title = asset.reason || asset.status || "";
       if (asset && (asset.status === "available" || asset.status === "preview") &&
-          /^data:image\/(png|jpeg|gif|webp);base64,/.test(asset.data_uri || "")) {
+          (/^data:image\/(png|jpeg|gif|webp);base64,/.test(asset.data_uri || "") ||
+           /^media\/[0-9a-f]{64}\.(png|jpg|gif|webp)$/.test(asset.data_uri || ""))) {
         var image = document.createElement("img");
         image.alt = "表情包";
         image.addEventListener("error", function () {

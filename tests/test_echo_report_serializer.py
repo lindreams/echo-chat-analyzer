@@ -155,6 +155,39 @@ def test_verified_animations_retain_original_and_preview_bytes_in_html(
         assert asset["data_uri"] in html
 
 
+def test_large_qq_report_publishes_bounded_offline_files_without_dropping_assets(tmp_path, monkeypatch):
+    from qq_chat_analyzer.presentation.echo_serializer import export_echo_report_json
+    import hashlib
+    from dataclasses import replace
+    from qq_chat_analyzer.analysis.stickers import StickerConversationReport, StickerMaterialUsage, StickerParticipant
+    from qq_chat_analyzer.application.sticker_media import verify_fetched_media
+    from qq_chat_analyzer.application.echo_report_export import package_echo_report
+    from qq_chat_analyzer.media_content import StoredMedia
+    from qq_chat_analyzer.presentation import stickers
+    from test_sticker_data import image_bytes
+
+    raw = image_bytes("GIF", animated=True)
+    verified = verify_fetched_media(raw, media_key="a", expected_md5=hashlib.md5(raw).hexdigest())
+    media = replace(verified, original_bytes=None, stored=StoredMedia(raw))
+    monkeypatch.setattr(stickers, "QQ_REPORT_INLINE_BYTES", 1, raising=False)
+    report = StickerConversationReport("qq", "fiction-room", "group", 1, 1, 0, 0,
+        members=(StickerParticipant("a", True, 1, 1),),
+        materials=(StickerMaterialUsage("a", "a", 1, (("a", 1),)),))
+    view = build_echo_report_view(analysis_models.AnalysisReports(stickers=(report,)),
+                                  conversation_kind="group", sticker_media=(media,))
+    asset, = view.stickers.assets
+    assert asset.status == "available" and asset.data_uri.startswith("media/")
+    output = tmp_path / "output"
+    export_echo_report_json(view, output / "echo-report.json")
+    export_echo_report_html(view, output / "echo-report.html")
+    published = package_echo_report(output, tmp_path / "reports", metadata={"generated_at":"2026-10-20T00:00:00+08:00"})
+    assert (published / asset.data_uri).read_bytes() == raw
+    assert asset.data_uri in (published / "echo-report.html").read_text(encoding="utf-8")
+    assert len(list((published / "media").iterdir())) == 1
+    assert media.original_bytes is None and media.stored.read() == raw
+    media.stored.close()
+
+
 def test_sticker_asset_budget_keeps_counts_and_explains_unavailable_images(monkeypatch):
     from dataclasses import replace
     from qq_chat_analyzer.analysis.stickers import StickerConversationReport, StickerMaterialUsage, StickerParticipant, StickerMedia

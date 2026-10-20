@@ -17,13 +17,22 @@ const MEDIA_WINDOW_MS = 60000;
 // Rolling per-bridge limits recover with time; no reset RPC or client-supplied quota.
 const callWindow = maximum => {
   const started = [];
-  return () => {
+  const prune = () => {
     const now = performance.now();
     while (started.length && started[0] <= now - MEDIA_WINDOW_MS) started.shift();
+    return now;
+  };
+  const allow = () => {
+    const now = prune();
     if (started.length >= maximum) return false;
     started.push(now);
     return true;
   };
+  allow.retryAfter = () => {
+    const now = prune();
+    return started.length < maximum ? 0 : Math.max(1, Math.ceil(started[0] + MEDIA_WINDOW_MS - now));
+  };
+  return allow;
 };
 const PROBE_TIMEOUT_MS = 8000;
 const DECIMAL_ID = /^[1-9][0-9]{0,19}$/;
@@ -71,21 +80,23 @@ const probeRequest = value => {
   return value.expectedSelf === null || typeof value.expectedSelf === 'boolean';
 };
 
-// Serial, rate-bounded media fetches. The transport is a single
-// base64 field under the client's 8 MiB response cap, so the file itself is
-// capped and never streamed through a second channel.
-const MAX_MEDIA_BYTES = 2 * 1024 * 1024;
+// Serial, rate-bounded fetches. One authenticated, generation-bound transfer
+// owns one pinned file handle; only a small chunk is base64 encoded at a time.
+const MAX_MEDIA_BYTES = 32 * 1024 * 1024;
+const MEDIA_CHUNK_BYTES = 256 * 1024;
+const MEDIA_TRANSFER_IDLE_MS = 30000;
 const MAX_MEDIA_CALLS = 64;
-const MEDIA_TIMEOUT_MS = 20000;
+const MEDIA_TIMEOUT_MS = 120000;
 // Fixed, sanitised stage codes. Only these may cross the bridge; anything else
 // is reported as the generic operation failure so no path or kernel message leaks.
 const MEDIA_STAGES = new Set([
+  'probe_timeout', 'probe_api_unavailable',
   'media_mapping_rejected', 'media_message_query_failed', 'media_api_unavailable',
   'media_busy', 'media_budget_exhausted', 'media_download_timeout',
   'media_download_failed', 'media_path_invalid', 'media_file_missing',
   'media_open_failed', 'media_file_type_rejected', 'media_file_identity_changed',
   'media_file_empty', 'media_file_too_large', 'media_read_incomplete',
-  'media_file_changed', 'media_file_rejected',
+  'media_file_changed', 'media_file_rejected', 'media_transfer_invalid',
 ]);
 const mediaError = code => Object.assign(new Error(code), {code});
 const MEDIA_KEYS = new Set([...PROBE_KEYS].filter(key => key !== 'expectedSegmentId').concat('elementId'));
@@ -115,7 +126,7 @@ const mediaRequest = value => {
 // still names the file that was opened; its size is never compared with the
 // handle size, because QQ can still be finishing the write it just reported.
 // Stability is proven around the read on that same handle instead.
-const readBoundedMedia = async filePath => {
+const openBoundedMedia = async filePath => {
   if (typeof filePath !== 'string' || filePath.length === 0 || filePath.length > 4096 ||
       filePath.includes('\x00') || !isAbsolute(filePath)) throw mediaError('media_path_invalid');
   const openFailed = error => mediaError(error?.code === 'ENOENT' ? 'media_file_missing' : 'media_open_failed');
@@ -132,6 +143,7 @@ const readBoundedMedia = async filePath => {
   } catch (error) {
     throw openFailed(error);
   }
+  let retained = false;
   try {
     let opened;
     try {
@@ -157,25 +169,35 @@ const readBoundedMedia = async filePath => {
     await checkPath();
     if (opened.size <= 0n) throw mediaError('media_file_empty');
     if (opened.size > BigInt(MAX_MEDIA_BYTES)) throw mediaError('media_file_too_large');
-    const raw = Buffer.alloc(Number(opened.size));
-    let offset = 0;
-    while (offset < raw.length) {
-      const {bytesRead} = await handle.read(raw, offset, raw.length - offset, offset);
-      if (bytesRead <= 0) throw mediaError('media_read_incomplete');
-      offset += bytesRead;
-    }
-    const tail = Buffer.alloc(1);
-    if ((await handle.read(tail, 0, 1, offset)).bytesRead !== 0) throw mediaError('media_file_changed');
-    await checkPath();
-    const after = await handle.stat({bigint: true});
-    if (!after.isFile() || after.ino !== opened.ino || after.dev !== opened.dev ||
-        after.size !== opened.size || after.mtimeNs !== opened.mtimeNs ||
-        after.ctimeNs !== opened.ctimeNs) throw mediaError('media_file_changed');
-    return raw;
+    let position = 0;
+    const size = Number(opened.size);
+    retained = true;
+    return {size, close: () => handle.close(), async read(offset) {
+      if (offset !== position || position >= size) throw mediaError('media_transfer_invalid');
+      const raw = Buffer.alloc(Math.min(MEDIA_CHUNK_BYTES, size - position));
+      let filled = 0;
+      while (filled < raw.length) {
+        const {bytesRead} = await handle.read(raw, filled, raw.length - filled, position + filled);
+        if (bytesRead <= 0) throw mediaError('media_read_incomplete');
+        filled += bytesRead;
+      }
+      position += filled;
+      const eof = position === size;
+      if (eof) {
+        const tail = Buffer.alloc(1);
+        if ((await handle.read(tail, 0, 1, position)).bytesRead !== 0) throw mediaError('media_file_changed');
+        await checkPath();
+        const after = await handle.stat({bigint: true});
+        if (!after.isFile() || after.ino !== opened.ino || after.dev !== opened.dev ||
+            after.size !== opened.size || after.mtimeNs !== opened.mtimeNs ||
+            after.ctimeNs !== opened.ctimeNs) throw mediaError('media_file_changed');
+      }
+      return {offset, base64: raw.toString('base64'), eof};
+    }};
   } catch (error) {
     throw MEDIA_STAGES.has(error?.code) ? error : mediaError('media_file_rejected');
   } finally {
-    await handle.close();
+    if (!retained) await handle.close();
   }
 };
 
@@ -203,6 +225,8 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
     rpc_auth: 'bearer-v1',
     boot_id: bootId,
     bridge_ready: true,
+    media_busy: mediaBusy || transfer !== null,
+    media_retry_after_ms: Math.max(allowProbe.retryAfter(), allowMedia.retryAfter()),
     qq_online: core.selfInfo?.online === true,
     self_info: {uin: uin(core.selfInfo?.uin), uid: text(core.selfInfo?.uid), nickname: text(core.selfInfo?.nick)},
     database_api_ready: typeof core.apis.DatabaseApi?.decryptDatabase === 'function',
@@ -241,9 +265,10 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
   // caller may use; the caller never supplies an element independently.
   const inspectPicMessage = async value => {
     const msgApi = core.apis?.MsgApi;
-    if (!msgApi || typeof msgApi.getMsgsByMsgId !== 'function') throw new Error('probe_api_unavailable');
+    if (!msgApi || typeof msgApi.getMsgsByMsgId !== 'function') throw mediaError('probe_api_unavailable');
     const peer = {guildId: '', chatType: value.chatType, peerUid: value.peerUid};
-    const response = await bounded(msgApi.getMsgsByMsgId(peer, [value.msgId]), PROBE_TIMEOUT_MS);
+    const response = await bounded(msgApi.getMsgsByMsgId(peer, [value.msgId]),
+      PROBE_TIMEOUT_MS, () => mediaError('probe_timeout'));
     const messages = Array.isArray(response?.msgList) ? response.msgList : [];
     const empty = {
       found: messages.length > 0, unique: false, msg_id_matches: false,
@@ -319,13 +344,50 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
   };
   const allowMedia = callWindow(MAX_MEDIA_CALLS);
   let mediaBusy = false;
+  let transfer = null;
+  const closeTransfer = async current => {
+    if (!current || transfer !== current) return;
+    transfer = null;
+    clearTimeout(current.timer);
+    await current.file.close();
+  };
+  const armTransfer = current => {
+    current.timer = setTimeout(() => { void closeTransfer(current).catch(() => {}); }, MEDIA_TRANSFER_IDLE_MS);
+    current.timer.unref?.();
+  };
+  const transferRequest = value => object(value) && !Array.isArray(value) &&
+    Object.keys(value).length === 1 && CREDENTIAL.test(value.transfer_id);
+  const chunkRequest = value => object(value) && !Array.isArray(value) &&
+    Object.keys(value).length === 2 && CREDENTIAL.test(value.transfer_id) &&
+    Number.isSafeInteger(value.offset) && value.offset >= 0 && value.offset < MAX_MEDIA_BYTES;
+  const readChunk = async value => {
+    const current = transfer;
+    if (!current || value.transfer_id !== current.id) throw mediaError('media_transfer_invalid');
+    if (current.reading) throw mediaError('media_busy');
+    current.reading = true;
+    clearTimeout(current.timer);
+    try {
+      const chunk = await current.file.read(value.offset);
+      if (chunk.eof) await closeTransfer(current);
+      else armTransfer(current);
+      return chunk;
+    } catch (error) {
+      await closeTransfer(current);
+      throw MEDIA_STAGES.has(error?.code) ? error : mediaError('media_file_rejected');
+    } finally { current.reading = false; }
+  };
+  const releaseTransfer = async value => {
+    if (transfer && transfer.id === value.transfer_id) await closeTransfer(transfer);
+    return {closed: true};
+  };
   // The only media read path. It re-locates the same message and the one PIC
   // element matching the recorded element ID, digest and file UUID, then asks
   // QQ for that element only. Bytes leave bounded; the local path never does.
   const downloadPicMedia = async value => {
-    if (mediaBusy) throw mediaError('media_busy');
+    if (mediaBusy || transfer !== null) throw mediaError('media_busy');
     if (!allowMedia()) throw mediaError('media_budget_exhausted');
     mediaBusy = true;
+    let download = null;
     try {
       let facts;
       try {
@@ -346,17 +408,21 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       if (!fileApi || typeof fileApi.downloadMedia !== 'function') throw mediaError('media_api_unavailable');
       let localPath;
       try {
-        localPath = await bounded(
-          fileApi.downloadMedia(value.msgId, value.chatType, value.peerUid, value.elementId,
-            '', '', MEDIA_TIMEOUT_MS, false),
-          MEDIA_TIMEOUT_MS, () => mediaError('media_download_timeout'));
+        download = Promise.resolve(fileApi.downloadMedia(value.msgId, value.chatType, value.peerUid, value.elementId,
+          '', '', MEDIA_TIMEOUT_MS, false));
+        localPath = await bounded(download, MEDIA_TIMEOUT_MS, () => mediaError('media_download_timeout'));
       } catch (error) {
         throw MEDIA_STAGES.has(error?.code) ? error : mediaError('media_download_failed');
       }
-      const raw = await readBoundedMedia(localPath);
-      return {size: raw.length, base64: raw.toString('base64')};
+      const file = await openBoundedMedia(localPath);
+      transfer = {id: randomBytes(32).toString('hex'), file, reading: false};
+      armTransfer(transfer);
+      return {transfer_id: transfer.id, size: file.size, chunk_size: MEDIA_CHUNK_BYTES};
     } finally {
-      mediaBusy = false;
+      // A deadline or disconnected caller cannot cancel QQ's native operation.
+      // Keep its lease until it settles; late paths/bytes never enter the report.
+      if (download === null) mediaBusy = false;
+      else void download.then(() => { mediaBusy = false; }, () => { mediaBusy = false; });
     }
   };
   const methods = new Map([
@@ -366,6 +432,8 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
     ['GroupApi.getGroupMemberAll', {count: 1, valid: value => !!uin(value) && typeof value === 'string', call: members}],
     ['EchoMediaProbe.resolvePicMessage', {count: 1, valid: probeRequest, call: probePicMessage}],
     ['EchoMediaProbe.downloadPicMedia', {count: 1, valid: mediaRequest, call: downloadPicMedia}],
+    ['EchoMediaProbe.readPicMediaChunk', {count: 1, valid: chunkRequest, call: readChunk}],
+    ['EchoMediaProbe.releasePicMedia', {count: 1, valid: transferRequest, call: releaseTransfer}],
     ['EchoSnapshotApi.acquire', {count: 0, call: () => snapshot.acquire()}],
     ['EchoSnapshotApi.cleanup', {count: 1, valid: generation, call: id => snapshot.cleanup(id)}],
     ['EchoSnapshotApi.recover', {count: 0, call: () => snapshot.recover()}]
@@ -467,6 +535,7 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
   server.headersTimeout = 10000;
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
   return {port: server.address().port, async stop() {
+    await closeTransfer(transfer);
     await new Promise((resolve, reject) => {
       server.close(error => error ? reject(error) : resolve());
       server.closeAllConnections();

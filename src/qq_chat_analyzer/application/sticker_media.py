@@ -30,8 +30,8 @@ from ..analysis.stickers import StickerData, StickerMedia, StickerSend
 
 STICKER_MEDIA_BATCH_SIZE = 32
 MAX_RETAINED_MEDIA_BYTES = 128 * 1024 * 1024
-# Mirrors the bridge transfer bound: one base64 field under the RPC cap.
-MAX_FETCHED_MEDIA_BYTES = 2 * 1024 * 1024
+# Mirrors the complete-file bound; RPC chunks stay below the response cap.
+MAX_FETCHED_MEDIA_BYTES = 32 * 1024 * 1024
 # Decoding is sequential. Bound canvas memory independently from total work;
 # a fixed charge also bounds tiny-frame animations and per-frame bookkeeping.
 MAX_FRAME_PIXELS = 4 * 1024 * 1024
@@ -39,6 +39,9 @@ DECODE_FRAME_COST = 64 * 1024
 MAX_DECODE_WORK = 64 * 1024 * 1024
 MAX_TOTAL_DECODE_WORK = 128 * 1024 * 1024
 MAX_DECODE_SECONDS = 2.0
+QQ_MAX_DECODE_PIXELS = 512 * 1024 * 1024
+QQ_MAX_DECODE_WORK = 512 * 1024 * 1024
+QQ_MAX_DECODE_SECONDS = 10.0
 
 
 def qq_media_failure(media_key: str, code: str) -> StickerMedia:
@@ -46,12 +49,16 @@ def qq_media_failure(media_key: str, code: str) -> StickerMedia:
     if code == "qq_media_time_budget":
         return StickerMedia(media_key, "limited", "report_media_time_budget")
     if code in {"qq_media_budget_exhausted", "qq_media_too_large", "qq_media_decode_budget", "qq_media_transport_limit"}:
-        return StickerMedia(media_key, "limited", "media_resource_budget")
+        return StickerMedia(media_key, "limited", code)
     if code in {"qq_media_mapping_rejected", "qq_media_element_unconfirmed", "qq_media_message_unconfirmed"} or code.startswith("qq_media_group_"):
         return StickerMedia(media_key, "failed", "message_mapping_unconfirmed")
     if code == "qq_media_file_missing":
         return StickerMedia(media_key, "missing", "media_file_missing")
-    return StickerMedia(media_key, "failed", "media_fetch_failed")
+    if code == "qq_media_invalid_content":
+        return StickerMedia(media_key, "invalid", code)
+    if code == "qq_media_cancelled":
+        return StickerMedia(media_key, "cancelled", code)
+    return StickerMedia(media_key, "failed", code)
 
 
 def associate_sticker_media(
@@ -79,10 +86,11 @@ def associate_sticker_media(
     # per unique content. A later send need not carry the earlier cache path.
     pending = tuple(send for send in data.sends if send.source == source
                     and send.media_key in keys and not (
-        media[send.media_key].status == "available" and media[send.media_key].original_bytes))
+        media[send.media_key].status == "available" and (media[send.media_key].original_bytes or media[send.media_key].stored)))
     if not pending:
         return data
-    retained = sum(len(item.original_bytes or b"") for item in media.values())
+    retained = sum(len(item.original_bytes) if item.original_bytes is not None else
+                   item.stored.size if item.stored is not None else 0 for item in media.values())
     options = {}
     if source == "qq" and len(roots) > 16:
         from .qq.qq_media_directories import qq_media_search_roots
@@ -242,7 +250,9 @@ def _check_gif_canvas(raw: bytes, check_time: Callable[[], None]) -> None:
 
 
 def _inspect(raw: bytes, *, max_pixels: int, max_frames: int | None,
-             budget: dict[str, int] | None = None) -> tuple[str, int]:
+             budget: dict[str, int] | None = None, max_work: int | None = None,
+             max_seconds: float | None = None,
+             cancelled: Callable[[], bool] = lambda: False) -> tuple[str, int]:
     """Validate sequentially without retaining decoded frames or a frame cache."""
     # Recognizable out-of-scope containers are not corrupt supported images.
     # Do not load additional codecs just to identify them.
@@ -253,9 +263,12 @@ def _inspect(raw: bytes, *, max_pixels: int, max_frames: int | None,
         from PIL import Image, UnidentifiedImageError
     except ImportError:
         raise _Rejected("unsupported", "decoder_unavailable") from None
-    deadline = time.monotonic() + MAX_DECODE_SECONDS
+    deadline = time.monotonic() + (MAX_DECODE_SECONDS if max_seconds is None else max_seconds)
+    work_limit = MAX_DECODE_WORK if max_work is None else max_work
 
     def check_time() -> None:
+        if cancelled():
+            raise _Rejected("cancelled", "media_cancelled")
         # Cooperative: native codec calls cannot be forcibly interrupted here.
         if time.monotonic() > deadline:
             raise _Rejected("limited", "decode_budget")
@@ -289,7 +302,7 @@ def _inspect(raw: bytes, *, max_pixels: int, max_frames: int | None,
                     frame_work = pixels + DECODE_FRAME_COST
                     work += frame_work
                     if (pixels > MAX_FRAME_PIXELS or total_pixels > max_pixels
-                            or work > MAX_DECODE_WORK
+                            or work > work_limit
                             or (max_frames is not None and count > max_frames)):
                         raise _Rejected("limited", "decode_budget")
                     if budget is not None:
@@ -311,7 +324,8 @@ def _inspect(raw: bytes, *, max_pixels: int, max_frames: int | None,
 
 def verify_fetched_media(
     raw: bytes, *, media_key: str, expected_md5: str,
-    max_pixels: int = 32 * 1024 * 1024, max_frames: int | None = None,
+    max_pixels: int | None = None, max_frames: int | None = None,
+    cancelled: Callable[[], bool] = lambda: False,
 ) -> StickerMedia:
     """Validate bytes fetched for one message whose PIC element was proved.
 
@@ -325,7 +339,9 @@ def verify_fetched_media(
         return StickerMedia(media_key, "invalid", "invalid_size")
     content = bytes(raw)
     try:
-        fmt, frames = _inspect(content, max_pixels=max_pixels, max_frames=max_frames)
+        fmt, frames = _inspect(content, max_pixels=QQ_MAX_DECODE_PIXELS if max_pixels is None else max_pixels,
+                               max_frames=max_frames, max_work=QQ_MAX_DECODE_WORK,
+                               max_seconds=QQ_MAX_DECODE_SECONDS, cancelled=cancelled)
     except _Rejected as failure:
         return StickerMedia(media_key, failure.status, failure.reason)
     verified = isinstance(expected_md5, str) and hashlib.md5(content).hexdigest() == expected_md5.lower()

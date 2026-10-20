@@ -154,6 +154,7 @@ class AnalysisApplicationService:
 
     def export_sticker_report(
         self, result: AnalysisResultDTO, stickers: StickerData, output_directory: Path,
+        *, cancelled=lambda: False,
     ) -> AnalysisResultDTO:
         """Reassemble retained display facts; never re-read or re-analyze a source."""
         with self._lifecycle_lock:
@@ -173,7 +174,7 @@ class AnalysisApplicationService:
             with timed_stage("report_view_assets"):
                 if view.stickers is not None:
                     view = replace(view, stickers=assemble_sticker_assets(view.stickers, stickers.media))
-            _write_echo_view(view, output_directory)
+            _write_echo_view(view, output_directory, cancelled=cancelled)
             return replace(result, stickers=stickers, echo_report_view=view, artifacts=_ECHO_ARTIFACTS)
         finally:
             with self._lifecycle_lock:
@@ -690,15 +691,17 @@ def _export_echo_artifacts(
     return view
 
 
-def _write_echo_view(view: EchoReportView, output_directory: Path) -> None:
+def _write_echo_view(view: EchoReportView, output_directory: Path, *, cancelled=lambda: False) -> None:
     """Shared JSON/HTML export for analysis and explicitly enriched snapshots."""
     with timed_stage("report_json_export"):
         export_echo_report_json(
             view,
             str(output_directory / _ECHO_ARTIFACT_FILENAMES["echo_report_json"]),
+            cancelled=cancelled,
         )
     with timed_stage("report_html_export"):
         export_echo_report_html(
             view,
             str(output_directory / _ECHO_ARTIFACT_FILENAMES["echo_report_html"]),
+            cancelled=cancelled,
         )

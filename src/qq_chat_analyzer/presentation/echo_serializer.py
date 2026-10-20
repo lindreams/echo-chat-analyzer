@@ -8,6 +8,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..resources import resource_path
+from ..media_content import MEDIA_FILE_NAME, publish_media
 from ..unicode_emoji import iter_emoji_clusters
 from .echo_report_template import (
     ECHO_REPORT_APP_JS,
@@ -372,10 +373,12 @@ def _session_to_dict(session: EchoConversationSession | None) -> dict[str, objec
 def export_echo_report_json(
     view: EchoReportView,
     output_path: str | Path,
+    *, cancelled=lambda: False,
 ) -> Path:
     """Write an Echo view as UTF-8 JSON and return the destination path."""
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    _export_sticker_files(view, destination.parent, cancelled=cancelled)
     with destination.open("w", encoding="utf-8", newline="\n") as handle:
         json.dump(
             echo_report_to_dict(view),
@@ -429,14 +432,27 @@ _ECHO_FAVICON_RELATIVE_PATH = "assets/branding/echo/echo_icon_32.png"
 def export_echo_report_html(
     view: EchoReportView,
     output_path: str | Path,
+    *, cancelled=lambda: False,
 ) -> Path:
-    """Write a self-contained Echo Report HTML file and return its path."""
+    """Write offline HTML, publishing relative media for larger QQ reports."""
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
+    _export_sticker_files(view, destination.parent, cancelled=cancelled)
     html = _build_echo_report_html(view)
     with destination.open("w", encoding="utf-8", newline="\n") as handle:
         handle.write(html)
     return destination
+
+
+def _export_sticker_files(view: EchoReportView, directory: Path, *, cancelled=lambda: False) -> None:
+    if cancelled():
+        raise InterruptedError("media_export_cancelled")
+    for asset in view.stickers.assets if view.stickers is not None else ():
+        if asset.content is None:
+            continue
+        if not asset.data_uri.startswith("media/") or not MEDIA_FILE_NAME.fullmatch(asset.data_uri[6:]):
+            raise ValueError("invalid_media_export_reference")
+        publish_media(asset.content.chunks(), directory / asset.data_uri, cancelled=cancelled)
 
 
 def _build_echo_report_html(view: EchoReportView) -> str:

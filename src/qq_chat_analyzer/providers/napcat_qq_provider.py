@@ -7,6 +7,7 @@ import binascii
 import json
 import re
 import time
+import tempfile
 from pathlib import Path
 from typing import Any, Callable
 import urllib.error
@@ -48,12 +49,13 @@ class NapCatQQWorkerGenerationChanged(NapCatQQError):
 # Fixed stages a media fetch may fail at. The bridge owns these labels; only a
 # whitelisted one survives, so no path, message ID or kernel text can leak.
 _MEDIA_STAGES = frozenset({
+    "probe_timeout", "probe_api_unavailable",
     "media_mapping_rejected", "media_message_query_failed", "media_api_unavailable",
     "media_busy", "media_budget_exhausted", "media_download_timeout",
     "media_download_failed", "media_path_invalid", "media_file_missing",
     "media_open_failed", "media_file_type_rejected", "media_file_identity_changed",
     "media_file_empty", "media_file_too_large", "media_read_incomplete",
-    "media_file_changed", "media_file_rejected",
+    "media_file_changed", "media_file_rejected", "media_transfer_invalid",
 })
 
 
@@ -135,7 +137,8 @@ def _text(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
-MAX_PIC_MEDIA_BYTES = 2 * 1024 * 1024
+MAX_PIC_MEDIA_BYTES = 32 * 1024 * 1024
+MAX_PIC_CHUNK_BYTES = 256 * 1024
 
 
 def _valid_pic_request(
@@ -223,7 +226,14 @@ class NapCatQQProvider:
             data=body,
             headers={"Content-Type": "application/json", **authorization_headers(credential)},
         )
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        # This provider admits only the validated loopback HTTP URL. A default
+        # opener also builds HTTPSHandler and repeatedly scans Windows' trust
+        # stores for every chunk, despite TLS never being used here.
+        opener = urllib.request.OpenerDirector()
+        for handler in (urllib.request.ProxyHandler({}), urllib.request.HTTPHandler(),
+                        urllib.request.HTTPDefaultErrorHandler(), _NoRedirect(),
+                        urllib.request.HTTPErrorProcessor()):
+            opener.add_handler(handler)
         try:
             try:
                 response = opener.open(request, timeout=timeout)
@@ -242,7 +252,8 @@ class NapCatQQProvider:
             raise NapCatQQError() from None
 
     def _rpc(self, method: str, params: list[Any] | None = None, *, timeout: float | None = None) -> Any:
-        deadline = time.monotonic() + (self._timeout if timeout is None else min(timeout, self._timeout))
+        maximum = 135.0 if method == "EchoMediaProbe.downloadPicMedia" else self._timeout
+        deadline = time.monotonic() + (maximum if timeout is None else min(timeout, maximum))
         credential = resolve_bridge_credential(self._credential_source)
         if self._generation_changed:
             raise NapCatQQWorkerGenerationChanged()
@@ -441,7 +452,8 @@ class NapCatQQProvider:
         chat_type: int = 1,
         expected_sender_uin: str | None = None,
         expected_sender_uid: str | None = None,
-        timeout: float | None = 25,
+        timeout: float | None = 135,
+        cancelled: Callable[[], bool] = lambda: False,
     ) -> bytes:
         """Fetch the bytes of one already located private/group PIC element.
 
@@ -450,7 +462,7 @@ class NapCatQQProvider:
         media. Only bounded bytes return; the runtime's local path, URL, file
         name and account IDs never cross the bridge.
 
-        The client deadline stays above the bridge's own 20 s media budget so a
+        The client deadline stays above the bridge's own 120 s media budget so a
         timeout is reported by the bridge as a stage instead of being lost here.
         """
         if (
@@ -463,8 +475,21 @@ class NapCatQQProvider:
             or not isinstance(element_id, str)
         ):
             raise NapCatQQError()
-        try:
-            result = self._rpc(
+        def call(method, params):
+            try:
+                budget = timeout if method == "EchoMediaProbe.downloadPicMedia" else 10
+                return self._rpc(method, params, timeout=budget)
+            except NapCatQQError as error:
+                stage = getattr(error, "rpc_error", None)
+                if stage in {"transport_timeout", "transport_limit"}:
+                    raise NapCatQQMediaStageError("media_" + stage) from None
+                if stage in _MEDIA_STAGES:
+                    raise NapCatQQMediaStageError(stage) from None
+                raise
+
+        if cancelled():
+            raise NapCatQQMediaStageError("media_cancelled")
+        result = call(
                 "EchoMediaProbe.downloadPicMedia",
                 [{
                     "msgId": msg_id,
@@ -478,34 +503,68 @@ class NapCatQQProvider:
                     **({"expectedSenderUin": expected_sender_uin, "expectedSenderUid": expected_sender_uid}
                        if chat_type == 2 else {}),
                 }],
-                timeout=timeout,
             )
-        except NapCatQQError as error:
-            stage = getattr(error, "rpc_error", None)
-            if stage in {"transport_timeout", "transport_limit"}:
-                raise NapCatQQMediaStageError("media_" + stage) from None
-            if stage in _MEDIA_STAGES:
-                raise NapCatQQMediaStageError(stage) from None
-            raise
-        if not isinstance(result, dict) or set(result) != {"size", "base64"}:
+        if not isinstance(result, dict) or set(result) != {"transfer_id", "size", "chunk_size"}:
             raise NapCatQQMediaStageError("media_transport_invalid")
-        size, encoded = result["size"], result["base64"]
-        if type(size) is int and size > MAX_PIC_MEDIA_BYTES:
-            raise NapCatQQMediaStageError("media_transport_limit")
-        if (
-            type(size) is not int
-            or not 0 < size <= MAX_PIC_MEDIA_BYTES
-            or not isinstance(encoded, str)
-            or len(encoded) != 4 * ((size + 2) // 3)
-        ):
+        transfer, size, chunk_size = (result[k] for k in ("transfer_id", "size", "chunk_size"))
+        if not isinstance(transfer, str) or re.fullmatch(r"[0-9a-f]{64}", transfer) is None:
             raise NapCatQQMediaStageError("media_transport_invalid")
         try:
-            content = base64.b64decode(encoded.encode("ascii"), validate=True)
-        except (binascii.Error, ValueError, UnicodeEncodeError):
-            raise NapCatQQMediaStageError("media_transport_invalid") from None
-        if len(content) != size or len(content) > MAX_PIC_MEDIA_BYTES:
-            raise NapCatQQMediaStageError("media_transport_invalid")
-        return content
+            if type(size) is int and size > MAX_PIC_MEDIA_BYTES:
+                raise NapCatQQMediaStageError("media_transport_limit")
+            if (type(size) is not int or not 0 < size <= MAX_PIC_MEDIA_BYTES
+                    or type(chunk_size) is not int or not 0 < chunk_size <= MAX_PIC_CHUNK_BYTES):
+                raise NapCatQQMediaStageError("media_transport_invalid")
+            # Partial transfers are never published. Disk spooling avoids a
+            # second full-file bytearray and its resize/copy peaks.
+            with tempfile.TemporaryFile() as stream:
+                offset = 0
+                while offset < size:
+                    if cancelled():
+                        raise NapCatQQMediaStageError("media_cancelled")
+                    chunk = call("EchoMediaProbe.readPicMediaChunk", [{"transfer_id": transfer, "offset": offset}])
+                    if not isinstance(chunk, dict) or set(chunk) != {"offset", "base64", "eof"}:
+                        raise NapCatQQMediaStageError("media_transport_invalid")
+                    expected = min(chunk_size, size - offset)
+                    encoded = chunk["base64"]
+                    if (type(chunk["offset"]) is not int or chunk["offset"] != offset
+                            or type(chunk["eof"]) is not bool or chunk["eof"] != (offset + expected == size)
+                            or not isinstance(encoded, str) or len(encoded) != 4 * ((expected + 2) // 3)):
+                        raise NapCatQQMediaStageError("media_transport_invalid")
+                    try:
+                        raw = base64.b64decode(encoded.encode("ascii"), validate=True)
+                    except (binascii.Error, ValueError, UnicodeEncodeError):
+                        raise NapCatQQMediaStageError("media_transport_invalid") from None
+                    if len(raw) != expected:
+                        raise NapCatQQMediaStageError("media_transport_invalid")
+                    stream.write(raw)
+                    offset += len(raw)
+                if cancelled():
+                    raise NapCatQQMediaStageError("media_cancelled")
+                stream.seek(0)
+                return stream.read()
+        finally:
+            try:
+                call("EchoMediaProbe.releasePicMedia", [{"transfer_id": transfer}])
+            except NapCatQQError:
+                pass  # A disconnected/generation-changed transfer expires on its owner.
+
+    def wait_media_ready(self, *, cancelled: Callable[[], bool] = lambda: False) -> None:
+        """Pace the serial queue without discarding targets or overlapping QQ."""
+        while True:
+            if cancelled():
+                raise NapCatQQMediaStageError("media_cancelled")
+            status = self._rpc("Core.status", timeout=5)
+            busy, delay = status.get("media_busy"), status.get("media_retry_after_ms")
+            if type(busy) is not bool or type(delay) is not int or not 0 <= delay <= 60000:
+                raise NapCatQQMediaStageError("media_transport_invalid")
+            if not busy and delay == 0:
+                return
+            until = time.monotonic() + (0.1 if busy else delay / 1000)
+            while time.monotonic() < until:
+                if cancelled():
+                    raise NapCatQQMediaStageError("media_cancelled")
+                time.sleep(min(0.1, max(0, until - time.monotonic())))
 
     def snapshot_client(self, snapshot_root: str | Path) -> QQDirectSnapshotRuntimeClient:
         def transport(url: str, body: bytes, timeout: float) -> tuple[int, str]:

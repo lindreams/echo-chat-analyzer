@@ -31,6 +31,7 @@ Echo 聊天分析报告
 文件说明：
 - echo-report.html：报告页面，直接用浏览器打开即可查看。
 - echo-report.json：报告的结构化数据，可供其他工具阅读。
+- 若包含 media/ 目录，请保留整个报告目录一起移动或分享，离线打开无需联网。
 - metadata.json：本报告包的轻量摘要。
 
 本目录只包含分析结果，不包含原始聊天数据。
@@ -47,6 +48,7 @@ def package_echo_report(
     *,
     metadata: Mapping[str, object],
     now: datetime | None = None,
+    cancelled=lambda: False,
 ) -> Path:
     """Publish a complete package by renaming same-root staging.
 
@@ -72,6 +74,29 @@ def package_echo_report(
     with owned_report_staging(root) as staging:
         shutil.copy2(source_html, staging / ECHO_REPORT_HTML_NAME, follow_symlinks=False)
         shutil.copy2(source_json, staging / ECHO_REPORT_JSON_NAME, follow_symlinks=False)
+        media_directory = Path(output_directory) / "media"
+        references = set()
+        try:
+            payload = json.loads(source_json.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            if media_directory.exists() or media_directory.is_symlink():
+                raise EchoReportExportError("Invalid report media manifest.") from None
+            payload = {}
+        if media_directory.exists() or media_directory.is_symlink():
+            _require_no_reparse_points(media_directory)
+        if isinstance(payload, dict):
+            chapter = payload.get("stickers") or {}
+            references = {asset.get("data_uri", "") for asset in chapter.get("assets", {}).values()
+                          if asset.get("data_uri", "").startswith("media/")}
+        if references:
+            from ..media_content import MEDIA_FILE_NAME, file_chunks, publish_media
+            media_directory = Path(output_directory) / "media"
+            _require_no_reparse_points(media_directory)
+            for reference in sorted(references):
+                name = reference.removeprefix("media/")
+                if not MEDIA_FILE_NAME.fullmatch(name):
+                    raise EchoReportExportError("Unexpected report media artifact.")
+                publish_media(file_chunks(media_directory / name), staging / "media" / name, cancelled=cancelled)
         (staging / ECHO_REPORT_METADATA_NAME).write_text(
             json.dumps(dict(metadata), ensure_ascii=False, separators=(",", ":")),
             encoding="utf-8",
@@ -82,6 +107,8 @@ def package_echo_report(
         )
         for artifact in staging.iterdir():
             _require_no_reparse_points(artifact)
+        if cancelled():
+            raise InterruptedError("media_export_cancelled")
         while True:
             _require_no_reparse_points(target)
             if target.exists():

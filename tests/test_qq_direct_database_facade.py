@@ -222,8 +222,6 @@ class _ProviderConnection:
         return self._provider
 
 
-
-
 @pytest.mark.parametrize("kind,local", [("private", False), ("group", False), ("group", True)])
 def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monkeypatch, kind, local):
     import base64
@@ -241,10 +239,10 @@ def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monk
     exports = []
     original = echo_serializer.export_echo_report_html
 
-    def export(view, path):
+    def export(view, path, **kwargs):
         exports.append(view)
         assert any(a.data_uri for a in view.stickers.assets)
-        return original(view, path)
+        return original(view, path, **kwargs)
 
     monkeypatch.setattr("qq_chat_analyzer.application.analysis_service.export_echo_report_html", export)
     progress = []
@@ -262,7 +260,7 @@ def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monk
     assert "正在获取表情包素材..." in progress
 
 
-@pytest.mark.parametrize("limit", ["none", "requests", "bridge", "time", "transport", "cancel"])
+@pytest.mark.parametrize("limit", ["none", "many", "bridge", "time", "transport", "cancel"])
 def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
     tmp_path, monkeypatch, caplog, limit,
 ):
@@ -279,13 +277,13 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
     with sqlite3.connect(tmp_path / "plaintext-qq.db") as db:
         seed, = db.execute('SELECT "40800" FROM group_msg_table').fetchone()
         db.execute('DELETE FROM group_msg_table')
-        for index in range(12):
+        for index in range(40 if limit == "many" else 12):
             stream = BytesIO()
-            Image.new("RGB", (3, 2), (index * 20, 50, 80)).save(stream, format="PNG")
+            Image.new("RGB", (3, 2), (index * 5, 50, 80)).save(stream, format="PNG")
             content = stream.getvalue()
             digest = hashlib.md5(content).digest()
             by_digest[digest.hex()] = content
-            for member in ("10086", "10087"):
+            for member in ((str(10086 + index // 8),) if limit == "many" else ("10086", "10087")):
                 db.execute('''INSERT INTO group_msg_table
                     ("40001", "40020", "40021", "40027", "40030", "40033", "40050", "40800")
                     VALUES (?, 'u_fictionalmember000000', '12345001', 'group-partition', '12345001', ?, ?, ?)''',
@@ -294,16 +292,20 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
     cancelled = Event()
     clock = [0.0]
     monkeypatch.setattr(module, "_monotonic", lambda: clock[0])
-    if limit == "requests":
-        monkeypatch.setattr(module, "QQ_REPORT_MEDIA_TARGET_LIMIT", 3)
     downloads = []
     if limit == "bridge":
         resolve = provider.resolve_pic_message
+        throttled = [False, False]
         def limited_resolve(**locator):
-            if len(downloads) == 3:
+            if len(downloads) == 3 and not throttled[1]:
+                throttled[0] = True
                 raise NapCatQQError("media_budget_exhausted")
             return resolve(**locator)
+        def ready(**kwargs):
+            if throttled[0]:
+                throttled[1] = True
         monkeypatch.setattr(provider, "resolve_pic_message", limited_resolve)
+        monkeypatch.setattr(provider, "wait_media_ready", ready, raising=False)
 
     def download(**locator):
         digest = locator["expected_md5"]
@@ -334,19 +336,20 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
         outcome = facade.analyze_session(ChatSource.QQ, "group:group-partition",
                                          AnalysisConfig(output_directory=output), progress=progress.append)
         chapter = json.loads((outcome.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]
-        assert chapter["total_send_count"] == 24 and chapter["unique_material_count"] == 12
+        assert chapter["total_send_count"] == (40 if limit == "many" else 24)
+        assert chapter["unique_material_count"] == (40 if limit == "many" else 12)
         from qq_chat_analyzer.presentation.stickers import sticker_report_targets
         targets = sticker_report_targets(outcome.echo_report_view.stickers)
         assert len(targets) >= 10  # Includes the Top 10 expansion, beyond the initial three.
-        expected = {"none": len(targets), "requests": 3, "bridge": 3, "time": 2, "transport": 1}[limit]
+        expected = len(targets)
+        if limit == "many":
+            assert expected == 40
         assert len(downloads) == len(set(downloads)) == expected
-        if limit == "requests":
-            assert len([text for text in progress if text.startswith("正在获取表情包素材（")]) == 3
-        if limit not in {"time", "transport"}:
+        if limit != "transport":
             assert {"available", "failed"} <= {a["status"] for a in chapter["assets"].values()}
         limited = sum(a["status"] == "limited" for a in chapter["assets"].values())
-        assert limited == (len(targets) - expected if limit != "none" else 0)
-        assert len(downloads) < len(by_digest)  # Unselected sends never trigger recovery.
+        assert limited == 0
+        assert len(downloads) <= len(by_digest)  # No duplicate or unselected recovery.
         lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[sticker-report-media")]
         assert len(lines) == 2 and all(str(tmp_path) not in line and "u_fiction" not in line for line in lines)
         details = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[sticker-media-")]
@@ -354,17 +357,39 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
         assert [int(re.search(r"target=(\d+)", line)[1]) for line in results] == list(range(1, len(targets) + 1))
         assert all(str(tmp_path) not in line and "u_fiction" not in line and
                    not any(digest in line for digest in by_digest) for line in details)
-        if expected >= 2:
+        if expected >= 2 and limit != "transport":
             assert any("code=qq_media_download_timeout" in line for line in results)
         if limit == "time":
-            assert any("stage=not_requested code=report_media_time_budget" in line for line in results)
+            assert not any("code=report_media_time_budget" in line for line in results)
         if limit == "transport":
-            assert any("code=report_media_inflight_unknown" in line for line in results)
+            assert all("code=qq_media_transport_timeout" in line for line in results)
             assert not any("code=embedded" in line for line in details)
         else:
             assert any("code=embedded" in line for line in details)
     assert runtime.acquired == runtime.cleaned and len(runtime.acquired) == 1
     assert historical.read_bytes() == b"fictional old report"
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_cancel_or_export_failure_closes_prepared_media_even_if_error_is_retained(tmp_path, monkeypatch, cancel):
+    raw = _fictional_png()
+    facade, _, _ = _fetch_facade(tmp_path, digest=hashlib.md5(raw).digest(), content=raw)
+    stopped, retained = [False], []
+
+    def failed_export(result, stickers, output, **kwargs):
+        retained.extend(item.stored for item in stickers.media if item.stored is not None)
+        stopped[0] = cancel
+        raise OSError("fictional export failure")
+
+    monkeypatch.setattr(facade._require_analysis_service(), "export_sticker_report", failed_export)
+    with pytest.raises(FacadeError) as error:
+        facade.analyze_session(ChatSource.QQ, "private:private-partition",
+            AnalysisConfig(output_directory=tmp_path / "generated"), cancelled=lambda: stopped[0])
+    if cancel:
+        assert error.value.code == "analysis_cancelled"
+    assert len(retained) == 1
+    with pytest.raises(ValueError, match="closed"):
+        retained[0].read()
 
 
 @pytest.mark.slow_integration
@@ -595,6 +620,7 @@ def test_report_pic_fetch_checks_identity_and_returns_verified_original(tmp_path
     assert [name for name, _ in provider.calls] == ["resolve", "download"]
     assert provider.calls[0][1] == {**expected, "expected_segment_id": element_id}
     download = dict(provider.calls[1][1])
+    assert callable(download.pop("cancelled")) and download.pop("timeout") >= 120
     assert download == {**expected, "element_id": element_id}
     assert not runtime.acquired and not runtime.cleaned
 
@@ -618,7 +644,7 @@ def test_group_fetched_gif_decode_limit_has_a_specific_public_error(tmp_path, mo
     from PIL import Image
     from qq_chat_analyzer.application import sticker_media
 
-    monkeypatch.setattr(sticker_media, "MAX_DECODE_WORK", 64 * 1024)
+    monkeypatch.setattr(sticker_media, "QQ_MAX_DECODE_WORK", 64 * 1024)
 
     stream = BytesIO()
     images = [Image.new("RGB", (2, 2), "red" if index % 2 else "blue")

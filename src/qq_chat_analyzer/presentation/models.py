@@ -8,6 +8,7 @@ computes statistics: every number is copied from an already-built report.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from ..media_content import StoredMedia
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +245,7 @@ class EchoStickerAsset:
     data_uri: str
     status: str
     reason: str | None = None
+    content: StoredMedia | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

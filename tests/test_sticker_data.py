@@ -397,13 +397,36 @@ def test_long_animation_validates_without_changing_original_or_preview_identity(
         assert media.animation_preserved
 
 
-@pytest.mark.parametrize("limit", ["work", "canvas", "late_canvas", "time", "late_corruption"])
+@pytest.mark.parametrize("size, noisy", [((320, 240), True), ((512, 512), False)])
+def test_qq_large_long_gif_keeps_all_frames_without_relaxing_local_limits(size, noisy):
+    import random
+    from qq_chat_analyzer.application.sticker_media import verify_fetched_media
+
+    # Exercise the old byte limit and cumulative frame-work limits separately.
+    randomizer = random.Random(73)
+    images = ([Image.frombytes("P", size, randomizer.randbytes(size[0] * size[1])) for _ in range(300)]
+              if noisy else [Image.new("RGB", size, "red" if i % 2 else "blue") for i in range(300)])
+    stream = BytesIO()
+    images[0].save(stream, format="GIF", save_all=True, append_images=images[1:],
+                   optimize=False, duration=40, loop=0)
+    raw = stream.getvalue()
+    assert len(raw) <= 32 * 1024 * 1024
+    if noisy:
+        assert len(raw) > 2 * 1024 * 1024
+    media = verify_fetched_media(raw, media_key="fictional", expected_md5=hashlib.md5(raw).hexdigest())
+    assert media.status == "available"
+    assert media.original_bytes == raw and media.frame_count == 300
+    assert media.animation_preserved
+
+
+@pytest.mark.parametrize("limit", ["work", "canvas", "late_canvas", "time", "qq_window", "late_corruption"])
 def test_animation_resource_limits_and_late_corruption_fail_closed(tmp_path, monkeypatch, limit):
     from qq_chat_analyzer.application import sticker_media
 
     raw = image_bytes(animated=True)
     if limit == "work":
         monkeypatch.setattr(sticker_media, "MAX_DECODE_WORK", 64 * 1024)
+        monkeypatch.setattr(sticker_media, "QQ_MAX_DECODE_WORK", 64 * 1024)
     elif limit == "canvas":
         # Enormous declared canvas, with tiny compressed data; never allocate it.
         raw = raw[:6] + (4096).to_bytes(2, "little") * 2 + raw[10:]
@@ -414,6 +437,14 @@ def test_animation_resource_limits_and_late_corruption_fail_closed(tmp_path, mon
     elif limit == "time":
         ticks = iter(range(1000))
         monkeypatch.setattr(sticker_media.time, "monotonic", lambda: next(ticks) * 20)
+    elif limit == "qq_window":
+        clock = [0.0]
+        open_image = Image.open
+        def delayed_open(*args, **kwargs):
+            clock[0] += 3.0
+            return open_image(*args, **kwargs)
+        monkeypatch.setattr(sticker_media.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(Image, "open", delayed_open)
     else:
         raw = raw[:-10]  # Damage the last frame, preserving a valid first frame.
     if limit in {"canvas", "late_canvas"}:
@@ -422,6 +453,11 @@ def test_animation_resource_limits_and_late_corruption_fail_closed(tmp_path, mon
     (tmp_path / "fictional.gif").write_bytes(raw)
     send = qq_pic(digest)
     fetched = sticker_media.verify_fetched_media(raw, media_key=send.media_key, expected_md5=digest)
+    if limit == "qq_window":
+        assert fetched.status == "available" and fetched.frame_count == 2
+        local, = resolve((send,), (tmp_path,))
+        assert (local.status, local.reason) == ("limited", "decode_budget")
+        return
     assert fetched.status == ("invalid" if limit in {"late_corruption", "late_canvas"} else "limited")
     assert fetched.original_bytes is None
     local, = resolve((send,), (tmp_path,))

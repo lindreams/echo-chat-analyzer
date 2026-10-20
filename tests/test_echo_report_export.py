@@ -54,6 +54,65 @@ def _output_directory(tmp_path: Path) -> Path:
     return output
 
 
+@pytest.mark.parametrize("failure", [None, "digest", "traversal", "cancel", "missing", "directory_missing"])
+def test_package_media_requires_selected_digest_named_files_and_is_atomic(tmp_path, failure):
+    import hashlib
+    module = _module()
+    output = _output_directory(tmp_path)
+    content = b"fictional verified media"
+    name = hashlib.sha256(content).hexdigest() + ".gif"
+    media = output / "media"
+    media.mkdir()
+    (media / name).write_bytes(b"damaged" if failure == "digest" else content)
+    unrelated = media / "unrelated-user-file.txt"
+    unrelated.write_bytes(b"private unselected data")
+    reference = "media/../unrelated-user-file.txt" if failure == "traversal" else "media/" + name
+    (output / "echo-report.json").write_text(json.dumps({"stickers":{"assets":{
+        "sticker:1":{"data_uri":reference,"status":"available"}}}}),encoding="utf-8")
+    reports = tmp_path / "reports"
+    if failure == "missing":
+        (media / name).unlink()
+    if failure == "directory_missing":
+        media.rename(output / "preserved-media")
+        unrelated = output / "preserved-media" / unrelated.name
+    if failure:
+        with pytest.raises((ValueError, OSError, module.EchoReportExportError)):
+            module.package_echo_report(output, reports, metadata=_metadata(), cancelled=lambda: failure == "cancel")
+        assert not list(reports.glob("Echo_Report_*"))
+    else:
+        published = module.package_echo_report(output, reports, metadata=_metadata())
+        assert (published / "media" / name).read_bytes() == content
+        assert len(list((published / "media").iterdir())) == 1
+    assert unrelated.read_bytes() == b"private unselected data"
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_media_export_compares_stat_stability_within_each_api(tmp_path, monkeypatch, changed):
+    from types import SimpleNamespace
+    from qq_chat_analyzer import media_content
+
+    path = tmp_path / "fictional.bin"
+    path.write_bytes(b"fictional media")
+    fstat = media_content.os.fstat
+    calls = 0
+
+    def windows_stat(fd):
+        nonlocal calls
+        calls += 1
+        info = fstat(fd)
+        values = {name: getattr(info, name) for name in (
+            "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")}
+        values["st_ctime_ns"] += 100 + (calls if changed else 0)
+        return SimpleNamespace(**values)
+
+    monkeypatch.setattr(media_content.os, "fstat", windows_stat)
+    if changed:
+        with pytest.raises(ValueError, match="media_export_file_changed"):
+            b"".join(media_content.file_chunks(path))
+    else:
+        assert b"".join(media_content.file_chunks(path)) == b"fictional media"
+
+
 def test_package_creates_echo_report_directory_with_expected_files(
     tmp_path: Path,
 ) -> None:
