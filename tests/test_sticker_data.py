@@ -771,16 +771,19 @@ def test_filtered_official_analysis_chain_returns_only_kept_sticker_sends(tmp_pa
     assert digest not in report_text and str(roots) not in report_text
 
 
-def test_wechat_configured_media_flows_through_provider_and_facade(tmp_path):
+@pytest.mark.parametrize("kind,fmt", [("private", "GIF"), ("group", "WEBP")])
+def test_wechat_type47_reaches_formal_report_through_provider_and_facade(tmp_path, monkeypatch, kind, fmt):
     from qq_chat_analyzer.application.facade import AnalysisConfig, ChatAnalyzerFacade, ChatSource
     from qq_chat_analyzer.application.wechat.wechat_environment_config import (
         WeChatEnvironmentConfig, WeChatEnvironmentConfigLoader, WeChatEnvironmentConfigWriter,
     )
     from qq_chat_analyzer.application.wechat.wechat_provider_factory import WeChatProviderFactory
     from qq_chat_analyzer.application.wechat.wechat_export_import_service import WeChatExportImportService
-    from qq_chat_analyzer.providers.wechat_database_provider import WeChatDatabaseProvider
+    import base64
+    import zstandard
+    from qq_chat_analyzer.providers.wechat_database_provider import WeChatDatabaseProvider, WeChatSession
 
-    raw = image_bytes(animated=True)
+    raw = image_bytes(fmt, animated=True)
     digest = hashlib.md5(raw).hexdigest()
     media_root = tmp_path / "explicit-originals"
     media_root.mkdir()
@@ -795,31 +798,67 @@ def test_wechat_configured_media_flows_through_provider_and_facade(tmp_path):
     assert isinstance(provider, WeChatDatabaseProvider)
     assert provider.with_data_root(tmp_path / "other-account").sticker_media_roots() == ()
     assert provider.sticker_media_roots() == (media_root,)
-    # Keep the real factory/provider wiring, replacing only database acquisition.
-    provider.list_sessions = lambda: []
-    def export(session_id, output_path, start_time=None, end_time=None):
-        output_path.write_text(json.dumps(dict(
-            source="wechat-db", conversation=dict(username=session_id), messages=[dict(
-                local_type=47, server_id="fiction-id", create_time=1760000000,
-                user_name="fiction-sender", message_content=f'<msg><emoji md5="{digest}"/></msg>',
-            )],
-        )), encoding="utf-8")
-        return output_path
-    provider.export_session_json = export
+    session_id = "wxid_fiction_room@chatroom" if kind == "group" else "wxid_fiction_peer"
+    # Keep real provider export, adapter, filters, aggregation and packaging.
+    # Only database reads/identity lookup return fictional source facts.
+    monkeypatch.setattr(provider, "list_sessions", lambda: [WeChatSession(
+        session_id=session_id, display_name="Fictional chat", session_type=kind)])
+    monkeypatch.setattr(provider, "_contact_display_names", lambda: {
+        "wxid_fiction_self": "Fictional Me", "wxid_fiction_peer": "Fictional Peer"})
+    monkeypatch.setattr(provider, "_resolve_self_username", lambda: "wxid_fiction_self")
+    xml = f'<msg><emoji md5="{digest.upper()}" cdnurl="https://fictional.invalid/never-fetch"/></msg>'
+    compressed = zstandard.ZstdCompressor().compress(xml.encode()).hex()
+    rows = [dict(local_type=1, server_id="text", user_name="wxid_fiction_self",
+                 create_time=1760000000, message_content="Fictional ordinary conversation."),
+            dict(local_type=47, server_id="mine", user_name="wxid_fiction_self",
+                 create_time=1760000001, message_content=xml),
+            dict(local_type=0x10000002F, server_id="theirs", user_name="wxid_fiction_peer",
+                 create_time=1760000002, WCDB_CT_message_content=4, message_content=compressed),
+            dict(local_type=47, server_id="unknown", user_name="wxid_fiction_peer",
+                 create_time=1760000003, message_content='<msg><emoji md5="invalid"/></msg>'),
+            dict(local_type=3, server_id="image", user_name="wxid_fiction_peer",
+                 create_time=1760000004, message_content=xml)]
+    monkeypatch.setattr(provider, "read_session_rows", lambda *args, **kwargs: rows)
     facade = ChatAnalyzerFacade(
         wechat_service=WeChatExportImportService(provider_factory=factory),
         analysis_service=AnalysisApplicationService(),
     )
-    outcome = facade.analyze_session(ChatSource.WECHAT, "fiction-room", AnalysisConfig(
+    outcome = facade.analyze_session(ChatSource.WECHAT, session_id, AnalysisConfig(
         output_directory=tmp_path / "result",
     ))
     assert outcome.result.stickers.media[0].original_bytes == raw
     assert outcome.result.stickers.media[0].frame_count == 2
-    opted_out = facade.analyze_session(ChatSource.WECHAT, "fiction-room", AnalysisConfig(
+    sends = outcome.result.stickers.sends
+    assert len(sends) == 3
+    assert [item.is_self for item in sends] == [True, False, False]
+    assert all(item.conversation_type == kind and item.conversation_id == session_id for item in sends)
+    assert sends[0].media_key == sends[1].media_key == "wechat:md5:" + digest
+    assert sends[2].identity_key is None
+    chapter = outcome.echo_report_view.stickers
+    assert chapter.available and chapter.conversation_kind == kind
+    assert (chapter.total_send_count, chapter.unique_material_count, chapter.unknown_identity_count) == (3, 1, 1)
+    assert chapter.covered_message_count == 4  # Type 3 is not a confirmed sticker or denominator.
+    assert sorted(member.send_count for member in chapter.members) == [1, 2]
+    asset, = chapter.assets
+    assert asset.status == "available"
+    assert base64.b64decode(asset.data_uri.split(",", 1)[1]) == raw
+    report_json = (outcome.report_directory / "echo-report.json").read_text(encoding="utf-8")
+    report_html = outcome.report_path.read_text(encoding="utf-8")
+    assert json.loads(report_json)["stickers"]["total_send_count"] == 3
+    assert asset.data_uri in report_html
+    assert session_id not in json.dumps(json.loads(report_json)["stickers"])
+    for secret in (digest, str(media_root), "fictional.invalid", "cdnurl"):
+        assert secret not in report_json and secret not in report_html
+    opted_out = facade.analyze_session(ChatSource.WECHAT, session_id, AnalysisConfig(
         output_directory=tmp_path / "no-media", sticker_media_roots=(),
     ))
     assert opted_out.result.stickers.media[0].status == "not_requested"
-    assert len(opted_out.result.stickers.sends) == 1
+    assert len(opted_out.result.stickers.sends) == 3
+    no_media = opted_out.echo_report_view.stickers
+    assert no_media.total_send_count == chapter.total_send_count
+    assert no_media.unique_material_count == chapter.unique_material_count
+    assert all(not asset.data_uri for asset in no_media.assets)
+    assert opted_out.report_path.is_file()
 
 
 @pytest.mark.parametrize("value", ["", "relative", ["relative"], ["../outside"], [3], ["\\\\server\\share"]])

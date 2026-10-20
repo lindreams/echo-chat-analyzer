@@ -215,7 +215,9 @@ def parse_rich_message(raw_message: Any) -> RichMessage | None:
 def _normalize_local_type(local_type: Any) -> str | None:
     if isinstance(local_type, bool) or not isinstance(local_type, int):
         return None
-    return _SUPPORTED_LOCAL_TYPES.get(local_type)
+    # The provider selects the low 32-bit message type and exports the raw
+    # value. Keep the same interpretation when high bits carry source flags.
+    return _SUPPORTED_LOCAL_TYPES.get(local_type & 0xFFFFFFFF)
 
 
 def _clean_string(value: Any) -> str | None:

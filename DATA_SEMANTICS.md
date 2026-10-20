@@ -102,7 +102,7 @@ ImportService 保存 (ChatMessage 实例, RichMessage) 配对
 
 - Unicode Emoji 在 Adapter 中仍是 TextContent；首次识别发生在分析阶段共享的 `iter_emoji_clusters()`，不是来源层。识别固定为 Unicode / Emoji 18.0（[UTS #51 revision 31](https://www.unicode.org/reports/tr51/tr51-31.html)）：使用官方 `emoji-test.txt` 的 fully-qualified、minimally-qualified、unqualified 序列及有效 Emoji 呈现变体，最长匹配，不凭区块推断。聊天兼容口径保留裸 `❤`、`♥` 等官方未限定形式，VS16 保留为 Emoji，VS15 明确指定文本时不计该元素；不同合法拼写仍是不同 key。支持官方 RGI 国旗、tag 旗帜、肤色和 ZWJ，单独数字、`#`、`*` 与独立 component 不计，未知组合不推定为新的整体表情。数据随 Python 包离线携带，来源 URL、SHA-256 和 Unicode License V3 见 [_unicode_emoji_data.py](src/qq_chat_analyzer/_unicode_emoji_data.py)，[生成脚本](scripts/generate_unicode_emoji.py) 从固定版本本地文件重建，无运行时网络或新依赖。
 - QQ 内置 face 在 `_content_from_segment()` 按 type 6 / `47601` 首次识别；MarketFace 按 type 11 / `45600` 原始 bytes 的 SHA-256 识别为 sticker，标签不参与身份判定。
-- 微信 type 1 的已知官方方括号表情在 `_extract_official_text_expressions()` 首次识别，英文别名归一为官方名称，同时保留原 TextContent；type 47 在 `_sticker_expression()` 识别为 sticker，key 优先 XML md5，否则 message_id，再否则 `unknown`。降级 key 不能证明相同素材身份。此 Adapter 只接收 type 1 / 47，其他类型被跳过，不能声称微信普通图片已有完整通路。
+- 微信 type 1 的已知官方方括号表情在 `_extract_official_text_expressions()` 首次识别，英文别名归一为官方名称，同时保留原 TextContent；type 47 在 `_sticker_expression()` 识别为 sticker，key 优先 XML md5，否则 message_id，再否则 `unknown`。降级 key 不能证明相同素材身份。此 Adapter 与 Provider 查询均按 `local_type` 的低 32 位识别 type 1 / 47，保留原始 source_type；其他类型被跳过，不能声称微信普通图片已有完整通路。
 - QQ type 2 为 `NonTextContent("image")`，其他未识别段为 `"unknown"`；缺少必需 face / sticker 身份的段可能不产生内容。未知图片不推断为 sticker。通用文字占位符（如 `[表情]`、`[贴图]`）在分析时被当作 platform_face 占位事实，不证明原消息确有可识别素材。
 - 投影保留身份及名称字段、时间、来源／原生类型、会话、消息 ID、系统标记、is_self 与 recalled 布尔值；正文仅拼接 TextContent。表达、非文本段、段位置／上下文、reply / mention、recall event 及“召回状态未知”不进入 ChatMessage；完整事实依赖原 Rich 配对，不能从投影重建。
 
