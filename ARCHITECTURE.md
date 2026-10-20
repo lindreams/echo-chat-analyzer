@@ -119,7 +119,7 @@ GUI → Facade.list_sessions / analyze_session → QQDirectDatabaseImportService
 2. acquire 前清理旧 generation / staging / 自有遗留明文；清理失败拒绝解密。
 3. main+WAL+SHM 获取固定 SHM 见证的 committed boundary B，验证 WAL header / salt / checksum、完整前缀、main identity/stat/content 稳定性和 checkpoint witness。允许 B 后 append；checkpoint、main 改变、reset/truncate 或无法证明一致性均失败关闭，不回退 main-only。
 4. staging 加密合并文件交给 NapCat 进程内解密；解密前后校验 dev / ino、大小、纳秒级 mtime / ctime 强见证，使用 descriptor fstat 保持文件身份比较一致。输入变化、无效见证或本人身份变化禁止发布。
-5. 删除 staging 加密输入后，写入 manifest 并原子发布 generation。客户端只对 snapshot_unstable 在共享总预算内有限重试，每次仍经过全部 guard。
+5. 解密返回且 staging 输入强见证复验成功后，只对自有、无硬链接及辅助文件的独立明文输出核对格式和捕获页数，将 Header 的读写版本由 WAL 标记转换为单文件标记；不修改来源、保留字节或 b-tree。删除 staging 加密输入后，写入 manifest 并原子发布 generation。客户端只对 snapshot_unstable 在共享总预算内有限重试，每次仍经过全部 guard。
 6. 应用校验 generation / manifest / 数据库 / self identity，只读查询；同一 generation 内选择会话并物化 payload。失败不读取旧 generation。
 
 一致性实现见 [main_wal.mjs](scripts/qq_direct_db_snapshot/main_wal.mjs)。这里记录必须维持的拒绝条件，不将历史真人验收扩大为跨 QQ 版本保证。

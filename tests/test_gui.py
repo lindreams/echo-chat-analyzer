@@ -1401,6 +1401,101 @@ def test_qq_workspace_full_chain_connect_sessions_analyze(
     assert window._open_echo_button.isVisibleTo(window)
 
 
+def test_qq_status_snapshot_error_shows_only_the_fixed_error_code(qt_app) -> None:
+    """A failed passive status probe keeps the stage it actually failed in."""
+    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
+
+    workspace = QQWorkspace(StubFacade())
+
+    workspace._handle_connection_status_error(
+        "qq_direct_database_unavailable", "fictional status detail",
+    )
+    assert workspace._status_label.text().endswith(
+        "（错误代码：qq_direct_database_unavailable）"
+    )
+
+    workspace._handle_connection_status_error("fictional private code", "detail")
+    assert "错误代码" not in workspace._status_label.text()
+
+
+def test_qq_error_snapshot_shows_the_reviewed_code(qt_app) -> None:
+    """An error snapshot returned (not raised) still names its fixed stage."""
+    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
+
+    workspace = QQWorkspace(StubFacade())
+    workspace._show_qq_status(
+        SimpleNamespace(
+            state="error", message="无法启动 QQ 登录授权，请稍后重试。",
+            action_hint="请稍后重试。", code="qq_runtime_identity_mismatch",
+        ),
+        False,
+    )
+    assert workspace._status_label.text().endswith(
+        "（错误代码：qq_runtime_identity_mismatch）"
+    )
+
+    workspace._show_qq_status(
+        SimpleNamespace(
+            state="disconnected", message="QQ 尚未连接。",
+            action_hint="", code="qq_direct_snapshot_invalid",
+        ),
+        False,
+    )
+    assert "错误代码" not in workspace._status_label.text()
+
+
+def test_every_literal_qq_failure_code_is_reviewed_for_display() -> None:
+    """A new QQ code must be reviewed before it can reach the user."""
+    import re
+
+    from qq_chat_analyzer.gui import qq_workspace as module
+
+    sources = [
+        *sorted((SRC_ROOT / "qq_chat_analyzer/application/qq").glob("*.py")),
+        SRC_ROOT / "qq_chat_analyzer/providers/napcat_qq_provider.py",
+        SRC_ROOT / "qq_chat_analyzer/providers/qq_direct_snapshot_runtime.py",
+        SRC_ROOT / "qq_chat_analyzer/runtime/__init__.py",
+        SRC_ROOT / "qq_chat_analyzer/resources.py",
+    ]
+    pattern = re.compile(
+        r"(?:code\s*[:=]\s*|[A-Z_]*CODE\s*=\s*)['\"]([a-z0-9_]+)['\"]"
+    )
+    produced = {
+        match.group(1)
+        for path in sources
+        for match in pattern.finditer(path.read_text(encoding="utf-8"))
+    }
+
+    assert produced <= module._REVIEWED_QQ_FAILURE_CODES
+    # Facade-owned codes that reach the same page from connect/session paths.
+    assert {"qq_install_path_invalid", "source_unavailable"} <= (
+        module._REVIEWED_QQ_FAILURE_CODES
+    )
+
+
+def test_qq_connect_failure_shows_only_the_fixed_error_code(qt_app) -> None:
+    """The failing stage stays reportable even when no log file was created."""
+    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
+
+    workspace = QQWorkspace(StubFacade())
+
+    workspace._handle_qq_connect_error(
+        "qq_runtime_identity_mismatch", "无法启动 QQ 登录授权，请稍后重试。",
+    )
+
+    assert workspace._status_label.text().endswith(
+        "（错误代码：qq_runtime_identity_mismatch）"
+    )
+    assert workspace._status_label.toolTip() == "无法启动 QQ 登录授权，请稍后重试。"
+
+    # Arbitrary text is never promoted to the visible code slot.
+    workspace._handle_qq_connect_error(
+        "private C:\\Users\\Fictional\\QQ path", "fictional message",
+    )
+    assert "C:\\Users" not in workspace._status_label.text()
+    assert "错误代码" not in workspace._status_label.text()
+
+
 def test_wechat_workspace_full_chain_connect_sessions_analyze(
     qt_app, sources, tmp_path
 ) -> None:

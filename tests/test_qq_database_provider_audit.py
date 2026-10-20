@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -93,3 +95,101 @@ def test_sqlite_failure_logs_privacy_safe_file_and_quick_check_diagnostics(
     assert "quick_check=error" in diagnostic
     assert str(tmp_path) not in diagnostic
     assert "fictional-not-a-sqlite-database" not in diagnostic
+
+
+@pytest.mark.parametrize('kind, category', [('missing', 'access'), ('corrupt', 'corrupt'), ('btree', 'integrity')])
+def test_quick_check_distinguishes_access_from_corruption(tmp_path, caplog, kind, category):
+    path = tmp_path / 'private-snapshot.db'
+    if kind == 'corrupt':
+        path.write_bytes(b'fictional private content, not SQLite')
+    elif kind == 'btree':
+        _create_group_database_with_blob(path, b'fictional')
+        data = bytearray(path.read_bytes())
+        # Inflate the freeblock count of the table leaf. It opens normally but
+        # quick_check returns an integrity row rather than throwing an exception.
+        page_size = int.from_bytes(data[16:18], 'big')
+        data[page_size + 7] = 61
+        path.write_bytes(data)
+    with caplog.at_level('WARNING', logger='qq_chat_analyzer.desktop.qq_database'):
+        assert QQDatabaseProvider.quick_check(path) != 'ok'
+    assert f'category={category}' in caplog.text
+    if kind == 'btree' and sqlite3.sqlite_version in ('3.50.4', '3.54.1'):
+        assert 'integrity_kind=btree' in caplog.text
+    assert str(tmp_path) not in caplog.text
+    assert 'private-snapshot' not in caplog.text
+    assert 'fictional private content' not in caplog.text
+
+
+@pytest.mark.parametrize("version", ["3.50.4", "3.54.1"])
+@pytest.mark.parametrize("message, kind", [
+    ("*** in database main ***\nFragmentation of 0 bytes reported as 61 on page 2", "btree"),
+    ("*** in database main ***\nTree 2 page 2 cell 0: overflow list length is 1 but should be 3", "overflow"),
+    ("*** in database main ***\nFreelist: size is 3 but should be 4", "freelist"),
+    ("*** in database main ***\nPage 7: never used", "page_reference"),
+    ("NULL value in PRIVATE_TABLE.PRIVATE_COLUMN", "constraint"),
+    ("unable to validate the inverted index for FTS4 table main.PRIVATE_TABLE: SQL logic error", "virtual_table"),
+    ("PRIVATE_PATH/overflow btree rowid=123", "unknown"),
+    ("unable to validate the inverted index for FTS4 table main.PRIVATE_TABLE: SQL logic error\nPRIVATE_CONTEXT", "unknown"),
+])
+def test_quick_check_logs_only_fixed_classification(tmp_path, monkeypatch, caplog, message, kind, version):
+    connection = MagicMock()
+    connection.execute.return_value.fetchone.return_value = (message,)
+    monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: connection)
+    monkeypatch.setattr(sqlite3, "sqlite_version", version)
+
+    with caplog.at_level("WARNING", logger="qq_chat_analyzer.desktop.qq_database"):
+        assert QQDatabaseProvider.quick_check(tmp_path / "PRIVATE_PATH.db") == "failed"
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "QQ snapshot quick_check result=failed category=integrity "
+        f"integrity_kind={kind} sqlite_version={version} classifier_version=1"
+    ]
+    assert not any(record.exc_info or record.stack_info for record in caplog.records)
+    connection.execute.assert_called_once_with("PRAGMA quick_check(1)")
+    connection.close.assert_called_once()
+
+
+def test_quick_check_unknown_versions_and_private_exception_stay_closed(tmp_path, monkeypatch, caplog):
+    connection = MagicMock()
+    connection.execute.return_value.fetchone.return_value = (
+        "unable to validate the inverted index for FTS4 table main.PRIVATE_TABLE: SQL logic error",
+    )
+    monkeypatch.setattr(sqlite3, "connect", lambda *args, **kwargs: connection)
+    for version, safe_version in [("3.54.2", "3.54.2"), ("PRIVATE_PATH", "unknown")]:
+        caplog.clear()
+        monkeypatch.setattr(sqlite3, "sqlite_version", version)
+        assert QQDatabaseProvider.quick_check(tmp_path / "PRIVATE_PATH.db") == "failed"
+        assert f"integrity_kind=unknown sqlite_version={safe_version}" in caplog.text
+        assert "PRIVATE" not in caplog.text
+    caplog.clear()
+    connection.execute.side_effect = sqlite3.DatabaseError("PRIVATE_PATH/PRIVATE_TABLE rowid=123")
+    assert QQDatabaseProvider.quick_check(tmp_path / "PRIVATE_PATH.db") == "error"
+    assert "category=sqlite sqlite_errorcode=0 sqlite_version=unknown" in caplog.text
+    assert "PRIVATE" not in caplog.text and "rowid" not in caplog.text
+
+
+@pytest.mark.skipif(sqlite3.sqlite_version != "3.50.4", reason="Upstream false positive reproduced on 3.50.4")
+def test_contentless_fts4_is_classified_but_still_rejected_by_facade(tmp_path, caplog):
+    from qq_direct_db_testing import FakeSnapshotRuntime
+    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade, ChatSource, FacadeError
+    from qq_chat_analyzer.application.qq.qq_direct_database_import_service import QQDirectDatabaseImportService
+
+    path = tmp_path / "PRIVATE_PATH.db"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("CREATE VIRTUAL TABLE PRIVATE_TABLE USING fts4(body, content='')")
+        connection.execute("INSERT INTO PRIVATE_TABLE(rowid,body) VALUES(1,'PRIVATE_CONTENT')")
+        connection.commit()
+        assert connection.execute(
+            "SELECT rowid FROM PRIVATE_TABLE WHERE PRIVATE_TABLE MATCH 'PRIVATE_CONTENT'"
+        ).fetchall() == [(1,)]
+    before = path.read_bytes()
+    runtime = FakeSnapshotRuntime(tmp_path / "runtime", snapshot_path=path)
+    facade = ChatAnalyzerFacade(qq_service=QQDirectDatabaseImportService(runtime_client=runtime))
+    with caplog.at_level("INFO"), pytest.raises(FacadeError) as caught:
+        facade.list_sessions(ChatSource.QQ)
+    assert caught.value.code == "qq_direct_snapshot_invalid"
+    assert "integrity_kind=virtual_table sqlite_version=3.50.4 classifier_version=1" in caplog.text
+    assert "PRIVATE" not in caplog.text and "PRIVATE" not in caught.value.public_message
+    assert runtime.cleaned == runtime.acquired
+    assert not any((runtime.root / "generations").glob("*"))
+    assert path.read_bytes() == before

@@ -14,6 +14,7 @@ import importlib.metadata
 import os
 import sys
 import tomllib
+import subprocess
 
 import pytest
 
@@ -57,6 +58,7 @@ def _frozen_modules() -> dict:
 @pytest.mark.parametrize("filename", [
     "windows_runtime_manifest.json",
     "qq_napcat_runtime_pins.json",
+    "sqlite_runtime_pins.json",
 ])
 def test_frozen_package_ships_current_qq_resource_contract(filename, monkeypatch) -> None:
     _require_frozen_build()
@@ -100,6 +102,7 @@ def test_frozen_release_version_is_available_without_source_checkout() -> None:
     ]
     assert len(distributions) == 1
     assert distributions[0].version == project["project"]["version"]
+    assert not list(INTERNAL.glob("*.dist-info/direct_url.json"))
 
 
 def test_frozen_package_retains_original_image_verification() -> None:
@@ -141,3 +144,52 @@ def test_frozen_package_ships_the_pinned_wechat_native_assets() -> None:
         artifact = runtime / relative
         assert artifact.is_file(), relative
         assert hashlib.sha256(artifact.read_bytes()).hexdigest() == expected, relative
+
+
+def test_frozen_sqlite_uses_the_pinned_dll() -> None:
+    _require_frozen_build()
+    import runpy
+
+    tools = runpy.run_path(str(PROJECT_ROOT / "scripts/bootstrap_sqlite_runtime.py"))
+    tools["verify_dll"](INTERNAL / "sqlite3.dll")
+    assert (INTERNAL / "_sqlite3.pyd").is_file()
+    assert list(INTERNAL.rglob("sqlite3.dll")) == [INTERNAL / "sqlite3.dll"]
+
+
+def test_packaged_sqlite_extension_performs_transactions_and_backup(tmp_path) -> None:
+    """Exercise the packaged CPython extension, not just LoadLibrary/version."""
+    _require_frozen_build()
+    result = subprocess.run([sys.executable, "-c", """
+import ctypes, hashlib, json, sys
+from pathlib import Path
+from contextlib import closing
+internal, work = map(Path, sys.argv[1:])
+sys.path.insert(0, str(internal))
+import _sqlite3, sqlite3
+assert Path(_sqlite3.__file__).resolve() == internal / '_sqlite3.pyd'
+pins = json.loads((internal / 'scripts/sqlite_runtime_pins.json').read_text())
+assert sqlite3.sqlite_version == pins['version']
+kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+kernel.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+kernel.GetModuleHandleW.restype = ctypes.c_void_p
+kernel.GetModuleFileNameW.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint]
+buffer = ctypes.create_unicode_buffer(32768)
+assert kernel.GetModuleFileNameW(kernel.GetModuleHandleW('sqlite3.dll'), buffer, len(buffer))
+loaded = Path(buffer.value).resolve()
+assert loaded == internal / 'sqlite3.dll'
+assert hashlib.sha256(loaded.read_bytes()).hexdigest() == pins['dllSha256']
+with closing(sqlite3.connect(work / 'fictional.db')) as db:
+    assert db.execute('SELECT sqlite_source_id()').fetchone() == (pins['sourceId'],)
+    db.execute('CREATE TABLE entries(id INTEGER PRIMARY KEY, body TEXT, data BLOB)')
+    db.execute('INSERT INTO entries VALUES(?,?,?)', (1, 'fictional', b'\\x00\\xff'))
+    db.commit()
+    db.execute('DELETE FROM entries')
+    db.rollback()
+    assert db.execute('SELECT body,data FROM entries').fetchall() == [('fictional', b'\\x00\\xff')]
+    with closing(sqlite3.connect(work / 'backup.db')) as backup:
+        db.backup(backup)
+        assert backup.execute('SELECT count(*) FROM entries').fetchone() == (1,)
+        assert backup.execute('PRAGMA quick_check(1)').fetchone() == ('ok',)
+    assert db.execute('PRAGMA integrity_check').fetchone() == ('ok',)
+""", str(INTERNAL.resolve()), str(tmp_path)], capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr

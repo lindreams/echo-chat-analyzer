@@ -529,7 +529,9 @@ class QQWorkspace(QWidget):
             return
         self._set_stage(None)
         self._hide_qq_guide()
-        self._status_label.setText(_CONNECTION_STATUS_UNKNOWN)
+        self._status_label.setText(
+            _CONNECTION_STATUS_UNKNOWN + _failure_code_suffix(code)
+        )
         self._status_label.setToolTip(message)
         self._status_label.setStyleSheet(QQ_STATUS_STYLE)
         self._status_label.setVisible(True)
@@ -567,7 +569,14 @@ class QQWorkspace(QWidget):
             else QQ_STATUS_STYLE
         )
 
-        self._status_label.setText(f"{_snapshot_prefix(snapshot)}{message}")
+        code_suffix = (
+            _failure_code_suffix(getattr(snapshot, "code", None))
+            if state == _QQ_STATE_ERROR
+            else ""
+        )
+        self._status_label.setText(
+            f"{_snapshot_prefix(snapshot)}{message}{code_suffix}"
+        )
         self._status_label.setToolTip(action_hint)
         self._status_label.setVisible(True)
         # While the journey advances by itself the button must not read like a
@@ -921,7 +930,7 @@ class QQWorkspace(QWidget):
         return max(0, _QQ_CONNECT_MIN_DISPLAY_MS - elapsed_ms)
 
     def _handle_qq_connect_error(self, code: str, message: str) -> None:
-        self._show_qq_error(_qq_error_title(code), message)
+        self._show_qq_error(_qq_error_title(code), message, code=code)
 
     def _offer_qq_install_path_selection(self) -> None:
         """Ask the user for QQ.exe only when every automatic path failed.
@@ -985,12 +994,18 @@ class QQWorkspace(QWidget):
             "[qq gui] save QQ path failed code=%s",
             code,
         )
-        self._show_qq_error(_QQ_PATH_SAVE_FAILED, message)
+        self._show_qq_error(_QQ_PATH_SAVE_FAILED, message, code=code)
 
-    def _show_qq_error(self, title: str, message: str) -> None:
+    def _show_qq_error(self, title: str, message: str, *, code: Any = None) -> None:
+        """Render a failure with its fixed internal code when one is provided.
+
+        The code is a literal call-site token (never exception text, server data
+        or a path), so the user can report the failing stage even when the
+        diagnostic log could not be created. Unreviewed values are not shown.
+        """
         self._leave_qq_journey()
         self._status_label.setStyleSheet(QQ_STATUS_STYLE_ERROR)
-        self._status_label.setText(_DISCONNECTED_PREFIX + title)
+        self._status_label.setText(_DISCONNECTED_PREFIX + title + _failure_code_suffix(code))
         self._status_label.setToolTip(message)
         self._status_label.setVisible(True)
         self.session_panel.show_disconnected_placeholder()
@@ -1035,7 +1050,7 @@ class QQWorkspace(QWidget):
 
     def _handle_qq_disconnect_error(self, code: str, message: str) -> None:
         self._qq_disconnect_button.setEnabled(True)
-        self._show_qq_error(_QQ_DISCONNECT_FAILED, message)
+        self._show_qq_error(_QQ_DISCONNECT_FAILED, message, code=code)
 
     def cancel_connection(self) -> None:
         """Cancel the active source task and return to a reconnectable page."""
@@ -1159,7 +1174,7 @@ class QQWorkspace(QWidget):
         self._sessions_loaded = False
         self._stop_qq_status_polling()
         self._hide_qq_qrcode()
-        self._show_qq_error(_qq_error_title(code), message)
+        self._show_qq_error(_qq_error_title(code), message, code=code)
 
     # ---------------------------------------------------------------- signals
 
@@ -1171,7 +1186,10 @@ class QQWorkspace(QWidget):
         self._invalidate_session_request()
         self._stop_qq_status_polling()
         self._hide_qq_qrcode()
-        self._show_qq_error("QQ 运行环境已变化，请重新连接。", message)
+        self._show_qq_error(
+            "QQ 运行环境已变化，请重新连接。", message,
+            code="qq_reconnect_required",
+        )
 
     def _handle_analysis_error(self, code: str, message: str) -> None:
         if code == "qq_reconnect_required":
@@ -1234,6 +1252,64 @@ def _qq_progress_stage(message: str) -> int:
     if any(term in lowered for term in ("扫码", "登录", "auth", "qrcode")):
         return _QQ_STAGE_SCANNING
     return _QQ_STAGE_STARTING_QQ
+
+
+#: Literal codes produced by the QQ application, provider and runtime layers
+#: (reviewed 2026-10-19; the drift test keeps this list honest). Anything else,
+#: including class-derived fallbacks such as ``os_error``, is never displayed.
+_REVIEWED_QQ_FAILURE_CODES = frozenset({
+    "budget_exhausted",
+    "napcat_qq_auth_rejected",
+    "napcat_qq_unavailable",
+    "napcat_qq_worker_generation_changed",
+    "qq_auth_cancelled",
+    "qq_auth_window_unavailable",
+    "qq_config_corrupted",
+    "qq_config_not_found",
+    "qq_config_write_failed",
+    "qq_direct_database_not_ready",
+    "qq_direct_database_recovery_failed",
+    "qq_direct_database_shutting_down",
+    "qq_direct_database_unavailable",
+    "qq_direct_session_not_found",
+    "qq_direct_snapshot_acquire_failed",
+    "qq_direct_snapshot_cleanup_failed",
+    "qq_direct_snapshot_invalid",
+    "qq_environment_config_error",
+    "qq_install_path_invalid",
+    "qq_install_path_missing",
+    "qq_invalid_environment",
+    "qq_process_detection_failed",
+    "qq_process_exit_timeout",
+    "qq_provider_unavailable",
+    "qq_reconnect_required",
+    "qq_resources_changed",
+    "qq_resources_unverified",
+    "qq_runtime_cleanup_failed",
+    "qq_runtime_error",
+    "qq_runtime_identity_mismatch",
+    "qq_runtime_ownership_unknown",
+    "qq_snapshot_cleanup_failed",
+    "qq_snapshot_invalid_generation_id",
+    "qq_snapshot_runtime_error",
+    "qq_snapshot_runtime_failure",
+    "qq_snapshot_runtime_invalid_response",
+    "qq_snapshot_runtime_not_ready",
+    "qq_snapshot_runtime_unauthorized",
+    "qq_snapshot_runtime_unavailable",
+    "qq_snapshot_worker_generation_changed",
+    "qq_version_metadata_conflict",
+    "qq_version_too_old",
+    "runtime_directory_missing",
+    "source_unavailable",
+})
+
+
+def _failure_code_suffix(code: Any) -> str:
+    """Return the fixed-code suffix for a reviewed code, otherwise nothing."""
+    if isinstance(code, str) and code in _REVIEWED_QQ_FAILURE_CODES:
+        return f"（错误代码：{code}）"
+    return ""
 
 
 def _qq_error_title(code: str) -> str:

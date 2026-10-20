@@ -1,7 +1,7 @@
 // Shared Stage 3.5I hardened capture, used by formal acquisition and the PoC.
 // Inputs and outputs stay local; diagnostics contain counts and fixed codes only.
 import {
-  closeSync, existsSync, fstatSync, openSync, readSync, statSync, unlinkSync,
+  closeSync, existsSync, fstatSync, lstatSync, openSync, readSync, statSync, unlinkSync,
   writeSync, writeFileSync, readFileSync,
 } from 'node:fs';
 import { createCipheriv, createDecipheriv, createHash, createHmac, pbkdf2Sync, randomBytes } from 'node:crypto';
@@ -287,6 +287,36 @@ function matchesWitness(wal, witness) {
   }
 }
 
+// Only for an owned, completed main+committed-WAL image after decryption.
+// Never call on a live source: changing these bytes there could hide its WAL.
+export function finalizeStandaloneSnapshot(path, pageCount) {
+  const state = lstatSync(path);
+  if (!state.isFile() || state.nlink !== 1 ||
+      ['-wal', '-shm', '-journal'].some(suffix => existsSync(path + suffix))) {
+    fail('plaintext_snapshot_invalid');
+  }
+  const fd = openSync(path, 'r+');
+  try {
+    const header = readExactly(fd, 100, 0);
+    if (!Number.isSafeInteger(pageCount) || pageCount < 1 ||
+        fstatSync(fd).size !== pageCount * PAGE_SIZE ||
+        !header.subarray(0, 16).equals(HEADER) || header.readUInt16BE(16) !== PAGE_SIZE ||
+        ![1, 2].includes(header[18]) || header[19] !== header[18] ||
+        (header.readUInt32BE(28) !== 0 && header.readUInt32BE(24) === header.readUInt32BE(92) &&
+         header.readUInt32BE(28) !== pageCount)) {
+      fail('plaintext_snapshot_invalid');
+    }
+    // SQLite WAL mode (2/2) can require writable auxiliary files even for
+    // mode=ro. All committed pages are already in this image; publish 1/1.
+    // Preserve reserve bytes, page count, counters and every b-tree byte.
+    const versions = Buffer.from([1, 1]);
+    let written = 0;
+    while (written < versions.length) {
+      written += writeSync(fd, versions, written, versions.length - written, 18 + written);
+    }
+  } finally { closeSync(fd); }
+}
+
 // These two PoC entry points share exactly the same capture/verification window.
 export function createMergedEncryptedDatabase(options) {
   return capture(options, false);
@@ -368,6 +398,7 @@ function capture({ mainPath, walPath, outputPath, passphrase, onPhase = () => {}
     }
     // If no append occurred, the indexed commit itself must remain identical.
     if (after.boundary === before.boundary) matchesWitness(latest, after);
+    if (plaintext) finalizeStandaloneSnapshot(outputPath, pageCount);
     published = true;
     return {
       pages: pageCount, validFrames: wal.validFrames, commitMarkers: wal.commitMarkers,
