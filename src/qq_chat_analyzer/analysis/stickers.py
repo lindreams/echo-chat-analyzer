@@ -121,6 +121,10 @@ class StickerMaterialUsage:
         return len(self.member_counts)
 
 
+# A single member may contribute at most this many sends to the shared board's
+# ordering score; the displayed count always stays the real total.
+SHARED_MEMBER_MATERIAL_CAP = 3
+
 # Experimental conjunction, not a score. Keep all calibration in one place.
 SIGNATURE_MIN_SENDS = 4
 SIGNATURE_MIN_DATES = 4
@@ -168,7 +172,16 @@ class StickerConversationReport:
                                for item in self.materials)
 
     def shared_ranking(self, sender_ids: tuple[str, ...] = ()) -> tuple[tuple[StickerMaterialUsage, int], ...]:
-        """Sum actual reliable member sends, excluding unknown senders."""
+        """Rank materials several reliable members actually used together.
+
+        Eligibility is at least two distinct reliable members. Explicit private
+        sides order by the smaller real count, because each side reaching three
+        sends saturates the group cap and would degrade to raw volume. Otherwise
+        order prefers participants, then the second-highest member count, then
+        each member's capped contribution, then the real total, so one prolific
+        sender cannot carry the board. The returned count is always the real
+        total send count, never the ordering score.
+        """
         sender_ids = tuple(dict.fromkeys(sender_ids))
         rows = []
         for item in self.materials:
@@ -176,13 +189,26 @@ class StickerConversationReport:
             if sender_ids:
                 if len(sender_ids) < 2 or not all(counts.get(sender) for sender in sender_ids):
                     continue
+                participants = len(sender_ids)
+                effective = min(counts[sender] for sender in sender_ids)
                 count = sum(counts[sender] for sender in sender_ids)
+                second = 0  # Not part of the explicit private-side order.
             else:
-                if item.reliable_member_count < 2:
+                participants = item.reliable_member_count
+                if participants < 2:
                     continue
+                effective = sum(min(value, SHARED_MEMBER_MATERIAL_CAP)
+                                for value in counts.values())
                 count = sum(counts.values())
-            rows.append((item, count))
-        return _rank_materials(rows)
+                second = sorted(counts.values(), reverse=True)[1]
+            rows.append((item, count, participants, effective, second))
+        if sender_ids:
+            # Equal smaller sides fall back to the real total, then identity.
+            rows.sort(key=lambda row: (-row[3], -row[1], row[0].identity_key))
+        else:
+            rows.sort(key=lambda row: (-row[2], -row[4], -row[3], -row[1],
+                                       row[0].identity_key))
+        return tuple((item, count) for item, count, _, _, _ in rows)
 
     def signature(self, sender_id: str) -> StickerHabit | None:
         candidates = [h for h in self.habits if h.sender_id == sender_id and h.qualified]

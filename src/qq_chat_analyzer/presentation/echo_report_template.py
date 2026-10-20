@@ -572,6 +572,10 @@ h1, h2, h3, p { margin-top: 0; }
 .sticker-top-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 12px; margin: 0; padding: 0; list-style: none; }
 .sticker-top-list li { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; }
 #sticker-shared-list .sticker-top-list { max-width: 560px; }
+/* Expanded shared board: one row that scrolls sideways, cards keep their size. */
+.sticker-top-list.is-row-scroll { display: flex; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; scrollbar-width: thin; }
+.sticker-top-list.is-row-scroll > li { flex: 0 0 calc((100% - 24px) / 3); }
+.sticker-group-rankings > div { min-width: 0; }
 .sticker-image { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 1; background: var(--canvas); color: var(--faint); }
 .sticker-placeholder { font: 12px/1.4 var(--sans); }
 .sticker-image.has-image .sticker-placeholder { display: none; }
@@ -599,6 +603,7 @@ h1, h2, h3, p { margin-top: 0; }
   .sticker-group .sticker-member .sticker-top-list,
   .sticker-members:has(> .is-expanded) .sticker-top-list,
   .sticker-group-rankings:has(> .is-expanded) .sticker-top-list { grid-template-columns: repeat(5, minmax(0, 120px)); }
+  .sticker-top-list.is-row-scroll > li { flex-basis: 120px; }
 }
 
 .expression-chapter .chapter-intro { margin: 0 0 44px; }
@@ -1649,6 +1654,12 @@ document.documentElement.classList.add("js-ready");
       container.appendChild(button);
       function render() {
         container.classList.toggle("is-expanded", expanded);
+        // Shared boards expand into one horizontally scrolling row so a Top 10
+        // never wraps or shrinks the existing cards.
+        list.classList.toggle(
+          "is-row-scroll",
+          expanded && (kind === "private-shared" || kind === "group-shared")
+        );
         list.textContent = "";
         items.slice(0, expanded ? items.length : 3).forEach(function (item, index) {
           var entry = document.createElement("li");

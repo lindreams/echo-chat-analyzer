@@ -113,6 +113,81 @@ def test_sticker_full_rankings_distinguish_group_totals_shared_and_members():
     assert member.send_count == 11 and member.per_hundred_messages is None
 
 
+def test_shared_ranking_prefers_participants_over_raw_volume():
+    """One prolific sender must not outrank a material several members share."""
+    from dataclasses import replace
+    from qq_chat_analyzer.analysis.stickers import StickerData, aggregate_stickers
+    base = qq_pic("b" * 32)
+    sends = []
+    for key, distribution in (
+        ("solo", {"m1": 100}),
+        ("loud", {"m1": 100, "m2": 1}),
+        ("balanced", {"m1": 12, "m2": 10}),
+        ("trio", {"m1": 5, "m2": 4, "m3": 3}),
+    ):
+        for member, count in distribution.items():
+            sends.extend(replace(base, sender_id=member, identity_key=key,
+                                 conversation_type="group") for _ in range(count))
+    report, = aggregate_stickers(StickerData(sends=tuple(sends)), ())
+
+    # Participants first, then the capped contribution, then the real total.
+    assert [(m.identity_key, n) for m, n in report.shared_ranking()] == [
+        ("trio", 12), ("balanced", 22), ("loud", 101)]
+    # The single-sender material keeps its real total and personal count, but
+    # never enters the shared board.
+    assert ("solo", 100) in [(m.identity_key, n) for m, n in report.ranking()]
+    assert all(key != "solo" for key, _ in report.shared_ranking())
+    assert report.ranking("m1")[0][1] == 100
+    assert report.exclusive_material_count() == 1
+    # Private-style explicit sides: only materials both sides actually used.
+    assert [(m.identity_key, n) for m, n in report.shared_ranking(("m1", "m2"))] == [
+        ("balanced", 22), ("trio", 9), ("loud", 101)]
+    assert report.shared_ranking(("m1",)) == ()
+
+
+def test_private_shared_ranking_uses_smaller_side_not_capped_volume():
+    """Two private sides can both pass the cap, so the cap alone saturates."""
+    from dataclasses import replace
+    from qq_chat_analyzer.analysis.stickers import StickerData, aggregate_stickers
+    base = qq_pic("c" * 32)
+    sends = []
+    for key, distribution in (
+        ("flood", {"me": 9, "them": 1}),
+        ("even", {"me": 2, "them": 2}),
+        ("deep", {"me": 6, "them": 5}),
+    ):
+        for member, count in distribution.items():
+            sends.extend(replace(base, sender_id=member, identity_key=key,
+                                 conversation_type="private") for _ in range(count))
+    report, = aggregate_stickers(StickerData(sends=tuple(sends)), ())
+
+    # The smaller side decides, and the displayed number stays the real total.
+    assert [(m.identity_key, n) for m, n in report.shared_ranking(("me", "them"))] == [
+        ("deep", 11), ("even", 4), ("flood", 10)]
+
+
+def test_group_shared_ranking_second_member_before_capped_and_total():
+    """A flood with a thin second member ranks below an evenly shared trio."""
+    from dataclasses import replace
+    from qq_chat_analyzer.analysis.stickers import StickerData, aggregate_stickers
+    base = qq_pic("d" * 32)
+    sends = []
+    for key, distribution in (
+        ("flood", {"m1": 10, "m2": 2, "m3": 1}),
+        ("trio", {"m1": 3, "m2": 3, "m3": 3}),
+        ("pair", {"m1": 20, "m2": 19}),
+    ):
+        for member, count in distribution.items():
+            sends.extend(replace(base, sender_id=member, identity_key=key,
+                                 conversation_type="group") for _ in range(count))
+    report, = aggregate_stickers(StickerData(sends=tuple(sends)), ())
+
+    # Participants first, so a prolific pair cannot outrank three-person
+    # materials; within equal participants the second-highest member decides.
+    assert [(m.identity_key, n) for m, n in report.shared_ranking()] == [
+        ("trio", 9), ("flood", 13), ("pair", 39)]
+
+
 def test_sticker_signature_requires_repetition_and_keeps_low_frequency_and_iso_years():
     from dataclasses import replace
     from qq_chat_analyzer.analysis.stickers import StickerData, aggregate_stickers

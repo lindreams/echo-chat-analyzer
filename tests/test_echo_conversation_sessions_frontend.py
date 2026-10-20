@@ -478,6 +478,24 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
         result.memberImageWidths = [...memberList.querySelectorAll(".sticker-image")].map(x => x.getBoundingClientRect().width);
         if (!button.hidden) { button.click(); }
         result.collapsed = memberList.children.length;
+        const rowCount = (list) => new Set(
+          [...list.children].map(x => Math.round(x.getBoundingClientRect().top))
+        ).size;
+        if (window.ECHO_DATA.stickers.conversation_kind === "private") {
+          const sharedList = document.querySelector("#sticker-shared-list .sticker-top-list");
+          const sharedButton = document.querySelector("#sticker-shared-list .sticker-expand");
+          result.privateCollapsedRows = rowCount(sharedList);
+          result.privateCollapsedDisplay = getComputedStyle(sharedList).display;
+          const collapsedWidths = [...sharedList.querySelectorAll(".sticker-image")].map(
+            x => x.getBoundingClientRect().width);
+          sharedButton.click();
+          result.privateExpandedRows = rowCount(sharedList);
+          result.privateScrollable = sharedList.scrollWidth > sharedList.clientWidth;
+          result.privateExpandedWidths = [...sharedList.querySelectorAll(".sticker-image")].map(
+            x => x.getBoundingClientRect().width);
+          result.privateCollapsedWidths = collapsedWidths;
+          sharedButton.click();
+        }
         if (window.ECHO_DATA.stickers.conversation_kind === "group") {
           const boxes = [...document.querySelectorAll("#sticker-member-options input")];
           result.pickerCount = boxes.length;
@@ -497,6 +515,11 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
           result.defaultGroupBounds = bounds();
           blocks[1].querySelector("button").click();
           result.sharedExpandedBounds = bounds();
+          const sharedList = blocks[1].querySelector(".sticker-top-list");
+          result.groupSharedRows = rowCount(sharedList);
+          result.groupSharedScrollable = sharedList.scrollWidth > sharedList.clientWidth;
+          result.groupSharedImageWidths = [...sharedList.querySelectorAll(".sticker-image")].map(
+            x => x.getBoundingClientRect().width);
           blocks[0].querySelector("button").click();
           result.bothExpandedBounds = bounds();
           result.groupExpandedCounts = blocks.map(x => x.querySelectorAll("li").length);
@@ -539,6 +562,13 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
     assert rendered["memberColumns"] == min(limit, 5)
     assert rendered["memberRows"] == (2 if limit == 10 else 1)
     assert all(110 <= value <= 120 for value in rendered["memberImageWidths"])
+    if kind == "private":
+        assert rendered["privateCollapsedDisplay"] == "grid"
+        assert rendered["privateCollapsedRows"] == 1
+        assert rendered["privateExpandedRows"] == 1
+        assert rendered["privateScrollable"]
+        assert all(abs(a - b) < 1 for a, b in zip(
+            rendered["privateCollapsedWidths"], rendered["privateExpandedWidths"]))
     if kind == "group":
         assert rendered["pickerCount"] == senders
         assert rendered["groupExpandedCounts"] == [10, 10]
@@ -552,6 +582,9 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
         assert shared[1]["top"] < shared[0]["top"] and total[0]["top"] < total[1]["top"]
         assert both[0]["top"] < both[1]["top"]
         assert all(pair[0]["width"] == pair[1]["width"] > default[0]["width"] for pair in (shared, both, total))
+        assert rendered["groupSharedRows"] == 1
+        assert rendered["groupSharedScrollable"]
+        assert all(110 <= value <= 120 for value in rendered["groupSharedImageWidths"])
         assert rendered["pickerBorder"] == "0px"
     assert rendered["loaded"] and rendered["offline"] and rendered["missing"] >= 2
     assert rendered["brokenFallback"] and rendered["preview"]
