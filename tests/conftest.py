@@ -232,7 +232,6 @@ DOMAIN_MODULES = {
         "test_report_package_catalog",
         "test_report_staging_recovery",
         "test_session_analysis_ownership",
-        "test_sticker_media_dialog",
     },
     "system": {
         "test_app_version",

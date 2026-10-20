@@ -222,7 +222,7 @@ class EchoStickerItem:
     reliable_member_count: int = 0
     unknown_sender_count: int = 0
     signature: EchoStickerSignature | None = None
-    # Private in-process linkage for explicit recovery; never serialized.
+    # Private in-process linkage for report media acquisition; never serialized.
     media_key: str = field(default="", repr=False)
 
 

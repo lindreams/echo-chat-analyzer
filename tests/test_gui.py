@@ -2071,3 +2071,74 @@ def test_wechat_structured_progress_crosses_real_facade_and_worker(
     assert seen[0][1] == "正在准备微信连接"
     assert "现在可以登录微信" in seen[2][1]
     assert seen[3][1] == "正在连接微信"
+
+
+@pytest.mark.parametrize("kind,fmt,local,preview,cancel", [
+    ("private", "PNG", False, False, False), ("group", "GIF", False, True, False),
+    ("private", "PNG", True, False, False), ("group", "WEBP", True, False, False),
+    ("group", "GIF", False, False, True),
+])
+def test_generate_button_opens_only_final_embedded_report(
+    qt_app, tmp_path, monkeypatch, kind, fmt, local, preview, cancel,
+):
+    import base64
+    import hashlib
+    import json
+    from test_sticker_data import image_bytes
+    from test_qq_direct_database_facade import _fetch_facade
+    from qq_chat_analyzer.application.facade import AnalysisConfig, ChatSource
+    from qq_chat_analyzer.gui.workers import run_inline
+    from PySide6.QtWidgets import QMessageBox
+
+    # The local PNG case is APNG; all animated fixtures have red and blue frames.
+    raw = image_bytes(fmt, animated=fmt != "PNG" or local)
+    digest = b"\xab" * 16 if preview else hashlib.md5(raw).digest()
+    facade, provider, runtime = _fetch_facade(
+        tmp_path, digest=digest, content=raw, group_sender="10087" if kind == "group" else None)
+    roots = tmp_path / "trusted-originals"
+    roots.mkdir()
+    if local:
+        (roots / f"{digest.hex()}.{fmt.lower()}").write_bytes(raw)
+    config = AnalysisConfig(output_directory=tmp_path / "generated", sticker_media_roots=(roots,))
+    window = _main_window(qt_app, facade)
+    opened, outcomes = [], []
+    window._report_opener = lambda path: opened.append(path) or True
+    panel = window.qq_workspace.session_panel
+    panel.configure(facade, ChatSource.QQ, run_inline)
+    panel.analysis_succeeded.connect(outcomes.append)
+    panel.populate_sessions([s for s in facade.list_sessions(ChatSource.QQ) if s.session_type == kind])
+    panel._session_list.setCurrentRow(0)
+    monkeypatch.setattr(panel, "build_config", lambda: config)
+    runtime.acquired.clear()
+    runtime.cleaned.clear()
+    monkeypatch.setattr(QMessageBox, "question", lambda *_a, **_k: pytest.fail("unexpected consent dialog"))
+    monkeypatch.setattr(QMessageBox, "warning", lambda *_a, **_k: pytest.fail("unexpected report failure"))
+    if cancel:
+        download = provider.download_pic_media
+        def cancel_during_download(**locator):
+            window.processing_page.cancel_button.click()
+            return download(**locator)
+        monkeypatch.setattr(provider, "download_pic_media", cancel_during_download)
+    panel._analyze_button.click()
+    for _ in range(4):
+        qt_app.processEvents()
+    outcome = outcomes[0] if outcomes else None
+    if cancel:
+        assert outcome is None and not opened and not panel._analysis_running
+        assert "取消" in window._status_label.text()
+        assert not (tmp_path / "generated/echo-report.html").exists()
+        assert len(provider.calls) == 2 and runtime.acquired == runtime.cleaned
+        window.close()
+        return
+    assert outcome is not None and opened == [outcome.report_path.resolve()]
+    from PySide6.QtWidgets import QPushButton
+    assert not any("查看表情素材" in button.text() for button in window.findChildren(QPushButton))
+    assert runtime.acquired == runtime.cleaned and len(runtime.acquired) == 1
+    assert len(provider.calls) == (0 if local else 2)
+    asset, = json.loads((outcome.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]["assets"].values()
+    assert asset["status"] == ("preview" if preview else "available")
+    assert base64.b64decode(asset["data_uri"].split(",", 1)[1]) == raw
+    assert asset["data_uri"] in outcome.report_path.read_text(encoding="utf-8")
+    assert "表情包图片 1/1" in window._status_label.text()
+    assert "预算受限" not in window._status_label.text()
+    window.close()

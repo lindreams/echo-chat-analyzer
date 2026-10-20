@@ -439,54 +439,6 @@ _QQ_MEDIA_STAGE_FAILURES = {
 class ChatAnalyzerFacade:
     """Coordinate sources, analysis, and presentation behind one surface."""
 
-    @staticmethod
-    def sticker_report_targets(outcome: AnalysisOutcome):
-        """Expose only this QQ report's de-duplicated, already selected materials."""
-        from ..presentation.stickers import sticker_report_targets
-
-        view = getattr(outcome, "echo_report_view", None)
-        return sticker_report_targets(view.stickers) if outcome.source is ChatSource.QQ and view else ()
-
-    def export_sticker_report(self, outcome: AnalysisOutcome, stickers) -> AnalysisOutcome:
-        """Explicitly save authorized media in a new package, preserving the old one."""
-        if self._sources_closing.is_set():
-            raise FacadeError(code="application_closing", public_message="Echo 正在关闭。")
-        if outcome.source is not ChatSource.QQ or not self.sticker_report_targets(outcome):
-            raise FacadeError(code="sticker_report_unavailable", public_message="当前 QQ 报告没有可关联的素材。")
-        scratch = None
-        try:
-            with _translated_errors(ChatSource.QQ):
-                directory, scratch = _create_output_directory(AnalysisConfig())
-                with timed_stage("sticker_report_export"):
-                    result = self._require_analysis_service().export_sticker_report(
-                        outcome.result, stickers, directory)
-                    if self._sources_closing.is_set():
-                        raise FacadeError(code="application_closing", public_message="Echo 正在关闭，未保存新报告。")
-                    generated_at = datetime.now(timezone.utc)
-                    metadata = build_report_metadata(result=result, source="qq", scope=outcome.analysis_scope,
-                                                     generated_at=generated_at)
-                    with timed_stage("report_package"):
-                        report_directory = package_echo_report(
-                            directory, reports_root=self._report_package_catalog.reports_root,
-                            metadata=metadata, now=generated_at.astimezone())
-                return replace(outcome, result=result, artifact_directory=report_directory,
-                               report_path=report_directory / ECHO_REPORT_HTML_NAME,
-                               report_directory=report_directory, echo_report_view=result.echo_report_view,
-                               report_generated_at=generated_at)
-        finally:
-            if scratch is not None:
-                scratch.cleanup()
-
-    @staticmethod
-    def discover_qq_sticker_directories(*, data_path=None, cancelled=lambda: False):
-        """Opt-in metadata discovery; returned scopes still require user consent."""
-        from .qq.qq_media_directories import discover_qq_media
-
-        try:
-            with timed_stage("sticker_directory_discovery"):
-                return discover_qq_media(data_path=data_path, cancelled=cancelled)
-        except Exception:
-            raise FacadeError(code="sticker_discovery_failed", public_message="QQ 素材目录识别失败，未读取媒体文件。") from None
 
     @staticmethod
     def associate_sticker_media(data, *, media_keys, roots=(), source, cancelled=lambda: False,
@@ -529,75 +481,13 @@ class ChatAnalyzerFacade:
             )
         return provider
 
-    def _qq_stored_pic_facts(self, session_id: str, message_id: str):
-        """Read one selected session's stored PIC facts without touching media."""
-        from ..qq_db_adapter import extract_qq_pic_media_facts, load_qq_db_json
-
-        if not isinstance(session_id, str) or not session_id.startswith(("private:", "group:")):
-            raise FacadeError(
-                code="qq_mapping_session_invalid",
-                public_message="消息映射验证需要当前 QQ 私聊或群聊。",
-            )
-        try:
-            service = self._require_service(ChatSource.QQ)
-            acquire = getattr(service, "acquired_session", None)
-            if not callable(acquire):
-                raise FacadeError(
-                    code="qq_mapping_unavailable",
-                    public_message="当前 QQ 数据来源不支持消息映射验证。",
-                )
-            with acquire(session_id) as acquisition:
-                payload = load_qq_db_json(acquisition.payload_path)
-                if payload is None:
-                    raise FacadeError(
-                        code="qq_mapping_payload_invalid",
-                        public_message="本次会话数据不可用，未读取媒体。请重新分析后重试。",
-                    )
-                query = payload.get("query") if isinstance(payload.get("query"), Mapping) else {}
-                if query.get("session_type") != session_id.split(":", 1)[0]:
-                    raise FacadeError(
-                        code="qq_mapping_session_invalid",
-                        public_message="本次数据与选中会话不一致，未读取媒体。",
-                    )
-                if session_id.startswith("group:") and query.get("internal_key") != session_id.split(":", 1)[1]:
-                    raise FacadeError(code="qq_media_group_scope_unconfirmed",
-                                      public_message="无法确认当前群聊范围，未下载图片。")
-                facts = extract_qq_pic_media_facts(payload, {message_id})
-        except FacadeError:
-            raise
-        except Exception:
-            raise FacadeError(
-                code="qq_mapping_snapshot_failed",
-                public_message="读取当前会话的已入库媒体事实失败，未下载图片。请重新连接 QQ 后重试。",
-            ) from None
-        return facts
-
-    def fetch_qq_sticker_media(
-        self, data, *, media_key: str, session_id: str, network_consent: bool = False,
-        cancelled=lambda: False, occurrence_id: str | None = None,
-    ):
-        """Fetch one user-selected QQ PIC material through the bridge.
-
-        A separate consent flag is required. The stored message facts are read
-        again, the kernel must uniquely confirm the same message, sender and PIC
-        element, and only that element is fetched. The bytes are validated and
-        returned as the digest-verified original or as a distinct trusted
-        preview. Nothing is written to disk and no other message is queried.
-        """
-        if network_consent is not True:
-            raise FacadeError(
-                code="qq_media_consent_required",
-                public_message="需要通过 QQ 网络获取素材前单独确认。",
-            )
-        return self._fetch_qq_pic(data, media_key=media_key, session_id=session_id,
-                                  cancelled=cancelled, occurrence_id=occurrence_id)
 
     def _fetch_qq_pic(
-        self, data, *, media_key: str, session_id: str, cancelled=lambda: False,
-        occurrence_id: str | None = None, stored_facts=None, provider=None,
+        self, data, *, media_key: str, session_id: str, stored_facts, provider,
+        cancelled=lambda: False, occurrence_id: str | None = None,
         deadline: float | None = None, on_stage=lambda stage: None,
     ):
-        """Shared identity/byte checks for report generation and manual recovery."""
+        """Verify the report target against its owned payload and authenticated QQ element."""
         from .sticker_media import verify_fetched_media
 
         def remaining(maximum):
@@ -638,8 +528,7 @@ class ChatAnalyzerFacade:
         if cancelled():
             raise FacadeError(code="qq_media_cancelled", public_message="已取消，未获取媒体。")
         on_stage("stored_message")
-        facts = (self._qq_stored_pic_facts(session_id, send.message_id)
-                 if stored_facts is None else stored_facts)
+        facts = stored_facts
         if len(facts) != 1:
             on_stage("stored_message_missing" if not facts else "stored_message_ambiguous")
             raise FacadeError(
@@ -680,7 +569,6 @@ class ChatAnalyzerFacade:
                 code="qq_media_element_unconfirmed",
                 public_message="该消息缺少可唯一确认的图片元素标识，未获取媒体。",
             )
-        provider = provider or self._qq_connected_provider("resolve_pic_message", "download_pic_media")
         locator = {
             "msg_id": fact.message_id,
             "peer_uid": fact.group_id if group else fact.peer_uid,

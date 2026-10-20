@@ -222,58 +222,6 @@ class _ProviderConnection:
         return self._provider
 
 
-@pytest.mark.parametrize("kind", ["private", "group"])
-@pytest.mark.parametrize("original", [True, False])
-def test_authorized_media_reaches_new_report_without_reacquiring_chat(tmp_path, monkeypatch, kind, original):
-    import base64
-    import json
-    from dataclasses import replace
-    from qq_chat_analyzer.application.scope_filter import AnalysisScopeMode
-
-    raw = _fictional_png()
-    digest = hashlib.md5(raw).digest() if original else _PIC_KEY_BYTES
-    facade, provider, runtime = _fetch_facade(tmp_path, digest=digest, content=raw,
-                                             group_sender="10087" if kind == "group" else None)
-    session_id = "group:group-partition" if kind == "group" else "private:private-partition"
-    outcome = facade.analyze_session(ChatSource.QQ, session_id, AnalysisConfig(
-        output_directory=tmp_path / "initial-report", scope_mode=AnalysisScopeMode.CUSTOM,
-        start_time="2025-10-09", end_time="2025-10-09"))
-    old_html = outcome.report_path.read_bytes()
-    old_metadata = json.loads((outcome.report_directory / "metadata.json").read_text(encoding="utf-8"))
-    target, = facade.sticker_report_targets(outcome)
-    media = facade.fetch_qq_sticker_media(outcome.result.stickers, media_key=target.media_key,
-        session_id=session_id, network_consent=True)
-    monkeypatch.setattr(runtime, "acquire", lambda: pytest.fail("re-export must use retained statistics"))
-    exported = facade.export_sticker_report(outcome, media)
-    assert exported.report_path != outcome.report_path
-    assert outcome.report_path.read_bytes() == old_html
-    assert exported.result.reports is outcome.result.reports
-    assert exported.result.stickers.sends is outcome.result.stickers.sends
-    payload = json.loads((exported.report_directory / "echo-report.json").read_text(encoding="utf-8"))
-    asset, = payload["stickers"]["assets"].values()
-    assert base64.b64decode(asset["data_uri"].split(",", 1)[1]) == raw
-    assert asset["status"] == ("available" if original else "preview")
-    assert asset["data_uri"].encode("ascii") in exported.report_path.read_bytes()
-    metadata = json.loads((exported.report_directory / "metadata.json").read_text(encoding="utf-8"))
-    assert metadata["analysis_scope"] == old_metadata["analysis_scope"]
-    assert "2025-10-09" in json.dumps(metadata["analysis_scope"])
-    with pytest.raises(FacadeError):
-        facade.export_sticker_report(outcome, replace(media, sends=()))
-    from qq_chat_analyzer.analysis.stickers import StickerMedia
-    with pytest.raises(FacadeError):
-        facade.export_sticker_report(outcome, replace(media, media=(StickerMedia("foreign", "not_requested"),)))
-    monkeypatch.setattr("qq_chat_analyzer.application.facade.package_echo_report",
-                        lambda *a, **k: (_ for _ in ()).throw(OSError("PRIVATE_EXPORT_FAILURE")))
-    with pytest.raises(FacadeError) as failed:
-        facade.export_sticker_report(outcome, media)
-    assert "PRIVATE" not in failed.value.public_message
-    assert outcome.report_path.read_bytes() == old_html
-    facade._analysis_service.shutdown()
-    with pytest.raises(FacadeError) as closing:
-        facade.export_sticker_report(outcome, media)
-    assert closing.value.code == "application_closing"
-    from qq_chat_analyzer.resources import user_data_dir
-    assert not list((user_data_dir() / "transient").glob("chat-analyzer-output-*"))
 
 
 @pytest.mark.parametrize("kind,local", [("private", False), ("group", False), ("group", True)])
@@ -387,7 +335,8 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
                                          AnalysisConfig(output_directory=output), progress=progress.append)
         chapter = json.loads((outcome.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]
         assert chapter["total_send_count"] == 24 and chapter["unique_material_count"] == 12
-        targets = facade.sticker_report_targets(outcome)
+        from qq_chat_analyzer.presentation.stickers import sticker_report_targets
+        targets = sticker_report_targets(outcome.echo_report_view.stickers)
         assert len(targets) >= 10  # Includes the Top 10 expansion, beyond the initial three.
         expected = {"none": len(targets), "requests": 3, "bridge": 3, "time": 2, "transport": 1}[limit]
         assert len(downloads) == len(set(downloads)) == expected
@@ -531,6 +480,17 @@ def _fetch_facade(tmp_path, *, digest: bytes, content: bytes, mapping_passed: bo
     service.start()
     provider = _PicProvider(
         content, mapping_passed=mapping_passed, download_error=download_error)
+    from qq_chat_analyzer.qq_db_adapter import QQPicMediaElement, QQPicMediaFact
+    provider.stored_facts = (QQPicMediaFact(
+        message_id="201", timestamp=1760000001,
+        peer_uid=None if group_sender else "u_fictionalpeer000000000000",
+        conversation_type="group" if group_sender else "private",
+        conversation_id="12345001" if group_sender else "private-partition",
+        group_id="12345001" if group_sender else None,
+        sender_uin=group_sender, sender_uid="u_fictionalmember000000" if group_sender else None,
+        is_self=group_sender == "10086" if group_sender else False,
+        elements=(QQPicMediaElement("7000000000000000001", "fictional-file-uuid", digest.hex(), True),),
+    ),)
     facade = ChatAnalyzerFacade(
         qq_service=service, qq_connection_service=_ProviderConnection(provider),
         analysis_service=AnalysisApplicationService(), stopwords_directory=Path(__file__).resolve().parents[1])
@@ -547,11 +507,11 @@ def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path,
                                    AnalysisConfig(output_directory=tmp_path / "report")).result
     send, = result.stickers.sends
     assert send.sender_id == sender and send.is_self is mine
-    provider.calls.clear()  # The initial report now restores automatically; inspect this manual retry only.
+    provider.calls.clear()  # Inspect the shared report fetch checks with explicit stored facts.
     caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
     caplog.clear()
-    data = facade.fetch_qq_sticker_media(result.stickers, media_key=send.media_key,
-                                       session_id="group:group-partition", network_consent=True, occurrence_id=send.occurrence_id)
+    data = facade._fetch_qq_pic(result.stickers, media_key=send.media_key,
+                                       session_id="group:group-partition", stored_facts=provider.stored_facts, provider=provider, occurrence_id=send.occurrence_id)
     assert data.sends is result.stickers.sends
     media, = data.media
     assert media.original_bytes == png and media.status == ("available" if original else "preview")
@@ -584,8 +544,8 @@ def test_group_facade_requires_each_identity_proof_even_with_passed_label(tmp_pa
     resolve = provider.resolve_pic_message
     monkeypatch.setattr(provider, "resolve_pic_message", lambda **kwargs: replace(resolve(**kwargs), **{field: value}))
     with pytest.raises(FacadeError) as caught:
-        facade.fetch_qq_sticker_media(data, media_key=data.sends[0].media_key,
-                                     session_id="group:group-partition", network_consent=True)
+        facade._fetch_qq_pic(data, media_key=data.sends[0].media_key,
+                                     session_id="group:group-partition", stored_facts=provider.stored_facts, provider=provider)
     assert caught.value.code == f"qq_media_group_{code}_unconfirmed"
     assert [name for name, _ in provider.calls] == ["resolve"]
     assert runtime.acquired == runtime.cleaned
@@ -605,13 +565,13 @@ def test_group_fetch_refuses_scope_or_analyzed_send_change_before_rpc(tmp_path, 
     if changed != "session":
         data = replace(data, sends=(replace(data.sends[0], **{changed: changes[changed]}),))
     with pytest.raises(FacadeError) as caught:
-        facade.fetch_qq_sticker_media(data, media_key=data.sends[0].media_key, session_id=session, network_consent=True)
+        facade._fetch_qq_pic(data, media_key=data.sends[0].media_key, session_id=session, stored_facts=provider.stored_facts, provider=provider)
     assert caught.value.code.startswith("qq_media_group_")
     assert not provider.calls and data.media == retained_media
     assert runtime.acquired == runtime.cleaned
 
 
-def test_fetched_pic_requires_separate_consent_then_reports_a_verified_original(tmp_path):
+def test_report_pic_fetch_checks_identity_and_returns_verified_original(tmp_path):
     png = _fictional_png()
     digest = hashlib.md5(png).hexdigest()
     data = StickerData(sends=(_pic_send(digest),))
@@ -619,14 +579,8 @@ def test_fetched_pic_requires_separate_consent_then_reports_a_verified_original(
         tmp_path, digest=bytes.fromhex(digest), content=png)
     key = data.sends[0].media_key
 
-    with pytest.raises(FacadeError) as refused:
-        facade.fetch_qq_sticker_media(
-            data, media_key=key, session_id="private:private-partition")
-    assert refused.value.code == "qq_media_consent_required"
-    assert provider.calls == []
-
-    result = facade.fetch_qq_sticker_media(
-        data, media_key=key, session_id="private:private-partition", network_consent=True)
+    result = facade._fetch_qq_pic(
+        data, media_key=key, session_id="private:private-partition", stored_facts=provider.stored_facts, provider=provider)
 
     media, = result.media
     assert (media.status, media.reason) == ("available", None)
@@ -638,11 +592,11 @@ def test_fetched_pic_requires_separate_consent_then_reports_a_verified_original(
         "expected_file_uuid": "fictional-file-uuid", "expected_self": False,
     }
     element_id = "7000000000000000001"
-    assert provider.calls == [
-        ("resolve", {**expected, "expected_segment_id": element_id}),
-        ("download", {**expected, "element_id": element_id}),
-    ]
-    assert len(runtime.cleaned) == 1
+    assert [name for name, _ in provider.calls] == ["resolve", "download"]
+    assert provider.calls[0][1] == {**expected, "expected_segment_id": element_id}
+    download = dict(provider.calls[1][1])
+    assert download == {**expected, "element_id": element_id}
+    assert not runtime.acquired and not runtime.cleaned
 
 
 def test_group_media_is_refused_before_acquisition_or_rpc(tmp_path, monkeypatch):
@@ -651,11 +605,11 @@ def test_group_media_is_refused_before_acquisition_or_rpc(tmp_path, monkeypatch)
     facade, provider, runtime = _fetch_facade(
         tmp_path, digest=_PIC_KEY_BYTES, content=_fictional_png())
     data = StickerData(sends=(replace(_pic_send(_PIC_KEY_BYTES.hex()), conversation_type="group"),))
-    monkeypatch.setattr(facade, "_qq_stored_pic_facts",
-                        lambda *_: pytest.fail("group media must not acquire a snapshot"))
+    monkeypatch.setattr(runtime, "acquire",
+                        lambda: pytest.fail("invalid selection must not acquire a snapshot"))
     with pytest.raises(FacadeError) as caught:
-        facade.fetch_qq_sticker_media(
-            data, media_key=data.sends[0].media_key, session_id="group:fictional", network_consent=True)
+        facade._fetch_qq_pic(
+            data, media_key=data.sends[0].media_key, session_id="group:fictional", stored_facts=provider.stored_facts, provider=provider)
     assert caught.value.code == "qq_media_invalid_selection"
     assert not provider.calls and not runtime.cleaned and not data.media
 
@@ -678,9 +632,9 @@ def test_group_fetched_gif_decode_limit_has_a_specific_public_error(tmp_path, mo
         AnalysisConfig(output_directory=tmp_path / "report")).result.stickers
     provider.calls.clear()
     with pytest.raises(FacadeError) as caught:
-        facade.fetch_qq_sticker_media(
+        facade._fetch_qq_pic(
             data, media_key=data.sends[0].media_key,
-            session_id="group:group-partition", network_consent=True)
+            session_id="group:group-partition", stored_facts=provider.stored_facts, provider=provider)
     assert caught.value.code == "qq_media_decode_budget"
     assert "解码安全预算" in caught.value.public_message
     assert all(media.original_bytes is None for media in data.media)
@@ -706,9 +660,9 @@ def test_unconfirmed_mapping_or_undecodable_content_is_never_displayed(tmp_path,
         expected = "qq_media_invalid_content"
 
     with pytest.raises(FacadeError) as caught:
-        facade.fetch_qq_sticker_media(
+        facade._fetch_qq_pic(
             data, media_key=data.sends[0].media_key,
-            session_id="private:private-partition", network_consent=True)
+            session_id="private:private-partition", stored_facts=provider.stored_facts, provider=provider)
 
     assert caught.value.code == expected
     assert not data.media
@@ -717,6 +671,8 @@ def test_unconfirmed_mapping_or_undecodable_content_is_never_displayed(tmp_path,
 
 
 @pytest.mark.parametrize("stage,code,visible", [
+    ("probe_timeout", "qq_media_query_timeout", "返回消息"),
+    ("probe_api_unavailable", "qq_media_api_unavailable", "消息查询"),
     ("media_download_timeout", "qq_media_download_timeout", "限定时间"),
     ("media_file_identity_changed", "qq_media_file_identity_changed", "不同文件"),
 ])
@@ -727,14 +683,14 @@ def test_fetch_failure_names_the_stage_instead_of_one_generic_message(
     png = _fictional_png()
     digest = hashlib.md5(png).hexdigest()
     data = StickerData(sends=(_pic_send(digest),))
-    facade, _provider, _runtime = _fetch_facade(
+    facade, provider, _runtime = _fetch_facade(
         tmp_path, digest=bytes.fromhex(digest), content=png,
         download_error=NapCatQQMediaStageError(stage))
 
     with pytest.raises(FacadeError) as caught:
-        facade.fetch_qq_sticker_media(
+        facade._fetch_qq_pic(
             data, media_key=data.sends[0].media_key,
-            session_id="private:private-partition", network_consent=True)
+            session_id="private:private-partition", stored_facts=provider.stored_facts, provider=provider)
 
     assert caught.value.code == code
     assert visible in caught.value.public_message
@@ -744,14 +700,14 @@ def test_unknown_fetch_failure_stays_generic_and_never_leaks_details(tmp_path):
     png = _fictional_png()
     digest = hashlib.md5(png).hexdigest()
     data = StickerData(sends=(_pic_send(digest),))
-    facade, _provider, _runtime = _fetch_facade(
+    facade, provider, _runtime = _fetch_facade(
         tmp_path, digest=bytes.fromhex(digest), content=png,
         download_error=RuntimeError("PRIVATE C:/fictional/secret 201"))
 
     with pytest.raises(FacadeError) as caught:
-        facade.fetch_qq_sticker_media(
+        facade._fetch_qq_pic(
             data, media_key=data.sends[0].media_key,
-            session_id="private:private-partition", network_consent=True)
+            session_id="private:private-partition", stored_facts=provider.stored_facts, provider=provider)
 
     assert caught.value.code == "qq_media_fetch_failed"
     message = caught.value.public_message

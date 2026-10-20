@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 import time
-import weakref
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -96,12 +95,10 @@ class MainWindow(QMainWindow):
         self.about_page: UpdatePage | None = None
         self._current_report_path: Path | None = None
         self._current_report_directory: Path | None = None
-        self._current_outcome: Any = None
         self._auto_opened_outcome_key: tuple[int, str] | None = None
         self._report_opener = _open_report_path
         self._directory_opener = directory_opener or _open_directory_path
         self._active_source: str | None = None
-        self._sticker_media_dialog: Any = None
         self._shutdown_protocol = ShutdownProtocol()
         self._update_install_token: str | None = None
         self._uninstall_active = False
@@ -170,11 +167,6 @@ class MainWindow(QMainWindow):
         report_actions_layout = QHBoxLayout()
         report_actions_layout.addWidget(self._open_echo_button)
         report_actions_layout.addWidget(self._open_report_directory_button)
-        self._sticker_button = QPushButton("查看表情素材", self)
-        self._sticker_button.setEnabled(False)
-        self._sticker_button.setVisible(False)
-        self._sticker_button.clicked.connect(self._show_sticker_materials)
-        report_actions_layout.addWidget(self._sticker_button)
         report_actions_layout.addStretch(1)
         layout.addLayout(report_actions_layout)
 
@@ -462,7 +454,6 @@ class MainWindow(QMainWindow):
     def show_outcome(self, outcome: Any) -> None:
         """Finish one analysis, open Echo, and return to the active workspace."""
         self.processing_page.stop()
-        self._close_sticker_materials()
         _LOGGER.info(
             "[gui] show_outcome report_path=%s report_directory=%s",
             getattr(outcome, "report_path", None),
@@ -501,61 +492,6 @@ class MainWindow(QMainWindow):
         if retention_warning and self._status_label.text() != retention_warning:
             self._status_label.setText(f"{retention_warning}\n{self._status_label.text()}")
         self._return_to_workspace_after_success()
-        self._current_outcome = outcome
-        stickers = getattr(getattr(outcome, "result", None), "stickers", None)
-        available = (
-            getattr(outcome, "source", None) in (ChatSource.QQ, ChatSource.WECHAT)
-            and (getattr(getattr(outcome, "session", None), "session_type", None) == "private"
-                 or (outcome.source == ChatSource.QQ
-                     and getattr(getattr(outcome, "session", None), "session_type", None) == "group"))
-            and stickers is not None and bool(stickers.sends))
-        self._sticker_button.setEnabled(available)
-        self._sticker_button.setVisible(available)
-
-    def _show_sticker_materials(self) -> None:
-        outcome = self._current_outcome
-        if not self._sticker_button.isEnabled() or outcome is None:
-            return
-        if self._sticker_media_dialog is not None:
-            self._sticker_media_dialog.show()
-            self._sticker_media_dialog.raise_()
-            return
-        from .sticker_media_dialog import StickerMediaDialog
-
-        session = getattr(outcome, "session", None)
-        report_targets = None
-        export_report = None
-        if outcome.source is ChatSource.QQ and getattr(outcome, "echo_report_view", None) is not None:
-            report_targets = self._facade.sticker_report_targets(outcome)
-            export_report = lambda data: self._facade.export_sticker_report(outcome, data)
-        dialog = StickerMediaDialog(
-            outcome.result.stickers, facade=self._facade, source=outcome.source.value,
-            conversation_label=getattr(session, "display_name", ""),
-            conversation_type=getattr(session, "session_type", "private"),
-            session_id=getattr(session, "session_id", None),
-            report_targets=report_targets, export_report=export_report,
-            executor=self._executor, parent=self)
-        dialog.report_exported.connect(lambda updated: self._accept_sticker_report(outcome, updated))
-        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
-        reference = weakref.ref(dialog)
-        dialog.destroyed.connect(lambda *_: self._clear_sticker_media_dialog(reference))
-        self._sticker_media_dialog = dialog
-        dialog.show()
-
-    def _accept_sticker_report(self, original, updated) -> None:
-        if self._current_outcome is not original:
-            return
-        self.show_outcome(updated)
-
-
-    def _clear_sticker_media_dialog(self, reference) -> None:
-        if self._sticker_media_dialog is not None and weakref.ref(self._sticker_media_dialog) == reference:
-            self._sticker_media_dialog = None
-
-    def _close_sticker_materials(self) -> None:
-        dialog, self._sticker_media_dialog = self._sticker_media_dialog, None
-        if dialog is not None:
-            dialog.close()
 
     def _return_to_workspace_after_success(self) -> None:
         """Return to the active workspace without clearing the Echo entry."""
@@ -664,12 +600,8 @@ class MainWindow(QMainWindow):
         self._open_report_directory_button.setVisible(directory_available)
 
     def _clear_echo_report_entry(self) -> None:
-        self._close_sticker_materials()
-        self._sticker_button.setEnabled(False)
-        self._sticker_button.setVisible(False)
         self._current_report_path = None
         self._current_report_directory = None
-        self._current_outcome = None
         self._auto_opened_outcome_key = None
         self._open_echo_button.setEnabled(False)
         self._open_echo_button.setVisible(False)
@@ -707,7 +639,6 @@ class MainWindow(QMainWindow):
         shutdown protocol, and the desktop entry point waits on that same
         protocol before the process is allowed to leave.
         """
-        self._close_sticker_materials()
         self._uninstall_timer.stop()
         if self.about_page is not None:
             self.about_page.close()

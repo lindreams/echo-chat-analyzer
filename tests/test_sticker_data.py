@@ -154,7 +154,6 @@ def qq_pic(digest):
 def test_both_qq_sides_recover_using_only_authorized_content_evidence(tmp_path):
     from qq_chat_analyzer.analysis.stickers import StickerData
     from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
-    from qq_chat_analyzer.application.qq.qq_media_directories import discover_qq_media
     from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
 
     account = tmp_path / "12345001"
@@ -182,10 +181,8 @@ def test_both_qq_sides_recover_using_only_authorized_content_evidence(tmp_path):
     sends = collect(messages)
     assert [send.is_self for send in sends] == [True, False]
     assert [send.content_md5 for send in sends] == list(digests)
-    scopes, = discover_qq_media(data_path=account)
-    assert set(scopes.roots) == {mine, received}
     data = ChatAnalyzerFacade.associate_sticker_media(StickerData(sends=sends),
-        media_keys=tuple(send.media_key for send in sends), roots=scopes.roots, source="qq")
+        media_keys=tuple(send.media_key for send in sends), roots=(mine, received), source="qq")
     assert [media.status for media in data.media] == ["available", "available"]
     assert [media.original_bytes for media in data.media] == list(raws)
 
@@ -887,9 +884,9 @@ def _private_payload(*blobs, senders):
     return payload
 
 
-def test_group_pic_catalog_keeps_members_shared_material_and_unknowns():
+def test_group_pic_facts_keep_members_shared_material_and_unknowns():
     from qq_chat_analyzer.analysis.stickers import count_sticker_messages
-    from qq_chat_analyzer.application.sticker_catalog import build_sticker_catalog
+    from qq_chat_analyzer.analysis.stickers import StickerData, aggregate_stickers
     from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
 
     custom = _scalar(45002, 2) + _scalar(45003, 1) + _bytes(45406, b"\xab" * 16)
@@ -911,20 +908,20 @@ def test_group_pic_catalog_keeps_members_shared_material_and_unknowns():
     assert all(s.conversation_type == "group" and s.conversation_id == "fictional-room" for s in sends)
     assert sends[0].message_id == "fictional-0" and sends[0].epoch_seconds == 1760000000
     assert sends[0].content_md5 == "ab" * 16 and sends[0].chat_date is not None
-    entries = build_sticker_catalog(sends, source="qq", conversation_type="group")
-    shared, *unknown = entries
+    report, = aggregate_stickers(StickerData(sends=sends), messages)
+    shared, = report.materials
     assert shared.count == 6
     assert dict(shared.member_counts) == {"10001": 2, "20002": 2, "30003": 1}
     assert shared.unknown_sender_count == 1
-    assert len(unknown) == 2 and all(not e.identity_known and e.count == 1 for e in unknown)
-    assert sum(sum(n for _, n in e.member_counts) + e.unknown_sender_count for e in entries) == 8
+    assert report.unknown_identity_count == 2
     assert count_sticker_messages(messages).total_messages == 9
-    # Self identity being unavailable must not erase independently known members.
+    # Missing self identity must not erase independently known members.
     payload.pop("self")
     messages, _ = parse_qq_db_rich_messages(payload)
-    shared = build_sticker_catalog(collect(messages), source="qq", conversation_type="group")[0]
+    report, = aggregate_stickers(StickerData(sends=collect(messages)), messages)
+    shared, = report.materials
     assert dict(shared.member_counts) == {"10001": 2, "20002": 2, "30003": 1}
-    assert shared.unknown_count == 6 and shared.unknown_sender_count == 1
+    assert shared.unknown_sender_count == 1
 
 
 def test_qq_private_send_identity_follows_source_self_marker_only():
@@ -1116,3 +1113,63 @@ def test_global_decode_and_file_budgets_are_shared_by_materials(tmp_path, monkey
     items = resolve_sticker_media(sends, roots=(tmp_path,), targeted=True,
         digest_names_only=True, max_files=1)
     assert all((item.status, item.reason) == ("limited", "file_count_budget") for item in items)
+
+
+def test_qq_59_authorized_scopes_are_all_searched_without_expanding_consent(tmp_path, monkeypatch):
+    from contextlib import contextmanager
+    from qq_chat_analyzer.analysis.stickers import StickerData
+    from qq_chat_analyzer.application import sticker_media
+    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
+
+    account = tmp_path / "12345001"
+    data = account / "nt_qq/nt_data"
+    originals = []
+    raw = image_bytes("PNG")
+    digest = hashlib.md5(raw).hexdigest()
+    for base in (data / "Pic", data / "Emoji/emoji-recv"):
+        for index in range(29):
+            month = base / f"{2024 + index // 12}-{1 + index % 12:02}"
+            ori = month / "Ori"
+            ori.mkdir(parents=True)
+            original = ori / f"{digest}.png"
+            original.write_bytes(raw)
+            originals.append(original)
+            thumb = month / "Thumb"
+            thumb.mkdir()
+            (thumb / f"{digest}.png").write_bytes(raw)
+    personal = data / "Emoji/personal_emoji/Ori"
+    personal.mkdir(parents=True)
+    original = personal / f"{digest}.png"
+    original.write_bytes(raw)
+    originals.append(original)
+    roots = tuple(path.parent for path in originals)
+    assert len(roots) == 59
+    # A new month outside the supplied roots is not part of the user's consent.
+    unapproved = data / "Pic/2030-01/Ori"
+    unapproved.mkdir(parents=True)
+    (unapproved / f"{digest}.png").write_bytes(raw)
+    opened = []
+    real_open = sticker_media._open_original
+    real_scan = sticker_media.os.scandir
+
+    @contextmanager
+    def approved_only(path, root):
+        assert path in originals
+        opened.append(path)
+        with real_open(path, root) as stream:
+            yield stream
+
+    def scan_approved_only(path):
+        assert "Thumb" not in path.parts
+        assert not path.is_relative_to(unapproved.parent)
+        return real_scan(path)
+
+    monkeypatch.setattr(sticker_media, "_open_original", approved_only)
+    monkeypatch.setattr(sticker_media.os, "scandir", scan_approved_only)
+    data = StickerData(sends=(qq_pic(digest),))
+    result = ChatAnalyzerFacade.associate_sticker_media(
+        data, media_keys=(data.sends[0].media_key,), roots=roots, source="qq")
+    media, = result.media
+    assert media.status == "available", (media.status, media.reason)
+    assert media.original_bytes == raw
+    assert set(opened) == set(originals) and len(opened) == 59
