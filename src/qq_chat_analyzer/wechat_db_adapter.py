@@ -189,7 +189,7 @@ def parse_rich_message(raw_message: Any) -> RichMessage | None:
     else:
         contents = (
             _sticker_expression(
-                decoded_content,
+                _strip_sender_prefix(decoded_content, sender_id),
                 message_id=message_id,
             ),
         )
@@ -311,6 +311,22 @@ def _decompress_text(raw: bytes) -> str | None:
         return None
 
 
+def _strip_sender_prefix(content: str | None, sender_id: str) -> str | None:
+    """Remove the group sender header WeChat stores ahead of sticker XML.
+
+    WeChat 4.x stores another member's group content as ``<username>:\\n``
+    followed by the message payload, while the local user's own rows carry no
+    such header. Only the already confirmed sender's exact header is removed;
+    every other shape is returned unchanged so the existing fallback holds.
+    """
+    if not content or content.startswith("<"):
+        return content
+    prefix = f"{sender_id}:\n"
+    if content.startswith(prefix):
+        return content[len(prefix):]
+    return content
+
+
 def _sticker_expression(
     content: str | None,
     *,
@@ -320,6 +336,7 @@ def _sticker_expression(
     fallback_key = message_id or "unknown"
     md5 = None
     unambiguous = False
+    emoji = None
     if (
         content
         and len(content) <= _XML_PARSE_MAX_LEN
@@ -355,6 +372,10 @@ def _sticker_expression(
             identity_basis="wechat_xml_md5" if reliable_md5 else "unresolved",
             identity_key=f"wechat:md5:{reliable_md5}" if reliable_md5 else None,
             content_md5=reliable_md5,
+            # Only a digest-verified occurrence may carry an acquisition hint.
+            recovery_url=(
+                _clean_string(emoji.get("cdnurl")) if reliable_md5 and emoji is not None else None
+            ),
         ),
     )
 

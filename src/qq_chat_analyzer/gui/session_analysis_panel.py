@@ -682,13 +682,15 @@ class SessionAnalysisPanel(QWidget):
             return
         cancel_event = Event()
         self._analysis_cancel = cancel_event
+        # Cancellation reaches every source: WeChat media recovery is network
+        # bound and must stop fetching once the user cancels.
         operation = lambda report: self._facade.analyze_session(
             source,
             session_id,
             config,
             progress=report,
             on_phase=report,
-            **({"cancelled": cancel_event.is_set} if source is ChatSource.QQ else {}),
+            cancelled=cancel_event.is_set,
         )
         identity = object()
         self._analysis_operation = identity

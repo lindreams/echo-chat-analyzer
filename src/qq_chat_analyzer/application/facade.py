@@ -850,6 +850,66 @@ class ChatAnalyzerFacade:
                 stored.close()
             raise
 
+    def _prepare_wechat_report_media(self, result, progress, cancelled, *, batch=None):
+        """Fetch only this report's selected WeChat materials from the CDN.
+
+        Materials already verified from an authorized local root are never
+        requested again. Only the union of the retained rankings is acquired,
+        and every result stays a fixed status/reason; URLs are never logged.
+        A recovery failure keeps the completed local analysis; an explicit
+        cancellation is never converted into a fallback export.
+        """
+        from collections import Counter
+        from ..presentation.stickers import REPORT_STICKER_BYTE_BUDGET, sticker_report_targets
+        from .wechat.wechat_sticker_cdn import recover_wechat_sticker_media
+
+        view = result.echo_report_view
+        targets = sticker_report_targets(view.stickers if view else None)
+        data = result.stickers
+        if not targets:
+            return data
+        batch = batch or uuid4().hex[:12]
+        started_at = _perf_counter()
+        keys = tuple(target.media_key for target in targets if target.media_key)
+
+        def stopped():
+            return cancelled() or self._sources_closing.is_set()
+
+        with timed_stage("sticker_report_media"):
+            _report_progress(progress, "正在获取表情包素材...")
+            try:
+                data = recover_wechat_sticker_media(
+                    data,
+                    media_keys=keys,
+                    max_report_bytes=REPORT_STICKER_BYTE_BUDGET,
+                    cancelled=stopped,
+                    progress=lambda text: _report_progress(progress, text),
+                )
+            except Exception:
+                # Cancellation must not turn into a fallback report; any other
+                # failure keeps the already completed local analysis.
+                if self._sources_closing.is_set():
+                    raise FacadeError(
+                        code="application_closing", public_message="Echo 正在关闭。"
+                    ) from None
+                if cancelled():
+                    raise FacadeError(
+                        code="analysis_cancelled", public_message="分析已取消。"
+                    ) from None
+                _LOGGER.info(
+                    "[sticker-media-cdn] batch=%s state=failed code=wechat_media_recovery_failed",
+                    batch)
+                return result.stickers
+        media = {item.media_key: item for item in data.media}
+        counts = Counter(media[t.media_key].status if t.media_key in media else "not_requested"
+                         for t in targets)
+        _LOGGER.info(
+            "[sticker-media-cdn] batch=%s state=finished targets=%d available=%d "
+            "limited=%d missing=%d failed=%d unsupported=%d elapsed_ms=%d",
+            batch, len(targets), counts["available"], counts["limited"], counts["missing"],
+            sum(counts[s] for s in ("failed", "invalid", "cancelled")), counts["unsupported"],
+            max(0, round((_perf_counter() - started_at) * 1000)))
+        return data
 
     def __init__(
         self,
@@ -1459,6 +1519,7 @@ class ChatAnalyzerFacade:
                     conversation_kind=conversation_kind,
                     viewer_speaker_key=viewer_speaker_key,
                     progress=progress,
+                    cancelled=cancelled,
                 )
 
     def _analyze_direct_db_qq_session(
@@ -1568,6 +1629,7 @@ class ChatAnalyzerFacade:
             if cancelled():
                 raise FacadeError(code="analysis_cancelled", public_message="分析已取消。")
             automatic_qq = source is ChatSource.QQ and session is not None
+            automatic_wechat = source is ChatSource.WECHAT and session is not None
             media_roots = source_media_roots if config.sticker_media_roots is None else config.sticker_media_roots
             request = AnalysisRequestDTO(
                 input_path=input_path,
@@ -1581,12 +1643,12 @@ class ChatAnalyzerFacade:
                 conversation_kind=conversation_kind,
                 viewer_speaker_key=viewer_speaker_key,
                 sticker_media_roots=() if automatic_qq else media_roots,
-                export_echo_report=not automatic_qq,
+                export_echo_report=not (automatic_qq or automatic_wechat),
             )
             with _translated_errors(source):
                 _report_progress(progress, "正在处理消息...")
                 _report_progress(progress, "正在分析聊天内容...")
-                if automatic_qq:
+                if automatic_qq or automatic_wechat:
                     _report_progress(progress, "正在分析表情包...")
                 core_started_at = _perf_counter()
                 core_completed = False
@@ -1631,6 +1693,24 @@ class ChatAnalyzerFacade:
                                 "report_image_unavailable" if asset.reason == "report_image_unavailable" else "upstream_unavailable")
                     _LOGGER.info("[sticker-media-asset] batch=%s target=%d code=%s", media_batch, ordinal, assembly)
                 _LOGGER.info("[sticker-media-export] batch=%s state=finished", media_batch)
+            elif automatic_wechat and result.echo_report_view is not None:
+                media_batch = uuid4().hex[:12]
+                stickers = self._prepare_wechat_report_media(
+                    result, progress, cancelled, batch=media_batch)
+                if cancelled() or self._sources_closing.is_set():
+                    raise FacadeError(code="analysis_cancelled", public_message="分析已取消。")
+                _report_progress(progress, "正在生成报告...")
+                try:
+                    with _translated_errors(source), timed_stage("sticker_report_export"):
+                        result = analysis_service.export_sticker_report(
+                            result, stickers, output_directory,
+                            cancelled=lambda: cancelled() or self._sources_closing.is_set())
+                except Exception:
+                    if cancelled() or self._sources_closing.is_set():
+                        raise FacadeError(code="analysis_cancelled", public_message="分析已取消。") from None
+                    _LOGGER.info("[sticker-media-export] batch=%s state=failed code=report_assembly_failed",
+                                 media_batch)
+                    raise
             else:
                 _report_progress(progress, "正在生成报告...")
             if cancelled() or self._sources_closing.is_set():

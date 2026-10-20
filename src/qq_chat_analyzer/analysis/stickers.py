@@ -37,6 +37,10 @@ class StickerSend:
     media_key: str = field(repr=False)
     content_md5: str | None = field(repr=False)
     local_paths: tuple[str, ...] = field(default=(), repr=False)
+    # Untrusted acquisition hint for a digest-verified occurrence only. Never
+    # serialized, never part of identity; the fetched bytes must still match
+    # content_md5 before use.
+    recovery_url: str | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -317,6 +321,7 @@ def collect_sticker_sends(messages: Iterable[RichMessage]) -> tuple[StickerSend,
                 identity_key=evidence.identity_key,
                 media_key=evidence.identity_key or f"unresolved:{occurrence_id}",
                 content_md5=evidence.content_md5, local_paths=evidence.local_paths,
+                recovery_url=evidence.recovery_url,
             ))
     return tuple(sends)
 

@@ -852,13 +852,82 @@ def test_wechat_type47_reaches_formal_report_through_provider_and_facade(tmp_pat
     opted_out = facade.analyze_session(ChatSource.WECHAT, session_id, AnalysisConfig(
         output_directory=tmp_path / "no-media", sticker_media_roots=(),
     ))
-    assert opted_out.result.stickers.media[0].status == "not_requested"
+    # Without an authorized local root the report falls back to the verified
+    # CDN hint only. This fictional host is outside the allowlist, so it is
+    # rejected before any request and no bytes are produced.
+    assert (opted_out.result.stickers.media[0].status,
+            opted_out.result.stickers.media[0].reason) == (
+        "unsupported", "wechat_cdn_url_host_rejected")
     assert len(opted_out.result.stickers.sends) == 3
     no_media = opted_out.echo_report_view.stickers
     assert no_media.total_send_count == chapter.total_send_count
     assert no_media.unique_material_count == chapter.unique_material_count
     assert all(not asset.data_uri for asset in no_media.assets)
     assert opted_out.report_path.is_file()
+
+
+def test_wechat_media_failure_keeps_local_report_but_cancel_does_not(
+    tmp_path, monkeypatch,
+):
+    """A recovery bug keeps the local analysis; cancellation aborts export."""
+    from qq_chat_analyzer.application.facade import (
+        AnalysisConfig, ChatAnalyzerFacade, ChatSource, FacadeError,
+    )
+    from qq_chat_analyzer.application.wechat.wechat_environment_config import (
+        WeChatEnvironmentConfig, WeChatEnvironmentConfigLoader, WeChatEnvironmentConfigWriter,
+    )
+    from qq_chat_analyzer.application.wechat.wechat_export_import_service import (
+        WeChatExportImportService,
+    )
+    from qq_chat_analyzer.application.wechat.wechat_provider_factory import WeChatProviderFactory
+    from qq_chat_analyzer.providers.wechat_database_provider import WeChatSession
+    import qq_chat_analyzer.application.wechat.wechat_sticker_cdn as sticker_cdn
+
+    path = tmp_path / "wechat.json"
+    WeChatEnvironmentConfigWriter(path).save(WeChatEnvironmentConfig())
+    factory = WeChatProviderFactory(config_loader=WeChatEnvironmentConfigLoader(path))
+    provider = factory.create()
+    session_id = "wxid_fiction_room@chatroom"
+    xml = ('<msg><emoji md5="0123456789abcdef0123456789abcdef" '
+           'cdnurl="https://fictional-vweixinf.tc.qq.com/fictional"/></msg>')
+    monkeypatch.setattr(provider, "list_sessions", lambda: [WeChatSession(
+        session_id=session_id, display_name="Fictional chat", session_type="group")])
+    monkeypatch.setattr(provider, "_contact_display_names", lambda: {})
+    monkeypatch.setattr(provider, "_resolve_self_username", lambda: "wxid_fiction_self")
+    monkeypatch.setattr(provider, "read_session_rows", lambda *args, **kwargs: [dict(
+        local_type=47, server_id="fictional-sticker", create_time=1760000001,
+        message_content=xml, user_name="wxid_fiction_peer")])
+    facade = ChatAnalyzerFacade(
+        wechat_service=WeChatExportImportService(provider_factory=factory),
+        analysis_service=AnalysisApplicationService(),
+    )
+
+    def failing_recovery(*args, **kwargs):
+        raise RuntimeError("fictional recovery defect")
+
+    monkeypatch.setattr(sticker_cdn, "recover_wechat_sticker_media", failing_recovery)
+    outcome = facade.analyze_session(ChatSource.WECHAT, session_id, AnalysisConfig(
+        output_directory=tmp_path / "fallback"))
+    assert outcome.report_path.is_file()
+    assert len(outcome.result.stickers.sends) == 1
+    assert outcome.result.stickers.media[0].status == "not_requested"
+    assert all(not asset.data_uri for asset in outcome.echo_report_view.stickers.assets)
+
+    cancelled = {"value": False}
+
+    def cancelled_recovery(*args, **kwargs):
+        cancelled["value"] = True
+        raise RuntimeError("fictional recovery defect")
+
+    monkeypatch.setattr(sticker_cdn, "recover_wechat_sticker_media", cancelled_recovery)
+    with pytest.raises(FacadeError) as error:
+        facade.analyze_session(
+            ChatSource.WECHAT, session_id,
+            AnalysisConfig(output_directory=tmp_path / "cancelled"),
+            cancelled=lambda: cancelled["value"],
+        )
+    assert error.value.code == "analysis_cancelled"
+    assert not (tmp_path / "cancelled" / "echo-report.html").is_file()
 
 
 @pytest.mark.parametrize("value", ["", "relative", ["relative"], ["../outside"], [3], ["\\\\server\\share"]])

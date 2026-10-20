@@ -42,6 +42,9 @@ class StickerIdentity:
     identity_key: str | None = field(default=None, repr=False)
     content_md5: str | None = field(default=None, repr=False)
     local_paths: tuple[str, ...] = field(default=(), repr=False)
+    # Untrusted acquisition hint taken from validated source XML; never part of
+    # identity and never serialized. A consumer must still verify the digest.
+    recovery_url: str | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

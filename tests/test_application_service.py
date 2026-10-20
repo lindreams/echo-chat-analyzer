@@ -91,7 +91,7 @@ def test_execute_returns_completed_privacy_safe_result_without_cli_output(
     monkeypatch.setattr(service_module, "count_word_speakers", reject_cli_preparation)
     monkeypatch.setattr(service_module, "top_word_speaker_summary", reject_cli_preparation)
 
-    def record_export(*args: object) -> None:
+    def record_export(*args: object, **kwargs: object) -> None:
         generated_filenames.append(Path(str(args[-1])).name)
 
     monkeypatch.setattr(

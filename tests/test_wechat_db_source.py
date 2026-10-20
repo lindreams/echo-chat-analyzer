@@ -367,6 +367,101 @@ def test_sticker_row_becomes_rich_expression_and_legacy_message(
     assert legacy.message_type == "sticker"
 
 
+FICTIONAL_STICKER_DIGEST = "0123456789abcdef0123456789abcdef"
+FICTIONAL_STICKER_XML = (
+    f'<msg><emoji md5="{FICTIONAL_STICKER_DIGEST.upper()}" '
+    'cdnurl="https://fictional.invalid/never-fetch"/></msg>'
+)
+
+
+@pytest.mark.parametrize("compressed", [False, True], ids=["plain", "zstd"])
+def test_group_sticker_strips_only_confirmed_sender_prefix(
+    tmp_path: Path, compressed: bool
+) -> None:
+    """WeChat 4.x group rows prefix another member's payload with its username."""
+    export = tmp_path / "session.json"
+    content = f"wxid_fictional_sender:\n{FICTIONAL_STICKER_XML}"
+    row = _db_row(
+        local_type=STICKER_LOCAL_TYPE,
+        server_id=900047,
+        message_content=(
+            zstd.ZstdCompressor().compress(content.encode()).hex() if compressed else content
+        ),
+    )
+    if compressed:
+        row["WCDB_CT_message_content"] = 4
+    _write_db_export(export, [row])
+
+    rich_messages = wechat_db_adapter.parse_rich_messages(
+        wechat_db_adapter.load_messages(export)
+    )
+
+    assert len(rich_messages) == 1
+    sticker = rich_messages[0].contents[0]
+    assert sticker.sticker.identity_basis == "wechat_xml_md5"
+    assert sticker.sticker.content_md5 == FICTIONAL_STICKER_DIGEST
+    assert sticker.sticker.identity_key == f"wechat:md5:{FICTIONAL_STICKER_DIGEST}"
+    # The legacy expression key keeps the source attribute's case; only the
+    # material identity is normalized.
+    assert sticker.expression_key.lower() == FICTIONAL_STICKER_DIGEST
+
+
+def test_group_sticker_prefix_of_another_sender_stays_unresolved(
+    tmp_path: Path,
+) -> None:
+    """A header that is not this row's confirmed sender is never stripped."""
+    export = tmp_path / "session.json"
+    _write_db_export(
+        export,
+        [
+            _db_row(
+                local_type=STICKER_LOCAL_TYPE,
+                server_id=900048,
+                message_content=f"wxid_fictional_other:\n{FICTIONAL_STICKER_XML}",
+            )
+        ],
+    )
+
+    rich_messages = wechat_db_adapter.parse_rich_messages(
+        wechat_db_adapter.load_messages(export)
+    )
+
+    sticker = rich_messages[0].contents[0]
+    assert sticker.sticker.identity_basis == "unresolved"
+    assert sticker.sticker.identity_key is None
+    assert sticker.sticker.content_md5 is None
+    assert sticker.expression_key == "900048"
+
+
+def test_group_sticker_prefix_does_not_relax_single_emoji_rule(
+    tmp_path: Path,
+) -> None:
+    """Stripping the header must not make an ambiguous XML resolve."""
+    export = tmp_path / "session.json"
+    ambiguous = (
+        f'<msg><emoji md5="{FICTIONAL_STICKER_DIGEST}"/>'
+        f'<emoji md5="{FICTIONAL_STICKER_DIGEST}"/></msg>'
+    )
+    _write_db_export(
+        export,
+        [
+            _db_row(
+                local_type=STICKER_LOCAL_TYPE,
+                server_id=900049,
+                message_content=f"wxid_fictional_sender:\n{ambiguous}",
+            )
+        ],
+    )
+
+    rich_messages = wechat_db_adapter.parse_rich_messages(
+        wechat_db_adapter.load_messages(export)
+    )
+
+    sticker = rich_messages[0].contents[0]
+    assert sticker.sticker.identity_basis == "unresolved"
+    assert sticker.sticker.identity_key is None
+
+
 def test_malformed_rows_do_not_drop_valid_neighbours(tmp_path: Path) -> None:
     export = tmp_path / "session.json"
     _write_db_export(export, [_db_row(create_time=None), _db_row(), "junk"])

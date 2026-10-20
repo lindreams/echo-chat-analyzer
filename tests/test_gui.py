@@ -1603,6 +1603,29 @@ def _window_with_running_fictional_analysis(qt_app, source):
     return window, facade, executor, panel
 
 
+def test_wechat_analysis_forwards_cancel_signal(qt_app):
+    """WeChat media recovery must observe the same cancel event as the panel."""
+    source = _facade_module().ChatSource.WECHAT
+    window, facade, executor, panel = _window_with_running_fictional_analysis(qt_app, source)
+    window.cancel_analysis()
+    captured: dict[str, object] = {}
+
+    def analyze_session(source, session_id, config=None, progress=None, on_phase=None,
+                        cancelled=lambda: False):
+        captured["cancelled"] = cancelled
+        return _StubOutcome()
+
+    facade.analyze_session = analyze_session
+    panel.start_analysis()
+    _drain(panel)
+    event = panel._analysis_cancel
+    executor.tasks[-1].operation(None)
+
+    assert captured.get("cancelled") is not None
+    event.set()
+    assert captured["cancelled"]() is True
+
+
 @pytest.mark.parametrize("source_name", ["qq", "wechat"])
 def test_processing_cancel_returns_while_real_worker_is_still_blocked(qt_app, source_name):
     from qq_chat_analyzer.application.facade import AnalysisPhase

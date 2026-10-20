@@ -209,6 +209,7 @@ DOMAIN_MODULES = {
         "test_wechat_provider_factory",
         "test_wechat_runtime_bootstrap",
         "test_wechat_setup_service",
+        "test_wechat_sticker_cdn",
         "test_wechat_wcdb_diagnostic",
         "test_wx_key_helper_powershell",
     },
