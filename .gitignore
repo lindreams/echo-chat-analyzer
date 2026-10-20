@@ -7,6 +7,7 @@ output/
 # The Windows portable runtime contract is a hand-authored, tracked input:
 # both scripts/build_windows_exe.ps1 and the runtime contract tests read it.
 !scripts/windows_runtime_manifest.json
+!scripts/sqlite_runtime_pins.json
 
 # The WeChat runtime pin file is a hand-authored, tracked input: the Node/Koffi
 # bootstrap and its tests read it.

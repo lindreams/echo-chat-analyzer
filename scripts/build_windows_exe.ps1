@@ -349,6 +349,13 @@ try {
         }
     }
 
+    # Includes RuntimeOnly: copying runtime assets cannot bless an old Python
+    # SQLite DLL. The spec pins the input; verify the collected output as well.
+    & $VenvPython (Join-Path $PSScriptRoot 'bootstrap_sqlite_runtime.py') --verify (Join-Path $PortableDirectory '_internal/sqlite3.dll')
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Frozen SQLite DLL failed its release pin; a full rebuild is required.'
+    }
+
     New-Item -ItemType Directory -Force -Path $PortableDirectory | Out-Null
     if (Test-Path -LiteralPath $PortableRuntime) {
         Remove-Item -LiteralPath $PortableRuntime -Recurse -Force

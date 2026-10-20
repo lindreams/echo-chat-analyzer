@@ -49,8 +49,15 @@ def _isolated_diagnostic_loggers() -> None:
 def test_uncaught_exception_is_logged_without_leaking(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The dialog is requested, never shown: a real modal blocks the suite."""
+    from PySide6.QtWidgets import QApplication, QMessageBox
+
     module = _desktop_runtime()
     records: list[logging.LogRecord] = []
+    critical = mock.Mock()
+    # A live QApplication from another module would open a modal dialog here.
+    monkeypatch.setattr(QApplication, "instance", staticmethod(lambda: object()))
+    monkeypatch.setattr(QMessageBox, "critical", critical)
 
     class _RecordingHandler(logging.Handler):
         def emit(self, record: logging.LogRecord) -> None:
@@ -75,6 +82,7 @@ def test_uncaught_exception_is_logged_without_leaking(
         text = records[0].getMessage()
         assert "secret desktop crash" in text
         assert "RuntimeError" in text
+        assert critical.call_count == 1
     finally:
         logger.removeHandler(handler)
         logger.setLevel(original_level)
@@ -131,3 +139,27 @@ def test_main_starts_gui_even_when_logging_initialization_fails(
     startup.finish_exit.assert_called_once_with(7, window=startup.window)
     startup.critical.assert_not_called()
     startup.configure.assert_called_once_with()
+
+
+@pytest.mark.parametrize("logging_fails", [False, True])
+def test_startup_failure_only_mentions_a_log_that_was_configured(
+    desktop_startup, logging_fails: bool,
+) -> None:
+    """An unavailable diagnostic log must not be promised to the user."""
+    startup = desktop_startup
+    module = _desktop_runtime()
+    if logging_fails:
+        startup.configure.side_effect = PermissionError(
+            13, "Permission denied", r"C:\Users\Fictional\Private\logs\echo.log",
+        )
+    startup.window_class.side_effect = RuntimeError("fictional startup failure")
+
+    assert startup.entry.main([]) == 1
+
+    startup.critical.assert_called_once()
+    expected = (
+        module.STARTUP_FAILED_NO_LOG_MESSAGE
+        if logging_fails
+        else module.STARTUP_FAILED_MESSAGE
+    )
+    assert startup.critical.call_args.args[-1] == expected

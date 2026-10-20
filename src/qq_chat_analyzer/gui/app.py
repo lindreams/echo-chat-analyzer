@@ -21,6 +21,7 @@ from ..version import APP_VERSION
 from ..desktop import main
 from .desktop_runtime import (
     STARTUP_FAILED_MESSAGE,
+    STARTUP_FAILED_NO_LOG_MESSAGE,
     configure_logging,
     install_global_exception_handler,
     log_startup,
@@ -189,12 +190,15 @@ def _run_gui(argv: list[str] | None = None) -> int:
     """Start the Qt event loop with the main window."""
     install_global_exception_handler()
     logger = None
+    diagnostics_ready = False
     try:
         logger = configure_logging()
         log_startup(APP_VERSION)
+        diagnostics_ready = True
     except Exception:
         # Diagnostics are optional; an unwritable log must not prevent GUI startup.
-        logger = None
+        # The unavailable log is not claimed to the user below.
+        pass
 
     arguments = list(sys.argv[1:] if argv is None else argv)
 
@@ -220,7 +224,12 @@ def _run_gui(argv: list[str] | None = None) -> int:
                 pass
         app = QApplication.instance()
         if app is not None:
-            QMessageBox.critical(None, "\u9519\u8bef", STARTUP_FAILED_MESSAGE)
+            QMessageBox.critical(
+                None,
+                "\u9519\u8bef",
+                STARTUP_FAILED_MESSAGE if diagnostics_ready
+                else STARTUP_FAILED_NO_LOG_MESSAGE,
+            )
         return 1
 
 

@@ -16,12 +16,76 @@ import json
 import re
 from pathlib import Path
 import tomllib
+import hashlib
+import io
+import runpy
+import struct
+import zipfile
 
 import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = PROJECT_ROOT / "scripts" / "windows_runtime_manifest.json"
+
+
+def _sqlite_build_tools():
+    return runpy.run_path(str(PROJECT_ROOT / "scripts/bootstrap_sqlite_runtime.py"))
+
+
+def _fictional_sqlite_archive():
+    dll = bytearray(256)
+    dll[:2] = b"MZ"
+    struct.pack_into("<I", dll, 60, 128)
+    dll[128:132] = b"PE\0\0"
+    struct.pack_into("<H", dll, 132, 0x8664)
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("sqlite3.dll", dll)
+        archive.writestr("sqlite3.def", "fictional exports")
+    payload = stream.getvalue()
+    pins = {"archiveSizeBytes": len(payload),
+            "archiveSha3_256": hashlib.sha3_256(payload).hexdigest(),
+            "dllSha256": hashlib.sha256(dll).hexdigest()}
+    return payload, bytes(dll), pins
+
+
+def test_sqlite_bootstrap_verifies_before_publishing_and_preserves_existing(tmp_path):
+    tools = _sqlite_build_tools()
+    payload, dll, pins = _fictional_sqlite_archive()
+    target = tmp_path / "sqlite3.dll"
+    with pytest.raises(ValueError):
+        tools["install_archive"](payload + b"changed", target, pins)
+    assert not target.exists()
+    assert tools["install_archive"](payload, target, pins) == target
+    assert target.read_bytes() == dll
+    target.write_bytes(b"another task's artifact")
+    with pytest.raises(ValueError):
+        tools["install_archive"](payload, target, pins)
+    assert target.read_bytes() == b"another task's artifact"
+
+
+def test_sqlite_bootstrap_rejects_wrong_dll_even_in_verified_archive(tmp_path):
+    tools = _sqlite_build_tools()
+    payload, _, pins = _fictional_sqlite_archive()
+    pins["dllSha256"] = "0" * 64
+    with pytest.raises(ValueError):
+        tools["install_archive"](payload, tmp_path / "sqlite3.dll", pins)
+    assert not (tmp_path / "sqlite3.dll").exists()
+
+
+def test_sqlite_collection_refuses_ambient_or_duplicate_dll(tmp_path):
+    tools = _sqlite_build_tools()
+    _, dll, pins = _fictional_sqlite_archive()
+    good, old = tmp_path / "pinned.dll", tmp_path / "ambient.dll"
+    good.write_bytes(dll)
+    old.write_bytes(b"old interpreter sqlite")
+    pinned = ("sqlite3.dll", str(good), "BINARY")
+    tools["verify_frozen_binaries"]([pinned], pins)
+    for entries in ([], [("sqlite3.dll", str(old), "BINARY")],
+                    [pinned, ("nested/sqlite3.dll", str(old), "BINARY")]):
+        with pytest.raises(ValueError):
+            tools["verify_frozen_binaries"](entries, pins)
 
 
 
@@ -206,8 +270,8 @@ def test_manifest_pins_the_wechat_native_assets_that_ship() -> None:
 # ------------------------------------------------ tracked build toolchain
 
 
-def test_spec_excludes_only_jieba_lac_data():
-    """Module exclusion must also remove LAC data, preserving other jieba assets."""
+def test_spec_excludes_unused_jieba_data_and_local_install_provenance(tmp_path):
+    """Keep runtime metadata/data without shipping editable-install locations."""
     import runpy
     from types import SimpleNamespace
     from PyInstaller.utils.hooks import collect_data_files
@@ -216,21 +280,43 @@ def test_spec_excludes_only_jieba_lac_data():
         (str(Path(destination) / Path(source).name), source, "DATA")
         for source, destination in collect_data_files("jieba")
     ]
-    analysis = SimpleNamespace(datas=collected, pure=[], scripts=[], binaries=[])
+    metadata = "qq_chat_analyzer-0.2.2.dist-info"
+    provenance = f"{metadata}/direct_url.json"
+    retained_metadata = {f"{metadata}/{name}" for name in (
+        "METADATA", "WHEEL", "entry_points.txt",
+    )}
+    collected += [(name, "fictional source", "DATA") for name in (
+        provenance, *retained_metadata, "unrelated/direct_url.json",
+    )]
+    # The metadata-only Analysis seam still receives a validated SQLite input.
+    payload, _, pins = _fictional_sqlite_archive()
+    (tmp_path / "scripts").mkdir()
+    for filename in ("pyproject.toml", "scripts/bootstrap_sqlite_runtime.py"):
+        (tmp_path / filename).write_bytes((PROJECT_ROOT / filename).read_bytes())
+    (tmp_path / "scripts/sqlite_runtime_pins.json").write_text(json.dumps(pins))
+    dll = tmp_path / "runtime/sqlite/sqlite3.dll"
+    _sqlite_build_tools()["install_archive"](payload, dll, pins)
+    analysis = SimpleNamespace(datas=collected, pure=[], scripts=[],
+                               binaries=[("sqlite3.dll", str(dll), "BINARY")])
     # Execute the real spec's post-Analysis collection rule without building.
     result = runpy.run_path(str(PROJECT_ROOT / "LocalChatAnalyzer.spec"), init_globals={
-        "SPEC": str(PROJECT_ROOT / "LocalChatAnalyzer.spec"),
+        "SPEC": str(tmp_path / "LocalChatAnalyzer.spec"),
         "Analysis": lambda *args, **kwargs: analysis,
         "PYZ": lambda *args, **kwargs: None,
         "EXE": lambda *args, **kwargs: None,
-        "COLLECT": lambda *args, **kwargs: None,
+        "COLLECT": lambda *args, **kwargs: kwargs,
     })
+    assert "sqlite3.dll" in result["coll"]["upx_exclude"]
     retained = {Path(item[0]).as_posix() for item in result["a"].datas}
     assert "jieba/dict.txt" in retained
     assert "jieba/analyse/idf.txt" in retained
     assert not any(name.startswith("jieba/lac_small/") for name in retained)
+    assert provenance not in retained
+    assert retained_metadata <= retained
+    assert "unrelated/direct_url.json" in retained
     assert retained == {
         Path(item[0]).as_posix() for item in collected
         if not Path(item[0]).as_posix().startswith("jieba/lac_small/")
+        and item[0] != provenance
     }
     assert "PIL" not in result["desktop_excludes"]

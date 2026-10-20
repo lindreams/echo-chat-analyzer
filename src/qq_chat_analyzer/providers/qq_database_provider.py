@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 import sqlite3
 import warnings
 from dataclasses import dataclass
@@ -490,12 +491,67 @@ def _quick_check(database_path: Path) -> str:
         uri = f"{database_path.resolve().as_uri()}?mode=ro"
         connection = sqlite3.connect(uri, uri=True)
         row = connection.execute("PRAGMA quick_check(1)").fetchone()
-        return "ok" if row and row[0] == "ok" else "failed"
-    except (OSError, sqlite3.DatabaseError):
+        if row and row[0] == "ok":
+            return "ok"
+        # SQLite's text may contain private table names or values. Never log it.
+        _LOGGER.warning(
+            "QQ snapshot quick_check result=failed category=integrity "
+            "integrity_kind=%s sqlite_version=%s classifier_version=1",
+            _integrity_failure_kind(row[0] if row else None, sqlite3.sqlite_version),
+            _safe_sqlite_version(),
+        )
+        return "failed"
+    except (OSError, sqlite3.DatabaseError) as error:
+        code = getattr(error, "sqlite_errorcode", 0)
+        primary = code & 0xff
+        category = (
+            "corrupt" if primary in (sqlite3.SQLITE_CORRUPT, sqlite3.SQLITE_NOTADB)
+            else "access" if primary in (sqlite3.SQLITE_CANTOPEN, sqlite3.SQLITE_READONLY, sqlite3.SQLITE_PERM, sqlite3.SQLITE_AUTH)
+            else "busy" if primary in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+            else "io" if isinstance(error, OSError) or primary == sqlite3.SQLITE_IOERR
+            else "sqlite"
+        )
+        _LOGGER.warning(
+            "QQ snapshot quick_check result=error category=%s "
+            "sqlite_errorcode=%d sqlite_version=%s",
+            category, code, _safe_sqlite_version(),
+        )
         return "error"
     finally:
         if connection is not None:
             connection.close()
+
+
+def _safe_sqlite_version() -> str:
+    version = sqlite3.sqlite_version
+    return version if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) else "unknown"
+
+
+def _integrity_failure_kind(message: object, version: str) -> str:
+    """Classify reviewed formats, never infer the damaged page or a root cause.
+
+    Reviewed against SQLite version-3.50.4 and version-3.54.1: src/btree.c,
+    src/pragma.c and ext/fts3/fts3.c. These six formats are unchanged; unreviewed
+    versions and unusual identifiers fail to unknown.
+    In particular, the FTS4 format also describes genuine validation failures:
+    matching it cannot establish the contentless-FTS4 upstream false positive.
+    """
+    if version not in ("3.50.4", "3.54.1") or not isinstance(message, str) or len(message) > 4096:
+        return "unknown"
+    structural = r"\*\*\* in database main \*\*\*\n"
+    identifier = r"[A-Za-z0-9_]+"
+    patterns = (
+        ("btree", structural + r"Fragmentation of [0-9]+ bytes reported as [0-9]+ on page [0-9]+"),
+        ("overflow", structural + r"Tree [0-9]+ page [0-9]+ cell [0-9]+: overflow list length is [0-9]+ but should be [0-9]+"),
+        ("freelist", structural + r"Freelist: size is [0-9]+ but should be [0-9]+"),
+        ("page_reference", structural + r"Page [0-9]+: never used"),
+        ("constraint", rf"(?:NULL value in {identifier}\.{identifier}|CHECK constraint failed in {identifier})"),
+        ("virtual_table", rf"unable to validate the inverted index for FTS4 table main\.{identifier}: SQL logic error"),
+    )
+    for kind, pattern in patterns:
+        if re.fullmatch(pattern, message):
+            return kind
+    return "unknown"
 
 
 def _bool_text(value: int | bool) -> str:
