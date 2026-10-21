@@ -95,7 +95,7 @@ message_denominator = data.message_counts.total_messages
 成员按可靠 sender_id 区分；零值或缺失发送者保留未知身份，不借昵称归属。
 群聊非本人发送是多名成员的合计，不能解释为一个 TA。
 
-### 私聊特色证据（V1.1 第二批）
+### 私聊特色证据（V1.1 七项算法与第三批故事关联）
 
 正式分析返回 `result.reports.private_stickers: PrivateStickerFeatures | None`。
 群聊保持 `None`，不运行私聊规则；混合来源、混合会话、缺少会话身份或私聊成员归属冲突时，
@@ -121,6 +121,14 @@ index = build_sticker_fact_index(
 )
 features = analyze_private_stickers(index)
 ```
+
+第三批在 `features.stories` 中保留全部关联组、至多三个精选 ID 和接力本地片段引用。
+故事通过字段名／下标引用七项完整候选；事件时间线与全历史背景分别保留，
+不因同素材相同就合并跨年的独立事件。精选不依赖媒体恢复结果。
+`stories.moments` 仍含本地原消息，不是新增分享数据合同；正式序列化继续排除整份私聊证据。
+按需创建的 Qt 本地实验预览不接入正式报告，也不恢复媒体、写文件或记录正文。
+具体规则、虚构合并案例、调用方式及真实媒体验收留项见
+[第三批交付记录](PRIVATE_STICKER_BATCH3.md)。
 
 索引校验发送与消息内容段逐项对应，不能靠非唯一消息 ID 重新配对。
 原始位置来自导入投影实例；正式过滤或缺少 Rich 配对造成的内部位置跳跃保留为屏障，

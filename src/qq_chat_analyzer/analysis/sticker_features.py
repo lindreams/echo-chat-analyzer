@@ -1,4 +1,4 @@
-"""V1.1 private sticker discoveries; deterministic evidence, no story/UI or I/O.
+"""V1.1 private sticker discoveries; deterministic evidence, no UI or I/O.
 
 All eligible candidates survive. Fields containing identities/occurrence refs
 are private, in-process evidence, not a share-report serialization contract.
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from collections import Counter, deque
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 import heapq
 from math import fsum
@@ -15,6 +15,7 @@ from typing import Literal
 
 from .sticker_index import DayCounts, IndexedStickerMessage, StickerFactIndex
 from .stickers import StickerHabit
+from .sticker_stories import StickerStorySelection, select_sticker_stories
 
 
 RULE_VERSION = "private-stickers.v1.1-batch2"
@@ -224,6 +225,7 @@ class PrivateStickerFeatures:
     relays: tuple[StickerRelay, ...] = ()
     shared_habits: tuple[SharedStickerHabit, ...] = ()
     styles: tuple[StickerStyleComparison, ...] = ()
+    stories: StickerStorySelection = field(default_factory=StickerStorySelection, repr=False)
 
 
 def analyze_private_stickers(index: StickerFactIndex) -> PrivateStickerFeatures:
@@ -243,7 +245,7 @@ def analyze_private_stickers(index: StickerFactIndex) -> PrivateStickerFeatures:
     for (sender, key), timeline in index.materials.items():
         counts[sender][key] = len(timeline.sends)
     adoptions = _adoptions(index)
-    return PrivateStickerFeatures(
+    features = PrivateStickerFeatures(
         True, source=report.source, conversation_id=report.conversation_id,
         first_date=_iso(index.first_day), end_date=_iso(index.end_day),
         adoptions=adoptions, reunions=_reunions(index),
@@ -251,6 +253,7 @@ def analyze_private_stickers(index: StickerFactIndex) -> PrivateStickerFeatures:
         relays=_relays(index), shared_habits=_shared_habits(index, counts, adoptions),
         styles=_styles(index, counts),
     )
+    return replace(features, stories=select_sticker_stories(index, features))
 
 
 def _iso(day: int | None) -> str | None:

@@ -72,7 +72,6 @@ def test_eight_turns_keep_the_actual_fourteen_message_scene_and_text():
     rows = short_relay()
     result = analyze_private_stickers(facts(rows))
     assert len(rows) == 14
-    assert hasattr(result, "relays"), "second batch must expose relay evidence"
     relay, = result.relays
     assert relay.turn_count == 8
     assert (relay.self_send_count, relay.peer_send_count) == (4, 4)
@@ -87,6 +86,12 @@ def test_eight_turns_keep_the_actual_fourteen_message_scene_and_text():
     common = next(x for x in relay.materials if x.identity_key == "fiction:心情0")
     assert (common.self_send_count, common.peer_send_count) == (2, 1)
     assert result.rule_version == "private-stickers.v1.1-batch2"
+    moment, = result.stories.moments
+    assert (moment.core_start, moment.core_end) == (2, 10)
+    assert (moment.context_start, moment.context_end) == (0, 11)
+    assert moment.dense_exchange
+    assert all(m.message is rows[m.ordinal] for m in moment.messages)
+    assert "context_time_gap" in moment.qualifiers
 
 
 def test_shared_habit_is_repeated_cross_day_use_with_an_adoption_link():
@@ -98,7 +103,6 @@ def test_shared_habit_is_repeated_cross_day_use_with_an_adoption_link():
     b.add(6, "A", "擦肩图")
     b.add(6, "B", "擦肩图", seconds=20)
     result = analyze_private_stickers(facts(b.ordered()))
-    assert hasattr(result, "shared_habits"), "second batch must expose shared habits"
     shared, = result.shared_habits
     assert shared.identity_key == "fiction:早安水獭"
     assert [(u.send_count, u.date_count, u.known_send_count) for u in shared.members] == [(6, 3, 7)]*2
@@ -110,7 +114,6 @@ def test_shared_habit_is_repeated_cross_day_use_with_an_adoption_link():
 
 def test_style_at_equal_volume_has_a_clear_contrast():
     result = analyze_private_stickers(facts(style_rows([2]*20, [40])))
-    assert hasattr(result, "styles"), "second batch must expose equal-volume style comparisons"
     style, = result.styles
     assert style.sample_size == 40
     assert style.richer.sender_id == "fiction-A"
@@ -123,7 +126,6 @@ def test_rarefaction_matches_exhaustive_sampling_of_a_small_multiset():
     # This oracle enumerates combinations, independently of the production product.
     from qq_chat_analyzer.analysis import sticker_features
     expected = sum(len(set(x)) for x in combinations("aaabbc", 3))/20
-    assert hasattr(sticker_features, "expected_sticker_richness")
     assert sticker_features.expected_sticker_richness((3, 2, 1), 3) == pytest.approx(expected)
 
 
@@ -134,6 +136,7 @@ def test_single_author_burst_is_one_turn_and_unknown_materials_are_not_merged():
     b.add(0, "B", "reply", seconds=20)
     rows = b.ordered()
     assert not analyze_private_stickers(facts(rows)).relays
+    assert not analyze_private_stickers(facts(rows)).stories.moments
     b.add(0, "A", None, seconds=30)
     b.add(0, "B", "different", seconds=40)
     relay, = analyze_private_stickers(facts(b.ordered())).relays
@@ -327,6 +330,17 @@ def test_all_seven_algorithms_keep_linkable_overlapping_stories_in_one_chat():
     assert [(u.send_count, u.known_send_count) for u in shared.members] == [(10, 100), (10, 10)]
     assert result.relays[0].turn_count == 8
     assert result.reunions[0].gap_days == 49
+    selection = result.stories
+    assert len(selection.candidates) == 2
+    material = next(s for s in selection.candidates if s.kind == "material")
+    assert {name for name, _ in material.findings} == {
+        "signatures", "adoptions", "reunions", "trends", "shared_habits", "relays"}
+    moment, = selection.moments
+    assert moment.event_id in material.event_ids
+    assert {name for _, _, name, _ in material.timeline} == {"adoptions", "reunions", "trends", "relays"}
+    assert material.timeline == tuple(sorted(material.timeline))
+    assert moment.shared_identity_keys == (shared.identity_key,)
+    assert material.story_id in selection.featured_ids
 
 
 @pytest.mark.parametrize("counts,m,expected", [((100,), 10, 1), ((1,)*10, 10, 10), ((3, 1), 2, 1.5), ((3, 1), 0, 0)])
@@ -387,10 +401,16 @@ def test_second_batch_runs_through_real_adapters_and_service_without_exporting_p
         assert f.available and f.relays and f.shared_habits and f.styles
         assert f.relays[0].turn_count == 8
         assert f.styles[0].sample_size == 10
+        assert f.stories.featured_ids and f.stories.moments
         assert [(u.send_count, u.known_send_count) for u in f.shared_habits[0].members] == [(10, 100), (10, 10)]
     exported = (tmp_path/"out"/"echo-report.json").read_text(encoding="utf-8")
-    for private_field in ("start_ordinal", "occurrence_id", "shared_habits", "known_materials_only", "barrier_reasons"):
+    for private_field in ("start_ordinal", "occurrence_id", "shared_habits", "known_materials_only", "barrier_reasons",
+                          "featured_ids", "core_start", "虚构日常"):
         assert private_field not in exported
+    normalized = json.dumps(json.loads(exported), ensure_ascii=False)
+    html = (tmp_path/"out"/"echo-report.html").read_text(encoding="utf-8")
+    for private_value in ("featured_ids", "core_start", "虚构日常：今天是第25天"):
+        assert private_value not in normalized and private_value not in html
 
 
 @pytest.mark.parametrize("source", ["qq", "wechat"])
@@ -424,3 +444,167 @@ def test_formal_quality_filter_leaves_a_relay_barrier(tmp_path, source):
     assert result.diagnostic_counts.analyzed_message_count == 4
     assert "known_filter_gaps" in result.reports.private_stickers.qualifiers
     assert not result.reports.private_stickers.relays
+
+
+def test_stories_keep_separate_returns_years_apart_without_history_bridging():
+    b = Messages("batch3-years")
+    for day in (0, 2, 4, 100, 102, 104, 800):
+        b.add(day, "A", "old")
+    b.add(0, "B", text="虚构朋友", seconds=1)
+    for day in (20, 40, 200, 300):
+        b.add(day, "A", "other", "other", "other")
+    f = analyze_private_stickers(facts(b.ordered()))
+    assert sum(r.identity_key == "fiction:old" for r in f.reunions) == 2
+    returns = [s for s in f.stories.candidates if "fiction:old" in s.identity_keys
+               and any(n == "reunions" for n, _ in s.findings)]
+    assert len(returns) == 2
+    assert returns[0].end_date < returns[1].start_date
+    assert sum(n == "signatures" for s in returns for n, _ in s.findings) <= 1
+
+
+@pytest.mark.parametrize("damage", ["gap", "unknown_sender", "unknown_time"])
+def test_moment_context_stops_at_untrusted_neighbor_and_reports_it(damage):
+    rows = list(short_relay())
+    # Damage the opening context, leaving eight trusted sticker turns intact.
+    positions = list(range(len(rows)))
+    if damage == "gap":
+        positions = [p if p < 2 else p+1 for p in positions]
+    elif damage == "unknown_sender":
+        rows[1] = replace(rows[1], sender=SenderIdentity(None, "未知"), is_self=None)
+    else:
+        rows[1] = replace(rows[1], timestamp="unknown")
+    moment, = analyze_private_stickers(facts(rows, positions=positions)).stories.moments
+    assert moment.context_start == 2
+    assert moment.context_end == 11
+    assert any(q.startswith("context_barrier:") for q in moment.qualifiers)
+    assert moment.messages[0].message is rows[2]
+
+
+def test_selection_keeps_all_candidates_and_promotes_a_later_stronger_event():
+    b = Messages("batch3-interest")
+    for day in range(6):
+        for i in range(12 if day == 5 else 4):
+            b.add(day, "A" if i % 2 == 0 else "B", f"图{day}-{i}", seconds=i*15)
+    f = analyze_private_stickers(facts(b.ordered()))
+    assert len(f.relays) == 6
+    assert len(f.stories.candidates) == 6
+    assert len(f.stories.featured_ids) == 3
+    best = next(s for s in f.stories.candidates if s.story_id == f.stories.featured_ids[0])
+    assert best.event_ids == (f.stories.moments[0].event_id,)
+    assert len(f.stories.moments[0].messages) == 12
+    assert "alternating_turns:12" in best.interest_reasons
+
+
+def test_overlapping_relays_share_one_event_without_building_an_unbounded_core():
+    b = Messages("batch3-overlap")
+    for i in range(45):
+        b.add(0, "A" if i % 2 == 0 else "B", "same", seconds=i*30)
+    f = analyze_private_stickers(facts(b.ordered()))
+    assert len(f.relays) > 1
+    moment, = f.stories.moments
+    assert len(moment.relay_indices) == len(f.relays)
+    assert moment.core_end-moment.core_start <= 21
+    assert "bounded_representative_of_overlapping_relays" in moment.qualifiers
+    assert sum(n == "relays" for s in f.stories.candidates for n, _ in s.findings) == len(f.relays)
+
+
+def test_context_adds_one_whole_author_round_on_each_side_only():
+    b = Messages("batch3-context")
+    for seconds, side in ((0, "A"), (1, "B"), (2, "B")):
+        b.add(0, side, text="虚构开场", seconds=seconds)
+    for i in range(8):
+        b.add(0, "A" if i % 2 == 0 else "B", "same", seconds=10+i*20)
+    for seconds, side in ((160, "A"), (161, "A"), (170, "B")):
+        b.add(0, side, text="虚构收尾", seconds=seconds)
+    rows = b.ordered()
+    moment, = analyze_private_stickers(facts(rows)).stories.moments
+    assert (moment.core_start, moment.core_end) == (3, 11)
+    assert (moment.context_start, moment.context_end) == (1, 13)
+    assert [m.message for m in moment.messages] == list(rows[1:13])
+
+
+def test_same_image_moment_requires_alternating_uses_of_that_image():
+    b = Messages("batch3-same-image")
+    for i in range(8):
+        b.add(0, "A" if i % 2 == 0 else "B", "same" if i in (0, 2, 5, 7) else f"other{i}", seconds=i*20)
+    moment, = analyze_private_stickers(facts(b.ordered())).stories.moments
+    assert moment.dense_exchange
+    assert not moment.shared_identity_keys  # A,A then B,B is not four alternating replies.
+
+
+@pytest.mark.slow_integration
+def test_local_preview_keeps_content_order_plays_verified_animation_and_marks_gaps(tmp_path, monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QFont, QFontDatabase
+    from PySide6.QtTest import QSignalSpy, QTest
+    from PySide6.QtWidgets import QApplication, QLabel
+    from qq_chat_analyzer.application.sticker_media import verify_fetched_media
+    from qq_chat_analyzer.presentation.sticker_moment_preview import create_local_moment_preview
+    from qq_chat_analyzer.rich_message import NonTextContent, RecallState, ReplyRelation
+    from test_sticker_data import image_bytes
+
+    app = QApplication.instance() or QApplication([])
+    # The Windows offscreen plugin has no system font database. Load a system
+    # font explicitly for readable synthetic screenshots, without user settings.
+    if not QFontDatabase.families():
+        import os
+        from pathlib import Path
+        font = Path(os.environ["WINDIR"])/"Fonts"/"msyh.ttc"
+        font_id = QFontDatabase.addApplicationFont(str(font))
+        assert font_id >= 0
+        app.setFont(QFont(QFontDatabase.applicationFontFamilies(font_id)[0], 10))
+    rows = list(short_relay())
+    rows[2] = replace(rows[2], contents=(TextContent("<b>虚构原文</b>"), rows[2].contents[0],
+                                       NonTextContent("unknown"), TextContent("虚构尾段")),
+                      recall_state=RecallState(True), relations=(ReplyRelation("duplicate"),))
+    index = facts(rows)
+    moment, = analyze_private_stickers(index).stories.moments
+    raw = image_bytes(animated=True)
+    key = index.messages[2].sends[0].media_key
+    verified = verify_fetched_media(raw, media_key=key, expected_md5=hashlib.md5(raw).hexdigest())
+    assert verified.status == "available" and verified.frame_count == 2
+    data = StickerData(collect_sticker_sends(rows), media=(verified,))
+    before = analyze_private_stickers(index)
+    dialog = create_local_moment_preview(moment, data)
+    try:
+        dialog.show()
+        app.processEvents()
+        labels = dialog.findChildren(QLabel)
+        texts = [label.text() for label in labels]
+        assert all(label.textFormat() == Qt.TextFormat.PlainText for label in labels)
+        assert texts.index("<b>虚构原文</b>") < texts.index("[未支持内容：unknown]") < texts.index("虚构尾段")
+        assert any("缺图" in text for text in texts)
+        assert any("撤回" in text for text in texts)
+        assert any("回复关系" in text for text in texts)
+        movies = [label.movie() for label in labels if label.movie() is not None]
+        assert movies
+        movie = movies[0]
+        changed = QSignalSpy(movie.frameChanged)
+        QTest.qWait(250)
+        assert changed.count() >= 1  # Playback timer, beyond manual decoding.
+        assert movie.jumpToFrame(0)
+        first = movie.currentImage()
+        assert movie.jumpToFrame(1) and movie.currentImage() != first
+        assert analyze_private_stickers(index) == before
+        # Explicitly requested synthetic artifact; never a default preview export.
+        assert dialog.grab().save(str(tmp_path/"fictional-preview.png"))
+    finally:
+        dialog.close()
+        app.processEvents()
+    # Resolved-byte lifetime is owned by the analysis result, not this dialog.
+    assert verified.original_bytes == raw
+    from qq_chat_analyzer.media_content import StoredMedia
+    snapshot = StoredMedia(raw)
+    snapshot.close()
+    for item, expected in (
+        (replace(verified, status="preview"), "可信预览；并非原图"),
+        (replace(verified, original_bytes=None, stored=snapshot), "快照不可读"),
+        (replace(verified, frame_count=99), "动画暂无法复现"),
+    ):
+        preview = create_local_moment_preview(moment, replace(data, media=(item,)))
+        try:
+            assert any(expected in label.text() for label in preview.findChildren(QLabel))
+        finally:
+            preview.close()
+            app.processEvents()
