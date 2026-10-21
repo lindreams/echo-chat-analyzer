@@ -22,7 +22,8 @@ class DayCounts:
 
     @classmethod
     def from_counts(cls, counts: Mapping[int, int]) -> DayCounts:
-        days = tuple(sorted(counts))
+        # Counter += 0 on a text-only day must not create a sticker usage day.
+        days = tuple(sorted(day for day, count in counts.items() if count > 0))
         prefix = [0]
         for day in days:
             prefix.append(prefix[-1] + counts[day])

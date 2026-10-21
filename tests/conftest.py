@@ -119,6 +119,7 @@ def isolate_user_data(tmp_path, monkeypatch):
 DOMAIN_MODULES = {
     "core": {
         "test_sticker_features",
+        "test_sticker_features_batch2",
         "test_sticker_data",
         "test_analysis_reports",
         "test_analysis_reports_service",

@@ -5,21 +5,36 @@ are private, in-process evidence, not a share-report serialization contract.
 """
 from __future__ import annotations
 
+from collections import Counter, deque
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 import heapq
+from math import fsum
 from typing import Literal
 
-from .sticker_index import DayCounts, StickerFactIndex
+from .sticker_index import DayCounts, IndexedStickerMessage, StickerFactIndex
 from .stickers import StickerHabit
 
 
-RULE_VERSION = "private-stickers.v1.1-batch1"
+RULE_VERSION = "private-stickers.v1.1-batch2"
 ADOPTION_MIN_SENDS = 3
 ADOPTION_MIN_DATES = 2
 REUNION_MIN_GAP_DAYS = 28
 REUNION_GAP_MULTIPLIER = 3
 TREND_MIN_SENDS = 5
+SHARED_MIN_SENDS = 3
+SHARED_MIN_DATES = 2
+SHARED_MIN_SHARE = .10
+RELAY_MIN_TURNS = 4
+RELAY_MAX_GAP_SECONDS = 120
+RELAY_MAX_SECONDS = 600
+STYLE_MIN_SENDS = 10
+STYLE_MIN_DATES = 2
+STYLE_MAX_SAMPLE = 100
+STYLE_MIN_RICHNESS_RATIO = 1.8
+STYLE_MIN_RICHNESS_DIFFERENCE = 3
+STYLE_MIN_D2_RATIO = 1.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +110,102 @@ class StickerSignatureEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class StickerRelayTurn:
+    # References to the existing index preserve ALL contents, including text.
+    # Private local evidence only: never pass this to a report serializer.
+    messages: tuple[IndexedStickerMessage, ...] = field(repr=False)
+    send_count: int
+
+    @property
+    def sender_id(self) -> str:
+        return self.messages[0].message.sender.identity_id
+
+    @property
+    def start_epoch_seconds(self) -> int:
+        return self.messages[0].epoch_seconds
+
+    @property
+    def end_epoch_seconds(self) -> int:
+        return self.messages[-1].epoch_seconds
+
+
+@dataclass(frozen=True, slots=True)
+class StickerRelayMaterial:
+    identity_key: str = field(repr=False)
+    media_key: str = field(repr=False)
+    self_send_count: int
+    peer_send_count: int
+    occurrence_ids: tuple[str, ...] = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class StickerRelay:
+    start_ordinal: int
+    end_ordinal: int  # Exclusive, within this analysis run only.
+    start_epoch_seconds: int
+    end_epoch_seconds: int
+    turns: tuple[StickerRelayTurn, ...] = field(repr=False)
+    self_send_count: int
+    peer_send_count: int
+    materials: tuple[StickerRelayMaterial, ...] = field(repr=False)
+    media_keys: tuple[str, ...] = field(repr=False)
+    unknown_identity_count: int
+    start_barrier_reasons: tuple[str, ...]
+    end_barrier_reasons: tuple[str, ...]
+
+    @property
+    def turn_count(self) -> int:
+        return len(self.turns)
+
+
+@dataclass(frozen=True, slots=True)
+class SharedStickerUse:
+    sender_id: str = field(repr=False)
+    send_count: int
+    date_count: int
+    known_send_count: int  # Includes reliable material sends with unknown dates.
+    first_date: str | None
+    last_date: str | None
+    has_unknown_time: bool
+
+    @property
+    def share(self) -> float:
+        return self.send_count / self.known_send_count
+
+
+@dataclass(frozen=True, slots=True)
+class SharedStickerHabit:
+    identity_key: str = field(repr=False)
+    media_key: str = field(repr=False)
+    members: tuple[SharedStickerUse, SharedStickerUse]
+    # Keep both stories and their exact link; selection is a later concern.
+    adoption: StickerAdoption | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class StickerStyleMember:
+    sender_id: str = field(repr=False)
+    known_send_count: int
+    unknown_identity_send_count: int
+    date_count: int
+    raw_unique_count: int
+    expected_unique_count: float
+    d2: float
+
+
+@dataclass(frozen=True, slots=True)
+class StickerStyleComparison:
+    sample_size: int
+    richer: StickerStyleMember
+    concentrated: StickerStyleMember
+    unattributed_send_count: int
+    claim: str = "known_materials_only"
+    min_richness_ratio: float = STYLE_MIN_RICHNESS_RATIO
+    min_richness_difference: int = STYLE_MIN_RICHNESS_DIFFERENCE
+    min_d2_ratio: float = STYLE_MIN_D2_RATIO
+
+
+@dataclass(frozen=True, slots=True)
 class PrivateStickerFeatures:
     available: bool
     unavailable_reason: str | None = None
@@ -110,6 +221,9 @@ class PrivateStickerFeatures:
         "filtered_observations_only", "history_may_be_truncated", "temporal_claims_use_known_dates",
     )
     rule_version: str = RULE_VERSION
+    relays: tuple[StickerRelay, ...] = ()
+    shared_habits: tuple[SharedStickerHabit, ...] = ()
+    styles: tuple[StickerStyleComparison, ...] = ()
 
 
 def analyze_private_stickers(index: StickerFactIndex) -> PrivateStickerFeatures:
@@ -124,11 +238,18 @@ def analyze_private_stickers(index: StickerFactIndex) -> PrivateStickerFeatures:
         qualifiers.append("filter_gap_provenance_not_supplied")
     if index.uncertain_sends:
         qualifiers.append("unresolved_sticker_facts")
+    # Reuse complete reliable timelines for K, never dated-only DayCounts.total.
+    counts = {sender: {} for sender in index.members}
+    for (sender, key), timeline in index.materials.items():
+        counts[sender][key] = len(timeline.sends)
+    adoptions = _adoptions(index)
     return PrivateStickerFeatures(
         True, source=report.source, conversation_id=report.conversation_id,
         first_date=_iso(index.first_day), end_date=_iso(index.end_day),
-        adoptions=_adoptions(index), reunions=_reunions(index),
+        adoptions=adoptions, reunions=_reunions(index),
         trends=_trends(index), signatures=_signatures(index), qualifiers=tuple(qualifiers),
+        relays=_relays(index), shared_habits=_shared_habits(index, counts, adoptions),
+        styles=_styles(index, counts),
     )
 
 
@@ -257,3 +378,143 @@ def _signatures(index: StickerFactIndex) -> tuple[StickerSignatureEvidence, ...]
                                                      habit.span_days >= 180, habit.span_days >= 180 or rank > 3,
                                                      selected is not None and selected.identity_key == habit.identity_key))
     return tuple(results)
+
+
+def _author_turns(index: StickerFactIndex) -> Iterator[StickerRelayTurn]:
+    messages = []
+    for message in index.messages:
+        sender = message.message.sender.identity_id
+        if messages and (message.barrier_before or sender != messages[-1].message.sender.identity_id):
+            yield StickerRelayTurn(tuple(messages), sum(len(m.sends) for m in messages))
+            messages = []
+        if sender in index.members and message.epoch_seconds is not None:
+            messages.append(message)
+    if messages:
+        yield StickerRelayTurn(tuple(messages), sum(len(m.sends) for m in messages))
+
+
+def _relay_evidence(index: StickerFactIndex, turns: tuple[StickerRelayTurn, ...]) -> StickerRelay:
+    sends = [s for turn in turns for m in turn.messages for s in m.sends]
+    own, peer = index.side_members
+    materials = {}
+    for send in sends:
+        if send.identity_key:
+            materials.setdefault(send.identity_key, []).append(send)
+    start, end = turns[0].messages[0].ordinal, turns[-1].messages[-1].ordinal+1
+    return StickerRelay(
+        start, end, turns[0].start_epoch_seconds, turns[-1].end_epoch_seconds, turns,
+        sum(s.sender_id == own for s in sends), sum(s.sender_id == peer for s in sends),
+        tuple(StickerRelayMaterial(key, ss[0].media_key,
+                                  sum(s.sender_id == own for s in ss), sum(s.sender_id == peer for s in ss),
+                                  tuple(s.occurrence_id for s in ss)) for key, ss in sorted(materials.items())),
+        tuple(dict.fromkeys(s.media_key for s in sends)), sum(not s.identity_key for s in sends),
+        index.messages[start].barrier_reasons,
+        index.messages[end].barrier_reasons if end < len(index.messages) else (),
+    )
+
+
+def _relays(index: StickerFactIndex) -> tuple[StickerRelay, ...]:
+    # Without original positions we cannot establish that filtering left the
+    # observed conversation contiguous. Counting habits needs no such claim.
+    if not index.source_positions_supplied or None in index.side_members:
+        return ()
+    window = deque()
+    results = []
+
+    def emit():
+        if len(window) >= RELAY_MIN_TURNS:
+            results.append(_relay_evidence(index, tuple(window)))
+
+    for turn in _author_turns(index):
+        if window:
+            previous = window[-1]
+            gap = turn.start_epoch_seconds-previous.end_epoch_seconds
+            if (not turn.send_count or turn.messages[0].barrier_before
+                    or previous.messages[-1].ordinal+1 != turn.messages[0].ordinal
+                    or turn.sender_id == previous.sender_id or not 0 < gap <= RELAY_MAX_GAP_SECONDS):
+                emit()
+                window.clear()
+        if not turn.send_count:
+            continue
+        if window and turn.end_epoch_seconds-window[0].start_epoch_seconds > RELAY_MAX_SECONDS:
+            # Emit the maximal window BEFORE advancing. Do not generate every
+            # ABAB prefix, trim a turn, or discard distinct overlapping events.
+            emit()
+            while window and turn.end_epoch_seconds-window[0].start_epoch_seconds > RELAY_MAX_SECONDS:
+                window.popleft()
+        if turn.end_epoch_seconds-turn.start_epoch_seconds <= RELAY_MAX_SECONDS:
+            window.append(turn)
+    emit()
+    return tuple(sorted(results, key=lambda r: (-r.turn_count, -min(r.self_send_count, r.peer_send_count),
+                                                r.start_ordinal, r.end_ordinal)))
+
+
+def _shared_habits(index: StickerFactIndex, counts: dict[str, dict[str, int]],
+                   adoptions: tuple[StickerAdoption, ...]) -> tuple[SharedStickerHabit, ...]:
+    own, peer = index.side_members
+    if own is None or peer is None:
+        return ()
+    totals = {sender: sum(values.values()) for sender, values in counts.items()}
+    adoption_by_key = {a.identity_key: a for a in adoptions}
+    results = []
+    for key in counts[own].keys() & counts[peer].keys():
+        uses = []
+        for sender in (own, peer):
+            timeline = index.materials[sender, key]
+            days = timeline.dated.days
+            use = SharedStickerUse(sender, counts[sender][key], len(days), totals[sender],
+                                   _iso(days[0]) if days else None, _iso(days[-1]) if days else None,
+                                   timeline.has_unknown_time)
+            if use.send_count < SHARED_MIN_SENDS or use.date_count < SHARED_MIN_DATES or use.share < SHARED_MIN_SHARE:
+                break
+            uses.append(use)
+        if len(uses) == 2:
+            results.append(SharedStickerHabit(key, index.materials[own, key].sends[0].media_key,
+                                             tuple(uses), adoption_by_key.get(key)))
+    return tuple(sorted(results, key=lambda h: (-min(u.date_count for u in h.members),
+                                                -min(u.send_count for u in h.members), h.identity_key)))
+
+
+def expected_sticker_richness(counts: Sequence[int], sample_size: int) -> float:
+    """Exact finite-sample expectation, evaluated by short floating products.
+
+    Sampling is without replacement from reliable observed sends. This neither
+    estimates unseen materials nor simulates a random sample. Work: O(m * U).
+    """
+    total = sum(counts)
+    if any(type(c) is not int or c <= 0 for c in counts) or not 0 <= sample_size <= total:
+        raise ValueError("positive material counts and a sample within the population required")
+    probabilities = []
+    for count in counts:
+        if total-count < sample_size:
+            probabilities.append(1.0)
+            continue
+        absent = 1.0
+        for j in range(sample_size):
+            absent *= (total-count-j)/(total-j)
+        probabilities.append(1-absent)
+    return fsum(probabilities)
+
+
+def _styles(index: StickerFactIndex, counts: dict[str, dict[str, int]]) -> tuple[StickerStyleComparison, ...]:
+    if None in index.side_members:
+        return ()
+    totals = {sender: sum(values.values()) for sender, values in counts.items()}
+    if any(totals[sender] < STYLE_MIN_SENDS or len(index.members[sender].known_sends.days) < STYLE_MIN_DATES
+           for sender in index.side_members):
+        return ()
+    sample = min(STYLE_MAX_SAMPLE, *(totals[sender] for sender in index.side_members))
+    unknowns = Counter(s.sender_id for s in index.uncertain_sends if not s.identity_key)
+    members = []
+    for sender in index.side_members:
+        values = tuple(counts[sender].values())
+        members.append(StickerStyleMember(sender, totals[sender], unknowns[sender],
+                                         len(index.members[sender].known_sends.days), len(values),
+                                         expected_sticker_richness(values, sample),
+                                         totals[sender]**2/sum(n*n for n in values)))
+    richer, concentrated = sorted(members, key=lambda m: -m.expected_unique_count)
+    if (richer.expected_unique_count < STYLE_MIN_RICHNESS_RATIO*concentrated.expected_unique_count
+            or richer.expected_unique_count-concentrated.expected_unique_count < STYLE_MIN_RICHNESS_DIFFERENCE
+            or richer.d2 < STYLE_MIN_D2_RATIO*concentrated.d2):
+        return ()
+    return (StickerStyleComparison(sample, richer, concentrated, index.unattributed_send_count),)
