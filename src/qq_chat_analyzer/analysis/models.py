@@ -7,6 +7,7 @@ from enum import Enum
 
 from .conversation_sessions import ConversationSessionReport
 from .stickers import StickerConversationReport
+from .sticker_features import PrivateStickerFeatures
 
 
 UNKNOWN_CONVERSATION_NAME = "\u672a\u77e5\u4f1a\u8bdd"
@@ -236,6 +237,8 @@ class AnalysisReports:
     private_language: PrivateLanguageReport | None = None
     expression: ExpressionReport | None = None
     stickers: tuple[StickerConversationReport, ...] = ()
+    # Private evidence only; Echo serializers consume the separate view model.
+    private_stickers: PrivateStickerFeatures | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

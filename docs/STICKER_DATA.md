@@ -95,6 +95,58 @@ message_denominator = data.message_counts.total_messages
 成员按可靠 sender_id 区分；零值或缺失发送者保留未知身份，不借昵称归属。
 群聊非本人发送是多名成员的合计，不能解释为一个 TA。
 
+### 私聊特色证据（V1.1 第一批）
+
+正式分析返回 `result.reports.private_stickers: PrivateStickerFeatures | None`。
+群聊保持 `None`，不运行私聊规则；混合来源、混合会话、缺少会话身份或私聊成员归属冲突时，
+索引不建立可用的私聊判断，结果携带 `unavailable_reason`，不猜测双方身份。
+证据不含故事原文，不改变报告布局；现有 HTML/JSON 展示序列化器不导出这份进程内私有结果。
+不能直接对证据对象使用通用 `asdict` 作为分享格式：其中仍有成员身份、素材 key 和 occurrence 引用。
+
+调用链在已有素材聚合后、任何媒体恢复前，构建一次 `StickerFactIndex` 并执行
+`analyze_private_stickers(index)`。素材身份与习惯继续由 `analysis/stickers.py` 拥有，
+不复制素材目录、排行榜或招牌资格规则。索引和算法分别位于
+`analysis/sticker_index.py`、`analysis/sticker_features.py`。
+独立调用示例（输入必须是同一份已正式过滤的 Rich 顺序序列）：
+
+```python
+from qq_chat_analyzer.analysis.sticker_index import build_sticker_fact_index
+from qq_chat_analyzer.analysis.sticker_features import analyze_private_stickers
+
+index = build_sticker_fact_index(
+    data, kept_rich_messages, reports=sticker_reports,
+    source_positions=kept_original_import_positions,
+)
+features = analyze_private_stickers(index)
+```
+
+索引校验发送与消息内容段逐项对应，不能靠非唯一消息 ID 重新配对。
+原始位置来自导入投影实例；正式过滤或缺少 Rich 配对造成的内部位置跳跃保留为屏障，
+不重新读取被过滤的正文。仅有首端截断不等同于整个范围都有内部缺口。
+独立调用未提供原位置时，证据明确标记缺少过滤缺口溯源，不能解释成来源历史完整。
+消息保持输入顺序，不按时间重排来消除倒序或并列的不确定性。
+
+索引共享成员×素材的发送序列、成员×日的稀疏前缀计数和带屏障的 kept Rich 消息顺序。
+`M` 为消息数，`E` 为含表情包消息数，`S` 为内容段发送数，`K` 为可靠素材发送数；
+一条消息可以贡献多个 `S/K`，但只贡献一个 `M/E`。
+日期索引仅包含可用日期，未定时发送仍保留在原始事实及不确定性证据中，不填补日期。
+`unknown_sender_count` 仍指发送者 ID 未知；ID 已知但本人标记未知另计 `unattributed_send_count`，
+不将两者混为一谈。未知素材仅供“可能遮挡缺席判断”的查询，绝不合并成一种素材。
+日期采用既有 Asia/Shanghai 语义；区间均为起点含、终点不含。
+
+| 结果 | 正式规则和主要证据 |
+| --- | --- |
+| `adoptions` | 首次可辨认使用不同日且方向符合原消息顺序；后用方至少 3 次、2 日。保留两端日期、发送引用、间隔及后用方次数／日数；`claim=observed_order_only`，不表达传播因果 |
+| `reunions` | 此前至少 3 次、2 日；相邻使用日差至少 `max(28, 3×此前日间隔中位数)`；开区间本人其他可靠图至少 3 次／2 日，或消息至少 20 条／3 日。保留旧习惯、中位数、两端日期与期间活动；相关未知或过滤缺口阻止沉寂判断 |
+| `trends` | 全部有效消息日期跨度至少 60 日用相邻 30 日窗，14～59 日用 7 日窗，每 7 日及末端扫描。走红同时满足发送次数增长与 K 占比增长；淡出还要求本人继续跨日贴图、原图跨日使用及相关未知不遮挡。保留两窗 K、次数、使用日、占比及此前历史，不用不等长窗口计算增长率 |
+| `signatures` | 复用全部合格 `StickerHabit`，保留既有选中标记，补充原始频次排名、Top 3 重复、至少 180 日跨度与独立故事资格；不以这些编辑标记修改原招牌资格 |
+
+所有合格候选均保留，含同素材不同阶段及重叠趋势窗口，不在分析层截成三条故事。
+未知身份、归属或时间造成的歧义按相关素材／区间处理，不替未知事实分配身份。
+缺图、媒体失败或不支持的格式均不改变算法资格；这批证据暂不改变既有报告媒体目标集合。
+后续内容精选须先关联／合并同事件，再将所需素材并入既有恢复通路；不得为补图重算真实资格。
+来源未导入的消息类型无法仅靠位置索引证明覆盖，所有结果始终限定为本次过滤后的可辨认记录。
+
 ## QQ 群聊接入审计与原生获取
 
 本轮只读取源码、公开资料和虚构样本，未读取真实 QQ 数据库、媒体或账号状态。

@@ -22,7 +22,12 @@ from ..analysis.analyzers import (
 )
 from ..analysis.analyzers.expression_analyzer import iter_emoji_clusters
 from ..analysis.models import AnalysisReports, ExpressionReport
+from ..analysis.sticker_features import (
+    PrivateStickerFeatures, analyze_private_stickers,
+)
+from ..analysis.sticker_index import build_sticker_fact_index
 from ..analysis.stickers import (
+    StickerConversationReport,
     StickerData,
     StickerMedia,
     aggregate_stickers,
@@ -219,13 +224,28 @@ class AnalysisApplicationService:
             # rather than being reported as covered denominator.
             sticker_scope = tuple(rich_by_instance.values())
             sticker_sends = collect_sticker_sends(sticker_scope)
-            with timed_stage("sticker_media_resolve"):
-                sticker_media = resolve_sticker_media(sticker_sends, roots=request.sticker_media_roots)
             stickers = StickerData(
                 sends=sticker_sends,
-                media=sticker_media,
                 message_counts=count_sticker_messages(sticker_scope),
             )
+            # Aggregate once, and finish private discovery before ANY media I/O.
+            # Positions describe removed/unpaired records without retaining their
+            # content in the feature index or guessing by source message IDs.
+            with timed_stage("sticker_aggregation"):
+                sticker_reports = aggregate_stickers(stickers, sticker_scope)
+            private_stickers = None
+            if _resolve_conversation_type(kept_messages, request.conversation_kind) == "private":
+                import_positions = {id(message): pos for pos, message in enumerate(outcome.messages)}
+                sticker_positions = tuple(import_positions[id(legacy)]
+                                          for legacy, _ in outcome.rich_message_pairs if id(legacy) in kept_instances)
+                with timed_stage("private_sticker_features"):
+                    private_stickers = analyze_private_stickers(build_sticker_fact_index(
+                        stickers, sticker_scope, reports=sticker_reports,
+                        source_positions=sticker_positions,
+                    ))
+            with timed_stage("sticker_media_resolve"):
+                sticker_media = resolve_sticker_media(sticker_sends, roots=request.sticker_media_roots)
+            stickers = replace(stickers, media=sticker_media)
         diagnostic_counts = AnalysisDiagnosticCounts(
             raw_message_count=outcome.processed_message_count,
             imported_message_count=len(parsed_messages),
@@ -281,6 +301,8 @@ class AnalysisApplicationService:
                     expression_report=expression_report,
                     expression_source=outcome.result.platform,
                     stickers=stickers,
+                    sticker_reports=sticker_reports,
+                    private_stickers=private_stickers,
                 )
             if ranked_words and self._legacy_word_artifacts is not None:
                 with timed_stage("word_speaker_analysis"):
@@ -422,6 +444,8 @@ def _build_reports(
     expression_report: ExpressionReport | None = None,
     expression_source: str | None = None,
     stickers: StickerData | None = None,
+    sticker_reports: tuple[StickerConversationReport, ...] | None = None,
+    private_stickers: PrivateStickerFeatures | None = None,
 ) -> AnalysisReports:
     """Run every extended analyzer over the messages kept for analysis.
 
@@ -463,8 +487,9 @@ def _build_reports(
                 messages,
                 rich_by_instance=rich_by_instance,
             )
-    with timed_stage("sticker_aggregation"):
-        sticker_reports = aggregate_stickers(stickers or StickerData(), (rich_by_instance or {}).values())
+    if sticker_reports is None:
+        with timed_stage("sticker_aggregation"):
+            sticker_reports = aggregate_stickers(stickers or StickerData(), (rich_by_instance or {}).values())
     return AnalysisReports(
         activity=activity,
         user_profiles=user_profiles,
@@ -473,6 +498,7 @@ def _build_reports(
         distinctive_words=distinctive_words,
         private_language=private_language,
         stickers=sticker_reports,
+        private_stickers=private_stickers,
         expression=prepare_expression_report(
             expression,
             expression_source=(
