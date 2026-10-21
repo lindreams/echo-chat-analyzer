@@ -7,18 +7,15 @@ import json
 import pytest
 
 from qq_chat_analyzer.analysis.sticker_features import analyze_private_stickers
-from qq_chat_analyzer.analysis.sticker_index import build_sticker_fact_index
 from qq_chat_analyzer.analysis.stickers import (
-    StickerData, StickerMedia, collect_sticker_sends, count_sticker_messages,
+    StickerData, StickerMedia, collect_sticker_sends,
 )
 from qq_chat_analyzer.rich_message import SenderIdentity, TextContent
-from sticker_feature_samples import Messages
+from sticker_feature_samples import Messages, formal_payload, indexed
 
 
 def facts(rows, *, positions=True, media=()):
-    data = StickerData(collect_sticker_sends(rows), media=media,
-                       message_counts=count_sticker_messages(rows))
-    return build_sticker_fact_index(data, rows, source_positions=(
+    return indexed(rows, media=media, positions=(
         range(len(rows)) if positions is True else None if positions is False else positions
     ))
 
@@ -135,8 +132,8 @@ def test_single_author_burst_is_one_turn_and_unknown_materials_are_not_merged():
         b.add(0, "A", None, seconds=i)
     b.add(0, "B", "reply", seconds=20)
     rows = b.ordered()
-    assert not analyze_private_stickers(facts(rows)).relays
-    assert not analyze_private_stickers(facts(rows)).stories.moments
+    result = analyze_private_stickers(facts(rows))
+    assert not result.relays and not result.stories.moments
     b.add(0, "A", None, seconds=30)
     b.add(0, "B", "different", seconds=40)
     relay, = analyze_private_stickers(facts(b.ordered())).relays
@@ -192,6 +189,12 @@ def test_relay_cannot_trim_a_long_author_turn_to_invent_a_short_chain():
     for i in range(4):
         b.add(0, "A" if i % 2 == 0 else "B", "same", seconds=1000+i*20)
     assert not analyze_private_stickers(facts(b.ordered())).relays
+    # The same gap across the actual 30-minute session boundary starts a fresh
+    # author round; old text must not swallow a genuine later four-turn relay.
+    rows = list(b.ordered())
+    rows[0] = replace(rows[0], timestamp=rows[1].timestamp-3600)
+    relay, = analyze_private_stickers(facts(rows)).relays
+    assert (relay.start_ordinal, relay.end_ordinal, relay.turn_count) == (1, 5, 4)
     assert not analyze_private_stickers(facts(short_relay(), positions=False)).relays
 
 
@@ -306,18 +309,10 @@ def test_text_only_days_do_not_satisfy_the_reunion_other_sticker_day_floor():
     assert not analyze_private_stickers(facts(b.ordered())).reunions
 
 
-def test_second_batch_uses_private_identity_and_is_independent_of_media_success():
-    rows = short_relay()
-    initial = analyze_private_stickers(facts(rows))
-    assert analyze_private_stickers(facts(rows, media=(StickerMedia("fiction:心情0", "failed"),))) == initial
-    for changed in (tuple(replace(m, conversation_type="group") for m in rows),
-                    tuple(replace(m, is_self=None) for m in rows)):
-        f = analyze_private_stickers(facts(changed))
-        assert not (f.relays or f.shared_habits or f.styles)
-
-
 def test_all_seven_algorithms_keep_linkable_overlapping_stories_in_one_chat():
-    result = analyze_private_stickers(facts(combined_scene()))
+    rows = combined_scene()
+    result = analyze_private_stickers(facts(rows))
+    assert analyze_private_stickers(facts(rows, media=(StickerMedia("fiction:打卡海豹", "failed"),))) == result
     assert all((result.signatures, result.adoptions, result.reunions, result.trends,
                 result.relays, result.shared_habits, result.styles))
     shared, = result.shared_habits
@@ -351,40 +346,10 @@ def test_rarefaction_handles_single_material_full_and_empty_samples(counts, m, e
 
 @pytest.mark.parametrize("source", ["qq", "wechat"])
 @pytest.mark.parametrize("group", [False, True])
-def test_second_batch_runs_through_real_adapters_and_service_without_exporting_private_evidence(tmp_path, source, group):
+def test_private_features_reach_real_adapters_without_exporting_evidence(tmp_path, source, group):
     from qq_chat_analyzer.application import AnalysisRequestDTO
     from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
-    from test_qq_db_rich_contents import _body, _sticker, _text
-    from test_sticker_data import _private_payload
-
-    rows = combined_scene()
-    if source == "qq":
-        bodies = [_body(*(_text(p.text) if isinstance(p, TextContent) else
-                           _sticker(p.sticker.identity_key.encode()) for p in m.contents)) for m in rows]
-        payload = _private_payload(*bodies, senders=tuple("10001" if m.is_self else "20002" for m in rows))
-        payload["self"] = {"namespace": "qq_uin", "value": "10001"}
-        if group:
-            payload["query"]["session_type"] = "group"
-        for record, row in zip(payload["records"], rows):
-            record["fields"]["40050"] = row.timestamp
-    else:
-        records = []
-        for row in rows:
-            if isinstance(row.contents[0], TextContent):
-                kind, content = 1, row.contents[0].text
-            else:
-                # WeChat type 47 carries one sticker per message in this adapter.
-                # Separate occurrences retain the original authors and unique seconds.
-                for i, part in enumerate(row.contents):
-                    digest = hashlib.md5(part.sticker.identity_key.encode()).hexdigest()
-                    records.append(dict(local_type=47, server_id="duplicate", create_time=row.timestamp+i,
-                                        user_name="fiction-self" if row.is_self else "fiction-peer",
-                                        message_content=f'<msg><emoji md5="{digest}"/></msg>'))
-                continue
-            records.append(dict(local_type=kind, server_id="duplicate", create_time=row.timestamp,
-                                user_name="fiction-self" if row.is_self else "fiction-peer", message_content=content))
-        payload = dict(source="wechat-db", conversation=dict(username="fiction-room",
-                       session_type="group" if group else "private", self_username="fiction-self"), messages=records)
+    payload = formal_payload(combined_scene(), source, group=group)
     path = tmp_path/"fictional.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     stopwords = tmp_path/"stopwords.txt"
@@ -403,6 +368,7 @@ def test_second_batch_runs_through_real_adapters_and_service_without_exporting_p
         assert f.styles[0].sample_size == 10
         assert f.stories.featured_ids and f.stories.moments
         assert [(u.send_count, u.known_send_count) for u in f.shared_habits[0].members] == [(10, 100), (10, 10)]
+    assert all(m.status not in {"available", "preview"} for m in result.stickers.media)
     exported = (tmp_path/"out"/"echo-report.json").read_text(encoding="utf-8")
     for private_field in ("start_ordinal", "occurrence_id", "shared_habits", "known_materials_only", "barrier_reasons",
                           "featured_ids", "core_start", "虚构日常"):
@@ -417,33 +383,26 @@ def test_second_batch_runs_through_real_adapters_and_service_without_exporting_p
 def test_formal_quality_filter_leaves_a_relay_barrier(tmp_path, source):
     from qq_chat_analyzer.application import AnalysisRequestDTO
     from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
-    from test_qq_db_rich_contents import _body, _sticker, _text
-    from test_sticker_data import _private_payload
 
-    start = 1750000000
-    if source == "qq":
-        payload = _private_payload(_body(_sticker()), _body(_sticker()),
-                                   _body(_text("Filtered " + "x"*110)), _body(_sticker()), _body(_sticker()),
-                                   senders=("10001", "20002", "10001", "10001", "20002"))
-        payload["self"] = {"namespace": "qq_uin", "value": "10001"}
-        for i, record in enumerate(payload["records"]):
-            record["fields"]["40050"] = start+i*20
-    else:
-        records = [dict(local_type=1 if i == 2 else 47, server_id="duplicate", create_time=start+i*20,
-                        user_name="fiction-self" if i in (0, 2, 3) else "fiction-peer",
-                        message_content="Filtered " + "x"*110 if i == 2 else '<msg><emoji md5="' + 'ab'*16 + '"/></msg>')
-                   for i in range(5)]
-        payload = dict(source="wechat-db", conversation=dict(username="fiction-room", session_type="private",
-                       self_username="fiction-self"), messages=records)
+    b = Messages("formal-filter")
+    b.add(0, "A", "same")
+    b.add(1, "B", text="Filtered " + "x"*110)
+    b.add(3, "B", "same")
+    b.add(4, "B", "same", "same")
+    for i in range(4):
+        b.add(5, "A" if i % 2 == 0 else "B", "same", seconds=i*20)
+    b.add(5, "A", text="Filtered " + "x"*110, seconds=30)
+    payload = formal_payload(b.ordered(), source)
     path = tmp_path/"fictional.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     stopwords = tmp_path/"stopwords.txt"
     stopwords.write_text("", encoding="utf-8")
     result = AnalysisApplicationService().execute(AnalysisRequestDTO(
         input_path=path, output_directory=tmp_path/"out", stopwords_path=stopwords, export_echo_report=False))
-    assert result.diagnostic_counts.analyzed_message_count == 4
+    assert result.diagnostic_counts.analyzed_message_count == (7 if source == "qq" else 8)
     assert "known_filter_gaps" in result.reports.private_stickers.qualifiers
     assert not result.reports.private_stickers.relays
+    assert not result.reports.private_stickers.adoptions
 
 
 def test_stories_keep_separate_returns_years_apart_without_history_bridging():
@@ -493,6 +452,18 @@ def test_selection_keeps_all_candidates_and_promotes_a_later_stronger_event():
     assert best.event_ids == (f.stories.moments[0].event_id,)
     assert len(f.stories.moments[0].messages) == 12
     assert "alternating_turns:12" in best.interest_reasons
+    # A vivid 60-turn exchange should not lose simply because a reunion uses
+    # days (200) as its unit. Both have the same editorial interest level.
+    for i in range(60):
+        b.add(6, "A" if i % 2 == 0 else "B", f"快接{i}", seconds=i)
+    for day in (0, 2, 4, 204):
+        b.add(day, "A", "old", seconds=1000)
+    for day in (20, 40):
+        b.add(day, "A", "other", "other", seconds=1000)
+    f = analyze_private_stickers(facts(b.ordered()))
+    assert any(r.gap_days == 200 for r in f.reunions)
+    best = next(s for s in f.stories.candidates if s.story_id == f.stories.featured_ids[0])
+    assert "alternating_turns:60" in best.interest_reasons
 
 
 def test_overlapping_relays_share_one_event_without_building_an_unbounded_core():
@@ -533,18 +504,60 @@ def test_same_image_moment_requires_alternating_uses_of_that_image():
 
 
 @pytest.mark.slow_integration
+def test_local_preview_rejects_equal_sends_from_another_analysis(monkeypatch):
+    monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    from qq_chat_analyzer.presentation.sticker_moment_preview import create_local_moment_preview
+
+    app = QApplication.instance() or QApplication([])
+    rows = short_relay()
+    features = analyze_private_stickers(facts(rows))
+    moment, = features.stories.moments
+    foreign = StickerData(collect_sticker_sends(rows))  # Equal values, different run objects.
+    with pytest.raises(ValueError, match="same analysis"):
+        dialog = create_local_moment_preview(moment, foreign, features=features)
+        dialog.close()
+        app.processEvents()
+    own = StickerData(tuple(s for row in moment.messages for s in row.sends))
+    replaced_row = replace(moment.messages[0], message=replace(rows[0], contents=(TextContent("替换的虚构正文"),)))
+    replaced_moment = replace(moment, messages=(replaced_row, *moment.messages[1:]))
+    with pytest.raises(ValueError, match="same analysis"):
+        create_local_moment_preview(replaced_moment, own, features=features)
+    b = Messages("preview-content-budget")
+    for i in range(4):
+        b.add(0, "A" if i % 2 == 0 else "B", *(("same",)*257 if i == 0 else ("same",)), seconds=i*20)
+    index = facts(b.ordered())
+    features = analyze_private_stickers(index)
+    moment, = features.stories.moments
+    data = StickerData(tuple(s for row in index.messages for s in row.sends))
+    with pytest.raises(ValueError, match="content budget"):
+        create_local_moment_preview(moment, data, features=features)
+
+
+@pytest.mark.slow_integration
 def test_local_preview_keeps_content_order_plays_verified_animation_and_marks_gaps(tmp_path, monkeypatch):
     monkeypatch.setenv("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtCore import Qt
+    from PySide6.QtCore import QCoreApplication, QEvent, Qt
     from PySide6.QtGui import QFont, QFontDatabase
     from PySide6.QtTest import QSignalSpy, QTest
     from PySide6.QtWidgets import QApplication, QLabel
     from qq_chat_analyzer.application.sticker_media import verify_fetched_media
+    from qq_chat_analyzer.presentation import sticker_moment_preview as preview_module
     from qq_chat_analyzer.presentation.sticker_moment_preview import create_local_moment_preview
     from qq_chat_analyzer.rich_message import NonTextContent, RecallState, ReplyRelation
     from test_sticker_data import image_bytes
+    from shiboken6 import isValid
 
     app = QApplication.instance() or QApplication([])
+    class PlainFirstLabel(QLabel):
+        def __init__(self, *args, **kwargs):
+            assert not any(isinstance(arg, str) for arg in args), "text entered QLabel before PlainText"
+            super().__init__(*args, **kwargs)
+
+        def setText(self, text):
+            assert self.textFormat() == Qt.TextFormat.PlainText
+            super().setText(text)
+    monkeypatch.setattr(preview_module, "QLabel", PlainFirstLabel)
     # The Windows offscreen plugin has no system font database. Load a system
     # font explicitly for readable synthetic screenshots, without user settings.
     if not QFontDatabase.families():
@@ -559,14 +572,14 @@ def test_local_preview_keeps_content_order_plays_verified_animation_and_marks_ga
                                        NonTextContent("unknown"), TextContent("虚构尾段")),
                       recall_state=RecallState(True), relations=(ReplyRelation("duplicate"),))
     index = facts(rows)
-    moment, = analyze_private_stickers(index).stories.moments
+    features = analyze_private_stickers(index)
+    moment, = features.stories.moments
     raw = image_bytes(animated=True)
     key = index.messages[2].sends[0].media_key
     verified = verify_fetched_media(raw, media_key=key, expected_md5=hashlib.md5(raw).hexdigest())
     assert verified.status == "available" and verified.frame_count == 2
-    data = StickerData(collect_sticker_sends(rows), media=(verified,))
-    before = analyze_private_stickers(index)
-    dialog = create_local_moment_preview(moment, data)
+    data = StickerData(tuple(s for row in index.messages for s in row.sends), media=(verified,))
+    dialog = create_local_moment_preview(moment, data, features=features)
     try:
         dialog.show()
         app.processEvents()
@@ -586,14 +599,17 @@ def test_local_preview_keeps_content_order_plays_verified_animation_and_marks_ga
         assert movie.jumpToFrame(0)
         first = movie.currentImage()
         assert movie.jumpToFrame(1) and movie.currentImage() != first
-        assert analyze_private_stickers(index) == before
         # Explicitly requested synthetic artifact; never a default preview export.
         assert dialog.grab().save(str(tmp_path/"fictional-preview.png"))
     finally:
         dialog.close()
         app.processEvents()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
     # Resolved-byte lifetime is owned by the analysis result, not this dialog.
     assert verified.original_bytes == raw
+    assert not isValid(movie)  # Closing releases players, not caller-owned media.
+    # Repeated occurrences share one playback device and byte buffer.
+    assert len({id(movie) for movie in movies}) == 1
     from qq_chat_analyzer.media_content import StoredMedia
     snapshot = StoredMedia(raw)
     snapshot.close()
@@ -602,9 +618,50 @@ def test_local_preview_keeps_content_order_plays_verified_animation_and_marks_ga
         (replace(verified, original_bytes=None, stored=snapshot), "快照不可读"),
         (replace(verified, frame_count=99), "动画暂无法复现"),
     ):
-        preview = create_local_moment_preview(moment, replace(data, media=(item,)))
+        preview = create_local_moment_preview(moment, replace(data, media=(item,)), features=features)
         try:
             assert any(expected in label.text() for label in preview.findChildren(QLabel))
         finally:
             preview.close()
             app.processEvents()
+    # Many different animations get bounded playback, with honest placeholders.
+    b = Messages("preview-budget")
+    for i in range(20):
+        b.add(0, "A" if i % 2 == 0 else "B", f"animated{i}", seconds=i*2)
+    index = facts(b.ordered())
+    features = analyze_private_stickers(index)
+    moment, = features.stories.moments
+    sends = tuple(s for row in index.messages for s in row.sends)
+    data = StickerData(sends, media=tuple(replace(verified, media_key=s.media_key) for s in sends))
+    preview = create_local_moment_preview(moment, data, features=features)
+    try:
+        labels = preview.findChildren(QLabel)
+        assert len({id(label.movie()) for label in labels if label.movie() is not None}) == 4
+        assert sum("播放器预算" in label.text() for label in labels) == 16
+    finally:
+        preview.close()
+        app.processEvents()
+    snapshot = StoredMedia(raw)
+    try:
+        def forbidden_read():
+            pytest.fail("encoded budget must be checked before snapshot I/O")
+        monkeypatch.setattr(snapshot, "read", forbidden_read)
+        monkeypatch.setattr(preview_module, "MAX_PREVIEW_BYTES", 1)
+        preview = create_local_moment_preview(moment, replace(data, media=(
+            replace(data.media[0], original_bytes=None, stored=snapshot),)), features=features)
+        try:
+            assert any("字节预算" in label.text() for label in preview.findChildren(QLabel))
+        finally:
+            preview.close()
+            app.processEvents()
+    finally:
+        snapshot.close()
+    monkeypatch.setattr(preview_module, "MAX_PREVIEW_BYTES", 8 * 1024 * 1024)
+    monkeypatch.setattr(preview_module, "MAX_PREVIEW_DECODE_WORK", 1)
+    preview = create_local_moment_preview(moment, data, features=features)
+    try:
+        assert any("解码预算" in label.text() for label in preview.findChildren(QLabel))
+        assert not any(label.movie() is not None for label in preview.findChildren(QLabel))
+    finally:
+        preview.close()
+        app.processEvents()

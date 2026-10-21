@@ -6,8 +6,10 @@ read; the dialog neither recovers media nor takes ownership of those snapshots.
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
-from PySide6.QtGui import QMovie, QPixmap
+from PySide6.QtGui import QImageReader, QMovie, QPixmap
 from PySide6.QtWidgets import QDialog, QLabel, QScrollArea, QVBoxLayout, QWidget
 
 from ..analysis.sticker_stories import StickerMoment
@@ -15,12 +17,28 @@ from ..analysis.stickers import StickerData, StickerMedia
 from ..analysis.timestamps import to_chat_datetime
 from ..rich_message import ExpressionContent, NonTextContent, TextContent
 
+if TYPE_CHECKING:
+    from ..analysis.sticker_features import PrivateStickerFeatures
 
-def create_local_moment_preview(moment: StickerMoment, data: StickerData) -> QDialog:
+MAX_PREVIEW_CONTENTS = 256
+MAX_PREVIEW_BYTES = 8 * 1024 * 1024
+MAX_PREVIEW_MOVIES = 4
+MAX_PREVIEW_PIXELS = 4_000_000
+MAX_PREVIEW_DECODE_WORK = 64_000_000
+
+
+def create_local_moment_preview(moment: StickerMoment, data: StickerData, *, features: PrivateStickerFeatures) -> QDialog:
     """Build a read-only local preview, with no files, logging or share actions."""
-    sends = set(data.sends)
-    if any(send not in sends for row in moment.messages for send in row.sends):
+    sends = {id(send) for send in data.sends}
+    # Equality cannot establish run ownership: another import can have identical
+    # IDs, timestamps and media keys. Only a moment held by this result, and the
+    # original send references preserved through media resolution, are accepted.
+    if (not any(moment is item for item in features.stories.moments)
+            or any(id(send) not in sends for row in moment.messages for send in row.sends)
+            or len({item.media_key for item in data.media}) != len(data.media)):
         raise ValueError("moment and media must belong to the same analysis")
+    if sum(max(1, len(row.message.contents)) for row in moment.messages) > MAX_PREVIEW_CONTENTS:
+        raise ValueError("local preview content budget exceeded; evidence remains intact")
     dialog = QDialog()
     dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
     dialog.setWindowTitle("经典瞬间 · 本地实验预览")
@@ -34,8 +52,9 @@ def create_local_moment_preview(moment: StickerMoment, data: StickerData) -> QDi
     outer.addWidget(area)
 
     def label(text: str) -> QLabel:
-        widget = QLabel(text, body)
+        widget = QLabel(body)
         widget.setTextFormat(Qt.TextFormat.PlainText)
+        widget.setText(text)
         widget.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         widget.setWordWrap(True)
         layout.addWidget(widget)
@@ -58,8 +77,9 @@ def create_local_moment_preview(moment: StickerMoment, data: StickerData) -> QDi
     }
     label("边界与限制：" + "；".join(limits.get(q, "存在未确认的上下文边界") for q in moment.qualifiers))
     media = {item.media_key: item for item in data.media}
-    # Qt parent ownership keeps buffers and movies alive until dialog deletion.
-    # Each occurrence gets its own playback device; snapshots remain caller-owned.
+    cache = {}
+    budget = {"bytes": MAX_PREVIEW_BYTES, "movies": MAX_PREVIEW_MOVIES, "work": MAX_PREVIEW_DECODE_WORK}
+    # One device per material, bounded across the dialog. Snapshots stay caller-owned.
     for row in moment.messages:
         msg = row.message
         side = "我" if msg.is_self is True else "TA" if msg.is_self is False else "未知作者"
@@ -81,7 +101,7 @@ def create_local_moment_preview(moment: StickerMoment, data: StickerData) -> QDi
             elif i in by_content:
                 item = media.get(by_content[i].media_key)
                 image = label("")
-                _set_image(image, item, dialog)
+                _set_image(image, item, dialog, cache, budget)
             elif isinstance(part, ExpressionContent):
                 label(part.display_text or f"[表达：{part.expression_kind}；无可用媒体]")
             elif isinstance(part, NonTextContent):
@@ -92,44 +112,75 @@ def create_local_moment_preview(moment: StickerMoment, data: StickerData) -> QDi
     return dialog
 
 
-def _set_image(label: QLabel, item: StickerMedia | None, dialog: QDialog) -> None:
+def _load_image(item: StickerMedia | None, dialog: QDialog, budget: dict):
     if item is None or item.status not in ("available", "preview"):
-        label.setText(f"[缺图：{item.status if item else '未恢复'}；原消息仍在]")
-        return
+        return None, f"[缺图：{item.status if item else '未恢复'}；原消息仍在]"
+    if item.frame_count and item.frame_count > 1 and not budget["movies"]:
+        return None, "[预览播放器预算已用完；原消息与媒体引用保留]"
+    size = len(item.original_bytes) if item.original_bytes is not None else item.stored.size if item.stored else 0
+    if size > budget["bytes"]:
+        return None, "[预览字节预算已用完；原消息与媒体引用保留]"
     try:
         raw = item.original_bytes if item.original_bytes is not None else item.stored.read() if item.stored else None
     except (OSError, ValueError):
         raw = None
     if not raw:
-        label.setText("[缺图：已验证快照不可读；不重新访问来源]")
-        return
+        return None, "[缺图：已验证快照不可读；不重新访问来源]"
+    if len(raw) > budget["bytes"]:
+        return None, "[预览字节预算已用完；原消息与媒体引用保留]"
+    budget["bytes"] -= len(raw)
+    buffer = QBuffer(dialog)
+    buffer.setData(QByteArray(raw))
+    buffer.open(QIODevice.OpenModeFlag.ReadOnly)
+    reader = QImageReader(buffer)
+    size = reader.size()
+    pixels = size.width()*size.height()
+    work = pixels*max(1, item.frame_count or 1)
+    if not size.isValid() or pixels > MAX_PREVIEW_PIXELS or work > budget["work"]:
+        buffer.deleteLater()
+        return None, "[预览解码预算不足；原消息与媒体引用保留]"
+    budget["work"] -= work
     prefix = "原图已验证" if item.status == "available" else "可信预览；并非原图"
-    label.setToolTip(prefix)
+    buffer.seek(0)
     if item.frame_count and item.frame_count > 1:
-        buffer = QBuffer(dialog)
-        buffer.setData(QByteArray(raw))
-        buffer.open(QIODevice.OpenModeFlag.ReadOnly)
         movie = QMovie(buffer, QByteArray(), dialog)
+        movie.setCacheMode(QMovie.CacheMode.CacheNone)
         if not movie.isValid() or movie.frameCount() != item.frame_count:
-            label.setText("[动画暂无法复现；保留原消息与媒体验证事实]")
             movie.deleteLater()
             buffer.deleteLater()
-            return
+            return None, "[动画暂无法复现；保留原消息与媒体验证事实]"
         movie.jumpToFrame(0)
         size = movie.currentImage().size()
         if size.width() > 280 or size.height() > 200:
             movie.setScaledSize(size.scaled(280, 200, Qt.AspectRatioMode.KeepAspectRatio))
-        label.setMovie(movie)
+        budget["movies"] -= 1
         movie.start()
+        return movie, prefix
     else:
         pixmap = QPixmap()
+        buffer.deleteLater()
         if not pixmap.loadFromData(raw):
-            label.setText("[媒体暂无法显示；保留原消息]")
-            return
-        label.setPixmap(pixmap.scaled(280, 200, Qt.AspectRatioMode.KeepAspectRatio,
-                                     Qt.TransformationMode.SmoothTransformation))
+            return None, "[媒体暂无法显示；保留原消息]"
+        return pixmap.scaled(280, 200, Qt.AspectRatioMode.KeepAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation), prefix
+
+
+def _set_image(label: QLabel, item: StickerMedia | None, dialog: QDialog, cache: dict, budget: dict) -> None:
+    key = item.media_key if item else None
+    if key not in cache:
+        cache[key] = _load_image(item, dialog, budget)
+    image, prefix = cache[key]
+    if image is None:
+        label.setText(prefix)
+        return
+    label.setToolTip(prefix)
+    if isinstance(image, QMovie):
+        label.setMovie(image)
+    else:
+        label.setPixmap(image)
     # Visible provenance applies to animations as well as still images.
-    caption = QLabel(f"[{prefix}]", label.parentWidget())
+    caption = QLabel(label.parentWidget())
     caption.setTextFormat(Qt.TextFormat.PlainText)
+    caption.setText(f"[{prefix}]")
     caption.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
     label.parentWidget().layout().addWidget(caption)

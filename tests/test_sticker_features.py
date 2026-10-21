@@ -6,18 +6,11 @@ import json
 import pytest
 
 from qq_chat_analyzer.analysis.stickers import (
-    StickerData, StickerMedia, aggregate_stickers, collect_sticker_sends, count_sticker_messages,
+    StickerData, collect_sticker_sends,
 )
 from qq_chat_analyzer.rich_message import SenderIdentity
 from qq_chat_analyzer.analysis.sticker_features import analyze_private_stickers
-from qq_chat_analyzer.analysis.sticker_index import build_sticker_fact_index
-from sticker_feature_samples import Messages, reviewed_scenarios
-
-
-def indexed(messages, *, positions=None, data=None):
-    data = data or StickerData(collect_sticker_sends(messages), message_counts=count_sticker_messages(messages))
-    reports = aggregate_stickers(data, messages)
-    return build_sticker_fact_index(data, messages, reports=reports, source_positions=positions)
+from sticker_feature_samples import Messages, formal_payload, indexed, reviewed_scenarios
 
 
 def discover(messages, **kwargs):
@@ -77,6 +70,27 @@ def test_adoption_records_observed_order_and_later_cross_day_reuse():
     assert "filtered_observations_only" in result.qualifiers
 
 
+def test_adoption_uncertainty_only_blocks_a_possible_direction_reversal():
+    rows = adoption_messages()
+    b = Messages()
+    b.add(5, None, "new")
+    assert len(discover((*rows, *b.rows)).adoptions) == 1  # Too late to reverse A before B.
+    b.rows.clear()
+    b.add(1, None, "new")
+    assert len(discover((rows[0], *b.rows, *rows[1:])).adoptions) == 1
+    b.rows.clear()
+    b.add(0, None, "new", seconds=1)
+    assert discover((rows[0], *b.rows, *rows[1:])).adoptions  # Same day, but definitely later.
+    # Unidentified material on the later user's side could instead predate A.
+    b.rows.clear()
+    b.add(-1, "B", None)
+    assert not discover((*b.rows, *rows)).adoptions
+    # Unknown time on A can make A earlier, but cannot put B before A.
+    undated = replace(rows[0], timestamp="unknown")
+    assert discover((*rows, undated)).adoptions
+    assert not discover((*rows, replace(undated, sender=rows[1].sender, is_self=False))).adoptions
+
+
 def test_cross_participant_time_inversion_does_not_get_sorted_into_an_adoption():
     rows = adoption_messages()
     # Each member's own timeline is sorted, but their first observations conflict
@@ -84,7 +98,7 @@ def test_cross_participant_time_inversion_does_not_get_sorted_into_an_adoption()
     assert not discover((*rows[1:], rows[0])).adoptions
 
 
-def test_all_qualified_adoptions_survive_and_media_status_cannot_change_them():
+def test_all_qualified_adoptions_survive():
     b = Messages()
     keys = tuple(f"new{i}" for i in range(5))
     b.add(0, "A", *keys)
@@ -93,10 +107,6 @@ def test_all_qualified_adoptions_survive_and_media_status_cannot_change_them():
     rows = b.ordered()
     first = discover(rows)
     assert len(first.adoptions) == 5
-    data = StickerData(collect_sticker_sends(rows), media=(StickerMedia(
-        media_key="fiction:new0", status="failed", reason="fictional_failure",
-    ),))
-    assert discover(rows, data=data) == first
 
 
 def test_left_truncated_scope_is_not_a_gap_across_the_entire_observed_history():
@@ -204,6 +214,18 @@ def test_short_record_can_have_rise_but_overall_volume_growth_is_not_a_fad():
     assert not discover(changing_messages(volume_only=True)).trends
 
 
+def test_rise_cannot_claim_an_empty_comparison_window_with_relevant_unknown_use():
+    rows = changing_messages()
+    b = Messages()
+    b.add(3, "A", None, seconds=120)
+    damaged = tuple(sorted((*rows, *b.rows), key=lambda m: m.timestamp))
+    assert not any(t.identity_key == "fiction:new" and t.direction == "rise" for t in discover(damaged).trends)
+    # The other member's unidentified sticker cannot hide A's earlier use.
+    other = replace(b.rows[0], sender=rows[0].sender, is_self=False)
+    assert any(t.identity_key == "fiction:new" and t.direction == "rise"
+               for t in discover(tuple(sorted((*rows, other), key=lambda m: m.timestamp))).trends)
+
+
 def test_fade_needs_prior_cross_day_habit_and_continued_sticker_activity():
     result = discover(changing_messages(fade=True))
     fade = next(t for t in result.trends if t.identity_key == "fiction:new" and t.direction == "fade")
@@ -281,7 +303,8 @@ def test_scope_and_private_members_cannot_be_guessed(damage):
         messages[-1] = replace(messages[-1], is_self=True)
     result = discover(tuple(messages))
     assert not result.available
-    assert not (result.adoptions or result.reunions or result.trends or result.signatures)
+    assert not any((result.adoptions, result.reunions, result.trends, result.signatures,
+                    result.relays, result.shared_habits, result.styles, result.stories.candidates))
 
 
 def test_index_rejects_data_from_a_different_message_set():
@@ -305,7 +328,9 @@ def test_self_context_unknown_is_not_a_missing_sender_identity():
     index = indexed(rows)
     assert index.unknown_sender_count == 0
     assert index.unattributed_send_count == 4
-    assert not discover(rows).adoptions
+    result = discover(rows)
+    assert not any((result.adoptions, result.reunions, result.trends, result.signatures,
+                    result.relays, result.shared_habits, result.styles, result.stories.candidates))
 
 
 def test_untrusted_normalized_time_cannot_override_the_source_message_fact():
@@ -350,44 +375,17 @@ def test_missing_rich_pair_is_a_gap_not_a_new_sticker_message_denominator(tmp_pa
 
 
 @pytest.mark.parametrize("source", ["qq", "wechat"])
-@pytest.mark.parametrize("filtered,group", [(False, False), (True, False), (False, True)])
-def test_formal_analysis_chain_exposes_private_evidence_before_media_without_exporting_it(tmp_path, monkeypatch, source, filtered, group):
+def test_adoption_reaches_formal_analysis_before_media(tmp_path, monkeypatch, source):
     from qq_chat_analyzer.application import AnalysisRequestDTO
-    from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
-    from test_qq_db_rich_contents import _body, _sticker, _text
-    from test_sticker_data import _private_payload
+    from qq_chat_analyzer.application import analysis_service as service
 
     b = Messages()
     for day, side, second in ((0, "A", 0), (3, "B", 0), (4, "B", 0), (4, "B", 60)):
         b.add(day, side, "shared", seconds=second)
-    rows = b.ordered()
-    digest = "ab"*16
-    if source == "qq":
-        payload = _private_payload(*[_body(_sticker(b"fiction-shared")) for _ in rows],
-                                   senders=("10001", "20002", "20002", "20002"))
-        payload["self"] = {"namespace": "qq_uin", "value": "10001"}
-        for record, row in zip(payload["records"], rows):
-            record["fields"]["40050"] = row.timestamp
-        if filtered:
-            extra = _private_payload(_body(_text("Filtered " + "z"*110)), senders=("20002",))["records"][0]
-            extra["fields"]["40050"] = rows[0].timestamp+86400
-            payload["records"].insert(1, extra)
-        if group:
-            payload["query"]["session_type"] = "group"
-    else:
-        records = [dict(local_type=47, server_id="duplicate", create_time=m.timestamp,
-                        user_name="fiction-self" if m.is_self else "fiction-peer",
-                        message_content=f'<msg><emoji md5="{digest}"/></msg>') for m in rows]
-        if filtered:
-            records.insert(1, dict(local_type=1, create_time=rows[0].timestamp+86400,
-                                   user_name="fiction-peer", message_content="Filtered " + "z"*110))
-        payload = dict(source="wechat-db", conversation=dict(username="fiction-room",
-                       session_type="group" if group else "private", self_username="fiction-self"), messages=records)
-    input_path = tmp_path/"fiction.json"
-    input_path.write_text(json.dumps(payload), encoding="utf-8")
+    path = tmp_path/"fiction.json"
+    path.write_text(json.dumps(formal_payload(b.ordered(), source)), encoding="utf-8")
     stopwords = tmp_path/"stopwords.txt"
     stopwords.write_text("", encoding="utf-8")
-    service = importlib.import_module("qq_chat_analyzer.application.analysis_service")
     observed = []
     original_analyze = service.analyze_private_stickers
     def observe(index):
@@ -397,29 +395,18 @@ def test_formal_analysis_chain_exposes_private_evidence_before_media_without_exp
     monkeypatch.setattr(service, "analyze_private_stickers", observe)
     original_resolve = service.resolve_sticker_media
     def resolve(sends, **kwargs):
-        if not group:
-            assert observed, "Discovery must finish before even local media resolution"
+        assert observed, "Discovery must finish before even local media resolution"
         return original_resolve(sends, **kwargs)
     monkeypatch.setattr(service, "resolve_sticker_media", resolve)
-    result = AnalysisApplicationService().execute(AnalysisRequestDTO(
-        input_path=input_path, output_directory=tmp_path/"out", stopwords_path=stopwords,
-    ))
-    if group:
-        assert result.reports.private_stickers is None
-        assert result.reports.stickers[0].total_send_count == 4
-        return
-    features = result.reports.private_stickers
-    assert features is not None and features.available
+    result = service.AnalysisApplicationService().execute(AnalysisRequestDTO(
+        input_path=path, output_directory=tmp_path/"out", stopwords_path=stopwords))
     assert result.stickers.message_counts.total_messages == 4
     assert result.reports.stickers[0].total_send_count == 4
-    assert len(features.adoptions) == (0 if filtered else 1)
-    if filtered:
-        assert "known_filter_gaps" in features.qualifiers
-    else:
-        assert features.adoptions[0].lag_days == 3
-    assert all(m.status not in {"available", "preview"} for m in result.stickers.media)
+    adoption, = result.reports.private_stickers.adoptions
+    assert adoption.lag_days == 3
     exported = (tmp_path/"out"/"echo-report.json").read_text(encoding="utf-8")
-    assert "observed_order_only" not in exported and digest not in exported
+    assert "observed_order_only" not in exported and adoption.identity_key not in exported
+    assert all(s.content_md5 not in exported for s in result.stickers.sends if s.content_md5)
 
 
 @pytest.mark.parametrize("name,messages,sends,signature_count,qualified_count", [

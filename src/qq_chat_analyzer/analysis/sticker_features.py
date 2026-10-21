@@ -16,6 +16,7 @@ from typing import Literal
 from .sticker_index import DayCounts, IndexedStickerMessage, StickerFactIndex
 from .stickers import StickerHabit
 from .sticker_stories import StickerStorySelection, select_sticker_stories
+from .conversation_sessions import DEFAULT_SESSION_THRESHOLD_SECONDS
 
 
 RULE_VERSION = "private-stickers.v1.1-batch2"
@@ -269,17 +270,25 @@ def _adoptions(index: StickerFactIndex) -> tuple[StickerAdoption, ...]:
     results = []
     for key in sorted(own_keys & other_keys):
         a, b = index.materials[own, key], index.materials[other, key]
-        if a.has_unknown_time or b.has_unknown_time or not a.chronological or not b.chronological:
+        if not a.chronological or not b.chronological or not a.dated.days or not b.dated.days:
             continue
-        if key in index.uncertain_material_keys:
+        # First *dated, attributable* observations. An undated send by the
+        # already-first member cannot reverse direction; one by the later or
+        # an unknown member can. Do not extrapolate actual historical adoption.
+        a_first = next(s for s in a.sends if s.chat_date is not None)
+        b_first = next(s for s in b.sends if s.chat_date is not None)
+        first, later = (a, b) if a_first.epoch_seconds < b_first.epoch_seconds else (b, a)
+        src, dst = (a_first, b_first) if first is a else (b_first, a_first)
+        if any(s.identity_key in (None, key)
+               and (s.sender_id not in index.members or s.sender_id == dst.sender_id)
+               and (s.chat_date is None or s.epoch_seconds <= src.epoch_seconds)
+               for s in index.uncertain_sends):
             continue
-        first, later = (a, b) if a.sends[0].epoch_seconds < b.sends[0].epoch_seconds else (b, a)
         left, right = first.dated.days[0], later.dated.days[0]
         if left == right or index.has_gap(left, right+1):
             continue
         if len(later.sends) < ADOPTION_MIN_SENDS or len(later.dated.days) < ADOPTION_MIN_DATES:
             continue
-        src, dst = first.sends[0], later.sends[0]
         # The collector's occurrence ordinal was validated against the complete
         # kept sequence by the index. Do not repair conflicting source order.
         if int(src.occurrence_id.partition(":")[0]) >= int(dst.occurrence_id.partition(":")[0]):
@@ -354,7 +363,8 @@ def _trends(index: StickerFactIndex) -> tuple[StickerTrend, ...]:
             a, c = before.send_count, after.send_count
             p, q = before.share, after.share
             rise = (before.known_send_count >= 3 and c >= TREND_MIN_SENDS and after.date_count >= 2
-                    and c >= 3*max(1, a) and (q >= 2*p if p else q >= .10))
+                    and c >= 3*max(1, a) and (q >= 2*p if p else q >= .10)
+                    and not index.has_uncertain_use(sender, key, start, middle))
             fade = (a >= TREND_MIN_SENDS and before.date_count >= 2 and c <= a/3
                     and after.known_send_count >= 5 and after.known_date_count >= 2 and p >= 2*q
                     and not index.has_uncertain_use(sender, key, middle, stop))
@@ -387,7 +397,9 @@ def _author_turns(index: StickerFactIndex) -> Iterator[StickerRelayTurn]:
     messages = []
     for message in index.messages:
         sender = message.message.sender.identity_id
-        if messages and (message.barrier_before or sender != messages[-1].message.sender.identity_id):
+        if messages and (message.barrier_before or sender != messages[-1].message.sender.identity_id
+                         or (message.epoch_seconds is not None
+                             and message.epoch_seconds-messages[-1].epoch_seconds > DEFAULT_SESSION_THRESHOLD_SECONDS)):
             yield StickerRelayTurn(tuple(messages), sum(len(m.sends) for m in messages))
             messages = []
         if sender in index.members and message.epoch_seconds is not None:

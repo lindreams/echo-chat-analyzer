@@ -11,6 +11,7 @@ from itertools import groupby
 from typing import TYPE_CHECKING, Literal
 
 from .sticker_index import IndexedStickerMessage, StickerFactIndex
+from .conversation_sessions import DEFAULT_SESSION_THRESHOLD_SECONDS
 
 if TYPE_CHECKING:
     from .sticker_features import PrivateStickerFeatures, StickerRelay
@@ -46,7 +47,7 @@ class StickerStory:
     media_keys: tuple[str, ...] = field(repr=False)
     event_ids: tuple[str, ...] = ()
     interest_level: int = 0
-    strength: float = 0
+    strength: float = 0  # Dimensionless, bounded salience within an interest level.
     interest_reasons: tuple[str, ...] = ()
     timeline: tuple[tuple[str, str, str, int], ...] = ()  # Start/end, field, candidate index.
 
@@ -61,6 +62,15 @@ class StickerStorySelection:
 
 def _next_day(value: str) -> str:
     return date.fromordinal(date.fromisoformat(value).toordinal()+1).isoformat()
+
+
+def _strength(value: float, reference: float) -> float:
+    """Relative to the finding's editorial threshold, bounded below one.
+
+    Raw days, turns and share changes stay in the original evidence. This is
+    an editorial tie-break, not a scientific or relationship score.
+    """
+    return value/(value+reference)
 
 
 def _near(a: StickerStory, b: StickerStory, index: StickerFactIndex) -> bool:
@@ -88,7 +98,9 @@ def _join(a: StickerStory, b: StickerStory, *, context: bool = False) -> Sticker
         media_keys=tuple(sorted(set(a.media_keys+b.media_keys))),
         event_ids=tuple(sorted(set(a.event_ids+b.event_ids))),
         timeline=tuple(sorted(set(a.timeline+b.timeline))),
-        interest_level=max(a.interest_level, b.interest_level), strength=max(a.strength, b.strength),
+        # Context of a lower interest level cannot inflate a stronger event.
+        interest_level=max(a.interest_level, b.interest_level),
+        strength=max((a.interest_level, a.strength), (b.interest_level, b.strength))[1],
         interest_reasons=tuple(sorted(set(a.interest_reasons+b.interest_reasons))))
 
 
@@ -116,16 +128,16 @@ def select_sticker_stories(index: StickerFactIndex, features: PrivateStickerFeat
         anchors.append(material("adoptions", i, f.identity_key, f.media_key,
             (f.first_sender_id, f.later_sender_id), f.later_first_date, _next_day(f.later_first_date),
             2 if f.lag_days >= 28 and f.later_date_count >= 3 else 1,
-            f.lag_days, f"observed_adoption_lag_days:{f.lag_days}"))
+            _strength(f.lag_days, 28), f"observed_adoption_lag_days:{f.lag_days}"))
     for i, f in enumerate(features.reunions):
         anchors.append(material("reunions", i, f.identity_key, f.media_key, (f.sender_id,),
             f.return_date, _next_day(f.return_date), 3 if f.gap_days >= 180 else 1,
-            f.gap_days, f"return_gap_days:{f.gap_days}"))
+            _strength(f.gap_days, 180), f"return_gap_days:{f.gap_days}"))
     for i, f in enumerate(features.trends):
         difference = abs(f.current.share-f.previous.share)
         anchors.append(material("trends", i, f.identity_key, f.media_key, (f.sender_id,),
             f.current.start_date, f.current.end_date, 3 if difference >= .5 else 1,
-            difference*100, f"{f.direction}_share_change:{difference:.3f}"))
+            _strength(difference, .5), f"{f.direction}_share_change:{difference:.3f}"))
     for story in sorted(anchors, key=lambda s: (s.start_date, s.findings)):
         matches = [i for i in material_positions.get(story.identity_keys[0], ()) if _near(stories[i], story, index)]
         if matches:
@@ -143,13 +155,13 @@ def select_sticker_stories(index: StickerFactIndex, features: PrivateStickerFeat
             tuple(u.sender_id for u in f.members), min((u.first_date for u in dated), default=None),
             _next_day(max(u.last_date for u in dated)) if dated else None,
             1 if min(u.date_count for u in f.members) >= 3 and min(u.send_count for u in f.members) >= 5 else 0,
-            min(u.date_count for u in f.members), "repeated_shared_use"))
+            _strength(min(u.date_count for u in f.members), 3), "repeated_shared_use"))
     for i, f in enumerate(features.signatures):
         h = f.habit
         contexts.append(material("signatures", i, h.identity_key, f.media_key, (h.sender_id,),
             h.first_date, _next_day(h.last_date) if h.last_date else None,
             (3 if h.span_days >= 365 else 1) if f.story_eligible else 0,
-            h.span_days, "long_term_signature" if f.long_term else "ordinary_signature_context"))
+            _strength(h.span_days, 365), "long_term_signature" if f.long_term else "ordinary_signature_context"))
     for story in contexts:
         matches = [i for i in material_positions.get(story.identity_keys[0], ())
                    if set(stories[i].sender_ids) & set(story.sender_ids)]
@@ -179,7 +191,7 @@ def select_sticker_stories(index: StickerFactIndex, features: PrivateStickerFeat
             tuple(sorted(set(t.sender_id for t in relay.turns))), start, end,
             tuple(("relays", i) for i in moment.relay_indices),
             tuple(dict.fromkeys(k for i in moment.relay_indices for k in features.relays[i].media_keys)),
-            (moment.event_id,), level, relay.turn_count, (f"alternating_turns:{relay.turn_count}",),
+            (moment.event_id,), level, _strength(relay.turn_count, 12), (f"alternating_turns:{relay.turn_count}",),
             tuple((start, end, "relays", i) for i in moment.relay_indices))
         possible = sorted({i for key in interaction.identity_keys for i in material_positions.get(key, ())})
         matches = [i for i in possible if _near(stories[i], interaction, index)]
@@ -194,7 +206,7 @@ def select_sticker_stories(index: StickerFactIndex, features: PrivateStickerFeat
         ratio = f.richer.expected_unique_count/f.concentrated.expected_unique_count
         stories.append(StickerStory("", "style", (), (f.richer.sender_id, f.concentrated.sender_id),
             features.first_date, features.end_date, (("styles", i),), (),
-            interest_level=2 if ratio >= 3 else 1, strength=ratio,
+            interest_level=2 if ratio >= 3 else 1, strength=_strength(ratio, 3),
             interest_reasons=(f"equal_volume_richness_ratio:{ratio:.3f}",)))
     candidates = tuple(replace(s, story_id=f"story:{i}") for i, s in enumerate(stories))
     ranked = sorted((s for s in candidates if s.interest_level > 0),
@@ -254,7 +266,7 @@ def _context(index: StickerFactIndex, start: int, end: int) -> tuple[int, int, t
         if reasons:
             qualifiers.update(f"context_barrier:{reason}" for reason in reasons)
             return False
-        if b.epoch_seconds-a.epoch_seconds > 1800:
+        if b.epoch_seconds-a.epoch_seconds > DEFAULT_SESSION_THRESHOLD_SECONDS:
             qualifiers.add("context_time_gap")
             return False
         return True
