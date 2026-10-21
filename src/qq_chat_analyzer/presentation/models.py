@@ -249,6 +249,16 @@ class EchoStickerAsset:
 
 
 @dataclass(frozen=True, slots=True)
+class EchoStickerMemory:
+    """Shareable summary only; no messages, source IDs or local event refs."""
+
+    title: str
+    period: str
+    details: tuple[str, ...]
+    materials: tuple[EchoStickerItem, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class EchoStickers:
     available: bool
     total_send_count: int = 0
@@ -266,6 +276,7 @@ class EchoStickers:
     exclusive_material_count: int = 0
     per_hundred_messages: float | None = None
     shared_ranking_min_materials: int = 3
+    memories: tuple[EchoStickerMemory, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

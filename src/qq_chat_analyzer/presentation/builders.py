@@ -732,6 +732,7 @@ def build_echo_report_view(
         stickers=build_echo_stickers(
             reports.stickers, sticker_media, conversation_kind=conversation_kind,
             member_names={member.speaker_key: member.display_name for member in members},
+            private_features=reports.private_stickers,
         ),
         empty_description="" if has_data else EMPTY_DESCRIPTION,
         active_days=(reports.activity.active_days if reports.activity else 0),

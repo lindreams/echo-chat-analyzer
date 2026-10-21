@@ -30,7 +30,7 @@ from .expression_assets import (
 )
 
 
-ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.8"
+ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.9"
 
 
 def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
@@ -68,6 +68,10 @@ def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
             view.expression_culture
         ),
         "stickers": _stickers_to_dict(view.stickers),
+        "sticker_memories": [{
+            "title": memory.title, "period": memory.period, "details": list(memory.details),
+            "materials": [{"asset_key": item.asset_key} for item in memory.materials],
+        } for memory in view.stickers.memories] if view.stickers and view.conversation_kind == "private" else [],
         "members": [
             _member_to_dict(member, view.expression_source)
             for member in view.members

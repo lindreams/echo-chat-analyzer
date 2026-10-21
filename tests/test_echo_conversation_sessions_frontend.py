@@ -190,11 +190,11 @@ def test_sticker_empty_unknown_and_group_visibility(tmp_path):
     empty = echo_report_to_dict(build_echo_report_view(None, conversation_kind="private"))["stickers"]
     rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=empty)
     assert not rendered["stickers"]["hidden"] and not rendered["sticker-empty"]["hidden"]
-    assert rendered["sticker-rankings"]["hidden"] and rendered["sticker-dynamic"]["hidden"]
+    assert rendered["sticker-rankings"]["hidden"] and rendered["sticker-memories"]["hidden"]
     unknown = dict(empty, total_send_count=2, unknown_identity_count=2, unattributed_send_count=2)
     rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=unknown)
     assert not rendered["sticker-rankings"]["hidden"]
-    assert rendered["sticker-dynamic"]["hidden"]
+    assert rendered["sticker-memories"]["hidden"] and rendered["sticker-memories-toc"]["hidden"]
     assert rendered["sticker-total"]["text"] == "2 次"
     assert "sticker-note" not in rendered
     rendered = _render_frontend(tmp_path, kind="group", sessions=None, stickers=unknown)
@@ -407,7 +407,7 @@ def _find_chromium() -> str | None:
 
 @pytest.mark.slow_integration
 @pytest.mark.parametrize("kind,senders,limit", [
-    ("private", 2, 10), ("group", 3, 10), ("group", 10, 5), ("group", 100, 3),
+    ("private", 2, 3), ("group", 3, 10), ("group", 10, 5), ("group", 100, 3),
 ])
 def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path, kind, senders, limit):
     width = 1280
@@ -482,19 +482,9 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
           [...list.children].map(x => Math.round(x.getBoundingClientRect().top))
         ).size;
         if (window.ECHO_DATA.stickers.conversation_kind === "private") {
-          const sharedList = document.querySelector("#sticker-shared-list .sticker-top-list");
-          const sharedButton = document.querySelector("#sticker-shared-list .sticker-expand");
-          result.privateCollapsedRows = rowCount(sharedList);
-          result.privateCollapsedDisplay = getComputedStyle(sharedList).display;
-          const collapsedWidths = [...sharedList.querySelectorAll(".sticker-image")].map(
-            x => x.getBoundingClientRect().width);
-          sharedButton.click();
-          result.privateExpandedRows = rowCount(sharedList);
-          result.privateScrollable = sharedList.scrollWidth > sharedList.clientWidth;
-          result.privateExpandedWidths = [...sharedList.querySelectorAll(".sticker-image")].map(
-            x => x.getBoundingClientRect().width);
-          result.privateCollapsedWidths = collapsedWidths;
-          sharedButton.click();
+          result.privateSharedAbsent = !document.querySelector("#sticker-shared-list");
+          result.memoriesHidden = document.getElementById("sticker-memories").hidden &&
+            document.getElementById("sticker-memories-toc").hidden;
         }
         if (window.ECHO_DATA.stickers.conversation_kind === "group") {
           const boxes = [...document.querySelectorAll("#sticker-member-options input")];
@@ -563,12 +553,7 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
     assert rendered["memberRows"] == (2 if limit == 10 else 1)
     assert all(110 <= value <= 120 for value in rendered["memberImageWidths"])
     if kind == "private":
-        assert rendered["privateCollapsedDisplay"] == "grid"
-        assert rendered["privateCollapsedRows"] == 1
-        assert rendered["privateExpandedRows"] == 1
-        assert rendered["privateScrollable"]
-        assert all(abs(a - b) < 1 for a, b in zip(
-            rendered["privateCollapsedWidths"], rendered["privateExpandedWidths"]))
+        assert rendered["privateSharedAbsent"] and rendered["memoriesHidden"]
     if kind == "group":
         assert rendered["pickerCount"] == senders
         assert rendered["groupExpandedCounts"] == [10, 10]
@@ -642,6 +627,73 @@ def test_saved_qq_media_report_loads_actual_images_offline(tmp_path, kind, caplo
     assert any("stage=sticker_report_export " in line for line in timing)
     assert all(str(tmp_path) not in line for line in timing)
     (tmp_path / "timings.json").write_text(json.dumps(timing, indent=2), encoding="utf-8")
+
+
+@pytest.mark.slow_integration
+def test_private_memories_are_an_independent_offline_chapter_on_desktop_and_narrow_screen(tmp_path):
+    import hashlib
+    from dataclasses import replace
+    from sticker_feature_samples import indexed
+    from test_sticker_features_batch2 import combined_scene
+    from test_sticker_data import image_bytes
+    from qq_chat_analyzer.analysis.models import AnalysisReports
+    from qq_chat_analyzer.analysis.sticker_features import analyze_private_stickers
+    from qq_chat_analyzer.application.sticker_media import verify_fetched_media
+    from qq_chat_analyzer.presentation import build_echo_report_view
+
+    chromium = _find_chromium()
+    if chromium is None:
+        pytest.skip("no local Chromium available")
+    rows = combined_scene()
+    index = indexed(rows, positions=range(len(rows)))
+    features = analyze_private_stickers(index)
+    key = features.shared_habits[0].media_key
+    raw = image_bytes("GIF", animated=True)
+    media = verify_fetched_media(raw, media_key=key, expected_md5=hashlib.md5(raw).hexdigest())
+    view = build_echo_report_view(AnalysisReports(stickers=(index.report,), private_stickers=features),
+        conversation_kind="private", sticker_media=(media,))
+    output = export_echo_report_html(view, tmp_path / "memories.html")
+    source = output.read_text(encoding="utf-8")
+    probe = r'''<script>window.addEventListener("load", () => {setTimeout(() => {
+      const a = document.getElementById("stickers"), b = document.getElementById("sticker-memories");
+      const toc = document.getElementById("sticker-memories-toc");
+      const images = [...b.querySelectorAll("img")];
+      const result = {separate:a.parentNode === b.parentNode && !a.contains(b),
+        visible:!a.hidden && !b.hidden && !toc.hidden, target:toc.getAttribute("href"),
+        cards:b.querySelectorAll("article").length, tops:a.querySelectorAll("li").length,
+        sharedAbsent:!document.querySelector("#sticker-shared-list"),
+        sameResource:images[0].src === a.querySelector("img").src,
+        loaded:images.every(x => x.complete && x.naturalWidth > 0),
+        nativeSave:images.every(x => x.dispatchEvent(new MouseEvent("contextmenu", {bubbles:true,cancelable:true}))),
+        overflow:document.documentElement.scrollWidth > innerWidth,
+        viewport:innerWidth,
+        fits:[...b.querySelectorAll("li,h3,.sticker-memory-period")].every(x => x.getBoundingClientRect().right <= innerWidth),
+        text:b.innerText};
+      const pre = document.createElement("pre"); pre.id = "memories-probe";
+      pre.hidden = true; pre.textContent = JSON.stringify(result); window.parent.document.body.appendChild(pre);
+    }, 300);});</script>'''
+    page = source.replace("</body>", probe+"</body>")
+    for width in (1280, 390):
+        # Windows headless Chromium clamps its native window to 500px. A
+        # same-origin srcdoc frame exercises a real 390px CSS viewport.
+        output.write_text(f'<iframe style="border:0;width:{width}px;height:1200px" '
+                          f'srcdoc="{html.escape(page, quote=True)}"></iframe>', encoding="utf-8")
+        browser = _run_browser([
+            chromium, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+            "--no-default-browser-check", "--disable-background-networking", "--hide-scrollbars",
+            "--host-resolver-rules=MAP * ~NOTFOUND", f"--user-data-dir={tmp_path / str(width)}",
+            "--virtual-time-budget=2000", "--window-size=1320,1240", "--dump-dom", output.as_uri(),
+        ])
+        assert browser.returncode == 0, browser.stderr
+        match = re.search(r'<pre id="memories-probe" hidden="">(.*?)</pre>', browser.stdout.decode("utf-8"), re.S)
+        assert match is not None
+        result = json.loads(html.unescape(match.group(1)))
+        assert result["separate"] and result["visible"] and result["target"] == "#sticker-memories"
+        assert result["cards"] == 2 and result["tops"] == 4 and result["sharedAbsent"]
+        assert result["sameResource"] and result["loaded"] and result["nativeSave"]
+        assert not result["overflow"] and result["fits"] and result["viewport"] == width
+        assert all(word in result["text"] for word in ("70 天", "49 天", "8 轮", "共同口头禅", "预计", "已验证原件"))
+        assert "虚构日常" not in result["text"] and "虚构回复" not in result["text"]
 
 
 def _run_browser(command: list[str]) -> subprocess.CompletedProcess:

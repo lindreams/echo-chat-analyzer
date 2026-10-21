@@ -78,18 +78,24 @@ ECHO_REPORT_HTML_SKELETON = r"""
         </a>
         <a class="toc-row" id="sticker-toc" href="#stickers" hidden>
           <span class="toc-number">06</span>
-          <span class="toc-copy"><strong>表情包</strong><small>查看表情包的发送次数与排行。</small></span>
+          <span class="toc-copy"><strong id="sticker-toc-title">表情包基础统计</strong><small>平时怎样使用表情包</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">08</span>
         </a>
-        <div class="toc-row is-future">
+        <a class="toc-row" id="sticker-memories-toc" href="#sticker-memories" hidden>
           <span class="toc-number">07</span>
+          <span class="toc-copy"><strong>表情包特色回忆</strong><small>一张图，几次值得记住的回响</small></span>
+          <span class="toc-leader" aria-hidden="true"></span>
+          <span class="toc-page">09</span>
+        </a>
+        <div class="toc-row is-future">
+          <span class="toc-number">08</span>
           <span class="toc-copy"><strong>互动关系</strong><small>未来章节</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">—</span>
         </div>
         <div class="toc-row is-future">
-          <span class="toc-number">08</span>
+          <span class="toc-number">09</span>
           <span class="toc-copy"><strong>余音</strong><small>让那些反复出现的词，成为最后的回响。</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">—</span>
@@ -269,7 +275,7 @@ ECHO_REPORT_HTML_SKELETON = r"""
     <section class="page chapter sticker-chapter" id="stickers" aria-labelledby="sticker-title" hidden>
       <header class="chapter-header">
         <span class="chapter-number">06</span>
-        <div><p class="folio">STICKERS</p><h2 id="sticker-title">表情包</h2></div>
+        <div><p class="folio">STICKERS</p><h2 id="sticker-title">表情包基础统计</h2></div>
       </header>
       <p class="chapter-intro">有些回应，交给一张图。</p>
       <dl class="sticker-fields" id="sticker-fields">
@@ -287,23 +293,28 @@ ECHO_REPORT_HTML_SKELETON = r"""
         </details>
         <div class="sticker-members" id="sticker-members"></div>
       </div>
-      <div class="sticker-dynamic" id="sticker-dynamic" hidden>
-        <div id="sticker-shared" hidden>
-          <h3 id="sticker-shared-title">我们共同最常用</h3>
-          <div id="sticker-shared-list"></div>
-        </div>
-      </div>
       <span class="page-number">08</span>
+    </section>
+
+    <section class="page chapter sticker-memories-chapter" id="sticker-memories" aria-labelledby="sticker-memories-title" hidden>
+      <header class="chapter-header">
+        <span class="chapter-number">07</span>
+        <div><p class="folio">STICKER MEMORIES</p><h2 id="sticker-memories-title">表情包特色回忆</h2></div>
+      </header>
+      <p class="chapter-intro">熟悉的图，也留下了自己的时间线。</p>
+      <div id="sticker-memory-stories"></div>
+      <p class="sticker-memory-note">仅据本次筛选后的可辨认记录；日期与间隔不代表完整聊天历史。图片可右键另存为，可信预览会单独标注。</p>
+      <span class="page-number">09</span>
     </section>
 
     <section class="page future" id="future" aria-labelledby="future-title">
       <header class="page-header"><p class="folio">UNWRITTEN</p><h2 id="future-title">尚未展开的部分</h2><p>有些痕迹，将在之后的章节中继续被看见。</p></header>
       <div class="future-list">
-        <div><span>07</span><h3>互动关系</h3><p>交流方向与回应方式。</p></div>
-        <div><span>08</span><h3>余音</h3><p>未来将以聊天词云，为 Echo Report 留下最后的回响。</p></div>
+        <div><span>08</span><h3>互动关系</h3><p>交流方向与回应方式。</p></div>
+        <div><span>09</span><h3>余音</h3><p>未来将以聊天词云，为 Echo Report 留下最后的回响。</p></div>
       </div>
       <footer class="end-mark"><a href="#cover">回到封面 ↑</a><span>余音 Echo · <b data-current-year>2026</b></span></footer>
-      <span class="page-number">09</span>
+      <span class="page-number">10</span>
     </section>
   </main>
 
@@ -554,13 +565,12 @@ h1, h2, h3, p { margin-top: 0; }
 #sticker-member-options label { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; overflow-wrap: anywhere; }
 #sticker-member-options input { accent-color: var(--accent); }
 .sticker-expand { background: none; border: 0; border-bottom: 1px solid var(--rule); color: var(--accent); font: 12px var(--sans); padding: 4px 0; margin-top: 8px; cursor: pointer; }
-.sticker-detail { color: var(--muted); font-size: 10px; line-height: 1.6; display: block; margin-top: 4px; }
 .sticker-fields { display: grid; grid-template-columns: 1fr 1fr; margin: 0 0 18px; border-bottom: 1px solid var(--rule); }
 .sticker-fields > div { padding: 0 0 14px; }
 .sticker-fields dt { color: var(--muted); font-size: 13px; }
 .sticker-fields dd { margin: 6px 0 0; font-size: 28px; line-height: 1.2; }
 .sticker-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-.sticker-section-heading h3, .sticker-dynamic h3 { margin: 0; font-size: 20px; font-weight: 500; }
+.sticker-section-heading h3 { margin: 0; font-size: 20px; font-weight: 500; }
 .sticker-section-heading small { color: var(--muted); font-size: 12px; }
 .sticker-members { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
 .sticker-member { min-width: 0; }
@@ -571,7 +581,6 @@ h1, h2, h3, p { margin-top: 0; }
 .sticker-rate { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
 .sticker-top-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 12px; margin: 0; padding: 0; list-style: none; }
 .sticker-top-list li { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; }
-#sticker-shared-list .sticker-top-list { max-width: 560px; }
 /* Expanded shared board: one row that scrolls sideways, cards keep their size. */
 .sticker-top-list.is-row-scroll { display: flex; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; scrollbar-width: thin; }
 .sticker-top-list.is-row-scroll > li { flex: 0 0 calc((100% - 24px) / 3); }
@@ -585,10 +594,15 @@ h1, h2, h3, p { margin-top: 0; }
 .sticker-preview { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; }
 .sticker-member-empty, .sticker-empty { color: var(--muted); font: 14px/1.8 var(--serif); }
 .sticker-empty { margin: 36px 0; }
-.sticker-dynamic { display: flex; gap: 32px; border-top: 1px solid var(--rule); margin-top: 22px; padding-top: 16px; }
-.sticker-dynamic[hidden] { display: none; }
-.sticker-dynamic > div { flex: 1; min-width: 0; }
-.sticker-dynamic h3 { font-size: 17px; margin-bottom: 10px; }
+.sticker-memory { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 28px; padding: 28px 0; border-top: 1px solid var(--rule); break-inside: avoid; }
+.sticker-memory.is-style { grid-template-columns: 1fr; }
+.sticker-memory-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-content: start; }
+.sticker-memory-images > :only-child { grid-column: 1 / -1; }
+.sticker-memory h3 { margin: 5px 0 14px; font: 500 25px/1.4 var(--serif); }
+.sticker-memory-period { color: var(--accent); font: 12px/1.6 var(--sans); letter-spacing: .04em; }
+.sticker-memory-details { padding: 0; list-style: none; margin: 0; }
+.sticker-memory-details li { margin: 10px 0; font: 14px/1.9 var(--sans); overflow-wrap: anywhere; }
+.sticker-memory-note { color: var(--muted); font: 12px/1.8 var(--sans); margin-top: 20px; }
 @media (min-width: 721px) {
   .sticker-chapter { padding: 44px 82px 64px; }
   .sticker-chapter .chapter-header { padding-bottom: 16px; }
@@ -945,7 +959,9 @@ h1, h2, h3, p { margin-top: 0; }
   .sticker-member + .sticker-member { border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); padding-top: 24px; }
   .sticker-section-heading { display: block; }
   .sticker-section-heading h3 { margin-bottom: 8px; }
-  .sticker-dynamic { flex-direction: column; gap: 24px; }
+  .sticker-memory { grid-template-columns: 1fr; gap: 16px; }
+  .sticker-memory-images { max-width: 160px; }
+  .sticker-memory h3 { font-size: 23px; }
   .expression-fields div,
   .expression-fields div:last-child {
     min-height: auto;
@@ -1599,9 +1615,13 @@ document.documentElement.classList.add("js-ready");
   if (hasStickers) {
     var stickerAssets = stickers.assets || {};
     var stickerGroup = stickers.conversation_kind === "group";
+    if (stickerGroup) {
+      setText("sticker-title", "表情包");
+      setText("sticker-toc-title", "表情包");
+    }
     document.getElementById("stickers").classList.toggle("sticker-group", stickerGroup);
     setText("sticker-total", formatCount(stickers.total_send_count) + " 次");
-    setText("sticker-unique", formatCount(stickers.unique_material_count) + " 种不同表情包");
+    setText("sticker-unique", formatCount(stickers.unique_material_count) + (stickerGroup ? " 种不同表情包" : " 种已辨认表情包"));
     var noSends = stickers.total_send_count === 0;
     setHidden("sticker-fields", noSends);
     setHidden("sticker-empty", !noSends);
@@ -1654,11 +1674,10 @@ document.documentElement.classList.add("js-ready");
       container.appendChild(button);
       function render() {
         container.classList.toggle("is-expanded", expanded);
-        // Shared boards expand into one horizontally scrolling row so a Top 10
-        // never wraps or shrinks the existing cards.
+        // Group shared rankings retain their horizontally scrolling expansion.
         list.classList.toggle(
           "is-row-scroll",
-          expanded && (kind === "private-shared" || kind === "group-shared")
+          expanded && kind === "group-shared"
         );
         list.textContent = "";
         items.slice(0, expanded ? items.length : 3).forEach(function (item, index) {
@@ -1674,17 +1693,11 @@ document.documentElement.classList.add("js-ready");
           count.className = "sticker-count";
           count.textContent = formatCount(item.count) + " 次";
           entry.appendChild(count);
-          if (kind === "private-shared") {
-            var detail = document.createElement("small");
-            detail.className = "sticker-detail";
-            detail.textContent = "我 " + formatCount(item.side_counts[0]) + " 次 · TA " + formatCount(item.side_counts[1]) + " 次";
-            entry.appendChild(detail);
-          }
           var asset = stickerAssets[item.asset_key];
           if (asset && asset.status === "preview") {
             var preview = document.createElement("small");
             preview.className = "sticker-preview";
-            preview.textContent = "预览";
+            preview.textContent = stickerGroup ? "预览" : "可信预览 · 非原件";
             entry.appendChild(preview);
           }
           list.appendChild(entry);
@@ -1759,11 +1772,6 @@ document.documentElement.classList.add("js-ready");
     if (stickerGroup && !noSends) { renderMemberOptions(); }
     memberSearch.addEventListener("input", renderMemberOptions);
     var shared = stickers.shared_materials || [];
-    var sharedList = document.getElementById("sticker-shared-list");
-    if (sharedList) { sharedList.textContent = ""; }
-    if (!stickerGroup && shared.length) { stickerRanking(sharedList, shared, "private-shared"); }
-    setHidden("sticker-shared", stickerGroup || !shared.length);
-    setHidden("sticker-dynamic", stickerGroup || !shared.length);
     var groupRankings = document.getElementById("sticker-group-rankings");
     groupRankings.textContent = "";
     setHidden("sticker-group-rankings", !stickerGroup || noSends);
@@ -1778,6 +1786,49 @@ document.documentElement.classList.add("js-ready");
         groupRankings.appendChild(block);
       });
     }
+
+    var memories = !stickerGroup ? (data.sticker_memories || []) : [];
+    setHidden("sticker-memories", !memories.length);
+    setHidden("sticker-memories-toc", !memories.length);
+    var stories = document.getElementById("sticker-memory-stories");
+    memories.forEach(function (memory) {
+      var article = document.createElement("article");
+      article.className = "sticker-memory" + (memory.materials.length ? "" : " is-style");
+      if (memory.materials.length) {
+        var images = document.createElement("div");
+        images.className = "sticker-memory-images";
+        memory.materials.forEach(function (item) {
+          var box = document.createElement("div");
+          box.appendChild(stickerImage(item));
+          var asset = stickerAssets[item.asset_key];
+          var caption = document.createElement("small");
+          caption.className = "sticker-preview";
+          caption.textContent = asset && asset.status === "available" ? "已验证原件" :
+            asset && asset.status === "preview" ? "可信预览 · 非原件" : "未恢复图片";
+          box.appendChild(caption);
+          images.appendChild(box);
+        });
+        article.appendChild(images);
+      }
+      var copy = document.createElement("div");
+      var period = document.createElement("div");
+      period.className = "sticker-memory-period";
+      period.textContent = memory.period;
+      copy.appendChild(period);
+      var heading = document.createElement("h3");
+      heading.textContent = memory.title;
+      copy.appendChild(heading);
+      var details = document.createElement("ul");
+      details.className = "sticker-memory-details";
+      memory.details.forEach(function (text) {
+        var line = document.createElement("li");
+        line.textContent = text;
+        details.appendChild(line);
+      });
+      copy.appendChild(details);
+      article.appendChild(copy);
+      stories.appendChild(article);
+    });
 
   }
 

@@ -150,13 +150,15 @@ def test_sticker_complete_rankings_and_signatures_reach_exported_artifacts(tmp_p
     raw, = result.reports.stickers
     chapter = json.loads((tmp_path / "private-output/echo-report.json").read_text(encoding="utf-8"))["stickers"]
     assert chapter["available"] and chapter["shared_material_count"] == 12
-    assert [x["count"] for x in chapter["shared_materials"]] == list(range(24, 4, -2))
+    assert [x["count"] for x in chapter["shared_materials"]] == (list(range(24, 4, -2)) if kind == "group" else [])
     mine, peer = chapter["members"][:2]
-    assert [x["count"] for x in mine["top_materials"]] == list(range(12, 2, -1))
+    limit = 10 if kind == "group" else 3
+    assert [x["count"] for x in mine["top_materials"]] == list(range(12, 12-limit, -1))
     assert mine["top_materials"] == peer["top_materials"]
     assert mine["signature"]["count"] == 9  # Rank four, not the single-day Top 1.
     assert mine["signature"]["signature"]["week_count"] == 4
-    assert [x["count"] for x in mine["top_materials"]] == [n for _, n in raw.ranking("100000001")][:10]
+    assert [x["count"] for x in mine["top_materials"]] == [n for _, n in raw.ranking("100000001")][:limit]
+    assert len(raw.ranking("100000001")) == len(raw.shared_ranking()) == 12
     if kind == "group":
         assert [x["count"] for x in chapter["total_top_materials"][:2]] == [54, 50]
         assert chapter["total_top_materials"][0]["unknown_sender_count"] == 30
@@ -166,7 +168,7 @@ def test_sticker_complete_rankings_and_signatures_reach_exported_artifacts(tmp_p
         assert (solo["send_count"], solo["message_count"], solo["per_hundred_messages"]) == (50, 1, 5000)
         assert solo["signature"] is None
     else:
-        assert [x["asset_key"] for x in mine["top_materials"]] == [x["asset_key"] for x in chapter["shared_materials"]]
+        assert chapter["shared_materials"] == []  # Complete shared statistics remain in raw.
     source = (tmp_path / "private-output/echo-report.html").read_text(encoding="utf-8")
     embedded = json.loads(re.search(r"window\.ECHO_DATA = (\{.*?\});", source, re.S).group(1))
     assert embedded["stickers"] == chapter
@@ -321,7 +323,7 @@ def test_execute_generates_echo_report_json_artifact(tmp_path: Path) -> None:
     report_path = output_directory / "echo-report.json"
     assert report_path.is_file()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "echo-report.v0.8"
+    assert payload["schema_version"] == "echo-report.v0.9"
 
 
 def test_report_boundary_does_not_retain_full_expression_candidates() -> None:

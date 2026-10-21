@@ -35,7 +35,7 @@ from ..analysis.stickers import (
     count_sticker_messages,
 )
 from ..presentation.builders import prepare_expression_report
-from ..presentation.stickers import assemble_sticker_assets
+from ..presentation.stickers import assemble_sticker_assets, build_echo_stickers, sticker_report_targets
 from ..analyzer import (
     WordSpeakerSummary,
     count_word_speakers,
@@ -244,7 +244,16 @@ class AnalysisApplicationService:
                         source_positions=sticker_positions,
                     ))
             with timed_stage("sticker_media_resolve"):
-                sticker_media = resolve_sticker_media(sticker_sends, roots=request.sticker_media_roots)
+                media_sends = sticker_sends
+                if private_stickers is not None and private_stickers.available and request.sticker_media_roots:
+                    # Use the same display projection as the final report;
+                    # explicit local roots must not recover the entire catalog.
+                    selected = build_echo_stickers(sticker_reports, (), conversation_kind="private",
+                                                   private_features=private_stickers)
+                    if any(member.send_count is not None for member in selected.members):
+                        keys = {t.media_key for t in sticker_report_targets(selected)}
+                        media_sends = tuple(s for s in sticker_sends if s.media_key in keys)
+                sticker_media = resolve_sticker_media(media_sends, roots=request.sticker_media_roots)
             stickers = replace(stickers, media=sticker_media)
         diagnostic_counts = AnalysisDiagnosticCounts(
             raw_message_count=outcome.processed_message_count,

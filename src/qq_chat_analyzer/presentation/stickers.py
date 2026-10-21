@@ -4,10 +4,15 @@ from __future__ import annotations
 import base64
 from collections import Counter
 from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from ..analysis.stickers import StickerConversationReport, StickerMaterialUsage, StickerMedia, StickerHabit
 from ..media_content import StoredMedia
 from .models import EchoStickerAsset, EchoStickerItem, EchoStickerMember, EchoStickers, EchoStickerSignature
+from .sticker_memories import build_sticker_memories
+
+if TYPE_CHECKING:
+    from ..analysis.sticker_features import PrivateStickerFeatures
 
 
 TOP_MATERIAL_LIMIT = 10
@@ -24,8 +29,10 @@ def sticker_report_targets(chapter: EchoStickers | None) -> tuple[EchoStickerIte
     # consumes the foreground request budget. This changes acquisition order,
     # never a ranking or a member's qualification.
     items = list(chapter.total_top_materials) + list(chapter.shared_materials)
+    for memory in chapter.memories:
+        items.extend(memory.materials)
     for member in chapter.members:
-        if member.signature is not None:
+        if chapter.conversation_kind == "group" and member.signature is not None:
             items.append(member.signature)
     member_limit = max((len(member.top_materials) for member in chapter.members), default=0)
     for rank in range(member_limit):
@@ -77,6 +84,7 @@ def build_echo_stickers(
     *,
     conversation_kind: str,
     member_names: dict[str, str] | None = None,
+    private_features: PrivateStickerFeatures | None = None,
 ) -> EchoStickers:
     if conversation_kind not in {"private", "group"}:
         return EchoStickers(available=False)
@@ -89,7 +97,7 @@ def build_echo_stickers(
     # Never combine multiple participants into one private side. A source must
     # reliably establish both sender identity and self marker for attribution.
     private = conversation_kind == "private"
-    member_limit = TOP_MATERIAL_LIMIT
+    member_limit = 3
     if not private:
         sending_members = sum(member.send_count > 0 for member in report.members)
         member_limit = 3 if sending_members >= 100 else 5 if sending_members >= 10 else 10
@@ -166,7 +174,7 @@ def build_echo_stickers(
         report.shared_ranking() if not private else ())
     shared_views = tuple(
         item_view(item, count, shared=True) for item, count in shared[:TOP_MATERIAL_LIMIT]
-    ) if len(shared) >= SHARED_RANKING_MIN_MATERIALS else ()
+    ) if not private and len(shared) >= SHARED_RANKING_MIN_MATERIALS else ()
     total_views = tuple(item_view(item, count) for item, count in report.ranking()[:TOP_MATERIAL_LIMIT]) if not private else ()
     chapter = EchoStickers(
         available=True, total_send_count=report.total_send_count,
@@ -180,4 +188,12 @@ def build_echo_stickers(
         per_hundred_messages=100 * report.total_send_count / report.message_count if report.message_count else None,
         shared_ranking_min_materials=SHARED_RANKING_MIN_MATERIALS,
     )
+    if (private and all(sides) and private_features is not None and private_features.available
+            and private_features.source == report.source
+            and private_features.conversation_id == report.conversation_id):
+        selected_media = {key for story in private_features.stories.candidates
+                          if story.story_id in private_features.stories.featured_ids for key in story.media_keys}
+        chapter = replace(chapter, memories=build_sticker_memories(private_features,
+            {item.media_key: item_view(item, item.count) for item in report.materials if item.media_key in selected_media},
+            {side.sender_id: label for side, label in zip(sides, member_labels)}))
     return assemble_sticker_assets(chapter, media)
