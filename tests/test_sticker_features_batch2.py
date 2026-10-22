@@ -466,6 +466,55 @@ def test_selection_keeps_all_candidates_and_promotes_a_later_stronger_event():
     assert "alternating_turns:60" in best.interest_reasons
 
 
+def test_repeated_adoptions_leave_room_for_a_qualified_sparse_shared_habit():
+    b = Messages("selection-adoptions")
+    for key in ("adopted-a", "adopted-b"):
+        b.add(0, "A", key)
+        for day in (15, 16, 17):
+            b.add(day, "B", key)
+    for day in (0, 7, 14, 365):
+        b.add(day, "A", "signature", seconds=300)
+    for day, keys in ((0, ("shared", "shared")), (2, ("shared",))):
+        b.add(day, "A", *keys, seconds=600)
+        b.add(day, "B", *keys, seconds=900)
+    rows = b.ordered()
+    index = facts(rows)
+    f = analyze_private_stickers(index)
+    assert len(f.adoptions) == 2 and len(f.shared_habits) == 1
+    selected = [s for sid in f.stories.featured_ids for s in f.stories.candidates if s.story_id == sid]
+    assert len(selected) == 3
+    assert sum(any(n == "adoptions" for n, _ in s.findings) for s in selected) == 1
+    assert any(n == "shared_habits" for s in selected for n, _ in s.findings)
+    from qq_chat_analyzer.analysis.models import AnalysisReports
+    from qq_chat_analyzer.presentation import build_echo_report_view
+    view = build_echo_report_view(AnalysisReports(stickers=(index.report,), private_stickers=f),
+                                  conversation_kind="private")
+    assert {m.findings[0].kind for m in view.stickers.memories} == {"signature", "adoption", "shared"}
+
+
+def test_large_trends_do_not_displace_distinct_interaction_and_shared_stories():
+    b = Messages("selection-trends")
+    for day in range(21):
+        b.add(day, "A", *((f"phase{day//7}",)*3))
+    for i in range(8):
+        b.add(21, "A" if i % 2 == 0 else "B", f"reply{i}", seconds=i*20)
+    for day in (23, 25):
+        b.add(day, "A", *(("shared",)*4))
+        b.add(day, "B", *(("shared",)*4), seconds=300)
+    index = facts(b.ordered())
+    f = analyze_private_stickers(index)
+    assert len(f.trends) >= 3 and f.relays and f.shared_habits
+    selected = [s for sid in f.stories.featured_ids for s in f.stories.candidates if s.story_id == sid]
+    assert {n for s in selected for n, _ in s.findings} >= {"trends", "relays", "shared_habits"}
+    # Full candidates and separate events remain available for local inspection.
+    assert {i for s in f.stories.candidates for n, i in s.findings if n == "trends"} == set(range(len(f.trends)))
+    from qq_chat_analyzer.analysis.models import AnalysisReports
+    from qq_chat_analyzer.presentation import build_echo_report_view
+    view = build_echo_report_view(AnalysisReports(stickers=(index.report,), private_stickers=f),
+                                  conversation_kind="private")
+    assert [m.findings[0].kind for m in view.stickers.memories] == ["trend", "relay", "shared"]
+
+
 def test_overlapping_relays_share_one_event_without_building_an_unbounded_core():
     b = Messages("batch3-overlap")
     for i in range(45):

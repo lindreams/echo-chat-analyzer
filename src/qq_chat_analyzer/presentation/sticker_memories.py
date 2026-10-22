@@ -109,11 +109,15 @@ def build_sticker_memories(
                     total=f.sample_size) for u in (f.richer, f.concentrated)),
                 note=f"按已有记录估算：从双方可辨认的表情发送中各随机取 {f.sample_size} 次，预计包含的平均种类数。"))
 
-        # Choose a lead visual within a selected story without changing the
-        # algorithm's story membership, ranking or featured IDs.
+        # Honor the shortlist's distinct lead even when a trend is attached as
+        # context. Keep every associated fact and the existing image cap.
         lead_order = ("reunion", "relay", "trend", "adoption", "signature", "shared", "style")
         if visuals:
-            lead = min(range(len(visuals)), key=lambda i: lead_order.index(visuals[i].kind))
+            lead_kind = {"reunions": "reunion", "relays": "relay", "trends": "trend",
+                         "adoptions": "adoption", "signatures": "signature",
+                         "shared_habits": "shared", "styles": "style"}.get(story.lead_finding)
+            lead = min(range(len(visuals)), key=lambda i: (
+                visuals[i].kind != lead_kind, lead_order.index(visuals[i].kind)))
             visuals.insert(0, visuals.pop(lead))
             memories.append(EchoStickerMemory(tuple(visuals), images))
     return tuple(memories)

@@ -50,6 +50,7 @@ class StickerStory:
     strength: float = 0  # Dimensionless, bounded salience within an interest level.
     interest_reasons: tuple[str, ...] = ()
     timeline: tuple[tuple[str, str, str, int], ...] = ()  # Start/end, field, candidate index.
+    lead_finding: str = ""  # Editorial lead; full associated evidence stays intact.
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +58,7 @@ class StickerStorySelection:
     candidates: tuple[StickerStory, ...] = ()
     featured_ids: tuple[str, ...] = ()
     moments: tuple[StickerMoment, ...] = field(default=(), repr=False)
-    rule_version: str = "private-sticker-stories.v1"
+    rule_version: str = "private-sticker-stories.v2"
 
 
 def _next_day(value: str) -> str:
@@ -154,7 +155,7 @@ def select_sticker_stories(index: StickerFactIndex, features: PrivateStickerFeat
         contexts.append(material("shared_habits", i, f.identity_key, f.media_key,
             tuple(u.sender_id for u in f.members), min((u.first_date for u in dated), default=None),
             _next_day(max(u.last_date for u in dated)) if dated else None,
-            1 if min(u.date_count for u in f.members) >= 3 and min(u.send_count for u in f.members) >= 5 else 0,
+            1,
             _strength(min(u.date_count for u in f.members), 3), "repeated_shared_use"))
     for i, f in enumerate(features.signatures):
         h = f.habit
@@ -211,7 +212,46 @@ def select_sticker_stories(index: StickerFactIndex, features: PrivateStickerFeat
     candidates = tuple(replace(s, story_id=f"story:{i}") for i, s in enumerate(stories))
     ranked = sorted((s for s in candidates if s.interest_level > 0),
                     key=lambda s: (-s.interest_level, -s.strength, -len(s.findings), s.story_id))
-    return StickerStorySelection(candidates, tuple(s.story_id for s in ranked[:3]), moments)
+
+    def patterns(story):
+        result = set()
+        for name, i in story.findings:
+            f = getattr(features, name)[i]
+            if name == "signatures":
+                if f.story_eligible:
+                    result.add((name, f.habit.sender_id))
+            elif name == "adoptions":
+                result.add((name, f.later_sender_id))
+            elif name == "trends":
+                result.add((name, f.sender_id, f.direction))
+            elif name == "reunions":
+                result.add((name, f.sender_id))
+            elif name == "relays":
+                result.update((name, event) for event in story.event_ids)
+            else:
+                result.add((name,))
+        return result
+
+    # Prefer a different kind of discovery after the strongest story. A new
+    # material alone does not make the same adoption/trend narrative novel.
+    # Distinct relay events and the other member's habits can still fill space
+    # when no new kind remains. Never manufacture a quota or raise the cap.
+    selected, seen, leads = [], set(), {}
+    remaining = [(s, patterns(s)) for s in ranked]
+    lead_order = ("reunions", "relays", "shared_habits", "adoptions", "signatures", "styles", "trends")
+    while remaining and len(selected) < 3:
+        covered = {p[0] for p in seen}
+        remaining = [(s, ps) for s, ps in remaining if ps-seen]
+        if not remaining:
+            break
+        pos = next((i for i, (_, ps) in enumerate(remaining) if any(p[0] not in covered for p in ps)), 0)
+        story, ps = remaining.pop(pos)
+        novel = {p[0] for p in ps-seen}
+        leads[story.story_id] = next(n for n in lead_order if n in (novel-covered or novel))
+        selected.append(story.story_id)
+        seen.update(ps)
+    candidates = tuple(replace(s, lead_finding=leads.get(s.story_id, "")) for s in candidates)
+    return StickerStorySelection(candidates, tuple(selected), moments)
 
 
 def _moments(index: StickerFactIndex, relays: tuple[StickerRelay, ...]) -> tuple[StickerMoment, ...]:
