@@ -1,7 +1,7 @@
-"""Explicit share-safe projection of the existing selected private stories.
+"""Share-safe visuals for already selected stories; no selection or analysis.
 
-Never serialize the feature dataclasses: relays and moments hold chat bodies.
-Selection, grouping and all numeric evidence remain owned by analysis.
+Relay/message objects stay local. Only explicit dates, counts, fixed side labels
+and the existing bounded media targets cross the report boundary.
 """
 from __future__ import annotations
 
@@ -9,7 +9,10 @@ from datetime import date, timedelta
 
 from ..analysis.sticker_features import PrivateStickerFeatures
 from ..analysis.timestamps import to_chat_datetime
-from .models import EchoStickerItem, EchoStickerMemory
+from .models import EchoStickerFinding, EchoStickerItem, EchoStickerMemory, EchoStickerMemoryPoint
+
+
+RELAY_PREVIEW_TURNS = 12
 
 
 def _last_day(exclusive: str) -> str:
@@ -21,7 +24,6 @@ def build_sticker_memories(
     materials: dict[str, EchoStickerItem],
     labels: dict[str, str],
 ) -> tuple[EchoStickerMemory, ...]:
-    """Project only selected facts, using fixed side labels and existing assets."""
     candidates = {s.story_id: s for s in features.stories.candidates}
     memories = []
     for story_id in features.stories.featured_ids:
@@ -29,76 +31,89 @@ def build_sticker_memories(
         findings = {}
         for field, position in story.findings:
             findings.setdefault(field, []).append(getattr(features, field)[position])
-        details = []
-        title = "这张图的几次回响"
-        if "signatures" in findings:
-            for f in findings["signatures"]:
-                h = f.habit
-                extra = f"；发送次数排第 {f.frequency_rank}，不在 Top 3" if not f.overlaps_top3 else ""
-                details.append(f"招牌表情包 · {labels[h.sender_id]}共用过 {h.send_count} 次；可定时记录在 "
-                    f"{h.first_date} 至 {h.last_date} 覆盖 {h.date_count} 个使用日，首末相隔 {h.span_days} 天{extra}。")
-            title = "陪了很久的招牌"
-        if "adoptions" in findings:
-            for f in findings["adoptions"]:
-                details.append(f"先后采用 · {labels[f.first_sender_id]}的首次可辨认使用在 {f.first_date}，"
-                    f"{f.lag_days} 天后（{f.later_first_date}）看到{labels[f.later_sender_id]}使用；"
-                    f"后者共用了 {f.later_send_count} 次、分布在 {f.later_date_count} 个使用日。先后不代表传播因果。")
-            title = "从一个人先用，到两个人都用"
-        if "reunions" in findings:
-            for f in findings["reunions"]:
-                details.append(f"旧爱重逢 · {labels[f.sender_id]}在 {f.return_date} 再次使用，"
-                    f"距上次可辨认使用（{f.previous_date}）相隔 {f.gap_days} 天；"
-                    f"此前已在 {f.previous_date_count} 个使用日用过 {f.previous_send_count} 次。")
-            title = "隔了一阵，又见这张图"
-        if "trends" in findings:
-            # A story can link overlapping rolling windows. Show one strongest
-            # comparison per side/direction, not a list of near-identical scans.
-            trends = {}
-            for f in findings["trends"]:
-                key = f.sender_id, f.direction
-                if key not in trends or abs(f.current.share-f.previous.share) > abs(trends[key].current.share-trends[key].previous.share):
-                    trends[key] = f
-            for f in trends.values():
-                p, q = f.previous, f.current
-                verb = "阶段走红" if f.direction == "rise" else "阶段性淡出"
-                details.append(f"{verb} · {labels[f.sender_id]}在 {p.start_date} 至 {_last_day(p.end_date)} "
-                    f"用了 {p.send_count} 次，{q.start_date} 至 {_last_day(q.end_date)} 用了 {q.send_count} 次；"
-                    f"占同期已辨认表情包发送的 {p.share:.0%} → {q.share:.0%}。")
-            if len(findings) == 1:
-                title = "一张图的流行与退场"
-        if "shared_habits" in findings:
-            for f in findings["shared_habits"]:
-                uses = "；".join(f"{labels[u.sender_id]}用了 {u.send_count} 次，可定时记录覆盖 {u.date_count} 个使用日"
-                                + ("（部分发送时间不明）" if u.has_unknown_time else "")
-                                for u in f.members)
-                details.append(f"共同口头禅 · {uses}。这是双方反复使用的习惯。")
-            if len(findings) == 1:
-                title = "你们反复用的同一张图"
-        if "relays" in findings:
-            # Overlapping relay windows already share one event. Describe the
-            # longest retained window, never add their turns together.
+        # Retain the existing per-story target cap and acquisition union.
+        images = tuple(sorted((materials[key] for key in story.media_keys if key in materials),
+                              key=lambda item: (-item.count, item.asset_key))[:3])
+        image_map = {item.media_key: item for item in images}
+
+        def picture(key):
+            return (image_map[key],) if key in image_map else ()
+
+        visuals = []
+        for f in findings.get("reunions", ()):
+            side = labels[f.sender_id]
+            visuals.append(EchoStickerFinding("reunion", f"隔了 {f.gap_days} 天，{side}又发了这张图。",
+                points=(EchoStickerMemoryPoint(f"{side} · 上次记录", start_date=f.previous_date),
+                        EchoStickerMemoryPoint(f"{side} · 再次使用", start_date=f.return_date)),
+                materials=picture(f.media_key)))
+
+        for f in findings.get("signatures", ()):
+            h = f.habit
+            visuals.append(EchoStickerFinding("signature", f"这张图，{labels[h.sender_id]}跨越 {h.span_days} 天在用。",
+                points=(EchoStickerMemoryPoint(labels[h.sender_id], value=h.send_count,
+                    date_count=h.date_count, start_date=h.first_date, end_date=h.last_date),),
+                materials=picture(f.media_key),
+                note="部分发送时间不明。" if h.send_count != h.dated_send_count else ""))
+
+        for f in findings.get("shared_habits", ()):
+            visuals.append(EchoStickerFinding("shared", "这张图，我们都反复用过。",
+                points=tuple(EchoStickerMemoryPoint(labels[u.sender_id], value=u.send_count,
+                    date_count=u.date_count, start_date=u.first_date, end_date=u.last_date) for u in f.members),
+                materials=picture(f.media_key),
+                note="部分发送时间不明。" if any(u.has_unknown_time for u in f.members) else ""))
+
+        if findings.get("relays"):
+            # Overlapping windows describe one event; never add their turns.
             f = max(findings["relays"], key=lambda f: (f.turn_count, f.self_send_count+f.peer_send_count))
             start, end = to_chat_datetime(f.start_epoch_seconds), to_chat_datetime(f.end_epoch_seconds)
-            details.append(f"表情包接力 · {start:%Y-%m-%d %H:%M:%S} 至 {end:%Y-%m-%d %H:%M:%S}，"
-                f"连续交替 {f.turn_count} 轮，我发了 {f.self_send_count} 次、TA 发了 {f.peer_send_count} 次。"
-                "这里展示互动摘要，聊天原文留在本机。")
+            points = []
+            for turn in f.turns[:RELAY_PREVIEW_TURNS]:
+                representative = next((image_map[s.media_key] for message in turn.messages
+                    for s in message.sends if s.identity_key and s.media_key in image_map), None)
+                points.append(EchoStickerMemoryPoint(labels[turn.sender_id], value=turn.send_count,
+                    materials=(representative,) if representative else ()))
+            notes = []
+            if f.turn_count > len(points):
+                notes.append(f"图示前 {len(points)} 轮，共 {f.turn_count} 轮。")
+            if any(t.send_count > 1 for t in f.turns):
+                notes.append("每轮仅展示代表图，次数包含整轮发送。")
             if f.unknown_identity_count:
-                details.append(f"其中 {f.unknown_identity_count} 次发送无法辨认素材，未归入任何一张图。")
-            if len(findings) == 1:
-                title = f"那次，你们接了 {f.turn_count} 轮"
-        if "styles" in findings:
-            for f in findings["styles"]:
-                a, b = f.richer, f.concentrated
-                details.append(f"拉齐到各发 {f.sample_size} 次，{labels[a.sender_id]}预计会用 "
-                    f"{a.expected_unique_count:.1f} 种图，{labels[b.sender_id]}预计会用 {b.expected_unique_count:.1f} 种。")
-                details.append("比较只覆盖已辨认的素材；这是等量抽样的预计种类，不是实际抽取结果，也不代表性格。")
-            title = f"{labels[findings['styles'][0].richer.sender_id]}偏收藏家，{labels[findings['styles'][0].concentrated.sender_id]}更专一"
-        if len(findings) > 1:
-            title = "这张图的几次回响"
-        period = f"{story.start_date} — {_last_day(story.end_date)}" if story.start_date and story.end_date else "本次记录中的发现"
-        images = sorted((materials[key] for key in story.media_keys if key in materials),
-                        key=lambda item: (-item.count, item.asset_key))[:3]
-        if len(story.media_keys) > len(images):
-            details.append("图片仅展示部分代表素材；摘要保留整段互动的实际发送次数。")
-        memories.append(EchoStickerMemory(title, period, tuple(details), tuple(images)))
+                notes.append(f"含 {f.unknown_identity_count} 次无法辨认素材。")
+            visuals.append(EchoStickerFinding("relay", f"你来我往，一连 {f.turn_count} 轮。",
+                period=f"{start:%Y-%m-%d %H:%M:%S} — {end:%Y-%m-%d %H:%M:%S}",
+                points=tuple(points), note="".join(notes)))
+
+        # Retain the existing strongest comparison per side/direction rather
+        # than all overlapping scans of the selected story.
+        trends = {}
+        for f in findings.get("trends", ()):
+            key = f.sender_id, f.direction
+            if key not in trends or abs(f.current.share-f.previous.share) > abs(trends[key].current.share-trends[key].previous.share):
+                trends[key] = f
+        for f in trends.values():
+            visuals.append(EchoStickerFinding("trend",
+                f"{labels[f.sender_id]}用这张图的占比，从 {f.previous.share:.0%} 到 {f.current.share:.0%}。",
+                points=tuple(EchoStickerMemoryPoint(labels[f.sender_id], value=w.send_count,
+                    total=w.known_send_count, start_date=w.start_date, end_date=_last_day(w.end_date))
+                    for w in (f.previous, f.current)), materials=picture(f.media_key)))
+
+        for f in findings.get("adoptions", ()):
+            visuals.append(EchoStickerFinding("adoption", f"{labels[f.later_sender_id]}的首次可见使用，晚了 {f.lag_days} 天。",
+                points=(EchoStickerMemoryPoint(labels[f.first_sender_id], start_date=f.first_date),
+                        EchoStickerMemoryPoint(labels[f.later_sender_id], start_date=f.later_first_date)),
+                materials=picture(f.media_key), note="先后出现，不代表谁带动了谁。"))
+
+        for f in findings.get("styles", ()):
+            visuals.append(EchoStickerFinding("style", f"同样取 {f.sample_size} 次，{labels[f.richer.sender_id]}的图样更丰富。",
+                points=tuple(EchoStickerMemoryPoint(labels[u.sender_id], value=u.expected_unique_count,
+                    total=f.sample_size) for u in (f.richer, f.concentrated)),
+                note=f"按已有记录估算：从双方可辨认的表情发送中各随机取 {f.sample_size} 次，预计包含的平均种类数。"))
+
+        # Choose a lead visual within a selected story without changing the
+        # algorithm's story membership, ranking or featured IDs.
+        lead_order = ("reunion", "relay", "trend", "adoption", "signature", "shared", "style")
+        if visuals:
+            lead = min(range(len(visuals)), key=lambda i: lead_order.index(visuals[i].kind))
+            visuals.insert(0, visuals.pop(lead))
+            memories.append(EchoStickerMemory(tuple(visuals), images))
     return tuple(memories)

@@ -249,12 +249,33 @@ class EchoStickerAsset:
 
 
 @dataclass(frozen=True, slots=True)
-class EchoStickerMemory:
-    """Shareable summary only; no messages, source IDs or local event refs."""
+class EchoStickerMemoryPoint:
+    """A display value/date/turn, never an analysis message reference."""
 
+    label: str
+    value: int | float | None = None
+    total: int | None = None
+    date_count: int | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    materials: tuple[EchoStickerItem, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class EchoStickerFinding:
+    kind: str
     title: str
-    period: str
-    details: tuple[str, ...]
+    period: str = ""
+    points: tuple[EchoStickerMemoryPoint, ...] = ()
+    materials: tuple[EchoStickerItem, ...] = ()
+    note: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class EchoStickerMemory:
+    """One selected story, with safe visual findings and bounded media targets."""
+
+    findings: tuple[EchoStickerFinding, ...]
     materials: tuple[EchoStickerItem, ...] = ()
 
 

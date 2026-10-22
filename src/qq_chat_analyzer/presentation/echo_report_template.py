@@ -301,9 +301,8 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <span class="chapter-number">07</span>
         <div><p class="folio">STICKER MEMORIES</p><h2 id="sticker-memories-title">表情包特色回忆</h2></div>
       </header>
-      <p class="chapter-intro">熟悉的图，也留下了自己的时间线。</p>
       <div id="sticker-memory-stories"></div>
-      <p class="sticker-memory-note">仅据本次筛选后的可辨认记录；日期与间隔不代表完整聊天历史。图片可右键另存为，可信预览会单独标注。</p>
+      <p class="sticker-memory-note">日期与统计仅依据本次可辨认记录，不代表完整聊天历史。</p>
       <span class="page-number">09</span>
     </section>
 
@@ -594,15 +593,72 @@ h1, h2, h3, p { margin-top: 0; }
 .sticker-preview { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; }
 .sticker-member-empty, .sticker-empty { color: var(--muted); font: 14px/1.8 var(--serif); }
 .sticker-empty { margin: 36px 0; }
-.sticker-memory { display: grid; grid-template-columns: 160px minmax(0, 1fr); gap: 28px; padding: 28px 0; border-top: 1px solid var(--rule); break-inside: avoid; }
-.sticker-memory.is-style { grid-template-columns: 1fr; }
-.sticker-memory-images { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-content: start; }
-.sticker-memory-images > :only-child { grid-column: 1 / -1; }
-.sticker-memory h3 { margin: 5px 0 14px; font: 500 25px/1.4 var(--serif); }
-.sticker-memory-period { color: var(--accent); font: 12px/1.6 var(--sans); letter-spacing: .04em; }
-.sticker-memory-details { padding: 0; list-style: none; margin: 0; }
-.sticker-memory-details li { margin: 10px 0; font: 14px/1.9 var(--sans); overflow-wrap: anywhere; }
-.sticker-memory-note { color: var(--muted); font: 12px/1.8 var(--sans); margin-top: 20px; }
+.sticker-memories-chapter { padding: 40px 48px 60px; background: #f7f3e9; --ink: #243d39; --muted: #657168; --rule: #d3d6c9; --accent: #ac4e31; color: var(--ink); }
+.sticker-memories-chapter .chapter-header h2 { font-size: 28px; }
+.sticker-memories-chapter .chapter-header { gap: 18px; padding-bottom: 23px; }
+.sticker-memory-story { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; margin-top: 28px; }
+.sticker-memory { min-width: 0; padding: 24px 0; border-top: 1px solid var(--rule); break-inside: avoid; }
+.sticker-memory h3 { margin: 15px 0 22px; font: 500 29px/1.45 var(--serif); overflow-wrap: anywhere; }
+.sticker-memory h3 em { color: var(--accent); font-style: normal; }
+.memory-kicker { margin: 0; color: var(--accent); font: 11px/1.5 var(--sans); letter-spacing: .08em; }
+.memory-kicker::before { content: "—"; margin-right: 12px; }
+.memory-body { display: grid; grid-template-columns: minmax(0, 1fr) 156px; gap: 16px; align-items: center; }
+.memory-copy { min-width: 0; }
+.memory-art { min-width: 0; margin: 0; }
+.memory-art .sticker-image { background: transparent; }
+.memory-art figcaption { margin-top: 5px; text-align: center; color: var(--muted); font: 10px/1.5 var(--sans); }
+.memory-lead, .sticker-memory.is-reunion, .sticker-memory.is-relay, .sticker-memory.is-style { grid-column: 1 / -1; }
+.memory-lead .memory-body, .is-reunion .memory-body { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 30px; }
+.memory-lead h3 { font-size: 47px; line-height: 1.4; margin: 24px 0; }
+.memory-lead .memory-art, .is-reunion .memory-art { width: 310px; max-width: 100%; justify-self: center; }
+.memory-lead .memory-art { width: 330px; }
+.memory-dates { display: flex; justify-content: space-between; gap: 15px; align-items: center; margin-top: 23px; }
+.memory-date { min-width: 0; font: 11px/1.7 var(--sans); color: var(--muted); }
+.memory-date strong { display: block; font: 18px/1.6 var(--serif); color: var(--ink); }
+.memory-date-rule { height: 1px; flex: 1; min-width: 16px; border-top: 1px dashed #78958b; }
+.memory-note, .sticker-memory-period { margin: 16px 0 0; color: var(--muted); font: 11px/1.8 var(--sans); }
+.is-signature { padding: 25px; background: #e6ecdf; border: 0; }
+.memory-habit-count { margin: 12px 0 0; font: 13px/1.7 var(--sans); }
+.memory-habit-count strong { font: 33px/1 var(--serif); margin-right: 4px; }
+.memory-lifetime { display: flex; align-items: center; gap: 12px; margin-top: 22px; font: 11px/1.5 var(--sans); color: var(--muted); }
+.memory-lifetime i { height: 3px; background: #37776b; flex: 1; }
+.memory-shared { display: grid; grid-template-columns: 1fr minmax(0, 156px) 1fr; gap: 8px; align-items: center; margin-top: 18px; }
+.memory-person { min-width: 0; text-align: center; font: 11px/1.8 var(--sans); color: var(--muted); }
+.memory-person b { font-weight: 500; color: #37776b; }
+.memory-person:last-child b { color: var(--accent); }
+.memory-person strong { display: block; font: 34px/1.6 var(--serif); color: var(--ink); }
+.memory-person small { display: block; font-size: 10px; }
+.is-relay { padding: 27px; border: 0; background: #243d39; color: #f7f3e9; --muted: #d0ddcd; --accent: #e7b996; }
+.is-relay h3 { font-size: 33px; margin-bottom: 8px; }
+.memory-relay { display: grid; grid-template-columns: repeat(var(--turns), minmax(0, 1fr)); gap: 10px; list-style: none; margin: 24px 0 0; padding: 0; }
+.memory-relay li { position: relative; min-width: 0; }
+.memory-relay li:not(:last-child)::after { content: "›"; position: absolute; right: -8px; top: 45%; color: #c0cbbd; }
+.memory-relay .sticker-image { border: 3px solid #9bb3a5; border-radius: 8px; overflow: hidden; }
+.memory-relay .is-peer .sticker-image { border-color: #daa78a; }
+.memory-turn-number { display: block; margin-bottom: 7px; color: #d0ddcd; font: 10px/1 var(--sans); }
+.memory-turn-side { display: block; margin-top: 6px; text-align: center; color: #c7dec8; font: 11px/1.6 var(--sans); }
+.is-peer .memory-turn-side { color: #f0bf9c; }
+.memory-relay .sticker-placeholder { font-size: 10px; text-align: center; }
+.is-trend .memory-body, .is-adoption .memory-body { grid-template-columns: minmax(0, 1fr) 126px; }
+.is-trend.memory-lead .memory-body, .is-adoption.memory-lead .memory-body { grid-template-columns: minmax(0, 1fr) 300px; }
+.memory-trend-row { display: grid; grid-template-columns: 1fr 80px; gap: 9px 14px; align-items: center; margin-top: 21px; }
+.memory-trend-dates { grid-column: 1 / -1; color: var(--muted); font: 11px/1.6 var(--sans); }
+.memory-track { height: 20px; background: #d6dccf; }
+.memory-fill { height: 100%; background: #37776b; }
+.memory-bar-value { text-align: right; font: 26px/1.2 var(--serif); }
+.memory-bar-value small { display: block; margin-top: 5px; color: var(--muted); font: 11px/1.5 var(--sans); }
+.memory-trend-caption { color: var(--muted); font: 12px/1.8 var(--sans); margin: 16px 0 0; }
+.is-adoption .memory-dates { align-items: flex-start; flex-direction: column; border-left: 1px solid var(--rule); padding-left: 18px; gap: 18px; }
+.is-adoption .memory-date-rule { display: none; }
+.is-style { background: #e9e5da; border-top: 2px solid #243d39; padding: 26px 28px; }
+.memory-style-body { display: grid; grid-template-columns: 1fr 1.2fr; gap: 38px; align-items: center; }
+.is-style h3 { font-size: 31px; }
+.memory-style-label { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; font: 12px/1.8 var(--sans); margin-top: 10px; }
+.memory-style-label strong { font: 34px/1.7 var(--serif); }
+.memory-style-row:nth-child(2) .memory-fill { background: #ac4e31; }
+.memory-axis { display: flex; justify-content: space-between; color: var(--muted); font: 10px/1.5 var(--sans); margin-top: 7px; }
+.is-style .memory-note { border-top: 1px solid #cacec1; padding-top: 14px; font-size: 12px; }
+.sticker-memory-note { color: var(--muted); font: 11px/1.8 var(--sans); margin: 28px 0 0; border-top: 1px solid var(--rule); padding-top: 18px; }
 @media (min-width: 721px) {
   .sticker-chapter { padding: 44px 82px 64px; }
   .sticker-chapter .chapter-header { padding-bottom: 16px; }
@@ -959,9 +1015,6 @@ h1, h2, h3, p { margin-top: 0; }
   .sticker-member + .sticker-member { border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); padding-top: 24px; }
   .sticker-section-heading { display: block; }
   .sticker-section-heading h3 { margin-bottom: 8px; }
-  .sticker-memory { grid-template-columns: 1fr; gap: 16px; }
-  .sticker-memory-images { max-width: 160px; }
-  .sticker-memory h3 { font-size: 23px; }
   .expression-fields div,
   .expression-fields div:last-child {
     min-height: auto;
@@ -1791,43 +1844,142 @@ document.documentElement.classList.add("js-ready");
     setHidden("sticker-memories", !memories.length);
     setHidden("sticker-memories-toc", !memories.length);
     var stories = document.getElementById("sticker-memory-stories");
-    memories.forEach(function (memory) {
-      var article = document.createElement("article");
-      article.className = "sticker-memory" + (memory.materials.length ? "" : " is-style");
-      if (memory.materials.length) {
-        var images = document.createElement("div");
-        images.className = "sticker-memory-images";
-        memory.materials.forEach(function (item) {
-          var box = document.createElement("div");
-          box.appendChild(stickerImage(item));
-          var asset = stickerAssets[item.asset_key];
-          var caption = document.createElement("small");
-          caption.className = "sticker-preview";
-          caption.textContent = asset && asset.status === "available" ? "已验证原件" :
-            asset && asset.status === "preview" ? "可信预览 · 非原件" : "未恢复图片";
-          box.appendChild(caption);
-          images.appendChild(box);
-        });
-        article.appendChild(images);
-      }
-      var copy = document.createElement("div");
-      var period = document.createElement("div");
-      period.className = "sticker-memory-period";
-      period.textContent = memory.period;
-      copy.appendChild(period);
-      var heading = document.createElement("h3");
-      heading.textContent = memory.title;
-      copy.appendChild(heading);
-      var details = document.createElement("ul");
-      details.className = "sticker-memory-details";
-      memory.details.forEach(function (text) {
-        var line = document.createElement("li");
-        line.textContent = text;
-        details.appendChild(line);
+    function memoryElement(tag, className, text) {
+      var node = document.createElement(tag);
+      node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+    function memoryImage(items, compact) {
+      var item = items[0] || {asset_key: ""};
+      var figure = memoryElement("figure", "memory-art");
+      figure.appendChild(stickerImage(item));
+      var asset = stickerAssets[item.asset_key];
+      var status = asset && asset.status;
+      var caption = memoryElement("figcaption", "", status === "available" ? (compact ? "原件" : "已验证原件") :
+        status === "preview" ? (compact ? "预览·非原件" : "可信预览 · 非原件") : "未恢复图片");
+      figure.appendChild(caption);
+      return figure;
+    }
+    function memoryDates(points) {
+      var dates = memoryElement("div", "memory-dates");
+      points.forEach(function (point, index) {
+        if (index) dates.appendChild(memoryElement("i", "memory-date-rule"));
+        var entry = memoryElement("div", "memory-date");
+        entry.appendChild(memoryElement("strong", "", point.start_date || "日期不明"));
+        entry.appendChild(memoryElement("span", "", point.label));
+        dates.appendChild(entry);
       });
-      copy.appendChild(details);
-      article.appendChild(copy);
-      stories.appendChild(article);
+      return dates;
+    }
+    function memoryTrack(value, total) {
+      var track = memoryElement("div", "memory-track");
+      var fill = memoryElement("div", "memory-fill");
+      fill.style.width = (total > 0 ? Math.min(100, Math.max(0, value / total * 100)) : 0) + "%";
+      track.appendChild(fill);
+      track.setAttribute("aria-hidden", "true");
+      return track;
+    }
+    var memoryLabels = {reunion: "旧图重逢", signature: "长期相伴", shared: "共同口头禅",
+      relay: "那次接力", trend: "使用变化", adoption: "先后出现", style: "用图风格 · 按已有记录估算"};
+    memories.forEach(function (memory, storyIndex) {
+      var story = memoryElement("article", "sticker-memory-story");
+      memory.findings.forEach(function (finding, findingIndex) {
+        var kind = finding.kind, points = finding.points;
+        if (!memoryLabels[kind]) return;
+        var panel = memoryElement("section", "sticker-memory is-" + kind +
+          (storyIndex === 0 && findingIndex === 0 ? " memory-lead" : ""));
+        panel.dataset.finding = kind;
+        var heading = memoryElement("h3", "");
+        // Typography only. Graph values always come from numeric points.
+        finding.title.split(/(\d+(?:\.\d+)?%?)/).forEach(function (part, index) {
+          heading.appendChild(index % 2 ? memoryElement("em", "", part) : document.createTextNode(part));
+        });
+        var copy = memoryElement("div", "memory-copy");
+        copy.appendChild(memoryElement("p", "memory-kicker", memoryLabels[kind]));
+        copy.appendChild(heading);
+        if (kind === "reunion" || kind === "adoption") copy.appendChild(memoryDates(points));
+        if (kind === "signature") {
+          var count = memoryElement("p", "memory-habit-count");
+          count.appendChild(memoryElement("strong", "", formatCount(points[0].date_count)));
+          count.appendChild(document.createTextNode(" 个日子里用过它"));
+          copy.appendChild(count);
+        }
+        if (kind === "style") {
+          var styleBody = memoryElement("div", "memory-style-body");
+          styleBody.appendChild(copy);
+          var chart = memoryElement("div", "memory-style-chart");
+          points.forEach(function (point) {
+            var row = memoryElement("div", "memory-style-row");
+            var label = memoryElement("div", "memory-style-label");
+            label.appendChild(memoryElement("span", "", point.label));
+            label.appendChild(memoryElement("strong", "", point.value.toFixed(1) + " 种"));
+            row.appendChild(label);
+            row.appendChild(memoryTrack(point.value, point.total));
+            chart.appendChild(row);
+          });
+          var axis = memoryElement("div", "memory-axis");
+          ["0", String(points[0].total / 2), points[0].total + " 种"].forEach(function (text) {
+            axis.appendChild(memoryElement("span", "", text));
+          });
+          chart.appendChild(axis);
+          styleBody.appendChild(chart);
+          panel.appendChild(styleBody);
+        } else if (kind === "relay") {
+          panel.appendChild(copy);
+          panel.appendChild(memoryElement("p", "sticker-memory-period", finding.period));
+          var turns = memoryElement("ol", "memory-relay");
+          turns.style.setProperty("--turns", String(points.length));
+          points.forEach(function (point, index) {
+            var turn = memoryElement("li", point.label === "TA" ? "is-peer" : "");
+            turn.appendChild(memoryElement("span", "memory-turn-number", String(index + 1).padStart(2, "0")));
+            turn.appendChild(memoryImage(point.materials, true));
+            turn.appendChild(memoryElement("span", "memory-turn-side", point.label + (point.value > 1 ? " · " + point.value + " 次" : "")));
+            turns.appendChild(turn);
+          });
+          panel.appendChild(turns);
+        } else if (kind === "shared") {
+          panel.appendChild(copy);
+          var sharedUse = memoryElement("div", "memory-shared");
+          points.forEach(function (point, index) {
+            if (index) sharedUse.appendChild(memoryImage(finding.materials));
+            var person = memoryElement("div", "memory-person");
+            person.appendChild(memoryElement("b", "", point.label));
+            person.appendChild(memoryElement("strong", "", point.value + " 次"));
+            person.appendChild(memoryElement("span", "", "分布在 " + point.date_count + " 天"));
+            person.appendChild(memoryElement("small", "", (point.start_date || "日期不明") + " — " + (point.end_date || "日期不明")));
+            sharedUse.appendChild(person);
+          });
+          panel.appendChild(sharedUse);
+        } else {
+          var body = memoryElement("div", "memory-body");
+          body.appendChild(copy);
+          body.appendChild(memoryImage(finding.materials));
+          panel.appendChild(body);
+          if (kind === "signature") {
+            var lifetime = memoryElement("div", "memory-lifetime");
+            lifetime.appendChild(memoryElement("span", "", points[0].start_date || "日期不明"));
+            lifetime.appendChild(memoryElement("i", ""));
+            lifetime.appendChild(memoryElement("span", "", points[0].end_date || "日期不明"));
+            panel.appendChild(lifetime);
+          }
+          if (kind === "trend") {
+            panel.appendChild(memoryElement("p", "memory-trend-caption", "占" + points[0].label + "同期已辨认表情发送的比例"));
+            points.forEach(function (point) {
+              var row = memoryElement("div", "memory-trend-row");
+              row.appendChild(memoryElement("div", "memory-trend-dates", point.start_date + " — " + point.end_date));
+              row.appendChild(memoryTrack(point.value, point.total));
+              var value = memoryElement("div", "memory-bar-value", point.total > 0 ? Math.round(point.value / point.total * 100) + "%" : "无可比发送");
+              value.appendChild(memoryElement("small", "", point.value + " / " + point.total + " 次"));
+              row.appendChild(value);
+              panel.appendChild(row);
+            });
+          }
+        }
+        if (finding.note) panel.appendChild(memoryElement("p", "memory-note", finding.note));
+        story.appendChild(panel);
+      });
+      stories.appendChild(story);
     });
 
   }

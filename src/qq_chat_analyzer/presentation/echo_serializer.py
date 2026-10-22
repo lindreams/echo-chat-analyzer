@@ -30,7 +30,7 @@ from .expression_assets import (
 )
 
 
-ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.9"
+ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.10"
 
 
 def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
@@ -69,7 +69,17 @@ def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
         ),
         "stickers": _stickers_to_dict(view.stickers),
         "sticker_memories": [{
-            "title": memory.title, "period": memory.period, "details": list(memory.details),
+            "findings": [{
+                "kind": finding.kind, "title": finding.title, "period": finding.period,
+                "note": finding.note,
+                "materials": [{"asset_key": item.asset_key} for item in finding.materials],
+                "points": [{
+                    "label": point.label, "value": point.value, "total": point.total,
+                    "date_count": point.date_count, "start_date": point.start_date,
+                    "end_date": point.end_date,
+                    "materials": [{"asset_key": item.asset_key} for item in point.materials],
+                } for point in finding.points],
+            } for finding in memory.findings],
             "materials": [{"asset_key": item.asset_key} for item in memory.materials],
         } for memory in view.stickers.memories] if view.stickers and view.conversation_kind == "private" else [],
         "members": [

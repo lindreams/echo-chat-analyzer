@@ -47,9 +47,18 @@ def test_featured_stories_export_only_summaries_and_share_the_media_target_union
     payload = echo_report_to_dict(view)
     memories = payload["sticker_memories"]
     assert len(memories) == 2  # One six-finding material story, one style comparison.
-    assert len(memories[0]["details"]) >= 4
-    summaries = json.dumps(memories, ensure_ascii=False)
-    assert all(word in summaries for word in ("70 天", "49 天", "8 轮", "共同口头禅", "预计"))
+    findings = {f["kind"]: f for m in memories for f in m["findings"]}
+    assert set(findings) == {"reunion", "signature", "shared", "relay", "trend", "adoption", "style"}
+    assert memories[0]["findings"][0]["kind"] == "reunion"
+    assert [(p["label"], p["start_date"]) for p in findings["reunion"]["points"]] == [
+        ("我 · 上次记录", "2025-01-22"), ("我 · 再次使用", "2025-03-12")]
+    assert [p["start_date"] for p in findings["adoption"]["points"]] == ["2025-01-01", "2025-03-12"]
+    assert [(p["value"], p["total"], p["end_date"]) for p in findings["trend"]["points"]] == [
+        (2, 92, "2025-02-13"), (6, 6, "2025-03-15")]
+    assert [(p["label"], p["value"]) for p in findings["relay"]["points"]] == [("我", 1), ("TA", 1)] * 4
+    assert [(p["value"], p["date_count"]) for p in findings["shared"]["points"]] == [(10, 7), (10, 4)]
+    assert [p["total"] for p in findings["style"]["points"]] == [10, 10]
+    assert findings["style"]["points"][0]["value"] == pytest.approx(9.67, abs=.01)
     habit = features.shared_habits[0]
     undated = replace(features, shared_habits=(replace(habit, members=(
         replace(habit.members[0], has_unknown_time=True), habit.members[1])),))
@@ -87,6 +96,31 @@ def test_featured_stories_export_only_summaries_and_share_the_media_target_union
                 assert part.text not in source
     assert all(secret not in source for secret in (
         "fiction-A", "fiction-B", "fiction:", "batch2-seven", "occurrence_id", "context_start"))
+
+
+def test_relay_projection_bounds_turns_without_losing_counts_or_exporting_bodies():
+    from sticker_feature_samples import Messages, indexed
+    from qq_chat_analyzer.analysis.sticker_features import analyze_private_stickers
+
+    sample = Messages("private-relay")
+    for i in range(16):
+        sample.add(0, "A" if i % 2 == 0 else "B",
+                   *(("stamp", "other", None) if i == 0 else ("stamp",)),
+                   text="private-body-sentinel" if i == 0 else "", seconds=i*20)
+    rows = sample.ordered()
+    index = indexed(rows, positions=range(len(rows)))
+    features = analyze_private_stickers(index)
+    payload = echo_report_to_dict(build_echo_report_view(analysis_models.AnalysisReports(
+        stickers=(index.report,), private_stickers=features), conversation_kind="private"))
+    relay = next(f for m in payload["sticker_memories"] for f in m["findings"] if f["kind"] == "relay")
+    assert "16" in relay["title"]
+    assert len(relay["points"]) == 12
+    assert [p["label"] for p in relay["points"]] == ["我", "TA"] * 6
+    assert relay["points"][0]["value"] == 3
+    assert len(relay["points"][0]["materials"]) == 1  # Representative, not three invented pictures.
+    assert "前 12 轮" in relay["note"] and "代表图" in relay["note"] and "1 次" in relay["note"]
+    assert all(secret not in json.dumps(payload, ensure_ascii=False) for secret in (
+        "private-body-sentinel", "fiction:", "private-relay", "fiction-A", "fiction-B"))
 
 
 def test_private_local_media_resolution_uses_the_final_report_targets(tmp_path, monkeypatch):
@@ -392,7 +426,7 @@ def test_activity_analysis_preserves_report_distribution_and_density_contract(tm
         activity=ActivityAnalyzer().analyze(messages),
     ))
     payload = echo_report_to_dict(view)
-    assert payload["schema_version"] == "echo-report.v0.9"
+    assert payload["schema_version"] == "echo-report.v0.10"
     assert payload["overview"] == {
         "has_data": True, "total_message_count": 3, "participant_count": 0,
         "empty_description": "", "active_days": 1,

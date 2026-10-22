@@ -323,7 +323,7 @@ def test_execute_generates_echo_report_json_artifact(tmp_path: Path) -> None:
     report_path = output_directory / "echo-report.json"
     assert report_path.is_file()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "echo-report.v0.9"
+    assert payload["schema_version"] == "echo-report.v0.10"
 
 
 def test_report_boundary_does_not_retain_full_expression_candidates() -> None:

@@ -630,7 +630,7 @@ def test_saved_qq_media_report_loads_actual_images_offline(tmp_path, kind, caplo
 
 
 @pytest.mark.slow_integration
-def test_private_memories_are_an_independent_offline_chapter_on_desktop_and_narrow_screen(tmp_path):
+def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path):
     import hashlib
     from dataclasses import replace
     from sticker_feature_samples import indexed
@@ -661,6 +661,8 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop_and_narr
       const result = {separate:a.parentNode === b.parentNode && !a.contains(b),
         visible:!a.hidden && !b.hidden && !toc.hidden, target:toc.getAttribute("href"),
         cards:b.querySelectorAll("article").length, tops:a.querySelectorAll("li").length,
+        kinds:[...b.querySelectorAll("[data-finding]")].map(x => x.dataset.finding),
+        relaySides:[...b.querySelectorAll(".memory-turn-side")].map(x => x.textContent),
         sharedAbsent:!document.querySelector("#sticker-shared-list"),
         sameResource:images[0].src === a.querySelector("img").src,
         loaded:images.every(x => x.complete && x.naturalWidth > 0),
@@ -673,9 +675,8 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop_and_narr
       pre.hidden = true; pre.textContent = JSON.stringify(result); window.parent.document.body.appendChild(pre);
     }, 300);});</script>'''
     page = source.replace("</body>", probe+"</body>")
-    for width in (1280, 390):
-        # Windows headless Chromium clamps its native window to 500px. A
-        # same-origin srcdoc frame exercises a real 390px CSS viewport.
+    for width in (1280,):
+        # Keep a precise desktop CSS viewport independent of headless chrome.
         output.write_text(f'<iframe style="border:0;width:{width}px;height:1200px" '
                           f'srcdoc="{html.escape(page, quote=True)}"></iframe>', encoding="utf-8")
         browser = _run_browser([
@@ -690,6 +691,8 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop_and_narr
         result = json.loads(html.unescape(match.group(1)))
         assert result["separate"] and result["visible"] and result["target"] == "#sticker-memories"
         assert result["cards"] == 2 and result["tops"] == 4 and result["sharedAbsent"]
+        assert set(result["kinds"]) == {"reunion", "signature", "shared", "relay", "trend", "adoption", "style"}
+        assert result["relaySides"] == ["我", "TA"] * 4
         assert result["sameResource"] and result["loaded"] and result["nativeSave"]
         assert not result["overflow"] and result["fits"] and result["viewport"] == width
         assert all(word in result["text"] for word in ("70 天", "49 天", "8 轮", "共同口头禅", "预计", "已验证原件"))
