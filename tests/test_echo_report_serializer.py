@@ -32,7 +32,8 @@ from qq_chat_analyzer.presentation import (
 )
 
 
-def test_featured_stories_export_only_summaries_and_share_the_media_target_union(tmp_path):
+def test_featured_stories_export_only_summaries_and_share_the_media_target_union(tmp_path, caplog):
+    caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
     from dataclasses import replace
     from sticker_feature_samples import indexed
     from test_sticker_features_batch2 import combined_scene
@@ -96,6 +97,14 @@ def test_featured_stories_export_only_summaries_and_share_the_media_target_union
                 assert part.text not in source
     assert all(secret not in source for secret in (
         "fiction-A", "fiction-B", "fiction:", "batch2-seven", "occurrence_id", "context_start"))
+    records = [r.getMessage() for r in caplog.records if r.name.endswith(".analysis_diagnostics")]
+    counts = json.loads(next(r.removeprefix("[sticker-counts] ") for r in records if r.startswith("[sticker-counts] ")))
+    assert counts == dict(features.diagnostic_counts)
+    assert all(type(value) is int for value in counts.values())
+    assert all(secret not in " ".join(records) for secret in (
+        "fiction", "batch2-seven", features.first_date, features.end_date, "occurrence_id"))
+    assert any("[sticker-projection-counts] featured=2 matched_scope=1 memories=2" in r for r in records)
+    assert any("[sticker-media-counts] before=2 after=2" in r for r in records)
 
 
 def test_relay_projection_bounds_turns_without_losing_counts_or_exporting_bodies():

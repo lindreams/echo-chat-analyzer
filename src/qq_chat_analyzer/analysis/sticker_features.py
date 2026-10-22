@@ -10,6 +10,8 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date
 import heapq
+import json
+import logging
 from math import fsum
 from typing import Literal
 
@@ -227,11 +229,15 @@ class PrivateStickerFeatures:
     shared_habits: tuple[SharedStickerHabit, ...] = ()
     styles: tuple[StickerStyleComparison, ...] = ()
     stories: StickerStorySelection = field(default_factory=StickerStorySelection, repr=False)
+    diagnostic_counts: tuple[tuple[str, int], ...] = field(default=(), repr=False, compare=False)
 
 
 def analyze_private_stickers(index: StickerFactIndex) -> PrivateStickerFeatures:
     """Analyze a shared fact index, independent of media success or UI limits."""
+    audit = Counter()
     if not index.available:
+        logging.getLogger("qq_chat_analyzer.desktop.analysis_diagnostics").info(
+            "[sticker-counts] %s", '{"analysis.unavailable": 1}')
         return PrivateStickerFeatures(False, index.unavailable_reason)
     report = index.report
     qualifiers = ["filtered_observations_only", "history_may_be_truncated", "temporal_claims_use_known_dates"]
@@ -245,23 +251,43 @@ def analyze_private_stickers(index: StickerFactIndex) -> PrivateStickerFeatures:
     counts = {sender: {} for sender in index.members}
     for (sender, key), timeline in index.materials.items():
         counts[sender][key] = len(timeline.sends)
-    adoptions = _adoptions(index)
+    audit["input.known_member_materials"] = len(index.materials)
+    audit["input.uncertain_sends"] = len(index.uncertain_sends)
+    audit["input.filter_gap_ranges"] = len(index.gap_starts)
+    audit["input.positions_supplied"] = int(index.source_positions_supplied)
+    adoptions = _adoptions(index, audit)
     features = PrivateStickerFeatures(
         True, source=report.source, conversation_id=report.conversation_id,
         first_date=_iso(index.first_day), end_date=_iso(index.end_day),
-        adoptions=adoptions, reunions=_reunions(index),
-        trends=_trends(index), signatures=_signatures(index), qualifiers=tuple(qualifiers),
-        relays=_relays(index), shared_habits=_shared_habits(index, counts, adoptions),
-        styles=_styles(index, counts),
+        adoptions=adoptions, reunions=_reunions(index, audit),
+        trends=_trends(index, audit), signatures=_signatures(index, audit), qualifiers=tuple(qualifiers),
+        relays=_relays(index, audit), shared_habits=_shared_habits(index, counts, adoptions, audit),
+        styles=_styles(index, counts, audit),
     )
-    return replace(features, stories=select_sticker_stories(index, features))
+    stories = select_sticker_stories(index, features)
+    for name in ("adoptions", "reunions", "trends", "signatures", "relays", "shared_habits", "styles"):
+        audit.setdefault(name+".raw", 0)
+        audit[name+".qualified"] = len(getattr(features, name))
+        audit[name+".associated_stories"] = sum(any(n == name for n, _ in s.findings) for s in stories.candidates)
+        audit[name+".featured_stories"] = sum(
+            any(n == name for n, _ in s.findings) for s in stories.candidates if s.story_id in stories.featured_ids)
+    audit["stories.findings"] = sum(len(s.findings) for s in stories.candidates)
+    audit["stories.associated"] = len(stories.candidates)
+    audit["stories.context_only"] = sum(s.interest_level == 0 for s in stories.candidates)
+    audit["stories.featured"] = len(stories.featured_ids)
+    audit.update(dict(stories.diagnostic_counts))
+    # Fixed keys and integers only. Never log evidence objects, identifiers,
+    # timestamps, source paths or the unavailable_reason supplied by the index.
+    logging.getLogger("qq_chat_analyzer.desktop.analysis_diagnostics").info(
+        "[sticker-counts] %s", json.dumps(dict(sorted(audit.items())), sort_keys=True))
+    return replace(features, stories=stories, diagnostic_counts=tuple(sorted(audit.items())))
 
 
 def _iso(day: int | None) -> str | None:
     return date.fromordinal(day).isoformat() if day is not None else None
 
 
-def _adoptions(index: StickerFactIndex) -> tuple[StickerAdoption, ...]:
+def _adoptions(index: StickerFactIndex, audit: Counter) -> tuple[StickerAdoption, ...]:
     own, other = index.side_members
     if own is None or other is None:
         return ()
@@ -269,8 +295,10 @@ def _adoptions(index: StickerFactIndex) -> tuple[StickerAdoption, ...]:
     other_keys = {key for sender, key in index.materials if sender == other}
     results = []
     for key in sorted(own_keys & other_keys):
+        audit["adoptions.raw"] += 1
         a, b = index.materials[own, key], index.materials[other, key]
         if not a.chronological or not b.chronological or not a.dated.days or not b.dated.days:
+            audit["adoptions.reject_time"] += 1
             continue
         # First *dated, attributable* observations. An undated send by the
         # already-first member cannot reverse direction; one by the later or
@@ -283,15 +311,19 @@ def _adoptions(index: StickerFactIndex) -> tuple[StickerAdoption, ...]:
                and (s.sender_id not in index.members or s.sender_id == dst.sender_id)
                and (s.chat_date is None or s.epoch_seconds <= src.epoch_seconds)
                for s in index.uncertain_sends):
+            audit["adoptions.reject_uncertain"] += 1
             continue
         left, right = first.dated.days[0], later.dated.days[0]
         if left == right or index.has_gap(left, right+1):
+            audit["adoptions.reject_same_day_or_gap"] += 1
             continue
         if len(later.sends) < ADOPTION_MIN_SENDS or len(later.dated.days) < ADOPTION_MIN_DATES:
+            audit["adoptions.reject_repetition"] += 1
             continue
         # The collector's occurrence ordinal was validated against the complete
         # kept sequence by the index. Do not repair conflicting source order.
         if int(src.occurrence_id.partition(":")[0]) >= int(dst.occurrence_id.partition(":")[0]):
+            audit["adoptions.reject_order"] += 1
             continue
         results.append(StickerAdoption(key, src.media_key, src.sender_id, dst.sender_id,
                                        src.chat_date, dst.chat_date, right-left,
@@ -299,10 +331,12 @@ def _adoptions(index: StickerFactIndex) -> tuple[StickerAdoption, ...]:
     return tuple(sorted(results, key=lambda f: (-f.later_date_count, -f.lag_days, f.identity_key)))
 
 
-def _reunions(index: StickerFactIndex) -> tuple[StickerReunion, ...]:
+def _reunions(index: StickerFactIndex, audit: Counter) -> tuple[StickerReunion, ...]:
     results = []
     for (sender, key), timeline in index.materials.items():
+        audit["reunions.raw"] += max(0, len(timeline.dated.days)-1)
         if timeline.has_unknown_time or not timeline.chronological:
+            audit["reunions.reject_time"] += max(0, len(timeline.dated.days)-1)
             continue
         days, prefix = timeline.dated.days, timeline.dated.prefix
         low, high = [], []  # Running median of PREVIOUS usage-day gaps only.
@@ -318,19 +352,23 @@ def _reunions(index: StickerFactIndex) -> tuple[StickerReunion, ...]:
                 if len(high) > len(low):
                     heapq.heappush(low, -heapq.heappop(high))
             if pos < 2 or prefix[pos] < 3:
+                audit["reunions.reject_history"] += 1
                 continue
             median = float(-low[0]) if len(low) > len(high) else (-low[0]+high[0])/2
             gap = days[pos]-days[pos-1]
             if gap < max(REUNION_MIN_GAP_DAYS, REUNION_GAP_MULTIPLIER*median):
+                audit["reunions.reject_gap_length"] += 1
                 continue
             start, end = days[pos-1]+1, days[pos]  # Exclude both endpoint dates.
             if index.has_gap(start, end) or index.has_uncertain_use(sender, key, start, end):
+                audit["reunions.reject_uncertain_or_filter_gap"] += 1
                 continue
             msgs = member.messages.count(start, end)
             msg_days = member.messages.date_count(start, end)
             others = member.known_sends.count(start, end)
             other_days = member.known_sends.date_count(start, end)
             if not ((msgs >= 20 and msg_days >= 3) or (others >= 3 and other_days >= 2)):
+                audit["reunions.reject_inactive_interval"] += 1
                 continue
             returned = first_by_day[days[pos]]
             results.append(StickerReunion(key, returned.media_key, sender,
@@ -344,49 +382,65 @@ def _window(material: DayCounts, total: DayCounts, start: int, end: int) -> Stic
                          material.date_count(start, end), total.count(start, end), total.date_count(start, end))
 
 
-def _trends(index: StickerFactIndex) -> tuple[StickerTrend, ...]:
+def _trends(index: StickerFactIndex, audit: Counter) -> tuple[StickerTrend, ...]:
     if index.first_day is None or index.end_day-index.first_day < 14:
+        audit["trends.unavailable_short_span"] = 1
         return ()
     first, end = index.first_day, index.end_day
     width = 30 if end-first >= 60 else 7
     stops = sorted({*range(first+2*width, end+1, 7), end})
     results = []
     for (sender, key), timeline in index.materials.items():
+        audit["trends.raw"] += len(stops)
         if timeline.has_unknown_time:
+            audit["trends.reject_time"] += len(stops)
             continue
         total = index.members[sender].known_sends
         for stop in stops:
             middle, start = stop-width, stop-2*width
             if index.has_gap(start, stop):
+                audit["trends.reject_filter_gap"] += 1
                 continue
             before, after = _window(timeline.dated, total, start, middle), _window(timeline.dated, total, middle, stop)
             a, c = before.send_count, after.send_count
             p, q = before.share, after.share
             rise = (before.known_send_count >= 3 and c >= TREND_MIN_SENDS and after.date_count >= 2
-                    and c >= 3*max(1, a) and (q >= 2*p if p else q >= .10)
-                    and not index.has_uncertain_use(sender, key, start, middle))
+                    and c >= 3*max(1, a) and (q >= 2*p if p else q >= .10))
             fade = (a >= TREND_MIN_SENDS and before.date_count >= 2 and c <= a/3
-                    and after.known_send_count >= 5 and after.known_date_count >= 2 and p >= 2*q
-                    and not index.has_uncertain_use(sender, key, middle, stop))
-            if rise or fade:
-                results.append(StickerTrend(key, timeline.sends[0].media_key, sender,
-                                             "rise" if rise else "fade", width, before, after,
-                                             timeline.dated.count(first, middle), middle-first))
+                    and after.known_send_count >= 5 and after.known_date_count >= 2 and p >= 2*q)
+            if not (rise or fade):
+                audit["trends.reject_counts_or_contrast"] += 1
+                continue
+            if index.has_uncertain_use(sender, key, start if rise else middle, middle if rise else stop):
+                audit["trends.reject_uncertain"] += 1
+                continue
+            results.append(StickerTrend(key, timeline.sends[0].media_key, sender,
+                                        "rise" if rise else "fade", width, before, after,
+                                        timeline.dated.count(first, middle), middle-first))
     return tuple(sorted(results, key=lambda f: (-abs(f.current.send_count-f.previous.send_count),
                                                -date.fromisoformat(f.current.end_date).toordinal(),
                                                f.identity_key, f.sender_id, f.direction)))
 
 
-def _signatures(index: StickerFactIndex) -> tuple[StickerSignatureEvidence, ...]:
+def _signatures(index: StickerFactIndex, audit: Counter) -> tuple[StickerSignatureEvidence, ...]:
     report = index.report
     results = []
     for sender in index.members:
         selected = report.signature(sender)
         ranks = {m.identity_key: (i, m.media_key) for i, (m, _) in enumerate(report.ranking(sender), 1)}
         for habit in report.habits:
-            if habit.sender_id != sender or not habit.qualified:
+            if habit.sender_id != sender:
+                continue
+            audit["signatures.raw"] += 1
+            if not habit.qualified:
+                audit["signatures.reject_habit_qualification"] += 1
+                for code, reason in (("N", "sends"), ("D", "dates"), ("S", "span"), ("W", "weeks"), ("P", "share")):
+                    if code in habit.rejection_reasons:
+                        audit["signatures.failed_"+reason] += 1
                 continue
             rank, media = ranks[habit.identity_key]
+            if habit.span_days < 180 and rank <= 3:
+                audit["signatures.context_only"] += 1
             results.append(StickerSignatureEvidence(habit, media, rank, rank <= 3,
                                                      habit.span_days >= 180, habit.span_days >= 180 or rank > 3,
                                                      selected is not None and selected.identity_key == habit.identity_key))
@@ -428,17 +482,23 @@ def _relay_evidence(index: StickerFactIndex, turns: tuple[StickerRelayTurn, ...]
     )
 
 
-def _relays(index: StickerFactIndex) -> tuple[StickerRelay, ...]:
+def _relays(index: StickerFactIndex, audit: Counter) -> tuple[StickerRelay, ...]:
     # Without original positions we cannot establish that filtering left the
     # observed conversation contiguous. Counting habits needs no such claim.
     if not index.source_positions_supplied or None in index.side_members:
+        audit["relays.unavailable_provenance_or_sides"] = 1
         return ()
     window = deque()
     results = []
 
     def emit():
+        if not window:
+            return
+        audit["relays.raw"] += 1
         if len(window) >= RELAY_MIN_TURNS:
             results.append(_relay_evidence(index, tuple(window)))
+        else:
+            audit["relays.reject_short_window"] += 1
 
     for turn in _author_turns(index):
         if window:
@@ -447,6 +507,7 @@ def _relays(index: StickerFactIndex) -> tuple[StickerRelay, ...]:
             if (not turn.send_count or turn.messages[0].barrier_before
                     or previous.messages[-1].ordinal+1 != turn.messages[0].ordinal
                     or turn.sender_id == previous.sender_id or not 0 < gap <= RELAY_MAX_GAP_SECONDS):
+                audit["relays.break_text_or_continuity_or_gap"] += 1
                 emit()
                 window.clear()
         if not turn.send_count:
@@ -465,7 +526,7 @@ def _relays(index: StickerFactIndex) -> tuple[StickerRelay, ...]:
 
 
 def _shared_habits(index: StickerFactIndex, counts: dict[str, dict[str, int]],
-                   adoptions: tuple[StickerAdoption, ...]) -> tuple[SharedStickerHabit, ...]:
+                   adoptions: tuple[StickerAdoption, ...], audit: Counter) -> tuple[SharedStickerHabit, ...]:
     own, peer = index.side_members
     if own is None or peer is None:
         return ()
@@ -473,6 +534,7 @@ def _shared_habits(index: StickerFactIndex, counts: dict[str, dict[str, int]],
     adoption_by_key = {a.identity_key: a for a in adoptions}
     results = []
     for key in counts[own].keys() & counts[peer].keys():
+        audit["shared_habits.raw"] += 1
         uses = []
         for sender in (own, peer):
             timeline = index.materials[sender, key]
@@ -480,7 +542,11 @@ def _shared_habits(index: StickerFactIndex, counts: dict[str, dict[str, int]],
             use = SharedStickerUse(sender, counts[sender][key], len(days), totals[sender],
                                    _iso(days[0]) if days else None, _iso(days[-1]) if days else None,
                                    timeline.has_unknown_time)
-            if use.send_count < SHARED_MIN_SENDS or use.date_count < SHARED_MIN_DATES or use.share < SHARED_MIN_SHARE:
+            if use.send_count < SHARED_MIN_SENDS or use.date_count < SHARED_MIN_DATES:
+                audit["shared_habits.reject_repetition"] += 1
+                break
+            if use.share < SHARED_MIN_SHARE:
+                audit["shared_habits.reject_share"] += 1
                 break
             uses.append(use)
         if len(uses) == 2:
@@ -511,12 +577,15 @@ def expected_sticker_richness(counts: Sequence[int], sample_size: int) -> float:
     return fsum(probabilities)
 
 
-def _styles(index: StickerFactIndex, counts: dict[str, dict[str, int]]) -> tuple[StickerStyleComparison, ...]:
+def _styles(index: StickerFactIndex, counts: dict[str, dict[str, int]], audit: Counter) -> tuple[StickerStyleComparison, ...]:
     if None in index.side_members:
+        audit["styles.unavailable_sides"] = 1
         return ()
+    audit["styles.raw"] = 1
     totals = {sender: sum(values.values()) for sender, values in counts.items()}
     if any(totals[sender] < STYLE_MIN_SENDS or len(index.members[sender].known_sends.days) < STYLE_MIN_DATES
            for sender in index.side_members):
+        audit["styles.reject_sample_or_dates"] = 1
         return ()
     sample = min(STYLE_MAX_SAMPLE, *(totals[sender] for sender in index.side_members))
     unknowns = Counter(s.sender_id for s in index.uncertain_sends if not s.identity_key)
@@ -531,5 +600,6 @@ def _styles(index: StickerFactIndex, counts: dict[str, dict[str, int]]) -> tuple
     if (richer.expected_unique_count < STYLE_MIN_RICHNESS_RATIO*concentrated.expected_unique_count
             or richer.expected_unique_count-concentrated.expected_unique_count < STYLE_MIN_RICHNESS_DIFFERENCE
             or richer.d2 < STYLE_MIN_D2_RATIO*concentrated.d2):
+        audit["styles.reject_contrast"] = 1
         return ()
     return (StickerStyleComparison(sample, richer, concentrated, index.unattributed_send_count),)

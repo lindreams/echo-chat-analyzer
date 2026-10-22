@@ -375,7 +375,8 @@ def test_missing_rich_pair_is_a_gap_not_a_new_sticker_message_denominator(tmp_pa
 
 
 @pytest.mark.parametrize("source", ["qq", "wechat"])
-def test_adoption_reaches_formal_analysis_before_media(tmp_path, monkeypatch, source):
+def test_adoption_reaches_formal_analysis_before_media(tmp_path, monkeypatch, source, caplog):
+    caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
     from qq_chat_analyzer.application import AnalysisRequestDTO
     from qq_chat_analyzer.application import analysis_service as service
 
@@ -407,6 +408,7 @@ def test_adoption_reaches_formal_analysis_before_media(tmp_path, monkeypatch, so
     exported = (tmp_path/"out"/"echo-report.json").read_text(encoding="utf-8")
     assert "observed_order_only" not in exported and adoption.identity_key not in exported
     assert all(s.content_md5 not in exported for s in result.stickers.sends if s.content_md5)
+    assert any(r.getMessage() == "[sticker-export-counts] html_payload_memories=1" for r in caplog.records)
 
 
 @pytest.mark.parametrize("name,messages,sends,signature_count,qualified_count", [

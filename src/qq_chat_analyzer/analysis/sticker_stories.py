@@ -58,7 +58,8 @@ class StickerStorySelection:
     candidates: tuple[StickerStory, ...] = ()
     featured_ids: tuple[str, ...] = ()
     moments: tuple[StickerMoment, ...] = field(default=(), repr=False)
-    rule_version: str = "private-sticker-stories.v2"
+    rule_version: str = "private-sticker-stories.v3"
+    diagnostic_counts: tuple[tuple[str, int], ...] = field(default=(), repr=False, compare=False)
 
 
 def _next_day(value: str) -> str:
@@ -221,37 +222,63 @@ def select_sticker_stories(index: StickerFactIndex, features: PrivateStickerFeat
                 if f.story_eligible:
                     result.add((name, f.habit.sender_id))
             elif name == "adoptions":
-                result.add((name, f.later_sender_id))
+                result.add((name, f.later_sender_id, f.first_date, f.later_first_date))
             elif name == "trends":
-                result.add((name, f.sender_id, f.direction))
+                result.add((name, f.sender_id, f.direction, f.current.start_date, f.current.end_date))
             elif name == "reunions":
-                result.add((name, f.sender_id))
+                result.add((name, f.sender_id, f.previous_date, f.return_date))
             elif name == "relays":
                 result.update((name, event) for event in story.event_ids)
             else:
                 result.add((name,))
         return result
 
+    def repeated(a, b):
+        if a[0] != b[0]:
+            return False
+        if a[0] == "trends":
+            # Overlapping scans of the same directional episode remain one
+            # narrative even when they concern different materials.
+            return a[:-2] == b[:-2] and max(a[-2], b[-2]) < min(a[-1], b[-1])
+        if a[0] in ("adoptions", "reunions"):
+            # Both observations must be near: the same member's events months
+            # apart, or a ten-day and a seven-month interval, are not repeats.
+            return a[:-2] == b[:-2] and all(
+                abs(date.fromisoformat(x).toordinal()-date.fromisoformat(y).toordinal()) <= 7
+                for x, y in zip(a[-2:], b[-2:]))
+        return a == b
+
+    def novel_patterns(ps, seen):
+        return {p for p in ps if not any(repeated(p, old) for old in seen)}
+
     # Prefer a different kind of discovery after the strongest story. A new
     # material alone does not make the same adoption/trend narrative novel.
     # Distinct relay events and the other member's habits can still fill space
     # when no new kind remains. Never manufacture a quota or raise the cap.
     selected, seen, leads = [], set(), {}
+    rejected_repeats = 0
     remaining = [(s, patterns(s)) for s in ranked]
     lead_order = ("reunions", "relays", "shared_habits", "adoptions", "signatures", "styles", "trends")
     while remaining and len(selected) < 3:
         covered = {p[0] for p in seen}
-        remaining = [(s, ps) for s, ps in remaining if ps-seen]
+        fresh = [(s, ps) for s, ps in remaining if novel_patterns(ps, seen)]
+        rejected_repeats += len(remaining)-len(fresh)
+        remaining = fresh
         if not remaining:
             break
         pos = next((i for i, (_, ps) in enumerate(remaining) if any(p[0] not in covered for p in ps)), 0)
         story, ps = remaining.pop(pos)
-        novel = {p[0] for p in ps-seen}
+        novel = {p[0] for p in novel_patterns(ps, seen)}
         leads[story.story_id] = next(n for n in lead_order if n in (novel-covered or novel))
         selected.append(story.story_id)
         seen.update(ps)
     candidates = tuple(replace(s, lead_finding=leads.get(s.story_id, "")) for s in candidates)
-    return StickerStorySelection(candidates, tuple(selected), moments)
+    repeated_after_cap = sum(not novel_patterns(ps, seen) for _, ps in remaining)
+    return StickerStorySelection(candidates, tuple(selected), moments, diagnostic_counts=(
+        ("stories.ranked", len(ranked)),
+        ("stories.reject_repeat", rejected_repeats+repeated_after_cap),
+        ("stories.reject_cap", len(remaining)-repeated_after_cap),
+    ))
 
 
 def _moments(index: StickerFactIndex, relays: tuple[StickerRelay, ...]) -> tuple[StickerMoment, ...]:

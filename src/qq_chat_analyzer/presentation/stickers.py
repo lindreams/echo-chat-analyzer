@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 from collections import Counter
 from dataclasses import replace
 from typing import TYPE_CHECKING
@@ -75,7 +76,13 @@ def assemble_sticker_assets(chapter: EchoStickers, media: tuple[StickerMedia, ..
                     remaining_bytes -= len(raw)
                     uri = f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
         assets.append(EchoStickerAsset(target.asset_key, uri, status, reason, content))
-    return replace(chapter, assets=tuple(assets))
+    assembled = replace(chapter, assets=tuple(assets))
+    if chapter.conversation_kind == "private":
+        logging.getLogger("qq_chat_analyzer.desktop.analysis_diagnostics").info(
+            "[sticker-media-counts] before=%d after=%d assets=%d usable_assets=%d",
+            len(chapter.memories), len(assembled.memories), len(assets),
+            sum(a.status in {"available", "preview"} for a in assets))
+    return assembled
 
 
 def build_echo_stickers(
@@ -188,12 +195,18 @@ def build_echo_stickers(
         per_hundred_messages=100 * report.total_send_count / report.message_count if report.message_count else None,
         shared_ranking_min_materials=SHARED_RANKING_MIN_MATERIALS,
     )
-    if (private and all(sides) and private_features is not None and private_features.available
+    matched = (private and all(sides) and private_features is not None and private_features.available
             and private_features.source == report.source
-            and private_features.conversation_id == report.conversation_id):
+            and private_features.conversation_id == report.conversation_id)
+    if matched:
         selected_media = {key for story in private_features.stories.candidates
                           if story.story_id in private_features.stories.featured_ids for key in story.media_keys}
         chapter = replace(chapter, memories=build_sticker_memories(private_features,
             {item.media_key: item_view(item, item.count) for item in report.materials if item.media_key in selected_media},
             {side.sender_id: label for side, label in zip(sides, member_labels)}))
+    if private:
+        logging.getLogger("qq_chat_analyzer.desktop.analysis_diagnostics").info(
+            "[sticker-projection-counts] featured=%d matched_scope=%d memories=%d findings=%d",
+            len(private_features.stories.featured_ids) if private_features else 0, int(bool(matched)),
+            len(chapter.memories), sum(len(m.findings) for m in chapter.memories))
     return assemble_sticker_assets(chapter, media)

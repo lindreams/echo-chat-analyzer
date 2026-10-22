@@ -419,6 +419,7 @@ def test_stories_keep_separate_returns_years_apart_without_history_bridging():
     assert len(returns) == 2
     assert returns[0].end_date < returns[1].start_date
     assert sum(n == "signatures" for s in returns for n, _ in s.findings) <= 1
+    assert all(s.story_id in f.stories.featured_ids for s in returns)
 
 
 @pytest.mark.parametrize("damage", ["gap", "unknown_sender", "unknown_time"])
@@ -490,6 +491,27 @@ def test_repeated_adoptions_leave_room_for_a_qualified_sparse_shared_habit():
     view = build_echo_report_view(AnalysisReports(stickers=(index.report,), private_stickers=f),
                                   conversation_kind="private")
     assert {m.findings[0].kind for m in view.stickers.memories} == {"signature", "adoption", "shared"}
+
+
+def test_independent_adoption_intervals_survive_cross_material_deduplication():
+    b = Messages("adoption-horizons")
+    for key, first, later in (("short", 0, 10), ("long", 0, 210), ("later", 100, 110), ("repeat", 0, 11)):
+        b.add(first, "A", key)
+        for day in (later, later+1, later+2):
+            b.add(day, "B", key)
+    f = analyze_private_stickers(facts(b.ordered()))
+    assert len(f.adoptions) == len(f.stories.candidates) == 4
+    selected = [s for s in f.stories.candidates if s.story_id in f.stories.featured_ids]
+    assert len(selected) == 3
+    assert sorted(f.adoptions[i].lag_days for s in selected for name, i in s.findings if name == "adoptions") == [10, 11, 210]
+    # The 10/11-day events near the start compete for one slot; another ten-day
+    # event months later and the seven-month interval remain independent.
+    assert sum("fiction:later" in s.identity_keys for s in selected) == 1
+    counts = dict(f.diagnostic_counts)
+    assert counts["stories.reject_repeat"] == 1 and counts["stories.reject_cap"] == 0
+    for name in ("adoptions", "reunions", "trends", "signatures", "relays", "shared_habits", "styles"):
+        assert counts[name+".raw"] == counts[name+".qualified"] + sum(
+            value for key, value in counts.items() if key.startswith(name+".reject_"))
 
 
 def test_large_trends_do_not_displace_distinct_interaction_and_shared_stories():

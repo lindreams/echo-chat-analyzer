@@ -740,3 +740,7 @@ def _write_echo_view(view: EchoReportView, output_directory: Path, *, cancelled=
             str(output_directory / _ECHO_ARTIFACT_FILENAMES["echo_report_html"]),
             cancelled=cancelled,
         )
+    logging.getLogger("qq_chat_analyzer.desktop.analysis_diagnostics").info(
+        "[sticker-export-counts] html_payload_memories=%d",
+        len(view.stickers.memories) if view.stickers else 0,
+    )
