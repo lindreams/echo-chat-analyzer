@@ -422,6 +422,34 @@ def test_stories_keep_separate_returns_years_apart_without_history_bridging():
     assert all(s.story_id in f.stories.featured_ids for s in returns)
 
 
+def test_independent_high_interest_returns_remain_available_after_featured_cap():
+    from qq_chat_analyzer.analysis.sticker_stories import select_additional_sticker_stories
+
+    b = Messages("independent-long-returns")
+    for k, returned in enumerate((200, 400, 600, 800)):
+        for day in (0, 2, 4, returned):
+            b.add(day, "A", f"old{k}", seconds=k*10)
+    for day in (20, 40, 60):
+        b.add(day, "A", "background")
+    b.add(0, "B", text="fictional friend", seconds=900)
+    f = analyze_private_stickers(facts(b.ordered()))
+    assert len(f.reunions) == len(f.stories.candidates) == 4
+    featured = [s for sid in f.stories.featured_ids for s in f.stories.candidates if s.story_id == sid]
+    assert [f.reunions[i].gap_days for s in featured for name, i in s.findings if name == "reunions"] == [796, 596, 396]
+    extra, = select_additional_sticker_stories(f)
+    assert extra.interest_level == 3 and extra.lead_finding == "reunions"
+    assert [f.reunions[i].gap_days for name, i in extra.findings if name == "reunions"] == [196]
+    assert extra.story_id not in f.stories.featured_ids
+    assert dict(f.stories.diagnostic_counts)["stories.reject_cap"] == 1  # Main shortlist only.
+    assert select_additional_sticker_stories(replace(f, stories=type(f.stories)())) == ()
+    # A high-interest near-repeat must not be revived as another extra.
+    for day in (0, 2, 4, 201):
+        b.add(day, "A", "nearby-return", seconds=200)
+    extended = analyze_private_stickers(facts(b.ordered()))
+    extra, = select_additional_sticker_stories(extended)
+    assert [extended.reunions[i].gap_days for name, i in extra.findings if name == "reunions"] == [197]
+
+
 @pytest.mark.parametrize("damage", ["gap", "unknown_sender", "unknown_time"])
 def test_moment_context_stops_at_untrusted_neighbor_and_reports_it(damage):
     rows = list(short_relay())
@@ -453,6 +481,8 @@ def test_selection_keeps_all_candidates_and_promotes_a_later_stronger_event():
     assert best.event_ids == (f.stories.moments[0].event_id,)
     assert len(f.stories.moments[0].messages) == 12
     assert "alternating_turns:12" in best.interest_reasons
+    from qq_chat_analyzer.analysis.sticker_stories import select_additional_sticker_stories
+    assert not select_additional_sticker_stories(f)  # Remaining four-turn relays are ordinary.
     # A vivid 60-turn exchange should not lose simply because a reunion uses
     # days (200) as its unit. Both have the same editorial interest level.
     for i in range(60):
@@ -509,6 +539,8 @@ def test_independent_adoption_intervals_survive_cross_material_deduplication():
     assert sum("fiction:later" in s.identity_keys for s in selected) == 1
     counts = dict(f.diagnostic_counts)
     assert counts["stories.reject_repeat"] == 1 and counts["stories.reject_cap"] == 0
+    from qq_chat_analyzer.analysis.sticker_stories import select_additional_sticker_stories
+    assert not select_additional_sticker_stories(f)
     for name in ("adoptions", "reunions", "trends", "signatures", "relays", "shared_habits", "styles"):
         assert counts[name+".raw"] == counts[name+".qualified"] + sum(
             value for key, value in counts.items() if key.startswith(name+".reject_"))

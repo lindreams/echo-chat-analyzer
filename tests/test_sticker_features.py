@@ -247,6 +247,40 @@ def test_uncertain_current_material_or_filter_gap_cannot_support_fade():
     assert not any(t.direction == "fade" for t in discover(damaged).trends)
 
 
+def test_formal_trend_accepts_proven_text_gap_but_not_potential_stickers(tmp_path):
+    from qq_chat_analyzer.application import AnalysisRequestDTO
+    from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
+
+    rows = changing_messages()
+    b = Messages()
+    b.add(2, "B", text="Filtered " + "x"*110, seconds=300)
+    text_rows = tuple(sorted((*rows, *b.rows), key=lambda m: m.timestamp))
+    stopwords = tmp_path/"stopwords.txt"
+    stopwords.write_text("", encoding="utf-8")
+
+    def run(messages, source):
+        path = tmp_path/"fictional.json"
+        path.write_text(json.dumps(formal_payload(messages, source)), encoding="utf-8")
+        return AnalysisApplicationService().execute(AnalysisRequestDTO(
+            input_path=path, output_directory=tmp_path/"out", stopwords_path=stopwords,
+            export_echo_report=False,
+        ))
+
+    result = run(text_rows, "wechat")
+    rise, = result.reports.private_stickers.trends
+    assert (rise.previous.send_count, rise.current.send_count) == (0, 35)
+    assert (rise.previous.known_send_count, rise.current.known_send_count) == (7, 70)
+    assert result.diagnostic_counts.analyzed_message_count < len(text_rows)
+    assert "known_filter_gaps" in result.reports.private_stickers.qualifiers
+    # QQ's derived text type cannot prove all source segments were understood.
+    assert not run(text_rows, "qq").reports.private_stickers.trends
+    # A filtered mixed message may hide enough target sends to reverse a rise.
+    b.rows.clear()
+    b.add(2, "A", *(("new",)*120), text="Filtered " + "x"*110, seconds=300)
+    unsafe_rows = tuple(sorted((*rows, *b.rows), key=lambda m: m.timestamp))
+    assert not run(unsafe_rows, "qq").reports.private_stickers.trends
+
+
 def test_trend_uses_text_tail_days_and_keeps_candidates_instead_of_top_one():
     b = Messages()
     for day in range(60):
@@ -312,6 +346,30 @@ def test_index_rejects_data_from_a_different_message_set():
     bad = StickerData(collect_sticker_sends(messages[:1]))
     with pytest.raises(ValueError, match="scope|occurrence|message"):
         indexed(messages, data=bad)
+
+
+def test_sticker_count_gap_needs_complete_and_trustworthy_excluded_evidence():
+    from qq_chat_analyzer.analysis.sticker_index import build_sticker_fact_index
+    from qq_chat_analyzer.analysis.stickers import count_sticker_messages
+    from qq_chat_analyzer.rich_message import NonTextContent, TextContent
+
+    rows = adoption_messages()
+    data = StickerData(collect_sticker_sends(rows), message_counts=count_sticker_messages(rows))
+    text = replace(rows[0], timestamp=rows[0].timestamp+86400, contents=(TextContent("fictional text"),))
+    later = replace(text, timestamp=text.timestamp+86400)
+    start, end = indexed(rows).first_day, indexed(rows).end_day
+
+    def blocked(evidence):
+        index = build_sticker_fact_index(data, rows, source_positions=(0, 3, 4), non_sticker_messages=evidence)
+        assert index.has_gap(start, end)  # No exception for conversational absence/order.
+        assert index.message_count == 3 and index.send_count == 4
+        return index.has_gap(start, end, sticker_counts_only=True)
+
+    assert not blocked({1: text, 2: later})
+    assert blocked({1: text})  # Even one unpaired position preserves the gap.
+    assert blocked({1: replace(text, contents=(NonTextContent("unknown"),)), 2: later})
+    assert blocked({1: replace(text, timestamp="unknown"), 2: later})
+    assert blocked({1: replace(text, sender=SenderIdentity(None, "unknown"), is_self=None), 2: later})
 
 
 @pytest.mark.parametrize("timestamp", [float("nan"), float("inf"), 10**30, -1, 0, True, "not-a-time"])

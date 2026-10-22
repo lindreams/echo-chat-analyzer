@@ -211,6 +211,36 @@ def select_sticker_stories(index: StickerFactIndex, features: PrivateStickerFeat
             interest_level=2 if ratio >= 3 else 1, strength=_strength(ratio, 3),
             interest_reasons=(f"equal_volume_richness_ratio:{ratio:.3f}",)))
     candidates = tuple(replace(s, story_id=f"story:{i}") for i, s in enumerate(stories))
+    selected, repeats, capped = _select_independent_stories(candidates, features, limit=3)
+    leads = {s.story_id: s.lead_finding for s in selected}
+    candidates = tuple(replace(s, lead_finding=leads.get(s.story_id, "")) for s in candidates)
+    return StickerStorySelection(candidates, tuple(s.story_id for s in selected), moments, diagnostic_counts=(
+        ("stories.ranked", sum(s.interest_level > 0 for s in candidates)),
+        ("stories.reject_repeat", repeats),
+        ("stories.reject_cap", capped),
+    ))
+
+
+def select_additional_sticker_stories(features: PrivateStickerFeatures) -> tuple[StickerStory, ...]:
+    """Derive high-interest, independent extras from the retained candidates.
+
+    These are available for a future lightweight consumer, not extra featured
+    cards. No new persisted/serialized fields, media requests or HTML changes.
+    Ordinary level-one discoveries and repeats of featured/earlier extras are
+    excluded. A consumer may take a smaller prefix without losing the pool.
+    """
+    selection = features.stories
+    featured = tuple(s for s in selection.candidates if s.story_id in selection.featured_ids)
+    candidates = tuple(s for s in selection.candidates
+                       if s.story_id not in selection.featured_ids and s.interest_level >= 2)
+    selected, _, _ = _select_independent_stories(candidates, features, limit=None, previous=featured)
+    return selected
+
+
+def _select_independent_stories(
+    candidates: tuple[StickerStory, ...], features: PrivateStickerFeatures, *,
+    limit: int | None, previous: tuple[StickerStory, ...] = (),
+) -> tuple[tuple[StickerStory, ...], int, int]:
     ranked = sorted((s for s in candidates if s.interest_level > 0),
                     key=lambda s: (-s.interest_level, -s.strength, -len(s.findings), s.story_id))
 
@@ -255,11 +285,12 @@ def select_sticker_stories(index: StickerFactIndex, features: PrivateStickerFeat
     # material alone does not make the same adoption/trend narrative novel.
     # Distinct relay events and the other member's habits can still fill space
     # when no new kind remains. Never manufacture a quota or raise the cap.
-    selected, seen, leads = [], set(), {}
+    selected = []
+    seen = {p for story in previous for p in patterns(story)}
     rejected_repeats = 0
     remaining = [(s, patterns(s)) for s in ranked]
     lead_order = ("reunions", "relays", "shared_habits", "adoptions", "signatures", "styles", "trends")
-    while remaining and len(selected) < 3:
+    while remaining and (limit is None or len(selected) < limit):
         covered = {p[0] for p in seen}
         fresh = [(s, ps) for s, ps in remaining if novel_patterns(ps, seen)]
         rejected_repeats += len(remaining)-len(fresh)
@@ -269,16 +300,11 @@ def select_sticker_stories(index: StickerFactIndex, features: PrivateStickerFeat
         pos = next((i for i, (_, ps) in enumerate(remaining) if any(p[0] not in covered for p in ps)), 0)
         story, ps = remaining.pop(pos)
         novel = {p[0] for p in novel_patterns(ps, seen)}
-        leads[story.story_id] = next(n for n in lead_order if n in (novel-covered or novel))
-        selected.append(story.story_id)
+        selected.append(replace(story, lead_finding=next(n for n in lead_order if n in (novel-covered or novel))))
         seen.update(ps)
-    candidates = tuple(replace(s, lead_finding=leads.get(s.story_id, "")) for s in candidates)
     repeated_after_cap = sum(not novel_patterns(ps, seen) for _, ps in remaining)
-    return StickerStorySelection(candidates, tuple(selected), moments, diagnostic_counts=(
-        ("stories.ranked", len(ranked)),
-        ("stories.reject_repeat", rejected_repeats+repeated_after_cap),
-        ("stories.reject_cap", len(remaining)-repeated_after_cap),
-    ))
+    return (tuple(selected),
+            rejected_repeats+repeated_after_cap, len(remaining)-repeated_after_cap)
 
 
 def _moments(index: StickerFactIndex, relays: tuple[StickerRelay, ...]) -> tuple[StickerMoment, ...]:

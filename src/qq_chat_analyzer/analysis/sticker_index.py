@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from types import MappingProxyType
 
-from ..rich_message import ExpressionContent, NonTextContent, RichMessage
+from ..rich_message import ExpressionContent, NonTextContent, RichMessage, TextContent
 from .stickers import StickerConversationReport, StickerData, StickerSend, aggregate_stickers
 from .timestamps import to_chat_datetime, to_epoch_seconds
 
@@ -101,10 +101,15 @@ class StickerFactIndex:
     # queries are logarithmic, including gaps whose endpoints run backwards.
     gap_starts: tuple[int, ...] = field(default=(), repr=False)
     gap_max_ends: tuple[int, ...] = field(default=(), repr=False)
+    sticker_gap_starts: tuple[int, ...] | None = field(default=None, repr=False)
+    sticker_gap_max_ends: tuple[int, ...] = field(default=(), repr=False)
 
-    def has_gap(self, start: int, end: int) -> bool:
-        pos = bisect_left(self.gap_starts, end)
-        return pos > 0 and self.gap_max_ends[pos-1] > start
+    def has_gap(self, start: int, end: int, *, sticker_counts_only: bool = False) -> bool:
+        starts, ends = self.gap_starts, self.gap_max_ends
+        if sticker_counts_only and self.sticker_gap_starts is not None:
+            starts, ends = self.sticker_gap_starts, self.sticker_gap_max_ends
+        pos = bisect_left(starts, end)
+        return pos > 0 and ends[pos-1] > start
 
     def has_uncertain_use(self, sender: str, key: str, start: int, end: int) -> bool:
         # Unknowns are indexed for uncertainty queries only, NEVER aggregated
@@ -122,6 +127,7 @@ def build_sticker_fact_index(
     data: StickerData, messages: Sequence[RichMessage], *,
     reports: tuple[StickerConversationReport, ...] | None = None,
     source_positions: Sequence[int] | None = None,
+    non_sticker_messages: Mapping[int, RichMessage] | None = None,
 ) -> StickerFactIndex:
     """Index exactly the ordered, formally filtered sequence behind ``data``.
 
@@ -129,6 +135,10 @@ def build_sticker_fact_index(
     Missing provenance is not evidence of complete source history. A mismatched
     data/sequence is a caller error, never repaired by IDs or recollection.
     Existing aggregation remains the owner of members, materials and habits.
+    ``non_sticker_messages`` supplies already-parsed excluded rows whose source
+    semantics PROVE text-only content, not merely absent collected stickers.
+    Only types/metadata are inspected; excluded rows are never retained here.
+    Such evidence can clear sticker-count gaps, never conversation barriers.
     """
     messages = tuple(messages)
     scopes = {(m.source, m.conversation_type, m.conversation_id) for m in messages}
@@ -137,6 +147,11 @@ def build_sticker_fact_index(
     positions = tuple(range(len(messages))) if source_positions is None else tuple(source_positions)
     if len(positions) != len(messages) or any(type(p) is not int or p < 0 for p in positions) or any(a >= b for a, b in zip(positions, positions[1:])):
         raise ValueError("source positions must match ordered kept messages")
+    non_sticker_messages = non_sticker_messages or {}
+    kept_positions = set(positions)
+    if non_sticker_messages and (source_positions is None or any(
+            type(p) is not int or p < 0 or p in kept_positions for p in non_sticker_messages)):
+        raise ValueError("excluded evidence requires distinct original source positions")
     by_message = _associate_occurrences(data.sends, messages)
     reports = aggregate_stickers(data, messages) if reports is None else reports
     if len(reports) != 1 or (reports[0].source, reports[0].conversation_type, reports[0].conversation_id) != next(iter(scopes)) or reports[0].total_send_count != len(data.sends) or reports[0].message_count != len(messages):
@@ -162,6 +177,7 @@ def build_sticker_fact_index(
     indexed = []
     days = []
     gaps = []
+    sticker_gaps = []
     previous_epoch = None
     for i, m in enumerate(messages):
         moment = to_chat_datetime(m.timestamp)
@@ -176,6 +192,29 @@ def build_sticker_fact_index(
             reasons.append("filtered_or_unpaired_gap")
             if indexed:  # A left-truncated scope is not an interior gap.
                 gaps.append((indexed[-1].day, day))
+                left = indexed[-1]
+                # Every omitted position needs independent source proof. An
+                # unpaired row, empty/unknown/mixed content, unreliable member
+                # or time leaves the entire conservative gap intact.
+                proven = left.epoch_seconds is not None and epoch is not None
+                for p in range(positions[i-1]+1, positions[i]):
+                    excluded = non_sticker_messages.get(p)
+                    if excluded is None:
+                        proven = False
+                        break
+                    t = to_epoch_seconds(excluded.timestamp) if to_chat_datetime(excluded.timestamp) else None
+                    side = (side_members[0] if excluded.is_self is True else
+                            side_members[1] if excluded.is_self is False else None)
+                    if (not proven or t is None or not left.epoch_seconds <= t <= epoch
+                            or (excluded.source, excluded.conversation_type, excluded.conversation_id) not in scopes
+                            or not excluded.sender.identity_id or type(excluded.is_self) is not bool
+                            or (side is not None and excluded.sender.identity_id != side)
+                            or (excluded.sender.identity_id in reliable and excluded.sender.identity_id != side)
+                            or not excluded.contents or not all(isinstance(c, TextContent) for c in excluded.contents)):
+                        proven = False
+                        break
+                if not proven:
+                    sticker_gaps.append((left.day, day))
         if epoch is None:
             reasons.append("unknown_time")
         elif previous_epoch is not None and epoch <= previous_epoch:
@@ -207,12 +246,17 @@ def build_sticker_fact_index(
                     uncertain_days[pair][day] += 1
         previous_epoch = epoch
     first, end = (min(days), max(days)+1) if days else (None, None)
-    gap_ranges = sorted((min(a, b) if a is not None and b is not None else first,
-                         max(a, b)+1 if a is not None and b is not None else end)
-                        for a, b in gaps) if days else []
-    max_ends = []
-    for _, stop in gap_ranges:
-        max_ends.append(max(stop, max_ends[-1]) if max_ends else stop)
+    def bounds(ranges):
+        ordered = sorted((min(a, b) if a is not None and b is not None else first,
+                          max(a, b)+1 if a is not None and b is not None else end)
+                         for a, b in ranges) if days else []
+        ends = []
+        for _, stop in ordered:
+            ends.append(max(stop, ends[-1]) if ends else stop)
+        return tuple(start for start, _ in ordered), tuple(ends)
+
+    gap_starts, gap_ends = bounds(gaps)
+    sticker_starts, sticker_ends = bounds(sticker_gaps)
     materials = {}
     for pair, ss in material_sends.items():
         epochs = [s.epoch_seconds for s in ss if s.epoch_seconds is not None]
@@ -235,7 +279,8 @@ def build_sticker_fact_index(
         unknown_sender_count=report.unknown_sender_count,
         unattributed_send_count=sum(len(ss) for m, ss in zip(messages, by_message) if m.sender.identity_id not in reliable),
         first_day=first, end_day=end, source_positions_supplied=source_positions is not None,
-        gap_starts=tuple(start for start, _ in gap_ranges), gap_max_ends=tuple(max_ends),
+        gap_starts=gap_starts, gap_max_ends=gap_ends,
+        sticker_gap_starts=sticker_starts, sticker_gap_max_ends=sticker_ends,
     )
 
 

@@ -238,10 +238,23 @@ class AnalysisApplicationService:
                 import_positions = {id(message): pos for pos, message in enumerate(outcome.messages)}
                 sticker_positions = tuple(import_positions[id(legacy)]
                                           for legacy, _ in outcome.rich_message_pairs if id(legacy) in kept_instances)
+                # WeChat's native Type 1 declares text, unlike QQ's content-
+                # derived message_type (which may omit malformed segments).
+                # Pass existing typed rows as evidence, never inspect/export
+                # their text or re-read the source. The index validates member,
+                # scope, time and content types before clearing count gaps.
+                non_sticker_messages = {
+                    import_positions[id(legacy)]: rich
+                    for legacy, rich in outcome.rich_message_pairs
+                    if id(legacy) not in kept_instances and rich.source == "wechat"
+                    and type(rich.source_type) is int and rich.source_type & 0xFFFFFFFF == 1
+                    and rich.message_type == "text"
+                }
                 with timed_stage("private_sticker_features"):
                     private_stickers = analyze_private_stickers(build_sticker_fact_index(
                         stickers, sticker_scope, reports=sticker_reports,
                         source_positions=sticker_positions,
+                        non_sticker_messages=non_sticker_messages,
                     ))
             with timed_stage("sticker_media_resolve"):
                 media_sends = sticker_sends

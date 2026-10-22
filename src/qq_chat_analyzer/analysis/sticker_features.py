@@ -398,7 +398,7 @@ def _trends(index: StickerFactIndex, audit: Counter) -> tuple[StickerTrend, ...]
         total = index.members[sender].known_sends
         for stop in stops:
             middle, start = stop-width, stop-2*width
-            if index.has_gap(start, stop):
+            if index.has_gap(start, stop, sticker_counts_only=True):
                 audit["trends.reject_filter_gap"] += 1
                 continue
             before, after = _window(timeline.dated, total, start, middle), _window(timeline.dated, total, middle, stop)
