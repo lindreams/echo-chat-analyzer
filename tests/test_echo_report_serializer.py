@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import date
 import re
 import sys
 from pathlib import Path
@@ -66,13 +67,13 @@ def test_featured_stories_export_only_summaries_and_share_the_media_target_union
     undated_payload = echo_report_to_dict(build_echo_report_view(
         replace(reports, private_stickers=undated), conversation_kind="private"))
     assert "部分发送时间不明" in json.dumps(undated_payload["sticker_memories"], ensure_ascii=False)
-    assert all(len(m["top_materials"]) <= 3 for m in payload["stickers"]["members"])
+    assert all(len(m["top_materials"]) <= 5 for m in payload["stickers"]["members"])
     assert payload["stickers"]["shared_materials"] == []
     targets = sticker_report_targets(view.stickers)
     assert len({t.media_key for t in targets}) == len(targets) == len(view.stickers.assets)
     story_assets = {item["asset_key"] for m in memories for item in m["materials"]}
     assert story_assets <= {a.key for a in view.stickers.assets}
-    # A selected image outside both Top 3 lists must still be recovered.
+    # A selected image outside both Top 5 lists must still be recovered.
     top_keys = {item.media_key for member in view.stickers.members for item in member.top_materials}
     outside = next(m for m in index.report.materials if m.media_key not in top_keys)
     story = replace(features.stories.candidates[0], media_keys=(outside.media_key,))
@@ -132,6 +133,114 @@ def test_relay_projection_bounds_turns_without_losing_counts_or_exporting_bodies
         "private-body-sentinel", "fiction:", "private-relay", "fiction-A", "fiction-B"))
 
 
+
+def test_independent_stories_after_featured_cap_are_exported_as_compact_memories():
+    from sticker_feature_samples import many_sticker_stories, indexed
+    from qq_chat_analyzer.analysis.sticker_features import analyze_private_stickers
+    from qq_chat_analyzer.presentation.stickers import sticker_report_targets
+
+    rows = many_sticker_stories()
+    index = indexed(rows, positions=range(len(rows)))
+    features = analyze_private_stickers(index)
+    before = features.stories.featured_ids
+    view = build_echo_report_view(analysis_models.AnalysisReports(
+        stickers=(index.report,), private_stickers=features), conversation_kind="private")
+    memories = echo_report_to_dict(view)["sticker_memories"]
+    assert len(memories) == 8
+    assert [m["compact"] for m in memories] == [False] * 3 + [True] * 5
+    returns = [f for m in memories for f in m["findings"] if f["kind"] == "reunion"]
+    assert sorted((date.fromisoformat(f["points"][1]["start_date"]) -
+                   date.fromisoformat(f["points"][0]["start_date"])).days for f in returns) == [
+        196, 396, 596, 796, 996, 1196]
+    assert features.stories.featured_ids == before
+    assert all(len(m.materials) <= 1 for m in view.stickers.memories if m.compact)
+    targets = sticker_report_targets(view.stickers)
+    assert len({t.media_key for t in targets}) == len(targets)
+    primary = {item.media_key for m in view.stickers.members for item in m.top_materials}
+    primary.update(item.media_key for m in view.stickers.memories if not m.compact for item in m.materials)
+    assert {item.media_key for item in targets[:len(primary)]} == primary
+    assert all(secret not in json.dumps(memories, ensure_ascii=False)
+               for secret in ("fiction-", "fiction:", "visual-six-plus", "occurrence_id"))
+    assert echo_report_to_dict(build_echo_report_view(
+        analysis_models.AnalysisReports(stickers=(index.report,), private_stickers=features),
+        conversation_kind="group"))["sticker_memories"] == []
+
+
+def test_a_qualified_return_survives_a_full_shortlist_of_other_discovery_kinds():
+    from sticker_feature_samples import Messages, indexed
+    from qq_chat_analyzer.analysis.sticker_features import analyze_private_stickers
+
+    sample = Messages("ordinary-return-after-cap")
+    for side in ("A", "B"):
+        for day in (0, 90, 180, 270, 365):
+            sample.add(day, side, f"signature-{side}", seconds=100 if side == "A" else 200)
+    for key, returned in (("old", 60), ("another-old", 80)):
+        for day in (0, 2, 4, returned):
+            sample.add(day, "A", key, seconds=300 if key == "old" else 400)
+    sample.add(20, "A", "background", "background", seconds=300)
+    sample.add(40, "A", "background", seconds=300)
+    for day, key in ((190, "phase-one"), (200, "phase-one"),
+                     (230, "phase-two"), (240, "phase-two")):
+        sample.add(day, "A", key, key, key, seconds=300)
+    for i in range(12):
+        sample.add(400, "A" if i % 2 == 0 else "B", f"reply-{i}", seconds=i*20)
+    rows = sample.ordered()
+    index = indexed(rows, positions=range(len(rows)))
+    features = analyze_private_stickers(index)
+    assert [r.gap_days for r in features.reunions] == [76, 56]
+    before = features.stories.featured_ids
+    assert len(before) == 3
+    featured = [s for s in features.stories.candidates if s.story_id in before]
+    assert not any(name == "reunions" for s in featured for name, _ in s.findings)
+    payload = echo_report_to_dict(build_echo_report_view(analysis_models.AnalysisReports(
+        stickers=(index.report,), private_stickers=features), conversation_kind="private"))
+    returns = [(m, f) for m in payload["sticker_memories"] for f in m["findings"]
+               if f["kind"] == "reunion"]
+    assert len(returns) == 1
+    assert returns[0][0]["compact"] is True
+    assert "76" in returns[0][1]["title"]  # One representative of the missing kind.
+    assert features.stories.featured_ids == before
+    assert "ordinary-return-after-cap" not in json.dumps(payload)
+
+
+def test_relay_previews_retain_each_visible_turn_material_with_a_bounded_target_union():
+    from sticker_feature_samples import Messages, indexed
+    from qq_chat_analyzer.analysis.sticker_features import analyze_private_stickers
+    from qq_chat_analyzer.presentation.stickers import sticker_report_targets
+
+    sample = Messages("distinct-relay")
+    for i in range(16):
+        sample.add(0, "A" if i % 2 == 0 else "B", f"reply{i:02}", seconds=i * 20)
+    rows = sample.ordered()
+    index = indexed(rows, positions=range(len(rows)))
+    features = analyze_private_stickers(index)
+    view = build_echo_report_view(analysis_models.AnalysisReports(
+        stickers=(index.report,), private_stickers=features), conversation_kind="private")
+    relay = next(f for m in echo_report_to_dict(view)["sticker_memories"]
+                 for f in m["findings"] if f["kind"] == "relay")
+    assert len(relay["points"]) == 12
+    assert [p["materials"] for p in relay["points"]] == [
+        [{"asset_key": f"sticker:{i}"}] for i in range(1, 13)]
+    assert "16" in relay["title"] and "前 12 轮" in relay["note"]
+    assert len(sticker_report_targets(view.stickers)) == 12
+
+
+
+def test_private_common_markers_use_the_two_sides_instead_of_other_members():
+    from qq_chat_analyzer.analysis.stickers import StickerConversationReport, StickerMaterialUsage, StickerParticipant
+
+    report = StickerConversationReport("qq", "fiction-room", "private", 10, 10, 0, 0,
+        members=(StickerParticipant("a", True, 3, 3), StickerParticipant("b", False, 3, 3),
+                 StickerParticipant("c", None, 4, 4)),
+        materials=(StickerMaterialUsage("other-shared", "other-media", 7, (("a", 3), ("c", 4))),
+                   StickerMaterialUsage("peer-only", "peer-media", 3, (("b", 3),))))
+    payload = echo_report_to_dict(build_echo_report_view(
+        analysis_models.AnalysisReports(stickers=(report,)), conversation_kind="private"))
+    leader = payload["stickers"]["members"][0]["top_materials"][0]
+    assert leader["reliable_member_count"] == 2
+    assert leader["side_counts"] == [3, 0]
+
+
 def test_private_local_media_resolution_uses_the_final_report_targets(tmp_path, monkeypatch):
     from sticker_feature_samples import formal_payload
     from test_sticker_features_batch2 import combined_scene
@@ -178,9 +287,9 @@ def test_report_media_targets_cover_top_ten_and_outside_signature_once(kind):
     view = build_echo_report_view(analysis_models.AnalysisReports(stickers=(report,)), conversation_kind=kind)
     assert all(member.unique_material_count == 12 for member in view.stickers.members)
     targets = sticker_report_targets(view.stickers)
-    expected = (*range(10), 11) if kind == "group" else range(3)
+    expected = (*range(10), 11) if kind == "group" else range(5)
     assert {t.media_key for t in targets} == {f"media-{i:02}" for i in expected}
-    assert len(targets) == len({t.asset_key for t in targets}) == (11 if kind == "group" else 3)
+    assert len(targets) == len({t.asset_key for t in targets}) == (11 if kind == "group" else 5)
     serialized = json.dumps(echo_report_to_dict(view))
     assert "media-" not in serialized and "key-" not in serialized
 
@@ -201,7 +310,7 @@ def test_group_report_budget_reaches_global_leaders_before_member_long_tail():
 
 
 @pytest.mark.parametrize("kind,senders,limit", [
-    ("private", 2, 3), ("group", 1, 10), ("group", 9, 10),
+    ("private", 2, 5), ("group", 1, 10), ("group", 9, 10),
     ("group", 10, 5), ("group", 99, 5), ("group", 100, 3),
 ])
 def test_member_top_limit_uses_scoped_sticker_senders_and_bounds_media_targets(kind, senders, limit):
@@ -373,7 +482,7 @@ def test_sticker_chapter_ranks_counts_and_limits_shared_exclusive_candidates():
     mine, theirs = chapter["members"]
     assert (mine["unique_material_count"], theirs["unique_material_count"]) == (4, 2)
     assert (mine["send_count"], mine["per_hundred_messages"]) == (9, 90.0)
-    assert [item["count"] for item in mine["top_materials"]] == [4, 2, 1]
+    assert [item["count"] for item in mine["top_materials"]] == [4, 2, 1, 1]
     assert [item["count"] for item in theirs["top_materials"]] == [4, 3]
     assert chapter["shared_material_count"] == 1
     assert chapter["shared_materials"] == []  # Too few for a useful shared leaderboard.
@@ -385,7 +494,7 @@ def test_sticker_chapter_ranks_counts_and_limits_shared_exclusive_candidates():
     assert echo_report_to_dict(disjoint_view)["stickers"]["shared_materials"] == []
     serialized = json.dumps(chapter)
     assert "uncertain" not in serialized and "fiction-room" not in serialized
-    assert len(chapter["assets"]) == 4
+    assert len(chapter["assets"]) == 5
     assert all(a["status"] == "not_requested" and not a["data_uri"] for a in chapter["assets"].values())
     # A single occurrence remains eligible; zero denominator is serialized as null.
     tiny = replace(report, total_send_count=1, members=(StickerParticipant("a", True, 0, 1),),

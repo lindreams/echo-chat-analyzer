@@ -260,6 +260,43 @@ def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monk
     assert "正在获取表情包素材..." in progress
 
 
+@pytest.mark.parametrize("kind", ["private", "group"])
+def test_report_uses_another_verified_send_when_the_first_copy_has_no_resource(tmp_path, monkeypatch, caplog, kind):
+    import json
+    from qq_chat_analyzer.providers.napcat_qq_provider import NapCatQQMediaStageError
+
+    raw = _fictional_png()
+    facade, provider, runtime = _fetch_facade(tmp_path, digest=hashlib.md5(raw).digest(), content=raw,
+        group_sender="10087" if kind == "group" else None)
+    table = "c2c_msg_table" if kind == "private" else "group_msg_table"
+    with sqlite3.connect(tmp_path / "plaintext-qq.db") as db:
+        db.execute(f'''INSERT INTO {table}
+            ("40001", "40020", "40021", "40027", "40030", "40033", "40050", "40800")
+            SELECT 202, "40020", "40021", "40027", "40030", "40033", "40050" + 1, "40800"
+            FROM {table} WHERE "40001" = 201''')
+    downloads = []
+    download = provider.download_pic_media
+    def fetch(**locator):
+        downloads.append(locator["msg_id"])
+        if locator["msg_id"] == "201":
+            raise NapCatQQMediaStageError("media_download_no_path")
+        return download(**locator)
+    monkeypatch.setattr(provider, "download_pic_media", fetch)
+    with caplog.at_level("INFO", logger="qq_chat_analyzer.desktop.facade"):
+        outcome = facade.analyze_session(ChatSource.QQ, f"{kind}:{kind}-partition",
+            AnalysisConfig(output_directory=tmp_path / "report"))
+    assert downloads == ["201", "202"]
+    assert [(call[1]["msg_id"], call[1]["expected_time"]) for call in provider.calls if call[0] == "resolve"] == [
+        ("201", 1760000001), ("202", 1760000002)]
+    chapter = json.loads((outcome.report_directory / "echo-report.json").read_text("utf-8"))["stickers"]
+    asset, = chapter["assets"].values()
+    assert chapter["total_send_count"] == 2 and asset["status"] == "available"
+    assert runtime.acquired == runtime.cleaned and len(runtime.acquired) == 1
+    lines = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[sticker-media-candidate]")]
+    assert len(lines) == 1 and "code=qq_media_download_no_path" in lines[0]
+    assert str(tmp_path) not in lines[0] and hashlib.md5(raw).hexdigest() not in lines[0]
+
+
 @pytest.mark.parametrize("limit", ["none", "many", "bridge", "time", "transport", "cancel"])
 def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
     tmp_path, monkeypatch, caplog, limit,
@@ -700,6 +737,10 @@ def test_unconfirmed_mapping_or_undecodable_content_is_never_displayed(tmp_path,
     ("probe_timeout", "qq_media_query_timeout", "返回消息"),
     ("probe_api_unavailable", "qq_media_api_unavailable", "消息查询"),
     ("media_download_timeout", "qq_media_download_timeout", "限定时间"),
+    ("media_download_no_path", "qq_media_download_no_path", "未返回图片文件位置"),
+    ("media_download_no_cache_hint", "qq_media_download_no_cache_hint", "未提供原图缓存位置"),
+    ("media_path_type_invalid", "qq_media_path_type_invalid", "类型异常"),
+    ("media_path_not_absolute", "qq_media_path_not_absolute", "绝对文件位置"),
     ("media_file_identity_changed", "qq_media_file_identity_changed", "不同文件"),
 ])
 def test_fetch_failure_names_the_stage_instead_of_one_generic_message(

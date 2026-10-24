@@ -277,6 +277,7 @@ class EchoStickerMemory:
 
     findings: tuple[EchoStickerFinding, ...]
     materials: tuple[EchoStickerItem, ...] = ()
+    compact: bool = False
 
 
 @dataclass(frozen=True, slots=True)

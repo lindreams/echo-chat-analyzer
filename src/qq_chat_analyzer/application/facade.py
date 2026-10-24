@@ -391,9 +391,25 @@ _QQ_MEDIA_STAGE_FAILURES = {
         "qq_media_download_failed",
         "QQ 下载接口返回失败，未展示。",
     ),
+    "media_download_no_path": (
+        "qq_media_download_no_path",
+        "QQ 下载接口未返回图片文件位置，未展示。",
+    ),
+    "media_download_no_cache_hint": (
+        "qq_media_download_no_cache_hint",
+        "QQ 未提供原图缓存位置，下载接口也未返回图片文件，未展示。",
+    ),
+    "media_path_type_invalid": (
+        "qq_media_path_type_invalid",
+        "QQ 下载接口返回的图片位置类型异常，未展示。",
+    ),
+    "media_path_not_absolute": (
+        "qq_media_path_not_absolute",
+        "QQ 下载接口未返回绝对文件位置，未展示。",
+    ),
     "media_path_invalid": (
         "qq_media_path_invalid",
-        "QQ 返回的图片位置为空或不可安全读取，未展示。",
+        "QQ 返回的图片位置不可安全读取，未展示。",
     ),
     "media_file_missing": (
         "qq_media_file_missing",
@@ -689,9 +705,25 @@ class ChatAnalyzerFacade:
             return cancelled() or self._sources_closing.is_set()
 
         sends = {}
+        seen_messages = set()
+        target_keys = {target.media_key for target in targets}
         for send in data.sends:
-            if send.source == "qq" and send.identity_basis == "qq_pic_45406_md5":
-                sends.setdefault(send.media_key, send)
+            if (send.source != "qq" or send.identity_basis != "qq_pic_45406_md5"
+                    or send.media_key not in target_keys):
+                continue
+            candidates = sends.setdefault(send.media_key, [])
+            if candidates and (send.conversation_type, send.conversation_id, send.content_md5) != (
+                    candidates[0].conversation_type, candidates[0].conversation_id, candidates[0].content_md5):
+                continue
+            message_key = (send.media_key, send.message_id)
+            if message_key not in seen_messages:
+                candidates.append(send)
+                seen_messages.add(message_key)
+        # Preserve the original representative; after a missing resource, prefer
+        # recent sends of the same material in this exact retained conversation.
+        for candidates in sends.values():
+            candidates[1:] = reversed(candidates[1:])
+        candidate_indexes = defaultdict(int)
         owned_media = []
         def retain(item):
             try:
@@ -749,8 +781,8 @@ class ChatAnalyzerFacade:
                             kind, internal_key = session.session_id.split(":", 1)
                             if query.get("session_type") != kind or query.get("internal_key") != internal_key:
                                 setup_failure = "report_scope_unconfirmed"
-                            eligible = pending
-                            for fact in extract_qq_pic_media_facts(payload, {sends[key].message_id for key in eligible}):
+                            message_ids = {send.message_id for key in pending for send in sends[key]}
+                            for fact in extract_qq_pic_media_facts(payload, message_ids):
                                 facts_by_message[fact.message_id].append(fact)
                             del payload
                     except Exception:
@@ -789,10 +821,11 @@ class ChatAnalyzerFacade:
                                 trace("waiting_bridge")
                                 wait_ready(cancelled=stopped)
                                 check_cancel()
+                            send = sends[key][candidate_indexes[key]]
                             recovered = self._fetch_qq_pic(
                                 replace(data, media=tuple(media.values())), media_key=key,
-                                session_id=session.session_id, occurrence_id=sends[key].occurrence_id,
-                                stored_facts=tuple(facts_by_message[sends[key].message_id]),
+                                session_id=session.session_id, occurrence_id=send.occurrence_id,
+                                stored_facts=tuple(facts_by_message[send.message_id]),
                                 provider=provider, cancelled=stopped, on_stage=trace)
                             item = next(item for item in recovered.media if item.media_key == key)
                             if item.original_bytes:
@@ -815,6 +848,13 @@ class ChatAnalyzerFacade:
                                 _LOGGER.info("[sticker-media-wait] batch=%s target=%d code=%s", batch, ordinal, code)
                                 # The next pass waits for the same bridge; no target
                                 # is abandoned and no native download overlaps.
+                                continue
+                            next_candidate = candidate_indexes[key] + 1
+                            if error.code in {"qq_media_download_no_path", "qq_media_download_no_cache_hint",
+                                              "qq_media_file_missing"} and next_candidate < len(sends[key]):
+                                candidate_indexes[key] = next_candidate
+                                _LOGGER.info("[sticker-media-candidate] batch=%s target=%d code=%s next=%d candidates=%d",
+                                             batch, ordinal, code, next_candidate + 1, len(sends[key]))
                                 continue
                             _LOGGER.info("[sticker-media-result] batch=%s target=%d stage=%s code=%s elapsed_ms=%d",
                                          batch, ordinal, current_stage, code, max(0, round((_perf_counter() - item_started) * 1000)))

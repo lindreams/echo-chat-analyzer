@@ -69,6 +69,7 @@ def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
         ),
         "stickers": _stickers_to_dict(view.stickers),
         "sticker_memories": [{
+            "compact": memory.compact,
             "findings": [{
                 "kind": finding.kind, "title": finding.title, "period": finding.period,
                 "note": finding.note,

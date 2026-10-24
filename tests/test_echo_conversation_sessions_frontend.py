@@ -194,11 +194,60 @@ def test_sticker_empty_unknown_and_group_visibility(tmp_path):
     unknown = dict(empty, total_send_count=2, unknown_identity_count=2, unattributed_send_count=2)
     rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=unknown)
     assert not rendered["sticker-rankings"]["hidden"]
-    assert rendered["sticker-memories"]["hidden"] and rendered["sticker-memories-toc"]["hidden"]
-    assert rendered["sticker-total"]["text"] == "2 次"
+    assert rendered["sticker-memories"]["hidden"] and "sticker-memories-toc" not in rendered
+    assert rendered["sticker-total"]["text"] == "2"
     assert "sticker-note" not in rendered
     rendered = _render_frontend(tmp_path, kind="group", sessions=None, stickers=unknown)
     assert rendered["stickers"]["hidden"] and rendered["sticker-toc"]["hidden"]
+
+
+@pytest.mark.parametrize("kind,total,shared,mine,theirs,sides,expected", [
+    pytest.param("private", 70, 12, 8, 7, "both",
+                 "12", id="full-counts-beyond-top-five"),
+    pytest.param("private", 2, 0, 0, 0, "both",
+                 "0", id="known-zero"),
+    pytest.param("private", 70, None, 8, 7, "both", None, id="shared-null"),
+    pytest.param("private", 70, "missing", 8, 7, "both", None, id="shared-missing"),
+    pytest.param("private", 70, 12, None, 7, "both", None, id="self-exclusive-null"),
+    pytest.param("private", 70, 12, 8, "missing", "both", None, id="peer-exclusive-missing"),
+    pytest.param("private", 70, 12, 8, 7, "peer-unknown", None, id="unreliable-peer"),
+    pytest.param("private", 70, 12, 8, 7, "peer-missing", None, id="missing-peer"),
+    pytest.param("private", 0, 0, 0, 0, "both", None, id="no-sends"),
+    pytest.param("group", 70, 12, 8, 7, "both", None, id="group"),
+])
+def test_private_sticker_comparison_uses_only_available_full_counts(
+    tmp_path, kind, total, shared, mine, theirs, sides, expected,
+):
+    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
+
+    chapter = echo_report_to_dict(build_echo_report_view(None, conversation_kind=kind))["stickers"]
+    chapter.update(total_send_count=total, unique_material_count=27)
+    if shared != "missing":
+        chapter["shared_material_count"] = shared
+    else:
+        chapter.pop("shared_material_count", None)
+    chapter["members"] = [
+        {"label": "我", "send_count": 40, "message_count": 80,
+         "unique_material_count": 20, "per_hundred_messages": 50,
+         "top_materials": [{"asset_key": f"self-{i}", "count": 2} for i in range(5)]},
+        {"label": "TA", "send_count": 30, "message_count": 60,
+         "unique_material_count": 19, "per_hundred_messages": 50,
+         "top_materials": [{"asset_key": f"peer-{i}", "count": 2} for i in range(5)]},
+    ]
+    for member, count in zip(chapter["members"], (mine, theirs)):
+        if count != "missing":
+            member["exclusive_material_count"] = count
+    if sides == "peer-unknown":
+        chapter["members"][1]["send_count"] = None
+    elif sides == "peer-missing":
+        chapter["members"].pop()
+
+    rendered = _render_frontend(tmp_path, kind=kind, sessions=None, stickers=chapter)
+    assert "sticker-comparison" in rendered, "missing compact sticker comparison paragraph"
+    row = rendered["sticker-comparison"]
+    assert row["hidden"] is (expected is None)
+    assert row["text"] == (expected or "")
+    assert rendered["sticker-exclusive-split"]["text"] == (f"仅我 {mine} / 仅 TA {theirs}" if expected is not None else "")
 
 
 def test_small_sticker_sample_keeps_counts_without_diagnostic_notices(tmp_path):
@@ -206,7 +255,7 @@ def test_small_sticker_sample_keeps_counts_without_diagnostic_notices(tmp_path):
     chapter = echo_report_to_dict(build_echo_report_view(None, conversation_kind="private"))["stickers"]
     chapter.update(total_send_count=5, unique_material_count=5, covered_message_count=5)
     rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=chapter)
-    assert rendered["sticker-total"]["text"] == "5 次"
+    assert rendered["sticker-total"]["text"] == "5"
     assert not rendered["sticker-rankings"]["hidden"]
     assert rendered["sticker-empty"]["hidden"]
     assert not rendered["sticker-fields"]["hidden"]
@@ -407,14 +456,16 @@ def _find_chromium() -> str | None:
 
 @pytest.mark.slow_integration
 @pytest.mark.parametrize("kind,senders,limit", [
-    ("private", 2, 3), ("group", 3, 10), ("group", 10, 5), ("group", 100, 3),
+    ("private", 2, 5), ("group", 3, 10), ("group", 10, 5), ("group", 100, 3),
 ])
 def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path, kind, senders, limit):
     width = 1280
     from dataclasses import replace
     import hashlib
     from qq_chat_analyzer.analysis.models import AnalysisReports
-    from qq_chat_analyzer.analysis.stickers import StickerConversationReport, StickerMaterialUsage, StickerParticipant
+    from qq_chat_analyzer.analysis.stickers import (
+        StickerConversationReport, StickerHabit, StickerMaterialUsage, StickerParticipant,
+    )
     from qq_chat_analyzer.application.sticker_media import verify_fetched_media
     from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
     from test_sticker_data import image_bytes
@@ -435,6 +486,8 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
             StickerMaterialUsage("mine", "mine", 10, (("a", 10),)),
             StickerMaterialUsage("theirs", "theirs", 10, (("b", 10),)),
         ) + tuple(StickerMaterialUsage(f"extra-{i:02d}", f"extra-{i:02d}", 2, (("a", 1), ("b", 1))) for i in range(10)),
+        habits=(StickerHabit("a", "first", 20, 20, 12, 90, 8, .4,
+                             "2025-01-01", "2025-04-01", ()),),
     )
     view = build_echo_report_view(AnalysisReports(stickers=(report,)), conversation_kind=kind,
                                   sticker_media=(original, preview, replace(original, media_key="mine", status="unsafe")))
@@ -460,9 +513,21 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
           missing: sheet.querySelectorAll(".sticker-image:not(.has-image)").length,
           overflow: document.documentElement.scrollWidth > window.innerWidth,
           preview: sheet.textContent.includes("预览"),
-          diagnostics: /可靠成员|已知|未知|素材 \d|招牌|资格|阈值|排序口径|身份判定/.test(sheet.innerText),
+          diagnostics: /可靠成员|已知|未知|素材 \d|资格|阈值|排序口径|身份判定/.test(sheet.innerText),
+          signatureCount: sheet.querySelectorAll("#sticker-members .sticker-signature").length,
+          signatureText: (sheet.querySelector(".sticker-signature") || {}).innerText || "",
+          signatureImage: Boolean(sheet.querySelector(".sticker-signature img")),
           imageWidth: sheet.querySelector(".sticker-image").getBoundingClientRect().width
         };
+        const comparison = document.getElementById("sticker-comparison");
+        result.comparisonHidden = comparison.hidden;
+        result.comparisonText = comparison.textContent;
+        if (!comparison.hidden) {
+          const comparisonRect = comparison.getBoundingClientRect();
+          result.comparisonInside = sheet.querySelector("#sticker-fields").contains(comparison);
+          result.exclusiveText = document.getElementById("sticker-exclusive-split").textContent;
+          result.comparisonLines = comparisonRect.height / parseFloat(getComputedStyle(comparison).lineHeight);
+        }
         const memberList = sheet.querySelector("#sticker-members .sticker-top-list");
         const button = sheet.querySelector("#sticker-members .sticker-expand");
         const member = window.ECHO_DATA.stickers.members[0];
@@ -484,7 +549,7 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
         if (window.ECHO_DATA.stickers.conversation_kind === "private") {
           result.privateSharedAbsent = !document.querySelector("#sticker-shared-list");
           result.memoriesHidden = document.getElementById("sticker-memories").hidden &&
-            document.getElementById("sticker-memories-toc").hidden;
+            !document.getElementById("sticker-memories-toc");
         }
         if (window.ECHO_DATA.stickers.conversation_kind === "group") {
           const boxes = [...document.querySelectorAll("#sticker-member-options input")];
@@ -541,20 +606,32 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
     rendered = json.loads(html.unescape(match.group(1)))
     assert rendered["visible"] and rendered["count"] == 1
     assert not rendered["overflow"] and not rendered["diagnostics"]
-    assert rendered["imageWidth"] >= 100
-    assert rendered["tops"] == (6 if kind == "private" else 3)
+    assert rendered["signatureCount"] == (1 if kind == "group" else 0)
+    if kind == "group":
+        assert rendered["signatureImage"]
+        for text in ("招牌表情包", "20 次", "出现在 12 天", "活跃 8 周", "跨度 90 天",
+                     "2025.01.01 – 2025.04.01"):
+            assert text in rendered["signatureText"]
+    default_count = 5 if kind == "private" else 3
+    assert rendered["imageWidth"] >= (64 if kind == "private" else 100)
+    assert rendered["tops"] == (10 if kind == "private" else 3)
     assert rendered["expanded"] == rendered["expected"] and len(rendered["expanded"]) == limit
-    assert rendered["expandHidden"] == (limit == 3)
-    if limit > 3:
+    assert rendered["expandHidden"] == (limit <= default_count)
+    if limit > default_count:
         assert rendered["expandLabel"] == f"展开 Top {limit}"
-    assert rendered["expandedState"] == ("true" if limit > 3 else "false")
-    assert rendered["collapsed"] == 3
+    assert rendered["expandedState"] == ("true" if limit > default_count else "false")
+    assert rendered["collapsed"] == default_count
     assert rendered["memberColumns"] == min(limit, 5)
     assert rendered["memberRows"] == (2 if limit == 10 else 1)
-    assert all(110 <= value <= 120 for value in rendered["memberImageWidths"])
+    minimum_image_width = 64 if kind == "private" else 110
+    assert all(minimum_image_width <= value <= 120 for value in rendered["memberImageWidths"])
     if kind == "private":
         assert rendered["privateSharedAbsent"] and rendered["memoriesHidden"]
+        assert not rendered["comparisonHidden"]
+        assert rendered["comparisonText"] == "12" and rendered["exclusiveText"] == "仅我 1 / 仅 TA 1"
+        assert rendered["comparisonInside"] and rendered["comparisonLines"] == pytest.approx(1)
     if kind == "group":
+        assert rendered["comparisonHidden"] and rendered["comparisonText"] == ""
         assert rendered["pickerCount"] == senders
         assert rendered["groupExpandedCounts"] == [10, 10]
         assert rendered["comparedMembers"] == 3
@@ -573,7 +650,11 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
         assert rendered["pickerBorder"] == "0px"
     assert rendered["loaded"] and rendered["offline"] and rendered["missing"] >= 2
     assert rendered["brokenFallback"] and rendered["preview"]
-    assert rendered["width"] == 1040 and rendered["height"] >= 980
+    assert rendered["width"] == 1040
+    if kind == "group":
+        assert rendered["height"] >= 980
+    else:
+        assert rendered["height"] < 980
 
 
 @pytest.mark.slow_integration
@@ -630,73 +711,197 @@ def test_saved_qq_media_report_loads_actual_images_offline(tmp_path, kind, caplo
 
 
 @pytest.mark.slow_integration
-def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path):
+@pytest.mark.parametrize("scene,leaders", [
+    ("combined", ["reunion", "style"]), ("zero", []),
+    ("one", ["relay"]), ("three", ["trend", "relay", "shared", "trend"]),
+    ("many", ["reunion", "relay", "shared"] + ["reunion"] * 5),
+])
+def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path, scene, leaders):
     import hashlib
-    from dataclasses import replace
-    from sticker_feature_samples import indexed
-    from test_sticker_features_batch2 import combined_scene
+    import math
+    from sticker_feature_samples import Messages, indexed, many_sticker_stories
+    from test_sticker_features_batch2 import combined_scene, short_relay
     from test_sticker_data import image_bytes
     from qq_chat_analyzer.analysis.models import AnalysisReports
     from qq_chat_analyzer.analysis.sticker_features import analyze_private_stickers
     from qq_chat_analyzer.application.sticker_media import verify_fetched_media
-    from qq_chat_analyzer.presentation import build_echo_report_view
+    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
 
     chromium = _find_chromium()
     if chromium is None:
         pytest.skip("no local Chromium available")
-    rows = combined_scene()
+    sample = Messages("visual-three" if scene == "three" else "visual-zero")
+    if scene == "three":
+        for day in range(21):
+            for i in range(3):
+                sample.add(day, "A", f"phase{day//7}", seconds=i)
+        for i in range(8):
+            sample.add(21, "A" if i % 2 == 0 else "B", f"reply{i}", seconds=i*20)
+        for day in (23, 25):
+            for side in ("A", "B"):
+                for i in range(4):
+                    sample.add(day, side, "shared", seconds=i + (300 if side == "B" else 0))
+    else:
+        sample.add(0, "A", "plain", text="private-body-sentinel")
+        sample.add(1, "B", "other")
+    rows = (combined_scene() if scene == "combined" else short_relay() if scene == "one"
+            else many_sticker_stories() if scene == "many" else sample.ordered())
     index = indexed(rows, positions=range(len(rows)))
     features = analyze_private_stickers(index)
-    key = features.shared_habits[0].media_key
-    raw = image_bytes("GIF", animated=True)
-    media = verify_fetched_media(raw, media_key=key, expected_md5=hashlib.md5(raw).hexdigest())
+    media = ()
+    if scene == "combined":
+        raw = image_bytes("GIF", animated=True)
+        media = (verify_fetched_media(raw, media_key=features.shared_habits[0].media_key,
+                                     expected_md5=hashlib.md5(raw).hexdigest()),)
     view = build_echo_report_view(AnalysisReports(stickers=(index.report,), private_stickers=features),
-        conversation_kind="private", sticker_media=(media,))
+        conversation_kind="private", sticker_media=media)
+    payload = echo_report_to_dict(view)
+    memories = payload["sticker_memories"]
+    assert [m["findings"][0]["kind"] for m in memories] == leaders
     output = export_echo_report_html(view, tmp_path / "memories.html")
     source = output.read_text(encoding="utf-8")
-    probe = r'''<script>window.addEventListener("load", () => {setTimeout(() => {
-      const a = document.getElementById("stickers"), b = document.getElementById("sticker-memories");
-      const toc = document.getElementById("sticker-memories-toc");
-      const images = [...b.querySelectorAll("img")];
-      const result = {separate:a.parentNode === b.parentNode && !a.contains(b),
-        visible:!a.hidden && !b.hidden && !toc.hidden, target:toc.getAttribute("href"),
-        cards:b.querySelectorAll("article").length, tops:a.querySelectorAll("li").length,
-        kinds:[...b.querySelectorAll("[data-finding]")].map(x => x.dataset.finding),
-        relaySides:[...b.querySelectorAll(".memory-turn-side")].map(x => x.textContent),
+    probe = r'''<style>.page:not(#stickers) {display:none !important;}</style>
+    <script>window.addEventListener("load", () => {setTimeout(() => {
+      const a=document.getElementById("stickers"), b=document.getElementById("sticker-memories");
+      const bounds=x=>{const r=x.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};
+      const stories=[...b.querySelectorAll("article")], images=[...b.querySelectorAll("img")];
+      const result={inside:a.contains(b),visible:!a.hidden,memoriesHidden:b.hidden,
+        pages:a.querySelectorAll(".page").length,
+        toc:[...document.querySelectorAll('a[href="#stickers"],a[href="#sticker-memories"]')].filter(x=>!x.hidden).map(x=>x.getAttribute("href")),
+        title:document.getElementById("sticker-title").textContent,
+        stats:[...a.querySelectorAll(".sticker-fields dd")].filter(x=>x.offsetParent).map(x=>getComputedStyle(x).fontSize),
+        habitPairs:[...b.querySelectorAll(".memory-habit-pair")].map(x=>({bounds:bounds(x),children:[...x.children].map(bounds)})),
+        staffs:[...a.querySelectorAll(".sticker-staff")].map(x=>({favorites:!!x.closest("#sticker-rankings"),relay:!!x.closest(".is-relay")})),
+        stories:stories.map(story=>({compact:story.classList.contains("is-compact"),
+          findings:[...story.querySelectorAll("[data-finding]")].map(x=>({kind:x.dataset.finding,text:x.innerText,
+            windows:[...x.querySelectorAll(".memory-trend-row")].map(bounds)})),
+          art:[...story.querySelectorAll(".memory-art")].filter(x=>!x.closest(".memory-relay")).map(x=>({key:x.dataset.assetKey,...bounds(x)})),
+          turns:[...story.querySelectorAll(".memory-relay li")].map(x=>({text:x.innerText,...bounds(x),
+            key:x.querySelector(".memory-art").dataset.assetKey,
+            side:bounds(x.querySelector(".memory-turn-side")),image:bounds(x.querySelector(".sticker-image"))}))
+        })),
+        tops:[...a.querySelectorAll("#sticker-members .sticker-member")].map(x=>({bounds:bounds(x),
+          entries:[...x.querySelectorAll("li")].map(bounds)})),
+        common:[...a.querySelectorAll(".sticker-common")].map(x=>x.closest("li").dataset.assetKey),
         sharedAbsent:!document.querySelector("#sticker-shared-list"),
-        sameResource:images[0].src === a.querySelector("img").src,
-        loaded:images.every(x => x.complete && x.naturalWidth > 0),
-        nativeSave:images.every(x => x.dispatchEvent(new MouseEvent("contextmenu", {bubbles:true,cancelable:true}))),
-        overflow:document.documentElement.scrollWidth > innerWidth,
-        viewport:innerWidth,
-        fits:[...b.querySelectorAll("li,h3,.sticker-memory-period")].every(x => x.getBoundingClientRect().right <= innerWidth),
+        imageCount:images.length,loaded:images.every(x=>x.complete&&x.naturalWidth>0),
+        sameResource:new Set(images.map(x=>x.currentSrc)).size===1,
+        nativeSave:images.every(x=>x.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))),
+        offline:images.every(x=>x.src.startsWith("data:image/")),
+        missing:b.querySelectorAll(".sticker-image:not(.has-image)").length,
+        overflow:document.documentElement.scrollWidth>innerWidth,
+        viewport:innerWidth,height:Math.ceil(bounds(a).bottom),
+        tail:bounds(a).bottom-bounds(b.hidden?document.getElementById("sticker-rankings"):stories[stories.length-1]).bottom,
+        chapterHeight:bounds(a).height,
+        fits:[...b.querySelectorAll("li,h3,.memory-art,.memory-date,.memory-trend-row")].every(x=>bounds(x).right<=bounds(a).right&&x.scrollWidth<=x.clientWidth+1),
         text:b.innerText};
-      const pre = document.createElement("pre"); pre.id = "memories-probe";
-      pre.hidden = true; pre.textContent = JSON.stringify(result); window.parent.document.body.appendChild(pre);
-    }, 300);});</script>'''
+      const heading=b.querySelector("h3");
+      if(heading){
+        const original=[...heading.childNodes];heading.textContent=heading.textContent.repeat(4);
+        result.longTitleFits=heading.scrollWidth<=heading.clientWidth+1&&bounds(heading).right<=bounds(a).right&&bounds(heading).height>=parseFloat(getComputedStyle(heading).lineHeight)*2-1;
+        heading.replaceChildren(...original);
+      }
+      const pre=document.createElement("pre");pre.id="memories-probe";pre.hidden=true;
+      pre.textContent=JSON.stringify(result);window.parent.document.body.appendChild(pre);
+    },300);});</script>'''
     page = source.replace("</body>", probe+"</body>")
-    for width in (1280,):
-        # Keep a precise desktop CSS viewport independent of headless chrome.
-        output.write_text(f'<iframe style="border:0;width:{width}px;height:1200px" '
-                          f'srcdoc="{html.escape(page, quote=True)}"></iframe>', encoding="utf-8")
-        browser = _run_browser([
-            chromium, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
-            "--no-default-browser-check", "--disable-background-networking", "--hide-scrollbars",
-            "--host-resolver-rules=MAP * ~NOTFOUND", f"--user-data-dir={tmp_path / str(width)}",
-            "--virtual-time-budget=2000", "--window-size=1320,1240", "--dump-dom", output.as_uri(),
-        ])
-        assert browser.returncode == 0, browser.stderr
-        match = re.search(r'<pre id="memories-probe" hidden="">(.*?)</pre>', browser.stdout.decode("utf-8"), re.S)
-        assert match is not None
-        result = json.loads(html.unescape(match.group(1)))
-        assert result["separate"] and result["visible"] and result["target"] == "#sticker-memories"
-        assert result["cards"] == 2 and result["tops"] == 4 and result["sharedAbsent"]
-        assert set(result["kinds"]) == {"reunion", "signature", "shared", "relay", "trend", "adoption", "style"}
-        assert result["relaySides"] == ["我", "TA"] * 4
-        assert result["sameResource"] and result["loaded"] and result["nativeSave"]
-        assert not result["overflow"] and result["fits"] and result["viewport"] == width
-        assert all(word in result["text"] for word in ("70 天", "49 天", "8 轮", "共同口头禅", "预计", "已验证原件"))
-        assert "虚构日常" not in result["text"] and "虚构回复" not in result["text"]
+    def write_viewport(height):
+        output.write_text('<body style="margin:0"><iframe style="display:block;border:0;width:1280px;height:'
+                          f'{height}px" srcdoc="{html.escape(page, quote=True)}"></iframe></body>', encoding="utf-8")
+    write_viewport(1200)
+    command = [chromium, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+        "--no-default-browser-check", "--disable-background-networking", "--hide-scrollbars",
+        "--host-resolver-rules=MAP * ~NOTFOUND", f"--user-data-dir={tmp_path / 'b'}",
+        "--virtual-time-budget=2000"]
+    browser = _run_browser(command + ["--window-size=1280,1200", "--dump-dom", output.as_uri()])
+    assert browser.returncode == 0, browser.stderr
+    match = re.search(r'<pre id="memories-probe" hidden="">(.*?)</pre>', browser.stdout.decode("utf-8"), re.S)
+    assert match is not None
+    result = json.loads(html.unescape(match.group(1)))
+    (tmp_path/"layout.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
+    assert result["inside"] and result["visible"] and result["pages"] == 0
+    assert result["toc"] == ["#stickers"] and result["title"] == "表情包"
+    assert result["memoriesHidden"] == (not leaders)
+    assert len(result["stories"]) == len(leaders) and result["sharedAbsent"]
+    assert not result["overflow"] and result["fits"] and result["viewport"] == 1280
+    assert 30 <= result["tail"] <= 115
+    assert [s["compact"] for s in result["stories"]] == [m["compact"] for m in memories]
+    has_relay = any(f["kind"]=="relay" for m in memories if not m["compact"] for f in m["findings"])
+    assert len(result["staffs"]) == (2 if has_relay else 1)
+    assert all(s["favorites"] or s["relay"] for s in result["staffs"])
+    assert sum(s["favorites"] for s in result["staffs"]) == 1
+    assert len(result["stats"]) == 3 and len(set(result["stats"])) == 1
+    for pair in result["habitPairs"]:
+        assert abs(pair["children"][0]["left"] - pair["bounds"]["left"]) <= 1
+        assert all(child["width"] >= 250 for child in pair["children"])
+    assert result["tops"][0]["bounds"]["bottom"] <= result["tops"][1]["bounds"]["top"]
+    assert all(all(x["right"]<=y["left"] for x,y in zip(m["entries"],m["entries"][1:])) for m in result["tops"])
+    common_keys = {item["asset_key"] for member in payload["stickers"]["members"]
+                   for item in member["top_materials"] if len(item["side_counts"])==2 and all(item["side_counts"])}
+    assert set(result["common"]) == common_keys
+    if scene == "zero":
+        assert result["chapterHeight"] < 800
+    if leaders:
+        assert result["longTitleFits"]
+    for rendered,memory in zip(result["stories"],memories):
+        if memory["compact"]:
+            assert len(rendered["art"]) <= 1 and not rendered["turns"]
+            assert memory["findings"][0]["title"] in rendered["findings"][0]["text"]
+            continue
+        ordinary_keys={i["asset_key"] for f in memory["findings"] if f["kind"]!="relay" for i in f["materials"]}
+        assert {a["key"] for a in rendered["art"]} == ordinary_keys
+        assert len(rendered["art"]) == len(ordinary_keys)
+        assert all(65<=a["width"]<=164 for a in rendered["art"])
+        for finding in memory["findings"]:
+            actual=next(x for x in rendered["findings"] if x["kind"]==finding["kind"])
+            for key in ("period","note"):
+                if finding[key]:
+                    assert finding[key] in actual["text"]
+            for point in finding["points"]:
+                for key in ("start_date","end_date"):
+                    if point[key]:
+                        assert point[key] in actual["text"]
+                if finding["kind"]=="trend":
+                    assert f'{point["value"]} / {point["total"]} 次' in actual["text"]
+                    assert f'{round(point["value"]/point["total"]*100)}%' in actual["text"]
+                if finding["kind"] in ("signature","shared"):
+                    assert f'{point["value"]} 次' in actual["text"]
+                    assert f'{point["date_count"]} 天' in actual["text"]
+            if finding["kind"]=="trend":
+                windows=actual["windows"]
+                assert len({round(x["top"]) for x in windows})==1
+                assert all(x["right"]<=y["left"] for x,y in zip(windows,windows[1:]))
+            if finding["kind"]=="relay":
+                turns=rendered["turns"]
+                assert len(turns)==len(finding["points"])==8
+                assert all(x["right"]<=y["left"] for x,y in zip(turns,turns[1:]))
+                assert len({round(t["top"]) for t in turns[::2]})>1
+                assert min(t["top"] for t in turns[1::2])>max(t["top"] for t in turns[::2])
+                for turn,point in zip(turns,finding["points"]):
+                    assert point["label"] in turn["text"]
+                    assert turn["key"]==(point["materials"][0]["asset_key"] if point["materials"] else "")
+                    assert turn["side"]["bottom"]<=turn["image"]["top"]
+                    assert turn["image"]["width"]<=65
+    if scene == "three":
+        first=result["stories"][0]["findings"]
+        assert len(first)==1 and len(first[0]["windows"])==3
+    if scene == "combined":
+        assert sum(len(m["entries"]) for m in result["tops"])==6
+        assert result["imageCount"]==9
+        assert result["sameResource"] and result["loaded"] and result["nativeSave"] and result["offline"]
+        assert all(word in result["text"] for word in ("70 天","49 天","8 轮","预计","9.7 种","1.0 种","10 次"))
+    elif leaders:
+        assert result["missing"]>0
+    assert all(secret not in result["text"] for secret in ("虚构日常","虚构回复","private-body-sentinel"))
+    height=math.ceil(result["height"])
+    write_viewport(height)
+    screenshot=tmp_path/f"{scene}-1280.png"
+    capture=_run_browser(command+[f"--window-size=1280,{height}",f"--screenshot={screenshot}",output.as_uri()])
+    assert capture.returncode==0,capture.stderr
+    png=screenshot.read_bytes()
+    assert png.startswith(b"\x89PNG\r\n\x1a\n")
+    assert int.from_bytes(png[16:20],"big")==1280
+    assert int.from_bytes(png[20:24],"big")==height
 
 
 def _run_browser(command: list[str]) -> subprocess.CompletedProcess:

@@ -1,6 +1,6 @@
 import {createServer} from 'node:http';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
-import {constants as fsConstants, promises as fs} from 'node:fs';
+import {appendFileSync, constants as fsConstants, promises as fs} from 'node:fs';
 import {isAbsolute} from 'node:path';
 
 const MAX_REQUEST_BYTES = 4096;
@@ -93,12 +93,85 @@ const MEDIA_STAGES = new Set([
   'probe_timeout', 'probe_api_unavailable',
   'media_mapping_rejected', 'media_message_query_failed', 'media_api_unavailable',
   'media_busy', 'media_budget_exhausted', 'media_download_timeout',
-  'media_download_failed', 'media_path_invalid', 'media_file_missing',
+  'media_download_failed', 'media_download_no_path', 'media_download_no_cache_hint', 'media_path_type_invalid',
+  'media_path_not_absolute', 'media_path_invalid', 'media_file_missing',
   'media_open_failed', 'media_file_type_rejected', 'media_file_identity_changed',
   'media_file_empty', 'media_file_too_large', 'media_read_incomplete',
   'media_file_changed', 'media_file_rejected', 'media_transfer_invalid',
 ]);
 const mediaError = code => Object.assign(new Error(code), {code});
+// Use the existing child-only diagnostic channel. Native messages, paths,
+// identities and arbitrary fields never reach it; logging is best effort.
+const logNativeMedia = (stage, value) => {
+  try {
+    const logFile = process.env.QCE_LOG_FILE;
+    if (!logFile) return;
+    const numericCode = raw => {
+      const code = typeof raw === 'string' && /^-?(?:0|[1-9]\d{0,9})$/.test(raw) ? Number(raw) : raw;
+      return Number.isSafeInteger(code) && code >= -2147483648 && code <= 4294967295 ? code : null;
+    };
+    let fields = '';
+    const returned = numericCode(value);
+    if (returned !== null) fields += ` return_code=${returned}`;
+    for (const key of ['result', 'errCode', 'retCode', 'resultCode', 'errorCode', 'status',
+      'fileErrCode', 'fileSrvErrCode', 'trasferStatus', 'step', 'fileDownType', 'thumbSize',
+      'source_state', 'file_state', 'thumb_count', 'thumb_regular', 'thumb_missing', 'thumb_invalid', 'thumb_other']) {
+      const code = numericCode(value?.[key]);
+      if (code !== null) fields += ` ${key}=${code}`;
+    }
+    const present = typeof value?.filePath === 'string' && value.filePath.length > 0;
+    appendFileSync(logFile, `[${new Date().toISOString()}] [echo-media] stage=${stage}${fields} path_present=${Number(present)}\n`);
+  } catch { /* Diagnostics cannot change acquisition behavior. */ }
+};
+// Inspect only paths supplied by the identity-confirmed PIC, never a directory.
+// States: 0 absent, 1 malformed, 2 missing, 3 regular file, 4 other type, 5 inaccessible.
+const logMediaCache = async pic => {
+  if (!process.env.QCE_LOG_FILE) return;
+  try {
+    const state = async path => {
+      if (path == null || path === '') return 0;
+      try { validateMediaPath(path); } catch { return 1; }
+      try { return (await fs.lstat(path)).isFile() ? 3 : 4; }
+      catch (error) { return error?.code === 'ENOENT' ? 2 : 5; }
+    };
+    const fields = {source_state: await state(pic.sourcePath), file_state: await state(pic.filePath),
+      thumb_count: 0, thumb_regular: 0, thumb_missing: 0, thumb_invalid: 0, thumb_other: 0};
+    if (pic.thumbPath instanceof Map) {
+      for (const path of pic.thumbPath.values()) {
+        if (fields.thumb_count >= 8) break;
+        fields.thumb_count++;
+        const kind = await state(path);
+        fields[kind === 3 ? 'thumb_regular' : kind === 2 ? 'thumb_missing' :
+          kind === 0 || kind === 1 ? 'thumb_invalid' : 'thumb_other']++;
+      }
+    }
+    logNativeMedia('cache_location', fields);
+  } catch { /* Cache diagnostics cannot change acquisition behavior. */ }
+};
+const observedMediaApi = fileApi => {
+  const wrapper = fileApi.core?.eventWrapper;
+  if (!process.env.QCE_LOG_FILE || typeof wrapper?.callNormalEventV2 !== 'function') return fileApi;
+  // The pinned FileApi drops the native result and returns only filePath.
+  // Observe that call on a per-download receiver; never patch the shared API
+  // or event wrapper used by QQ and other plugins.
+  const observer = Object.create(wrapper);
+  observer.callNormalEventV2 = async (...args) => {
+    const media = args[0] === 'NodeIKernelMsgService/downloadRichMedia' &&
+      args[1] === 'NodeIKernelMsgListener/onRichMediaDownloadComplete';
+    if (media) {
+      const check = args[3];
+      args[3] = value => { logNativeMedia('native_request', value); return check(value); };
+    }
+    const result = await wrapper.callNormalEventV2(...args);
+    if (media) logNativeMedia('native_complete', result?.[1]);
+    return result;
+  };
+  const core = Object.create(fileApi.core);
+  core.eventWrapper = observer;
+  const api = Object.create(fileApi);
+  api.core = core;
+  return api;
+};
 const MEDIA_KEYS = new Set([...PROBE_KEYS].filter(key => key !== 'expectedSegmentId').concat('elementId'));
 const GROUP_MEDIA_KEYS = new Set([...MEDIA_KEYS, 'expectedSenderUin', 'expectedSenderUid']);
 // Same fixed request shape as the probe, with the verified element ID in the
@@ -126,9 +199,14 @@ const mediaRequest = value => {
 // still names the file that was opened; its size is never compared with the
 // handle size, because QQ can still be finishing the write it just reported.
 // Stability is proven around the read on that same handle instead.
+const validateMediaPath = filePath => {
+  if (filePath == null || filePath === '') throw mediaError('media_download_no_path');
+  if (typeof filePath !== 'string') throw mediaError('media_path_type_invalid');
+  if (filePath.length > 4096 || filePath.includes('\x00')) throw mediaError('media_path_invalid');
+  if (!isAbsolute(filePath)) throw mediaError('media_path_not_absolute');
+};
 const openBoundedMedia = async filePath => {
-  if (typeof filePath !== 'string' || filePath.length === 0 || filePath.length > 4096 ||
-      filePath.includes('\x00') || !isAbsolute(filePath)) throw mediaError('media_path_invalid');
+  validateMediaPath(filePath);
   const openFailed = error => mediaError(error?.code === 'ENOENT' ? 'media_file_missing' : 'media_open_failed');
   let before;
   try {
@@ -408,9 +486,18 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       if (!fileApi || typeof fileApi.downloadMedia !== 'function') throw mediaError('media_api_unavailable');
       let localPath;
       try {
-        download = Promise.resolve(fileApi.downloadMedia(value.msgId, value.chatType, value.peerUid, value.elementId,
-          '', '', MEDIA_TIMEOUT_MS, false));
+        // The confirmed PIC supplies the original-cache hint. NapCat reuses
+        // that file when present; an unnecessary native download can return
+        // no path. Never accept a path from the RPC caller or force deletion.
+        const cachedPath = element.picElement.sourcePath ?? '';
+        if (cachedPath !== '') validateMediaPath(cachedPath);
+        await logMediaCache(element.picElement);
+        download = Promise.resolve(observedMediaApi(fileApi).downloadMedia(value.msgId, value.chatType, value.peerUid, value.elementId,
+          '', cachedPath, MEDIA_TIMEOUT_MS, false));
         localPath = await bounded(download, MEDIA_TIMEOUT_MS, () => mediaError('media_download_timeout'));
+        if ((localPath == null || localPath === '') && cachedPath === '') {
+          throw mediaError('media_download_no_cache_hint');
+        }
       } catch (error) {
         throw MEDIA_STAGES.has(error?.code) ? error : mediaError('media_download_failed');
       }

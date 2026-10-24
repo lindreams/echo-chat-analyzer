@@ -77,6 +77,24 @@ class Messages:
         return tuple(sorted(self.rows, key=lambda m: m.timestamp))
 
 
+
+def many_sticker_stories():
+    """Independent fictional returns plus one relay and one shared habit."""
+    b = Messages("visual-six-plus")
+    for k, returned in enumerate((200, 400, 600, 800, 1000, 1200)):
+        for day in (0, 2, 4, returned):
+            b.add(day, "A", f"old{k}", seconds=k * 10)
+    for day in (20, 40, 60):
+        b.add(day, "A", "background")
+    b.add(0, "B", text="虚构好友", seconds=900)
+    for i in range(8):
+        b.add(1210, "A" if i % 2 == 0 else "B", f"exchange{i % 3}", seconds=i * 20)
+    for side in ("A", "B"):
+        for day in (1215, 1217, 1219):
+            b.add(day, side, "common", "common", seconds=100 + (side == "B") * 300)
+    return b.ordered()
+
+
 def reviewed_scenarios():
     out = {}
     b = Messages("daily")

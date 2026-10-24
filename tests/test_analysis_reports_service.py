@@ -152,7 +152,7 @@ def test_sticker_complete_rankings_and_signatures_reach_exported_artifacts(tmp_p
     assert chapter["available"] and chapter["shared_material_count"] == 12
     assert [x["count"] for x in chapter["shared_materials"]] == (list(range(24, 4, -2)) if kind == "group" else [])
     mine, peer = chapter["members"][:2]
-    limit = 10 if kind == "group" else 3
+    limit = 10 if kind == "group" else 5
     assert [x["count"] for x in mine["top_materials"]] == list(range(12, 12-limit, -1))
     assert mine["top_materials"] == peer["top_materials"]
     assert mine["signature"]["count"] == 9  # Rank four, not the single-day Top 1.

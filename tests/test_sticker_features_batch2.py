@@ -566,7 +566,7 @@ def test_large_trends_do_not_displace_distinct_interaction_and_shared_stories():
     from qq_chat_analyzer.presentation import build_echo_report_view
     view = build_echo_report_view(AnalysisReports(stickers=(index.report,), private_stickers=f),
                                   conversation_kind="private")
-    assert [m.findings[0].kind for m in view.stickers.memories] == ["trend", "relay", "shared"]
+    assert [m.findings[0].kind for m in view.stickers.memories if not m.compact] == ["trend", "relay", "shared"]
 
 
 def test_overlapping_relays_share_one_event_without_building_an_unbounded_core():

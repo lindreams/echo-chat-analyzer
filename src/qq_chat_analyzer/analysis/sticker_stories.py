@@ -222,19 +222,29 @@ def select_sticker_stories(index: StickerFactIndex, features: PrivateStickerFeat
 
 
 def select_additional_sticker_stories(features: PrivateStickerFeatures) -> tuple[StickerStory, ...]:
-    """Derive high-interest, independent extras from the retained candidates.
+    """Keep strong independent extras and one example of each missing kind.
 
-    These are available for a future lightweight consumer, not extra featured
-    cards. No new persisted/serialized fields, media requests or HTML changes.
-    Ordinary level-one discoveries and repeats of featured/earlier extras are
-    excluded. A consumer may take a smaller prefix without losing the pool.
+    The three featured stories stay unchanged. Qualified ordinary discoveries
+    can fill a missing kind in the compact section; repeats and ordinary extras
+    of an already displayed kind remain excluded.
     """
     selection = features.stories
     featured = tuple(s for s in selection.candidates if s.story_id in selection.featured_ids)
     candidates = tuple(s for s in selection.candidates
                        if s.story_id not in selection.featured_ids and s.interest_level >= 2)
     selected, _, _ = _select_independent_stories(candidates, features, limit=None, previous=featured)
-    return selected
+    covered = {name for story in featured+selected for name, _ in story.findings}
+    ordinary = tuple(s for s in selection.candidates
+                     if s.story_id not in selection.featured_ids and s.interest_level == 1)
+    remaining, _, _ = _select_independent_stories(
+        ordinary, features, limit=None, previous=featured+selected)
+    extras = list(selected)
+    for story in remaining:
+        kinds = {name for name, _ in story.findings}
+        if kinds-covered:
+            extras.append(story)
+            covered.update(kinds)
+    return tuple(extras)
 
 
 def _select_independent_stories(

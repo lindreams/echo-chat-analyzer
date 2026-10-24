@@ -78,15 +78,9 @@ ECHO_REPORT_HTML_SKELETON = r"""
         </a>
         <a class="toc-row" id="sticker-toc" href="#stickers" hidden>
           <span class="toc-number">06</span>
-          <span class="toc-copy"><strong id="sticker-toc-title">表情包基础统计</strong><small>平时怎样使用表情包</small></span>
+          <span class="toc-copy"><strong id="sticker-toc-title">表情包</strong><small>平时怎样使用表情包</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">08</span>
-        </a>
-        <a class="toc-row" id="sticker-memories-toc" href="#sticker-memories" hidden>
-          <span class="toc-number">07</span>
-          <span class="toc-copy"><strong>表情包特色回忆</strong><small>一张图，几次值得记住的回响</small></span>
-          <span class="toc-leader" aria-hidden="true"></span>
-          <span class="toc-page">09</span>
         </a>
         <div class="toc-row is-future">
           <span class="toc-number">08</span>
@@ -275,12 +269,13 @@ ECHO_REPORT_HTML_SKELETON = r"""
     <section class="page chapter sticker-chapter" id="stickers" aria-labelledby="sticker-title" hidden>
       <header class="chapter-header">
         <span class="chapter-number">06</span>
-        <div><p class="folio">STICKERS</p><h2 id="sticker-title">表情包基础统计</h2></div>
+        <div><p class="folio">STICKERS</p><h2 id="sticker-title">表情包</h2></div>
       </header>
       <p class="chapter-intro">有些回应，交给一张图。</p>
       <dl class="sticker-fields" id="sticker-fields">
-        <div><dt>表情包发送</dt><dd id="sticker-total"></dd></div>
-        <div><dt>使用过</dt><dd id="sticker-unique"></dd></div>
+        <div><dt>发出的表情包</dt><dd id="sticker-total"></dd><p class="sticker-stat-detail" id="sticker-sends-split" hidden></p></div>
+        <div><dt>不同的图样</dt><dd id="sticker-unique"></dd><p class="sticker-stat-detail" id="sticker-kinds-split" hidden></p></div>
+        <div id="sticker-shared-field" hidden><dt>共同用过的图样</dt><dd id="sticker-comparison" hidden></dd><p class="sticker-stat-detail" id="sticker-exclusive-split"></p></div>
       </dl>
       <p class="sticker-empty" id="sticker-empty" hidden></p>
       <div class="sticker-group-rankings" id="sticker-group-rankings" hidden></div>
@@ -293,17 +288,11 @@ ECHO_REPORT_HTML_SKELETON = r"""
         </details>
         <div class="sticker-members" id="sticker-members"></div>
       </div>
+      <section class="sticker-memories" id="sticker-memories" aria-labelledby="sticker-memories-title" hidden>
+        <h2 id="sticker-memories-title">回忆</h2>
+        <div id="sticker-memory-stories"></div>
+      </section>
       <span class="page-number">08</span>
-    </section>
-
-    <section class="page chapter sticker-memories-chapter" id="sticker-memories" aria-labelledby="sticker-memories-title" hidden>
-      <header class="chapter-header">
-        <span class="chapter-number">07</span>
-        <div><p class="folio">STICKER MEMORIES</p><h2 id="sticker-memories-title">表情包特色回忆</h2></div>
-      </header>
-      <div id="sticker-memory-stories"></div>
-      <p class="sticker-memory-note">日期与统计仅依据本次可辨认记录，不代表完整聊天历史。</p>
-      <span class="page-number">09</span>
     </section>
 
     <section class="page future" id="future" aria-labelledby="future-title">
@@ -578,6 +567,13 @@ h1, h2, h3, p { margin-top: 0; }
 .sticker-member h4 { margin: 0 0 6px; font: 500 20px/1.3 var(--serif); overflow-wrap: anywhere; }
 .sticker-member h4 strong { color: var(--accent); font-weight: 400; }
 .sticker-rate { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+.sticker-signature { display: flex; gap: 12px; align-items: flex-start; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); margin: 0 0 16px; padding: 12px 0; }
+.sticker-image.sticker-signature-image { flex: 0 0 104px; width: 104px; }
+.sticker-signature-body { min-width: 0; }
+.sticker-signature-title { margin: 0; color: var(--muted); font-size: 11px; letter-spacing: .08em; }
+.sticker-signature-body .sticker-count { margin-top: 4px; }
+.sticker-signature-body .sticker-rate { margin: 4px 0 0; }
+.sticker-signature-basis { display: block; margin-top: 6px; color: var(--faint); font-size: 10px; line-height: 1.5; }
 .sticker-top-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 12px; margin: 0; padding: 0; list-style: none; }
 .sticker-top-list li { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; }
 /* Expanded shared board: one row that scrolls sideways, cards keep their size. */
@@ -593,72 +589,7 @@ h1, h2, h3, p { margin-top: 0; }
 .sticker-preview { display: block; font-size: 10px; color: var(--muted); margin-top: 3px; }
 .sticker-member-empty, .sticker-empty { color: var(--muted); font: 14px/1.8 var(--serif); }
 .sticker-empty { margin: 36px 0; }
-.sticker-memories-chapter { padding: 40px 48px 60px; background: #f7f3e9; --ink: #243d39; --muted: #657168; --rule: #d3d6c9; --accent: #ac4e31; color: var(--ink); }
-.sticker-memories-chapter .chapter-header h2 { font-size: 28px; }
-.sticker-memories-chapter .chapter-header { gap: 18px; padding-bottom: 23px; }
-.sticker-memory-story { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; margin-top: 28px; }
-.sticker-memory { min-width: 0; padding: 24px 0; border-top: 1px solid var(--rule); break-inside: avoid; }
-.sticker-memory h3 { margin: 15px 0 22px; font: 500 29px/1.45 var(--serif); overflow-wrap: anywhere; }
-.sticker-memory h3 em { color: var(--accent); font-style: normal; }
-.memory-kicker { margin: 0; color: var(--accent); font: 11px/1.5 var(--sans); letter-spacing: .08em; }
-.memory-kicker::before { content: "—"; margin-right: 12px; }
-.memory-body { display: grid; grid-template-columns: minmax(0, 1fr) 156px; gap: 16px; align-items: center; }
-.memory-copy { min-width: 0; }
-.memory-art { min-width: 0; margin: 0; }
-.memory-art .sticker-image { background: transparent; }
-.memory-art figcaption { margin-top: 5px; text-align: center; color: var(--muted); font: 10px/1.5 var(--sans); }
-.memory-lead, .sticker-memory.is-reunion, .sticker-memory.is-relay, .sticker-memory.is-style { grid-column: 1 / -1; }
-.memory-lead .memory-body, .is-reunion .memory-body { grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 30px; }
-.memory-lead h3 { font-size: 47px; line-height: 1.4; margin: 24px 0; }
-.memory-lead .memory-art, .is-reunion .memory-art { width: 310px; max-width: 100%; justify-self: center; }
-.memory-lead .memory-art { width: 330px; }
-.memory-dates { display: flex; justify-content: space-between; gap: 15px; align-items: center; margin-top: 23px; }
-.memory-date { min-width: 0; font: 11px/1.7 var(--sans); color: var(--muted); }
-.memory-date strong { display: block; font: 18px/1.6 var(--serif); color: var(--ink); }
-.memory-date-rule { height: 1px; flex: 1; min-width: 16px; border-top: 1px dashed #78958b; }
-.memory-note, .sticker-memory-period { margin: 16px 0 0; color: var(--muted); font: 11px/1.8 var(--sans); }
-.is-signature { padding: 25px; background: #e6ecdf; border: 0; }
-.memory-habit-count { margin: 12px 0 0; font: 13px/1.7 var(--sans); }
-.memory-habit-count strong { font: 33px/1 var(--serif); margin-right: 4px; }
-.memory-lifetime { display: flex; align-items: center; gap: 12px; margin-top: 22px; font: 11px/1.5 var(--sans); color: var(--muted); }
-.memory-lifetime i { height: 3px; background: #37776b; flex: 1; }
-.memory-shared { display: grid; grid-template-columns: 1fr minmax(0, 156px) 1fr; gap: 8px; align-items: center; margin-top: 18px; }
-.memory-person { min-width: 0; text-align: center; font: 11px/1.8 var(--sans); color: var(--muted); }
-.memory-person b { font-weight: 500; color: #37776b; }
-.memory-person:last-child b { color: var(--accent); }
-.memory-person strong { display: block; font: 34px/1.6 var(--serif); color: var(--ink); }
-.memory-person small { display: block; font-size: 10px; }
-.is-relay { padding: 27px; border: 0; background: #243d39; color: #f7f3e9; --muted: #d0ddcd; --accent: #e7b996; }
-.is-relay h3 { font-size: 33px; margin-bottom: 8px; }
-.memory-relay { display: grid; grid-template-columns: repeat(var(--turns), minmax(0, 1fr)); gap: 10px; list-style: none; margin: 24px 0 0; padding: 0; }
-.memory-relay li { position: relative; min-width: 0; }
-.memory-relay li:not(:last-child)::after { content: "›"; position: absolute; right: -8px; top: 45%; color: #c0cbbd; }
-.memory-relay .sticker-image { border: 3px solid #9bb3a5; border-radius: 8px; overflow: hidden; }
-.memory-relay .is-peer .sticker-image { border-color: #daa78a; }
-.memory-turn-number { display: block; margin-bottom: 7px; color: #d0ddcd; font: 10px/1 var(--sans); }
-.memory-turn-side { display: block; margin-top: 6px; text-align: center; color: #c7dec8; font: 11px/1.6 var(--sans); }
-.is-peer .memory-turn-side { color: #f0bf9c; }
-.memory-relay .sticker-placeholder { font-size: 10px; text-align: center; }
-.is-trend .memory-body, .is-adoption .memory-body { grid-template-columns: minmax(0, 1fr) 126px; }
-.is-trend.memory-lead .memory-body, .is-adoption.memory-lead .memory-body { grid-template-columns: minmax(0, 1fr) 300px; }
-.memory-trend-row { display: grid; grid-template-columns: 1fr 80px; gap: 9px 14px; align-items: center; margin-top: 21px; }
-.memory-trend-dates { grid-column: 1 / -1; color: var(--muted); font: 11px/1.6 var(--sans); }
-.memory-track { height: 20px; background: #d6dccf; }
-.memory-fill { height: 100%; background: #37776b; }
-.memory-bar-value { text-align: right; font: 26px/1.2 var(--serif); }
-.memory-bar-value small { display: block; margin-top: 5px; color: var(--muted); font: 11px/1.5 var(--sans); }
-.memory-trend-caption { color: var(--muted); font: 12px/1.8 var(--sans); margin: 16px 0 0; }
-.is-adoption .memory-dates { align-items: flex-start; flex-direction: column; border-left: 1px solid var(--rule); padding-left: 18px; gap: 18px; }
-.is-adoption .memory-date-rule { display: none; }
-.is-style { background: #e9e5da; border-top: 2px solid #243d39; padding: 26px 28px; }
-.memory-style-body { display: grid; grid-template-columns: 1fr 1.2fr; gap: 38px; align-items: center; }
-.is-style h3 { font-size: 31px; }
-.memory-style-label { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; font: 12px/1.8 var(--sans); margin-top: 10px; }
-.memory-style-label strong { font: 34px/1.7 var(--serif); }
-.memory-style-row:nth-child(2) .memory-fill { background: #ac4e31; }
-.memory-axis { display: flex; justify-content: space-between; color: var(--muted); font: 10px/1.5 var(--sans); margin-top: 7px; }
-.is-style .memory-note { border-top: 1px solid #cacec1; padding-top: 14px; font-size: 12px; }
-.sticker-memory-note { color: var(--muted); font: 11px/1.8 var(--sans); margin: 28px 0 0; border-top: 1px solid var(--rule); padding-top: 18px; }
+.sticker-chapter:not(.sticker-group) { min-height: 0; }
 @media (min-width: 721px) {
   .sticker-chapter { padding: 44px 82px 64px; }
   .sticker-chapter .chapter-header { padding-bottom: 16px; }
@@ -666,6 +597,7 @@ h1, h2, h3, p { margin-top: 0; }
   .sticker-chapter .chapter-intro { margin: 6px 0 10px; }
   .sticker-fields { margin-bottom: 12px; }
   .sticker-top-list { grid-template-columns: repeat(3, minmax(0, 120px)); }
+  .sticker-chapter:not(.sticker-group) .sticker-top-list { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .sticker-group-rankings:has(> .is-expanded) { grid-template-columns: 1fr; }
   .sticker-group-rankings > .is-expanded { order: -1; }
   .sticker-members:has(> .is-expanded) { grid-template-columns: 1fr; }
@@ -675,6 +607,129 @@ h1, h2, h3, p { margin-top: 0; }
   .sticker-group-rankings:has(> .is-expanded) .sticker-top-list { grid-template-columns: repeat(5, minmax(0, 120px)); }
   .sticker-top-list.is-row-scroll > li { flex-basis: 120px; }
 }
+
+.sticker-staff { position: absolute; pointer-events: none; background: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20760%20116%22%20preserveAspectRatio%3D%22none%22%3E%3Cpath%20d%3D%22M0%2034%20C120%209%20250%2064%20380%2034%20S640%209%20760%2034%22%20fill%3D%22none%22%20stroke%3D%22%23d2cabd%22%20stroke-width%3D%22.8%22%2F%3E%3Cpath%20d%3D%22M0%2044%20C120%2019%20250%2074%20380%2044%20S640%2019%20760%2044%22%20fill%3D%22none%22%20stroke%3D%22%23d2cabd%22%20stroke-width%3D%22.8%22%2F%3E%3Cpath%20d%3D%22M0%2054%20C120%2029%20250%2084%20380%2054%20S640%2029%20760%2054%22%20fill%3D%22none%22%20stroke%3D%22%23d2cabd%22%20stroke-width%3D%22.8%22%2F%3E%3Cpath%20d%3D%22M0%2064%20C120%2039%20250%2094%20380%2064%20S640%2039%20760%2064%22%20fill%3D%22none%22%20stroke%3D%22%23d2cabd%22%20stroke-width%3D%22.8%22%2F%3E%3Cpath%20d%3D%22M0%2074%20C120%2049%20250%20104%20380%2074%20S640%2049%20760%2074%22%20fill%3D%22none%22%20stroke%3D%22%23d2cabd%22%20stroke-width%3D%22.8%22%2F%3E%3C%2Fsvg%3E") center / 100% 100% no-repeat; opacity: .58; }
+.sticker-chapter:not(.sticker-group) { min-height: 0; padding: 56px 82px 44px; }
+.sticker-chapter:not(.sticker-group) .chapter-header { padding-bottom: 24px; }
+.sticker-chapter:not(.sticker-group) .chapter-header h2 { font-size: 60px; }
+.sticker-chapter:not(.sticker-group) .chapter-intro { margin: 20px 0 23px; font-size: 16px; }
+.sticker-chapter:not(.sticker-group) .sticker-fields { grid-template-columns: 1fr 1fr; margin: 0; padding: 18px 0; border-top: 1px solid var(--ink); }
+.sticker-chapter.has-sticker-comparison .sticker-fields { grid-template-columns: 1.2fr 1fr 1fr; }
+.sticker-chapter:not(.sticker-group) .sticker-fields > div { padding: 0 0 0 28px; border-left: 1px solid var(--rule); min-width: 0; }
+.sticker-chapter:not(.sticker-group) .sticker-fields > div:first-child { padding-left: 0; border-left: 0; }
+.sticker-chapter:not(.sticker-group) .sticker-fields dt { font-size: 12px; }
+.sticker-chapter:not(.sticker-group) .sticker-fields dd { margin: 10px 0 0; font: 400 37px/1 var(--serif); }
+.sticker-chapter:not(.sticker-group) #sticker-total::after { content: " 次"; font: 12px var(--sans); color: var(--muted); }
+.sticker-chapter:not(.sticker-group) #sticker-unique::after,
+.sticker-chapter:not(.sticker-group) #sticker-comparison::after { content: " 种"; font: 12px var(--sans); color: var(--muted); }
+.sticker-stat-detail { margin: 10px 0 0; color: var(--muted); font: 12px/1.6 var(--sans); }
+.sticker-chapter:not(.sticker-group) #sticker-rankings { position: relative; margin: 22px 0 20px; }
+.sticker-chapter:not(.sticker-group) #sticker-rankings > .sticker-staff { left: 109px; right: 0; top: 74px; height: 94px; }
+.sticker-chapter:not(.sticker-group) .sticker-members { position: relative; z-index: 1; grid-template-columns: 1fr; gap: 10px; }
+.sticker-chapter:not(.sticker-group) .sticker-member { display: grid; grid-template-columns: 112px minmax(0, 1fr); gap: 13px; align-items: center; min-height: 108px; }
+.sticker-chapter:not(.sticker-group) .sticker-member + .sticker-member { padding: 0; border: 0; }
+.sticker-chapter:not(.sticker-group) .sticker-member h4 { font-size: 19px; margin: 0; }
+.sticker-chapter:not(.sticker-group) .sticker-rate { display: none; }
+.sticker-chapter:not(.sticker-group) .sticker-top-list { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 13px; }
+.sticker-chapter:not(.sticker-group) .sticker-top-list li { display: block; text-align: center; }
+.sticker-chapter:not(.sticker-group) .sticker-top-list .sticker-rank { display: none; }
+.sticker-chapter:not(.sticker-group) .sticker-top-list .sticker-image { width: 82px; max-width: 100%; height: 76px; aspect-ratio: auto; margin: 0 auto 8px; background: var(--paper-light); }
+.sticker-chapter:not(.sticker-group) .sticker-top-list .sticker-image.has-image { background: transparent; }
+.sticker-chapter:not(.sticker-group) .sticker-count { display: inline; margin: 0; font: 21px/1.4 var(--serif); }
+.sticker-common { display: inline-flex; align-items: center; margin-left: 5px; color: var(--muted); font: 10px/1.4 var(--sans); white-space: nowrap; }
+.sticker-common::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--viewer); box-shadow: 4px 0 var(--accent); margin-right: 8px; }
+.sticker-chapter:not(.sticker-group) .sticker-expand { grid-column: 2; }
+.sticker-memories { margin-top: 0; padding-top: 21px; border-top: 1px solid var(--ink); }
+.sticker-memories > h2 { margin: 0 0 22px; font: 500 28px/1.4 var(--serif); }
+.sticker-memories > h2::after { content: "MEMORIES"; margin-left: 17px; color: var(--faint); font: 10px var(--sans); letter-spacing: .16em; }
+#sticker-memory-stories { display: grid; grid-template-columns: 1fr 1fr; column-gap: 28px; }
+.sticker-memory-story { grid-column: 1 / -1; min-width: 0; margin: 0; padding: 23px 0; border-top: 1px solid var(--rule); }
+.sticker-memory-story:first-child { padding-top: 0; border-top: 0; }
+.sticker-memory-story:last-child { padding-bottom: 0; }
+.sticker-memory { min-width: 0; }
+.sticker-memory + .sticker-memory { margin-top: 18px; padding-top: 17px; border-top: 1px solid var(--rule); }
+.sticker-memory.has-art { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 25px; align-items: center; }
+.sticker-memory.is-reunion.has-art { grid-template-columns: 154px minmax(0, 1fr); gap: 30px; min-height: 165px; }
+.sticker-memory.is-related { margin-left: 121px; }
+.sticker-memory-story.has-reunion .sticker-memory.is-related { margin-left: 184px; }
+.memory-body, .memory-copy { min-width: 0; }
+.memory-copy { margin-bottom: 14px; }
+.memory-kicker { margin: 0 0 9px; color: var(--accent); font: 11px/1.5 var(--sans); letter-spacing: .1em; }
+.sticker-memory h3 { min-width: 0; margin: 0; font: 500 25px/1.5 var(--serif); overflow-wrap: anywhere; }
+.sticker-memory h3 em { color: var(--accent); font-style: normal; font-weight: 400; }
+.is-reunion h3 em { font-size: 48px; line-height: 1; }
+.sticker-memory.is-related h3 { font-size: 18px; }
+.memory-art { width: 96px; min-width: 0; max-width: 100%; margin: 0; }
+.memory-art.is-reunion-art { width: 148px; }
+.memory-art .sticker-image { background: var(--paper-light); }
+.memory-art .sticker-image.has-image { background: transparent; }
+.memory-art .sticker-placeholder { padding: 6px; text-align: center; font-size: 10px; }
+.memory-art figcaption { margin-top: 5px; text-align: center; color: var(--muted); font: 10px/1.5 var(--sans); overflow-wrap: anywhere; }
+.memory-art.is-original figcaption { display: none; }
+.memory-dates { display: flex; align-items: center; gap: 16px; margin-top: 21px; }
+.memory-date { min-width: 0; color: var(--muted); font: 11px/1.7 var(--sans); }
+.memory-date strong { display: block; margin-top: 4px; color: var(--ink); font: 14px/1.6 var(--serif); }
+.memory-date-rule { flex: 1; min-width: 24px; height: 1px; border-top: 1px solid var(--rule); }
+.is-adoption h3 { font-size: 20px; }
+.is-adoption .memory-dates { margin-top: 0; justify-content: flex-start; }
+.is-adoption .memory-date-rule { flex: 0 1 100px; }
+.is-adoption .memory-date { display: flex; align-items: baseline; gap: 9px; }
+.is-adoption .memory-date strong { margin: 0; }
+.memory-note { margin: 10px 0 0; color: var(--muted); font: 10px/1.8 var(--sans); overflow-wrap: anywhere; }
+.memory-habit-count { margin: 0; color: var(--muted); font: 12px/1.7 var(--sans); }
+.memory-habit-count strong { color: var(--ink); font: 28px/1.2 var(--serif); }
+.memory-habit-pair { margin: 18px 0 0 121px; padding-top: 17px; border-top: 1px solid var(--rule); display: grid; grid-template-columns: 1fr 1.15fr; gap: 26px; }
+.has-reunion .memory-habit-pair { margin-left: 184px; }
+.sticker-memory-story .memory-habit-pair .sticker-memory.is-related { margin: 0; padding: 0; border: 0; }
+.memory-habit-pair .memory-kicker { color: var(--muted); }
+.memory-habit-pair:has(> :only-child) { grid-template-columns: 1fr; }
+.sticker-memory-story.is-compact:not(:has(> .memory-art)) { grid-template-columns: 1fr; }
+.memory-shared { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.memory-person { min-width: 0; color: var(--muted); font: 11px/1.8 var(--sans); }
+.memory-person b { color: var(--viewer); font-weight: 500; }
+.memory-person:last-child b { color: var(--accent); }
+.memory-person strong { display: block; margin: 6px 0; color: var(--ink); font: 29px/1.2 var(--serif); }
+.memory-person small { display: block; margin-top: 6px; font-size: 10px; }
+.memory-trend-windows { display: grid; grid-template-columns: repeat(var(--windows, 2), minmax(0, 1fr)); gap: 24px; }
+.memory-trend-row { display: flex; flex-direction: column; min-width: 0; }
+.memory-trend-dates { color: var(--muted); font: 11px/1.6 var(--sans); }
+.memory-bar-value { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 8px 0 10px; font: 28px/1 var(--serif); }
+.memory-bar-value small { color: var(--muted); font: 10px/1.5 var(--sans); }
+.memory-track { width: 100%; height: 5px; background: var(--rule); }
+.memory-fill { height: 100%; background: var(--viewer); }
+.memory-style-chart { display: grid; gap: 18px; margin-top: 20px; }
+.memory-style-row { display: grid; grid-template-columns: 36px minmax(0, 1fr) 100px; align-items: center; gap: 18px; }
+.memory-style-label { color: var(--viewer); font: 12px/1.5 var(--sans); }
+.memory-style-row:last-child .memory-style-label { color: var(--accent); }
+.memory-style-row .memory-track { height: 8px; background: rgb(210 202 189 / 35%); }
+.memory-style-row:last-child .memory-fill { background: var(--accent); }
+.memory-style-row strong { text-align: right; font: 32px/1 var(--serif); font-weight: 400; }
+.is-relay .memory-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 20px; }
+.is-relay .memory-copy { grid-column: 1; }
+.sticker-memory-period { grid-column: 2; margin: 0; max-width: 260px; color: var(--muted); font: 10px/1.6 var(--sans); overflow-wrap: anywhere; }
+.memory-relay-stage { grid-column: 1 / -1; position: relative; min-width: 0; }
+.memory-relay-stage > .sticker-staff { left: 0; right: 0; top: 36px; height: 110px; }
+.memory-relay { position: relative; display: grid; grid-template-columns: repeat(var(--turns), minmax(0, 1fr)); align-items: start; gap: 12px; min-height: 188px; list-style: none; margin: 0; padding: 20px 0 0; }
+.memory-relay li { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 0; }
+.memory-relay li:nth-child(8n+2) { transform: translateY(56px); }
+.memory-relay li:nth-child(8n+3) { transform: translateY(-6px); }
+.memory-relay li:nth-child(8n+4) { transform: translateY(50px); }
+.memory-relay li:nth-child(8n+5) { transform: translateY(-10px); }
+.memory-relay li:nth-child(8n+6) { transform: translateY(54px); }
+.memory-relay li:nth-child(8n+7) { transform: translateY(-3px); }
+.memory-relay li:nth-child(8n+8) { transform: translateY(58px); }
+.memory-relay .memory-art { width: 64px; }
+.memory-turn-side { color: var(--viewer); font: 10px/1.6 var(--sans); text-align: center; white-space: nowrap; }
+.is-peer .memory-turn-side { color: var(--accent); }
+.memory-turn-number { color: var(--muted); font: 10px/1.4 var(--serif); }
+.is-relay .memory-note { grid-column: 1 / -1; }
+.sticker-memory-story.is-compact { grid-column: auto; display: grid; grid-template-columns: 65px minmax(0, 1fr); gap: 16px; align-items: center; padding: 22px 0; }
+.is-compact > .memory-art { width: 62px; }
+.is-compact h3 { font-size: 18px; }
+.is-compact .memory-kicker { margin-bottom: 6px; }
+.is-compact .memory-note { margin-top: 7px; }
+.sticker-memory-story.is-compact:last-child { padding-bottom: 0; }
+
 
 .expression-chapter .chapter-intro { margin: 0 0 44px; }
 .expression-fields {
@@ -1665,16 +1720,13 @@ document.documentElement.classList.add("js-ready");
     (conversation.kind === "private" || conversation.kind === "group"));
   setHidden("stickers", !hasStickers);
   setHidden("sticker-toc", !hasStickers);
+  setHidden("sticker-comparison", true);
   if (hasStickers) {
     var stickerAssets = stickers.assets || {};
     var stickerGroup = stickers.conversation_kind === "group";
-    if (stickerGroup) {
-      setText("sticker-title", "表情包");
-      setText("sticker-toc-title", "表情包");
-    }
     document.getElementById("stickers").classList.toggle("sticker-group", stickerGroup);
-    setText("sticker-total", formatCount(stickers.total_send_count) + " 次");
-    setText("sticker-unique", formatCount(stickers.unique_material_count) + (stickerGroup ? " 种不同表情包" : " 种已辨认表情包"));
+    setText("sticker-total", formatCount(stickers.total_send_count) + (stickerGroup ? " 次" : ""));
+    setText("sticker-unique", formatCount(stickers.unique_material_count) + (stickerGroup ? " 种不同表情包" : ""));
     var noSends = stickers.total_send_count === 0;
     setHidden("sticker-fields", noSends);
     setHidden("sticker-empty", !noSends);
@@ -1707,6 +1759,45 @@ document.documentElement.classList.add("js-ready");
       return frame;
     }
 
+    function stickerSignature(member) {
+      var signature = member.signature;
+      var facts = signature && signature.signature;
+      if (!facts) { return null; }
+      var block = document.createElement("div");
+      block.className = "sticker-signature";
+      var image = stickerImage(signature);
+      image.classList.add("sticker-signature-image");
+      block.appendChild(image);
+      var body = document.createElement("div");
+      body.className = "sticker-signature-body";
+      var title = document.createElement("p");
+      title.className = "sticker-signature-title";
+      title.textContent = "招牌表情包";
+      body.appendChild(title);
+      var count = document.createElement("strong");
+      count.className = "sticker-count";
+      count.textContent = formatCount(facts.send_count) + " 次";
+      body.appendChild(count);
+      var spread = document.createElement("p");
+      spread.className = "sticker-rate";
+      spread.textContent = "出现在 " + formatCount(facts.date_count) + " 天 · 活跃 " +
+        formatCount(facts.week_count) + " 周 · 跨度 " + formatCount(facts.span_days) + " 天";
+      body.appendChild(spread);
+      if (facts.first_date && facts.last_date) {
+        var range = document.createElement("p");
+        range.className = "sticker-rate";
+        range.textContent = facts.first_date.replace(/-/g, ".") + " – " +
+          facts.last_date.replace(/-/g, ".");
+        body.appendChild(range);
+      }
+      var basis = document.createElement("small");
+      basis.className = "sticker-signature-basis";
+      basis.textContent = "按出现天数与活跃周挑选，不按发送次数。";
+      body.appendChild(basis);
+      block.appendChild(body);
+      return block;
+    }
+
     function stickerRanking(container, items, kind) {
       if (!items.length) {
         var empty = document.createElement("p");
@@ -1716,6 +1807,7 @@ document.documentElement.classList.add("js-ready");
         return;
       }
       var expanded = false;
+      var collapsedCount = stickerGroup ? 3 : 5;
       var list = document.createElement("ol");
       list.className = "sticker-top-list";
       container.appendChild(list);
@@ -1723,7 +1815,7 @@ document.documentElement.classList.add("js-ready");
       button.type = "button";
       button.className = "sticker-expand";
       button.setAttribute("aria-expanded", "false");
-      button.hidden = items.length <= 3;
+      button.hidden = items.length <= collapsedCount;
       container.appendChild(button);
       function render() {
         container.classList.toggle("is-expanded", expanded);
@@ -1733,7 +1825,7 @@ document.documentElement.classList.add("js-ready");
           expanded && kind === "group-shared"
         );
         list.textContent = "";
-        items.slice(0, expanded ? items.length : 3).forEach(function (item, index) {
+        items.slice(0, expanded ? items.length : collapsedCount).forEach(function (item, index) {
           var entry = document.createElement("li");
           entry.dataset.assetKey = item.asset_key;
           entry.dataset.count = item.count;
@@ -1746,6 +1838,13 @@ document.documentElement.classList.add("js-ready");
           count.className = "sticker-count";
           count.textContent = formatCount(item.count) + " 次";
           entry.appendChild(count);
+          if (!stickerGroup && hasStickerComparison && item.side_counts && item.side_counts.length === 2 &&
+              item.side_counts.every(function (value) { return value > 0; })) {
+            var common = document.createElement("span");
+            common.className = "sticker-common";
+            common.textContent = "共同";
+            entry.appendChild(common);
+          }
           var asset = stickerAssets[item.asset_key];
           if (asset && asset.status === "preview") {
             var preview = document.createElement("small");
@@ -1755,7 +1854,7 @@ document.documentElement.classList.add("js-ready");
           }
           list.appendChild(entry);
         });
-        button.textContent = expanded ? "收起至 Top 3" : "展开 Top " + items.length;
+        button.textContent = expanded ? "收起至 Top " + collapsedCount : "展开 Top " + items.length;
         button.setAttribute("aria-expanded", String(expanded));
       }
       button.addEventListener("click", function () { expanded = !expanded; render(); });
@@ -1766,6 +1865,29 @@ document.documentElement.classList.add("js-ready");
     var allStickerMembers = (stickers.members || []).filter(function (member) {
       return !stickerGroup || member.send_count > 0;
     });
+    var stickerComparisonCounts = [stickers.shared_material_count].concat(allStickerMembers.map(function (member) {
+      return member.exclusive_material_count;
+    }));
+    var hasStickerComparison = !stickerGroup && stickers.total_send_count > 0 && allStickerMembers.length === 2 &&
+      allStickerMembers.every(function (member) { return Number.isInteger(member.send_count) && member.send_count >= 0; }) &&
+      stickerComparisonCounts.every(function (count) { return Number.isInteger(count) && count >= 0; });
+    setHidden("sticker-comparison", !hasStickerComparison);
+    setHidden("sticker-shared-field", !hasStickerComparison);
+    document.getElementById("stickers").classList.toggle("has-sticker-comparison", hasStickerComparison);
+    if (hasStickerComparison) {
+      setText("sticker-comparison", formatCount(stickerComparisonCounts[0]));
+      setText("sticker-exclusive-split", "仅我 " + formatCount(stickerComparisonCounts[1]) +
+        " / 仅 TA " + formatCount(stickerComparisonCounts[2]));
+    }
+    var hasSides = !stickerGroup && allStickerMembers.length === 2 && allStickerMembers.every(function (m) {
+      return Number.isInteger(m.send_count) && m.send_count >= 0;
+    });
+    setHidden("sticker-sends-split", !hasSides);
+    setHidden("sticker-kinds-split", !hasSides || !allStickerMembers.every(function (m) { return Number.isInteger(m.unique_material_count); }));
+    if (hasSides) {
+      setText("sticker-sends-split", "我 " + formatCount(allStickerMembers[0].send_count) + " / TA " + formatCount(allStickerMembers[1].send_count));
+      setText("sticker-kinds-split", "我 " + formatCount(allStickerMembers[0].unique_material_count) + " / TA " + formatCount(allStickerMembers[1].unique_material_count));
+    }
     var selectedMembers = new Set(allStickerMembers.length ? [0] : []);
     function renderStickerMembers() {
       stickerMembers.textContent = "";
@@ -1793,6 +1915,8 @@ document.documentElement.classList.add("js-ready");
             article.appendChild(rate);
           }
         }
+        var signature = stickerGroup ? stickerSignature(member) : null;
+        if (signature) { article.appendChild(signature); }
         stickerRanking(article, member.top_materials || [], "personal");
         stickerMembers.appendChild(article);
       });
@@ -1842,7 +1966,6 @@ document.documentElement.classList.add("js-ready");
 
     var memories = !stickerGroup ? (data.sticker_memories || []) : [];
     setHidden("sticker-memories", !memories.length);
-    setHidden("sticker-memories-toc", !memories.length);
     var stories = document.getElementById("sticker-memory-stories");
     function memoryElement(tag, className, text) {
       var node = document.createElement(tag);
@@ -1850,15 +1973,24 @@ document.documentElement.classList.add("js-ready");
       if (text !== undefined) node.textContent = text;
       return node;
     }
-    function memoryImage(items, compact) {
+    function stickerStaff() {
+      var staff = memoryElement("div", "sticker-staff");
+      staff.setAttribute("aria-hidden", "true");
+      return staff;
+    }
+    if (!stickerGroup && !noSends) {
+      document.getElementById("sticker-rankings").appendChild(stickerStaff());
+    }
+    function memoryImage(items) {
       var item = items[0] || {asset_key: ""};
       var figure = memoryElement("figure", "memory-art");
+      figure.dataset.assetKey = item.asset_key;
       figure.appendChild(stickerImage(item));
-      var asset = stickerAssets[item.asset_key];
-      var status = asset && asset.status;
-      var caption = memoryElement("figcaption", "", status === "available" ? (compact ? "原件" : "已验证原件") :
-        status === "preview" ? (compact ? "预览·非原件" : "可信预览 · 非原件") : "未恢复图片");
-      figure.appendChild(caption);
+      var asset = stickerAssets[item.asset_key], status = asset && asset.status;
+      figure.classList.toggle("is-original", status === "available");
+      figure.appendChild(memoryElement("figcaption", "",
+        status === "available" ? "已验证原件" :
+        status === "preview" ? "可信预览 · 非原件" : "未恢复图片"));
       return figure;
     }
     function memoryDates(points) {
@@ -1866,8 +1998,8 @@ document.documentElement.classList.add("js-ready");
       points.forEach(function (point, index) {
         if (index) dates.appendChild(memoryElement("i", "memory-date-rule"));
         var entry = memoryElement("div", "memory-date");
-        entry.appendChild(memoryElement("strong", "", point.start_date || "日期不明"));
         entry.appendChild(memoryElement("span", "", point.label));
+        entry.appendChild(memoryElement("strong", "", point.start_date || "日期不明"));
         dates.appendChild(entry);
       });
       return dates;
@@ -1880,104 +2012,183 @@ document.documentElement.classList.add("js-ready");
       track.setAttribute("aria-hidden", "true");
       return track;
     }
-    var memoryLabels = {reunion: "旧图重逢", signature: "长期相伴", shared: "共同口头禅",
-      relay: "那次接力", trend: "使用变化", adoption: "先后出现", style: "用图风格 · 按已有记录估算"};
-    memories.forEach(function (memory, storyIndex) {
-      var story = memoryElement("article", "sticker-memory-story");
-      memory.findings.forEach(function (finding, findingIndex) {
-        var kind = finding.kind, points = finding.points;
-        if (!memoryLabels[kind]) return;
-        var panel = memoryElement("section", "sticker-memory is-" + kind +
-          (storyIndex === 0 && findingIndex === 0 ? " memory-lead" : ""));
-        panel.dataset.finding = kind;
-        var heading = memoryElement("h3", "");
-        // Typography only. Graph values always come from numeric points.
-        finding.title.split(/(\d+(?:\.\d+)?%?)/).forEach(function (part, index) {
-          heading.appendChild(index % 2 ? memoryElement("em", "", part) : document.createTextNode(part));
+    function windowKey(point) {
+      return JSON.stringify([point.label, point.start_date, point.end_date, point.value, point.total]);
+    }
+    function sameTrendMaterial(a, b) {
+      return a.kind === "trend" && b.kind === "trend" && a.materials.length === 1 && b.materials.length === 1 &&
+        a.materials[0].asset_key === b.materials[0].asset_key && a.points[0].label === b.points[0].label &&
+        a.points.some(function (left) { return b.points.some(function (right) { return windowKey(left) === windowKey(right); }); });
+    }
+    // Join only comparisons that share the same observed window, side and material.
+    // Numeric facts remain untouched; this removes duplicated middle windows.
+    function visualFindings(findings) {
+      var grouped = [];
+      findings.forEach(function (finding) {
+        var group = grouped.find(function (items) {
+          return items.some(function (item) { return sameTrendMaterial(item, finding); });
         });
+        if (group) group.push(finding); else grouped.push([finding]);
+      });
+      return grouped;
+    }
+    var memoryLabels = {reunion: "久别重逢", signature: "长久的习惯", shared: "共同习惯",
+      relay: "你来我往", trend: "使用变化", adoption: "先后使用", style: "使用风格"};
+    var relayStaffUsed = false;
+    memories.forEach(function (memory) {
+      var story = memoryElement("article", "sticker-memory-story");
+      story.classList.toggle("is-compact", Boolean(memory.compact));
+      if (memory.compact) {
+        var lead = memory.findings[0];
+        if (memory.materials.length) story.appendChild(memoryImage(memory.materials));
+        var compactPanel = memoryElement("section", "sticker-memory");
+        compactPanel.dataset.finding = lead.kind;
+        compactPanel.appendChild(memoryElement("p", "memory-kicker", memoryLabels[lead.kind]));
+        compactPanel.appendChild(memoryElement("h3", "", lead.title));
+        if (lead.period) compactPanel.appendChild(memoryElement("p", "memory-note", lead.period));
+        var summaries = [];
+        memory.findings.forEach(function (finding) {
+          if (finding !== lead) summaries.push(finding.title);
+          finding.points.forEach(function (point) {
+            if (!point.start_date) return;
+            var text = point.label + " " + point.start_date;
+            if (point.end_date) text += " — " + point.end_date;
+            if (point.date_count !== null && point.date_count !== undefined) text += " · " + point.date_count + " 天";
+            if (point.value !== null && point.value !== undefined) text += " · " + point.value + " 次";
+            if (summaries.indexOf(text) < 0) summaries.push(text);
+          });
+          if (finding.note && summaries.indexOf(finding.note) < 0) summaries.push(finding.note);
+        });
+        summaries.forEach(function (text) { compactPanel.appendChild(memoryElement("p", "memory-note", text)); });
+        story.appendChild(compactPanel);
+        stories.appendChild(story);
+        return;
+      }
+      var groups = visualFindings(memory.findings);
+      var ordinary = [], reunionKeys = new Set();
+      memory.findings.forEach(function (finding) {
+        if (finding.kind === "relay") return;
+        finding.materials.forEach(function (item) {
+          if (!ordinary.some(function (other) { return other.asset_key === item.asset_key; })) ordinary.push(item);
+          if (finding.kind === "reunion") reunionKeys.add(item.asset_key);
+        });
+      });
+      story.classList.toggle("has-reunion", reunionKeys.size > 0);
+      var painted = new Set();
+      // The main event leads. Related facts share its picture; relay stays full width.
+      groups.sort(function (a, b) {
+        if (a[0].kind === "relay" && ordinary.length) return 1;
+        if (b[0].kind === "relay" && ordinary.length) return -1;
+        return 0;
+      });
+      var habitPair = null;
+      groups.forEach(function (group) {
+        var finding = group[0], kind = finding.kind, points = finding.points;
+        if (!memoryLabels[kind]) return;
+        var panel = memoryElement("section", "sticker-memory is-" + kind);
+        panel.dataset.finding = kind;
+        if (group.length > 1) {
+          var windows = new Map();
+          group.forEach(function (item) { item.points.forEach(function (p) { windows.set(windowKey(p), p); }); });
+          points = Array.from(windows.values()).sort(function (a, b) { return a.start_date.localeCompare(b.start_date); });
+        }
+        var picture = finding.materials.filter(function (item) { return !painted.has(item.asset_key); });
+        if (picture.length && kind !== "relay") {
+          panel.classList.add("has-art");
+          var art = memoryElement("div", "memory-story-art");
+          picture.forEach(function (item) {
+            var image = memoryImage([item]);
+            if (reunionKeys.has(item.asset_key)) image.classList.add("is-reunion-art");
+            art.appendChild(image); painted.add(item.asset_key);
+          });
+          panel.appendChild(art);
+        } else if (ordinary.length && kind !== "relay") {
+          panel.classList.add("is-related");
+        }
+        var body = memoryElement("div", "memory-body");
         var copy = memoryElement("div", "memory-copy");
         copy.appendChild(memoryElement("p", "memory-kicker", memoryLabels[kind]));
+        var heading = memoryElement("h3", "");
+        var title = group.length > 1 ? points[0].label + "用这张图的比例，在这些时段发生了变化。" : finding.title;
+        title.split(/(\d+(?:\.\d+)?%?)/).forEach(function (part, index) {
+          heading.appendChild(index % 2 ? memoryElement("em", "", part) : document.createTextNode(part));
+        });
         copy.appendChild(heading);
-        if (kind === "reunion" || kind === "adoption") copy.appendChild(memoryDates(points));
+        body.appendChild(copy);
+        if (kind === "reunion" || kind === "adoption") body.appendChild(memoryDates(points));
         if (kind === "signature") {
           var count = memoryElement("p", "memory-habit-count");
-          count.appendChild(memoryElement("strong", "", formatCount(points[0].date_count)));
-          count.appendChild(document.createTextNode(" 个日子里用过它"));
-          copy.appendChild(count);
+          count.appendChild(memoryElement("strong", "", formatCount(points[0].value) + " 次"));
+          count.appendChild(document.createTextNode(" · 分布在 "));
+          count.appendChild(memoryElement("strong", "", formatCount(points[0].date_count) + " 天"));
+          body.appendChild(count);
+          body.appendChild(memoryElement("p", "memory-note", (points[0].start_date || "日期不明") + " — " + (points[0].end_date || "日期不明")));
         }
-        if (kind === "style") {
-          var styleBody = memoryElement("div", "memory-style-body");
-          styleBody.appendChild(copy);
-          var chart = memoryElement("div", "memory-style-chart");
+        if (kind === "shared") {
+          var shared = memoryElement("div", "memory-shared");
           points.forEach(function (point) {
-            var row = memoryElement("div", "memory-style-row");
-            var label = memoryElement("div", "memory-style-label");
-            label.appendChild(memoryElement("span", "", point.label));
-            label.appendChild(memoryElement("strong", "", point.value.toFixed(1) + " 种"));
-            row.appendChild(label);
-            row.appendChild(memoryTrack(point.value, point.total));
-            chart.appendChild(row);
-          });
-          var axis = memoryElement("div", "memory-axis");
-          ["0", String(points[0].total / 2), points[0].total + " 种"].forEach(function (text) {
-            axis.appendChild(memoryElement("span", "", text));
-          });
-          chart.appendChild(axis);
-          styleBody.appendChild(chart);
-          panel.appendChild(styleBody);
-        } else if (kind === "relay") {
-          panel.appendChild(copy);
-          panel.appendChild(memoryElement("p", "sticker-memory-period", finding.period));
-          var turns = memoryElement("ol", "memory-relay");
-          turns.style.setProperty("--turns", String(points.length));
-          points.forEach(function (point, index) {
-            var turn = memoryElement("li", point.label === "TA" ? "is-peer" : "");
-            turn.appendChild(memoryElement("span", "memory-turn-number", String(index + 1).padStart(2, "0")));
-            turn.appendChild(memoryImage(point.materials, true));
-            turn.appendChild(memoryElement("span", "memory-turn-side", point.label + (point.value > 1 ? " · " + point.value + " 次" : "")));
-            turns.appendChild(turn);
-          });
-          panel.appendChild(turns);
-        } else if (kind === "shared") {
-          panel.appendChild(copy);
-          var sharedUse = memoryElement("div", "memory-shared");
-          points.forEach(function (point, index) {
-            if (index) sharedUse.appendChild(memoryImage(finding.materials));
             var person = memoryElement("div", "memory-person");
             person.appendChild(memoryElement("b", "", point.label));
             person.appendChild(memoryElement("strong", "", point.value + " 次"));
             person.appendChild(memoryElement("span", "", "分布在 " + point.date_count + " 天"));
             person.appendChild(memoryElement("small", "", (point.start_date || "日期不明") + " — " + (point.end_date || "日期不明")));
-            sharedUse.appendChild(person);
+            shared.appendChild(person);
           });
-          panel.appendChild(sharedUse);
-        } else {
-          var body = memoryElement("div", "memory-body");
-          body.appendChild(copy);
-          body.appendChild(memoryImage(finding.materials));
-          panel.appendChild(body);
-          if (kind === "signature") {
-            var lifetime = memoryElement("div", "memory-lifetime");
-            lifetime.appendChild(memoryElement("span", "", points[0].start_date || "日期不明"));
-            lifetime.appendChild(memoryElement("i", ""));
-            lifetime.appendChild(memoryElement("span", "", points[0].end_date || "日期不明"));
-            panel.appendChild(lifetime);
-          }
-          if (kind === "trend") {
-            panel.appendChild(memoryElement("p", "memory-trend-caption", "占" + points[0].label + "同期已辨认表情发送的比例"));
-            points.forEach(function (point) {
-              var row = memoryElement("div", "memory-trend-row");
-              row.appendChild(memoryElement("div", "memory-trend-dates", point.start_date + " — " + point.end_date));
-              row.appendChild(memoryTrack(point.value, point.total));
-              var value = memoryElement("div", "memory-bar-value", point.total > 0 ? Math.round(point.value / point.total * 100) + "%" : "无可比发送");
-              value.appendChild(memoryElement("small", "", point.value + " / " + point.total + " 次"));
-              row.appendChild(value);
-              panel.appendChild(row);
-            });
-          }
+          body.appendChild(shared);
         }
-        if (finding.note) panel.appendChild(memoryElement("p", "memory-note", finding.note));
-        story.appendChild(panel);
+        if (kind === "trend") {
+          var comparisons = memoryElement("div", "memory-trend-windows");
+          comparisons.style.setProperty("--windows", String(points.length));
+          points.forEach(function (point) {
+            var row = memoryElement("div", "memory-trend-row");
+            row.appendChild(memoryElement("div", "memory-trend-dates", point.start_date + " — " + point.end_date));
+            var value = memoryElement("div", "memory-bar-value", point.total > 0 ? Math.round(point.value / point.total * 100) + "%" : "无可比发送");
+            value.appendChild(memoryElement("small", "", point.value + " / " + point.total + " 次"));
+            row.appendChild(value);
+            row.appendChild(memoryTrack(point.value, point.total));
+            comparisons.appendChild(row);
+          });
+          body.appendChild(comparisons);
+        }
+        if (kind === "style") {
+          var chart = memoryElement("div", "memory-style-chart");
+          points.forEach(function (point) {
+            var row = memoryElement("div", "memory-style-row");
+            row.appendChild(memoryElement("span", "memory-style-label", point.label));
+            row.appendChild(memoryTrack(point.value, point.total));
+            row.appendChild(memoryElement("strong", "", point.value.toFixed(1) + " 种"));
+            chart.appendChild(row);
+          });
+          body.appendChild(chart);
+        }
+        if (kind === "relay") {
+          body.appendChild(memoryElement("p", "sticker-memory-period", finding.period));
+          var stage = memoryElement("div", "memory-relay-stage");
+          if (!relayStaffUsed) { stage.appendChild(stickerStaff()); relayStaffUsed = true; }
+          var turns = memoryElement("ol", "memory-relay");
+          turns.style.setProperty("--turns", String(points.length));
+          points.forEach(function (point, index) {
+            var turn = memoryElement("li", point.label === "TA" ? "is-peer" : "");
+            turn.appendChild(memoryElement("span", "memory-turn-side", point.label + (point.value > 1 ? " · " + point.value + " 次" : "")));
+            turn.appendChild(memoryImage(point.materials));
+            turn.appendChild(memoryElement("span", "memory-turn-number", String(index + 1).padStart(2, "0")));
+            turns.appendChild(turn);
+          });
+          stage.appendChild(turns); body.appendChild(stage);
+        }
+        group.forEach(function (item) {
+          if (item.note) body.appendChild(memoryElement("p", "memory-note", item.note));
+        });
+        panel.appendChild(body);
+        if ((kind === "signature" || kind === "shared") && panel.classList.contains("is-related")) {
+          if (!habitPair) {
+            habitPair = memoryElement("div", "memory-habit-pair");
+            story.appendChild(habitPair);
+          }
+          habitPair.appendChild(panel);
+        } else {
+          story.appendChild(panel);
+        }
       });
       stories.appendChild(story);
     });

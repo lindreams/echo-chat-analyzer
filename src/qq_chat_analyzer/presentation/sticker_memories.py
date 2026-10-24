@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from ..analysis.sticker_features import PrivateStickerFeatures
+from ..analysis.sticker_stories import select_additional_sticker_stories
 from ..analysis.timestamps import to_chat_datetime
 from .models import EchoStickerFinding, EchoStickerItem, EchoStickerMemory, EchoStickerMemoryPoint
 
@@ -26,14 +27,26 @@ def build_sticker_memories(
 ) -> tuple[EchoStickerMemory, ...]:
     candidates = {s.story_id: s for s in features.stories.candidates}
     memories = []
-    for story_id in features.stories.featured_ids:
+    featured = features.stories.featured_ids
+    if not featured:
+        return ()
+    selected = featured + tuple(s.story_id for s in select_additional_sticker_stories(features))
+    for story_id in selected:
         story = candidates[story_id]
+        compact = story_id not in featured
         findings = {}
         for field, position in story.findings:
             findings.setdefault(field, []).append(getattr(features, field)[position])
-        # Retain the existing per-story target cap and acquisition union.
-        images = tuple(sorted((materials[key] for key in story.media_keys if key in materials),
-                              key=lambda item: (-item.count, item.asset_key))[:3])
+        # Ordinary findings share at most three images; compact stories need one.
+        images = list(sorted((materials[key] for key in story.media_keys if key in materials),
+                             key=lambda item: (-item.count, item.asset_key))[:1 if compact else 3])
+        if not compact and findings.get("relays"):
+            relay = max(findings["relays"], key=lambda f: (f.turn_count, f.self_send_count+f.peer_send_count))
+            for turn in relay.turns[:RELAY_PREVIEW_TURNS]:
+                representative = next((materials[s.media_key] for message in turn.messages
+                    for s in message.sends if s.identity_key and s.media_key in materials), None)
+                if representative is not None and all(i.media_key != representative.media_key for i in images):
+                    images.append(representative)
         image_map = {item.media_key: item for item in images}
 
         def picture(key):
@@ -119,5 +132,5 @@ def build_sticker_memories(
             lead = min(range(len(visuals)), key=lambda i: (
                 visuals[i].kind != lead_kind, lead_order.index(visuals[i].kind)))
             visuals.insert(0, visuals.pop(lead))
-            memories.append(EchoStickerMemory(tuple(visuals), images))
+            memories.append(EchoStickerMemory(tuple(visuals), tuple(images), compact=compact))
     return tuple(memories)

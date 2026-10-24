@@ -11,6 +11,7 @@ from ..analysis.stickers import StickerConversationReport, StickerMaterialUsage,
 from ..media_content import StoredMedia
 from .models import EchoStickerAsset, EchoStickerItem, EchoStickerMember, EchoStickers, EchoStickerSignature
 from .sticker_memories import build_sticker_memories
+from ..analysis.sticker_stories import select_additional_sticker_stories
 
 if TYPE_CHECKING:
     from ..analysis.sticker_features import PrivateStickerFeatures
@@ -31,7 +32,8 @@ def sticker_report_targets(chapter: EchoStickers | None) -> tuple[EchoStickerIte
     # never a ranking or a member's qualification.
     items = list(chapter.total_top_materials) + list(chapter.shared_materials)
     for memory in chapter.memories:
-        items.extend(memory.materials)
+        if not memory.compact:
+            items.extend(memory.materials)
     for member in chapter.members:
         if chapter.conversation_kind == "group" and member.signature is not None:
             items.append(member.signature)
@@ -40,6 +42,10 @@ def sticker_report_targets(chapter: EchoStickers | None) -> tuple[EchoStickerIte
         for member in chapter.members:
             if rank < len(member.top_materials):
                 items.append(member.top_materials[rank])
+    # Compact discoveries use the remaining budget after the main report.
+    for memory in chapter.memories:
+        if memory.compact:
+            items.extend(memory.materials)
     return tuple({item.media_key: item for item in items if item.media_key}.values())
 
 
@@ -104,7 +110,7 @@ def build_echo_stickers(
     # Never combine multiple participants into one private side. A source must
     # reliably establish both sender identity and self marker for attribution.
     private = conversation_kind == "private"
-    member_limit = 3
+    member_limit = 5
     if not private:
         sending_members = sum(member.send_count > 0 for member in report.members)
         member_limit = 3 if sending_members >= 100 else 5 if sending_members >= 10 else 10
@@ -143,13 +149,13 @@ def build_echo_stickers(
               enumerate(sorted(report.materials, key=lambda item: item.identity_key), 1)}
     asset_keys = {key: f"sticker:{index}" for index, key in enumerate(labels, 1)}
 
-    def item_view(item: StickerMaterialUsage, count: int, *, shared: bool = False, habit: StickerHabit | None = None) -> EchoStickerItem:
+    def item_view(item: StickerMaterialUsage, count: int, *, habit: StickerHabit | None = None) -> EchoStickerItem:
         key = asset_keys[item.identity_key]
         counts = dict(item.member_counts)
         return EchoStickerItem(
             label=labels[item.identity_key], asset_key=key, count=count,
             media_key=item.media_key,
-            side_counts=tuple(counts.get(side.sender_id, 0) for side in sides) if shared and private else (),
+            side_counts=tuple(counts.get(side.sender_id, 0) for side in sides) if private and all(sides) else (),
             reliable_member_count=item.reliable_member_count, unknown_sender_count=item.unknown_sender_count,
             signature=EchoStickerSignature(
                 habit.send_count, habit.dated_send_count, habit.date_count, habit.span_days,
@@ -180,7 +186,7 @@ def build_echo_stickers(
     shared = report.shared_ranking(tuple(side.sender_id for side in sides)) if private and all(sides) else (
         report.shared_ranking() if not private else ())
     shared_views = tuple(
-        item_view(item, count, shared=True) for item, count in shared[:TOP_MATERIAL_LIMIT]
+        item_view(item, count) for item, count in shared[:TOP_MATERIAL_LIMIT]
     ) if not private and len(shared) >= SHARED_RANKING_MIN_MATERIALS else ()
     total_views = tuple(item_view(item, count) for item, count in report.ranking()[:TOP_MATERIAL_LIMIT]) if not private else ()
     chapter = EchoStickers(
@@ -199,8 +205,11 @@ def build_echo_stickers(
             and private_features.source == report.source
             and private_features.conversation_id == report.conversation_id)
     if matched:
+        selected_ids = set(private_features.stories.featured_ids)
+        if selected_ids:
+            selected_ids.update(story.story_id for story in select_additional_sticker_stories(private_features))
         selected_media = {key for story in private_features.stories.candidates
-                          if story.story_id in private_features.stories.featured_ids for key in story.media_keys}
+                          if story.story_id in selected_ids for key in story.media_keys}
         chapter = replace(chapter, memories=build_sticker_memories(private_features,
             {item.media_key: item_view(item, item.count) for item in report.materials if item.media_key in selected_media},
             {side.sender_id: label for side, label in zip(sides, member_labels)}))

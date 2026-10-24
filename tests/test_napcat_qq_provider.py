@@ -29,6 +29,8 @@ import fs from 'node:fs';
 import {mock} from 'node:test';
 import {createInterface} from 'node:readline';
 const config = JSON.parse(process.argv[2]);
+delete process.env.QCE_LOG_FILE;
+if(config.nativeLog) process.env.QCE_LOG_FILE=config.nativeLog;
 // File races and old Windows stat differences are confined to fictional files
 // in this server's test directory; no QQ or NapCat runtime is loaded.
 if(config.mediaRace) {
@@ -79,12 +81,27 @@ const mark = name => { if (config.marker) fs.appendFileSync(config.marker, name 
 const info = fields => new Proxy(fields, {get(target, key) { mark('Core.status'); return target[key]; }});
 const core={dbPassphrase:'PRIVATE',selfInfo:info({uin:'12345678',uid:'u_self',nick:'Self',online:true,secret:'PRIVATE'}),apis:{
  DatabaseApi:{hasPassphrase:()=>true,decryptDatabase(){mark('decryptDatabase')}},
- FileApi:{downloadMedia:async(...args)=>{mark('downloadMedia');if(config.expectedDownload && JSON.stringify(args.slice(0,4))!==JSON.stringify(config.expectedDownload)) throw new Error('wrong locator');return config.mediaPath ?? ''}},
+ FileApi:{downloadMedia:async function(...args){
+   mark('downloadMedia');
+   if(config.expectedDownload && JSON.stringify(args.slice(0,4))!==JSON.stringify(config.expectedDownload)) throw new Error('wrong locator');
+   // Pinned NapCat FileApi uses argument six for an existing original cache.
+   if(args[5] && fs.existsSync(args[5]) && !args[7]) return args[5];
+   if(config.nativeDownload) {
+     const [,event]=await this.core.eventWrapper.callNormalEventV2(
+       'NodeIKernelMsgService/downloadRichMedia',
+       'NodeIKernelMsgListener/onRichMediaDownloadComplete',
+       [{msgId:args[0],elementId:args[3]}],()=>true,
+       event=>event.msgId===args[0] && event.msgElementId===args[3],1,args[6]);
+     return event.filePath;
+   }
+   return config.mediaPath ?? '';
+ }},
  FriendApi:{getBuddyV2ExWithCate:async()=>{mark('listFriends');return [{buddyList:[{uin:'23456789',uid:'u_friend',coreInfo:{uin:'23456789',uid:'u_friend',nick:'Nick',remark:'Remark',secret:'PRIVATE'},secret:'PRIVATE'},{uid:'u_only'},{uin:'34567890'}]}]}},
  GroupApi:{getGroups:async()=>{mark('listGroups');return [{groupCode:'45678901',groupName:'Group',memberCount:3},{groupCode:'56789012'}]},getGroupMemberAll:async()=>{mark('getGroupMemberAll');return {result:{infos:new Map([['u_member',{uid:'u_member',uin:'23456789',nick:'Nick',cardName:'Card',secret:'PRIVATE'}]])}}}},
  MsgApi:{getMsgsByMsgId:async(peer,ids)=>{
    mark('getMsgsByMsgId');
    const pic={elementType:2,elementId:'8000000000000000001',picElement:{md5HexStr:'AB'.repeat(16),fileUuid:'fictional-file-uuid',fileName:'PRIVATE.jpg'},...config.picOverrides};
+   if(config.thumbPaths) pic.picElement.thumbPath=new Map(config.thumbPaths.map((path,index)=>[index,path]));
    const message={msgId:ids[0],msgSeq:'42',msgTime:'1760000001',chatType:peer.chatType,peerUid:peer.peerUid,senderUid:peer.peerUid,secret:'PRIVATE',elements:[pic,{elementType:1,elementId:'8000000000000000002',textElement:{content:'PRIVATE'}}],...config.messageOverrides};
    if(config.duplicatePic) message.elements.push({...pic});
    if(config.secondMessageOverrides && config.queried) Object.assign(message,config.secondMessageOverrides);
@@ -92,6 +109,19 @@ const core={dbPassphrase:'PRIVATE',selfInfo:info({uin:'12345678',uid:'u_self',ni
    return {result:0,msgList:config.mode==='probe-duplicate'?[message,{...message}]:[message]};
  }}
 }};
+if(config.nativeDownload) {
+  core.eventWrapper={async callNormalEventV2(method,listener,params,check,match){
+    if(this!==core.eventWrapper) throw Error('PRIVATE wrong receiver');
+    mark('nativeDownload');
+    const result=config.nativeResult ?? {result:0};
+    if(!check(result)) throw Error('PRIVATE rejected request');
+    const event={msgId:params[0].msgId,msgElementId:params[0].elementId,
+      filePath:config.mediaPath ?? '',...config.nativeEvent};
+    if(!match(event)) throw Error('PRIVATE wrong callback');
+    return [result,event];
+  }};
+  core.apis.FileApi.core=core;
+}
 let snapshot={
  acquire:async()=>{mark('acquire');return {ok:true,status:'ready',generation_id:'test-generation'}},
  cleanup:async()=>{mark('cleanup');return {ok:true,status:'cleaned'}},
@@ -966,6 +996,13 @@ def test_media_fetch_relocates_the_element_and_returns_only_bounded_bytes(runtim
     executed = calls.read_text().splitlines()
     assert "getMsgsByMsgId" in executed and "downloadMedia" in executed
 
+    # The original is already cached. A repeated native download can return no
+    # path, so the bridge must pass the confirmed PIC's cache to FileApi.
+    base = runtime(mediaPath="", picOverrides={"picElement": {
+        "md5HexStr": "AB" * 16, "fileUuid": "fictional-file-uuid",
+        "sourcePath": str(media_file), "fileName": "PRIVATE.jpg"}})
+    assert provider(base).download_pic_media(**_MEDIA) == raw
+
     # The raw response carries bytes only: no path, file name or element ID.
     status, payload = request(base, "EchoMediaProbe.downloadPicMedia", [dict(_MEDIA_WIRE)])
     assert status == 200 and payload["ok"] is True
@@ -973,6 +1010,35 @@ def test_media_fetch_relocates_the_element_and_returns_only_bounded_bytes(runtim
     body = json.dumps(payload)
     for private in (str(media_file), "fictional-media.bin", _MEDIA["element_id"], _MEDIA["peer_uid"]):
         assert private not in body
+
+
+def test_native_media_diagnostics_keep_only_codes_and_cannot_block_downloads(runtime, tmp_path):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    log = tmp_path / "native-codes.log"
+    image = tmp_path / "PRIVATE-cached-preview.bin"
+    image.write_bytes(b"fictional-native-media")
+    base = runtime(nativeDownload=True, nativeLog=str(log), nativeResult="0",
+        nativeEvent={"fileErrCode": "-123", "fileSrvErrCode": "1001", "trasferStatus": 2,
+                     "step": 3, "errMsg": "PRIVATE event text", "status": "PRIVATE invalid status",
+                     "errCode": "77 PRIVATE", "fileDownType": 4294967296},
+        picOverrides={"picElement": {"md5HexStr": "AB" * 16,
+            "fileUuid": "fictional-file-uuid", "sourcePath": str(tmp_path / "missing-original"),
+            "filePath": str(image)}},
+        thumbPaths=[str(image), str(tmp_path / "missing-preview")])
+    with pytest.raises(module.NapCatQQMediaStageError) as caught:
+        provider(base).download_pic_media(**_MEDIA)
+    assert caught.value.stage == "media_download_no_path"
+    diagnostic = log.read_text(encoding="utf-8")
+    assert "stage=native_request return_code=0" in diagnostic
+    assert "fileErrCode=-123 fileSrvErrCode=1001 trasferStatus=2 step=3" in diagnostic
+    assert "stage=cache_location source_state=2 file_state=3 thumb_count=2 thumb_regular=1 thumb_missing=1 thumb_invalid=0 thumb_other=0" in diagnostic
+    assert "path_present=0" in diagnostic
+    assert "errCode=" not in diagnostic and "fileDownType=" not in diagnostic
+    assert all(secret not in diagnostic for secret in (
+        "PRIVATE", str(tmp_path), TOKEN, _MEDIA["msg_id"], _MEDIA["peer_uid"], _MEDIA["expected_md5"]))
+    # Cache checks and logging cannot return a different image or block a download.
+    base = runtime(nativeDownload=True, nativeLog=str(tmp_path), mediaPath=str(image))
+    assert provider(base).download_pic_media(**_MEDIA) == b"fictional-native-media"
 
 
 def test_large_media_is_chunked_and_does_not_hold_the_next_download(runtime, tmp_path):
@@ -1101,7 +1167,9 @@ def test_media_file_identity_uses_exact_ids_and_rejects_path_swaps(runtime, tmp_
         else:
             link.unlink()
     client = provider(runtime(mediaPath=str(target), mediaRace=race,
-                              replacementPath=str(replacement)))
+        picOverrides={"picElement": {"md5HexStr": "AB" * 16,
+            "fileUuid": "fictional-file-uuid", "sourcePath": str(target)}},
+        replacementPath=str(replacement)))
     if stage is None:
         assert client.download_pic_media(**_MEDIA) == raw
     else:
@@ -1116,7 +1184,10 @@ def test_media_file_identity_uses_exact_ids_and_rejects_path_swaps(runtime, tmp_
     ("missing", "media_file_missing"),
     ("directory", "media_file_type_rejected"),
     ("empty_file", "media_file_empty"),
-    ("empty_path", "media_path_invalid"),
+    ("empty_path", "media_download_no_path"),
+    ("no_cache_hint", "media_download_no_cache_hint"),
+    ("non_string_path", "media_path_type_invalid"),
+    ("relative_path", "media_path_not_absolute"),
 ])
 def test_media_fetch_reports_a_fixed_stage_for_each_local_rejection(runtime, tmp_path, kind, stage):
     module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
@@ -1127,8 +1198,12 @@ def test_media_fetch_reports_a_fixed_stage_for_each_local_rejection(runtime, tmp
         target.mkdir()
     elif kind == "empty_file":
         target.write_bytes(b"")
-    media_path = "" if kind == "empty_path" else str(target)
-    base = runtime(mediaPath=media_path)
+    media_path = {"empty_path": "", "no_cache_hint": "",
+                  "non_string_path": {"PRIVATE": "kernel-return"},
+                  "relative_path": "PRIVATE-relative-path"}.get(kind, str(target))
+    options = {"picOverrides": {"picElement": {"md5HexStr": "AB" * 16,
+        "fileUuid": "fictional-file-uuid", "sourcePath": str(tmp_path / "missing-original")}}} if kind == "empty_path" else {}
+    base = runtime(mediaPath=media_path, **options)
     client = provider(base)
     with pytest.raises(module.NapCatQQMediaStageError) as caught:
         client.download_pic_media(**_MEDIA)
