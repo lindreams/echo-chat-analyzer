@@ -49,9 +49,11 @@ def test_spec_declares_explicit_qq_contract_files_in_scripts(filename):
 @pytest.fixture
 def frozen_qq(tmp_path, monkeypatch):
     """Fictional program plus source metadata that must never be a fallback."""
+    from test_windows_runtime_contract import prepare_sqlite_build_input
+
     project = tmp_path / "development-checkout"
     metadata = project / "scripts"
-    metadata.mkdir(parents=True)
+    prepare_sqlite_build_input(project)
     shutil.copyfile(ROOT / "pyproject.toml", project / "pyproject.toml")
     install = tmp_path / "安装 空间" / "Echo"
     internal = install / "_internal"

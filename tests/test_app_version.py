@@ -72,6 +72,9 @@ def test_desktop_spec_ships_release_metadata_for_runtime_version():
 
 @pytest.mark.slow_integration
 def test_desktop_build_rejects_stale_installed_release_metadata(tmp_path):
+    from test_windows_runtime_contract import prepare_sqlite_build_input
+
+    prepare_sqlite_build_input(tmp_path)
     (tmp_path / "pyproject.toml").write_text('[project]\nversion = "99.0.0"\n', encoding="utf-8")
     with pytest.raises(RuntimeError, match="version"):
         _spec_datas(tmp_path)

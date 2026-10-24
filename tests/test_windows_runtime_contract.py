@@ -50,6 +50,18 @@ def _fictional_sqlite_archive():
     return payload, bytes(dll), pins
 
 
+def prepare_sqlite_build_input(project_root):
+    """Give a simulated project real validation with fictional PE bytes/pins."""
+    scripts = project_root / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    (scripts / "bootstrap_sqlite_runtime.py").write_bytes(
+        (PROJECT_ROOT / "scripts/bootstrap_sqlite_runtime.py").read_bytes())
+    payload, _, pins = _fictional_sqlite_archive()
+    (scripts / "sqlite_runtime_pins.json").write_text(json.dumps(pins), encoding="utf-8")
+    return _sqlite_build_tools()["install_archive"](
+        payload, project_root / "runtime/sqlite/sqlite3.dll", pins)
+
+
 def test_sqlite_bootstrap_verifies_before_publishing_and_preserves_existing(tmp_path):
     tools = _sqlite_build_tools()
     payload, dll, pins = _fictional_sqlite_archive()
@@ -289,13 +301,8 @@ def test_spec_excludes_unused_jieba_data_and_local_install_provenance(tmp_path):
         provenance, *retained_metadata, "unrelated/direct_url.json",
     )]
     # The metadata-only Analysis seam still receives a validated SQLite input.
-    payload, _, pins = _fictional_sqlite_archive()
-    (tmp_path / "scripts").mkdir()
-    for filename in ("pyproject.toml", "scripts/bootstrap_sqlite_runtime.py"):
-        (tmp_path / filename).write_bytes((PROJECT_ROOT / filename).read_bytes())
-    (tmp_path / "scripts/sqlite_runtime_pins.json").write_text(json.dumps(pins))
-    dll = tmp_path / "runtime/sqlite/sqlite3.dll"
-    _sqlite_build_tools()["install_archive"](payload, dll, pins)
+    (tmp_path / "pyproject.toml").write_bytes((PROJECT_ROOT / "pyproject.toml").read_bytes())
+    dll = prepare_sqlite_build_input(tmp_path)
     analysis = SimpleNamespace(datas=collected, pure=[], scripts=[],
                                binaries=[("sqlite3.dll", str(dll), "BINARY")])
     # Execute the real spec's post-Analysis collection rule without building.
