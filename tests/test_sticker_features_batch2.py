@@ -267,15 +267,22 @@ def test_styles_omit_scaled_proportions_similar_repertoires_boring_and_low_sampl
 def test_style_does_not_attribute_missing_materials_or_unknown_senders():
     rows = style_rows([2]*20, [40])
     unknown = replace(rows[0], contents=(replace(rows[0].contents[0], sticker=replace(
-        rows[0].contents[0].sticker, identity_key=None)),)*100)
+        rows[0].contents[0].sticker, identity_key=None)),)*10)
     unassigned = replace(rows[0], sender=SenderIdentity(None, "未知"), is_self=None)
     style, = analyze_private_stickers(facts((*rows, unknown, unassigned))).styles
     assert style.richer.known_send_count == 40
-    assert style.richer.unknown_identity_send_count == 100
+    assert style.richer.unknown_identity_send_count == 10
     assert style.unattributed_send_count == 1
     assert style.claim == "known_materials_only"
-    # 100 unidentifiable stickers cannot satisfy a 10-known-send sample floor.
+    # Unidentifiable stickers cannot satisfy a 10-known-send sample floor.
     assert not analyze_private_stickers(facts((*style_rows([2, 2], [40]), unknown))).styles
+
+
+@pytest.mark.parametrize("sender", ["A", "B", None, "C"])
+def test_style_omits_comparison_when_member_or_sender_coverage_is_poor(sender):
+    b = Messages("batch2-style")
+    b.add(2, sender, *(None for _ in range(11 if sender in ("A", "B") else 21)))
+    assert not analyze_private_stickers(facts((*style_rows([2]*20, [40]), *b.ordered()))).styles
 
 
 def test_style_needs_two_actual_usage_days_and_counts_undated_known_sends():

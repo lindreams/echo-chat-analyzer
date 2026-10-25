@@ -5,7 +5,9 @@ The filter is intentionally deterministic and rule-based:
 - messages with 100 or more characters are almost always copied text, bot
   output, or long-running spam in real QQ group samples;
 - high-confidence repetition noise from the existing noise detector is reused
-  without changing its detection logic.
+  without changing its detection logic;
+- reward campaigns with copy instructions and a structured redemption code
+  are excluded even when their wording and codes vary.
 
 Filtering only partitions the in-memory message list; the original imported
 messages are never mutated or deleted.
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+import re
 
 from .candidates import Candidate
 from .detectors.noise_detector import detect_noise_candidates
@@ -22,6 +25,18 @@ from .message import ChatMessage
 
 
 LONG_TEXT_THRESHOLD = 100
+
+_COPY_INSTRUCTION = re.compile(
+    r"复制[^。！？!?；;]{0,24}(?:口令|兑换码)"
+    r"|(?:口令|兑换码)[^。！？!?；;]{0,24}复制"
+)
+_PROMOTION_REWARD = re.compile(r"限时|免费|福利|礼包|点券|红包|皮肤|奖励|抽奖")
+_PROMOTION_CODE = re.compile(
+    r"[【\[（(][^【\[（(】\]）)A-Za-z0-9\r\n]{0,24}"
+    r"[A-Za-z0-9]{6,32}[】\]）)]"
+    r"|(?:口令|兑换码)[^A-Za-z0-9。！？!?；;]{0,16}[:：]\s*"
+    r"[A-Za-z0-9]{6,32}(?![A-Za-z0-9_])"
+)
 
 _INTERNAL_NOISE_TYPES = (
     "noise_single_character_repeat",
@@ -87,6 +102,17 @@ def apply_message_quality_filter(
             )
             continue
 
+        if _is_copy_promotion(normalized):
+            filtered_messages.append(message)
+            reasons.append(
+                MessageQualityReason(
+                    message=message,
+                    reason="copy_promotion",
+                    metadata={"rule": "copy_promotion"},
+                )
+            )
+            continue
+
         candidate = internal_noise_by_target.get(normalized)
         if candidate is not None:
             filtered_messages.append(message)
@@ -123,3 +149,12 @@ def apply_message_quality_filter(
 def _normalize_text(text: str) -> str:
     """Mirror the noise detector's whitespace normalization exactly."""
     return " ".join(text.split()).strip()
+
+
+def _is_copy_promotion(text: str) -> bool:
+    """Require all three cues; ordinary talk about campaigns remains chat."""
+    return bool(
+        _COPY_INSTRUCTION.search(text)
+        and _PROMOTION_REWARD.search(text)
+        and _PROMOTION_CODE.search(text)
+    )

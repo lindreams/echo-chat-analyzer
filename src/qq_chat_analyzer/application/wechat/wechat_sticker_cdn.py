@@ -262,7 +262,15 @@ def recover_wechat_sticker_media(
     sends = {}
     for send in data.sends:
         if send.source == "wechat" and send.identity_basis == "wechat_xml_md5":
-            sends.setdefault(send.media_key, send)
+            previous = sends.get(send.media_key)
+            if previous is None or (
+                previous.content_md5 == send.content_md5
+                and wechat_cdn_url_rejection(previous.recovery_url) is not None
+                and wechat_cdn_url_rejection(send.recovery_url) is None
+            ):
+                # An earlier occurrence may retain only the digest. Reuse a
+                # valid URL from the same material, still verifying full bytes.
+                sends[send.media_key] = send
     media = {item.media_key: item for item in data.media}
     # A key without a digest-verified occurrence can never authorize a request.
     pending = [

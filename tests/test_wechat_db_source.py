@@ -374,6 +374,26 @@ FICTIONAL_STICKER_XML = (
 )
 
 
+@pytest.mark.parametrize(("primary", "android", "expected"), [
+    (None, FICTIONAL_STICKER_DIGEST.upper(), FICTIONAL_STICKER_DIGEST),
+    (None, "not-a-digest", None),
+    ("malformed", FICTIONAL_STICKER_DIGEST, None),
+    ("a" * 32, FICTIONAL_STICKER_DIGEST, "a" * 32),
+])
+def test_wechat_android_digest_identifies_material_only_when_primary_is_absent(primary, android, expected):
+    attributes = f'androidmd5="{android}"'
+    if primary is not None:
+        attributes += f' md5="{primary}"'
+    message = wechat_db_adapter.parse_rich_message(_db_row(
+        local_type=STICKER_LOCAL_TYPE, server_id=900047,
+        message_content=f'<msg><emoji {attributes}/></msg>',
+    ))
+    expression = message.contents[0]
+    assert expression.sticker.content_md5 == expected
+    assert expression.sticker.identity_key == (f"wechat:md5:{expected}" if expected else None)
+    assert expression.expression_key == (primary or "900047")
+
+
 @pytest.mark.parametrize("compressed", [False, True], ids=["plain", "zstd"])
 def test_group_sticker_strips_only_confirmed_sender_prefix(
     tmp_path: Path, compressed: bool

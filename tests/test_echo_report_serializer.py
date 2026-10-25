@@ -61,12 +61,14 @@ def test_featured_stories_export_only_summaries_and_share_the_media_target_union
     assert [(p["value"], p["date_count"]) for p in findings["shared"]["points"]] == [(10, 7), (10, 4)]
     assert [p["total"] for p in findings["style"]["points"]] == [10, 10]
     assert findings["style"]["points"][0]["value"] == pytest.approx(9.67, abs=.01)
+    assert findings["adoption"]["note"] == "同一张图，在你们之间留下了回音。"
+    assert findings["style"]["note"] == ""
     habit = features.shared_habits[0]
     undated = replace(features, shared_habits=(replace(habit, members=(
         replace(habit.members[0], has_unknown_time=True), habit.members[1])),))
     undated_payload = echo_report_to_dict(build_echo_report_view(
         replace(reports, private_stickers=undated), conversation_kind="private"))
-    assert "部分发送时间不明" in json.dumps(undated_payload["sticker_memories"], ensure_ascii=False)
+    assert "部分发送时间不明" not in json.dumps(undated_payload["sticker_memories"], ensure_ascii=False)
     assert all(len(m["top_materials"]) <= 5 for m in payload["stickers"]["members"])
     assert payload["stickers"]["shared_materials"] == []
     targets = sticker_report_targets(view.stickers)
@@ -128,7 +130,7 @@ def test_relay_projection_bounds_turns_without_losing_counts_or_exporting_bodies
     assert [p["label"] for p in relay["points"]] == ["我", "TA"] * 6
     assert relay["points"][0]["value"] == 3
     assert len(relay["points"][0]["materials"]) == 1  # Representative, not three invented pictures.
-    assert "前 12 轮" in relay["note"] and "代表图" in relay["note"] and "1 次" in relay["note"]
+    assert relay["note"] == "图示前 12 轮，共 16 轮。"
     assert all(secret not in json.dumps(payload, ensure_ascii=False) for secret in (
         "private-body-sentinel", "fiction:", "private-relay", "fiction-A", "fiction-B"))
 
@@ -456,6 +458,25 @@ def test_sticker_asset_budget_keeps_counts_and_explains_unavailable_images(monke
     assert all(not a["data_uri"] for a in list(chapter["assets"].values())[2:])
 
 
+@pytest.mark.parametrize("shared_kinds", [0, 1, 2])
+def test_group_shared_board_shows_every_eligible_material_even_with_few_kinds(shared_kinds):
+    from qq_chat_analyzer.analysis.stickers import aggregate_stickers, StickerData, collect_sticker_sends
+    from sticker_feature_samples import Messages
+    from test_group_sticker_features import group_rows
+
+    b = Messages("small-shared-board")
+    for sender in "AB":
+        b.add(0, sender, *(f"common-{i}" for i in range(shared_kinds)), f"personal-{sender}")
+    rows = group_rows(b)
+    report, = aggregate_stickers(StickerData(collect_sticker_sends(rows)), rows)
+    chapter = echo_report_to_dict(build_echo_report_view(
+        analysis_models.AnalysisReports(stickers=(report,)), conversation_kind="group"))["stickers"]
+    assert chapter["shared_material_count"] == shared_kinds
+    assert len(chapter["shared_materials"]) == shared_kinds
+    assert all(item["count"] == 2 for item in chapter["shared_materials"])
+    assert chapter["shared_ranking_min_materials"] == 1
+
+
 def test_sticker_chapter_ranks_counts_and_limits_shared_exclusive_candidates():
     from dataclasses import replace
     from qq_chat_analyzer.analysis.stickers import (
@@ -485,7 +506,7 @@ def test_sticker_chapter_ranks_counts_and_limits_shared_exclusive_candidates():
     assert [item["count"] for item in mine["top_materials"]] == [4, 2, 1, 1]
     assert [item["count"] for item in theirs["top_materials"]] == [4, 3]
     assert chapter["shared_material_count"] == 1
-    assert chapter["shared_materials"] == []  # Too few for a useful shared leaderboard.
+    assert chapter["shared_materials"] == []  # Private reports use the two personal boards.
     assert [m["exclusive_material_count"] for m in chapter["members"]] == [2, 1]
     assert mine["signature"] is None
     disjoint = replace(report, materials=report.materials[1:3])

@@ -297,7 +297,7 @@ class EchoStickers:
     total_top_materials: tuple[EchoStickerItem, ...] = ()
     exclusive_material_count: int = 0
     per_hundred_messages: float | None = None
-    shared_ranking_min_materials: int = 3
+    shared_ranking_min_materials: int = 1
     memories: tuple[EchoStickerMemory, ...] = ()
 
 

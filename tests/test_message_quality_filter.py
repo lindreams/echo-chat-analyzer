@@ -80,6 +80,47 @@ def test_normal_chat_is_not_mis_filtered() -> None:
     assert result.reasons == []
 
 
+def test_copy_campaign_variants_are_filtered_without_excluding_the_sender() -> None:
+    ordinary = _message("虚构用户甲", "今晚一起公园散步吧", 1_700_000_000)
+    promotions = [
+        _message("虚构用户甲", text, 1_700_000_060 + index * 120)
+        for index, text in enumerate([
+            "限时礼包来了！复制口令【星空福利AbCdEf】参与活动。",
+            "wxid_fictional_peer:\n复制【星空礼包Q7w8E9】口令，免费奖励等你来拿！",
+            "【虚构庆典】皮肤好礼，复制以下口令并粘贴：K9m2P4，和好友一起参与。",
+            "限时奖励，复制兑换码：ABCDEF，前往活动页面使用。",
+        ])
+    ]
+    messages = [promotions[0], ordinary, *promotions[1:]]
+
+    result = apply_message_quality_filter(messages)
+
+    assert result.kept_messages == [ordinary]
+    assert result.filtered_messages == promotions
+    assert {reason.reason for reason in result.reasons} == {"copy_promotion"}
+    assert messages == [promotions[0], ordinary, *promotions[1:]]
+
+
+def test_copy_promotion_requires_an_instruction_reward_and_structured_code() -> None:
+    messages = [
+        _message("虚构用户甲", text, 1_700_000_000 + index * 120)
+        for index, text in enumerate([
+            "那个限时礼包的口令怎么复制？",
+            "限时礼包的口令 ABCDEF 怎么复制？我没看懂。",
+            "昨天说的游戏皮肤和活动口令我都记得，复制那个按钮找不到了。",
+            "测试数据，复制口令【虚构标识AbCdEf】，检查字符串是否一致。",
+            "限时福利，欢迎来公园活动，报名编号 ABCDEF。",
+            "口令：ABCDEF，是刚才那个免费礼包的吗？",
+            "复制文件时提示口令错误，邮件发到 reward@example.com。",
+        ])
+    ]
+
+    result = apply_message_quality_filter(messages)
+
+    assert result.kept_messages == messages
+    assert result.filtered_messages == []
+
+
 def test_original_messages_are_never_removed_from_input() -> None:
     messages = [
         _message("虚构用户", "哈哈哈哈哈哈哈哈", 1_700_000_000),

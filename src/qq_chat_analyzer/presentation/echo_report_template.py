@@ -463,7 +463,6 @@ h1, h2, h3, p { margin-top: 0; }
 .voice-entry header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 18px; }
 .voice-entry h3 { min-width: 0; margin: 0; overflow-wrap: anywhere; font: 500 25px/1.3 var(--sans); }
 .member-index { color: var(--accent); font: 13px/1.8 var(--serif); }
-.voice-descriptor { margin: 13px 0 0 40px; color: var(--muted); font: 14px/1.8 var(--serif); overflow-wrap: anywhere; }
 .voice-words { display: flex; flex-wrap: wrap; min-width: 0; gap: 12px 28px; margin: 34px 0 0 40px; padding: 0; list-style: none; }
 .voice-words li { position: relative; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--ink); font: 400 clamp(25px, 4vw, 39px)/1.25 var(--serif); letter-spacing: -.02em; }
 .voice-word-token {
@@ -501,7 +500,6 @@ h1, h2, h3, p { margin-top: 0; }
 .member-list.mode-group .voice-entry header { gap: 12px; }
 .member-list.mode-group .voice-entry h3 { font: 500 18px/1.35 var(--sans); }
 .member-list.mode-group .member-index { font-size: 11px; }
-.member-list.mode-group .voice-descriptor { margin: 6px 0 0; font-size: 12.5px; line-height: 1.6; }
 .member-list.mode-group .voice-words { gap: 6px 7px; margin: 11px 0 0; }
 .member-list.mode-group .voice-words li { font: 400 20px/1.3 var(--serif); letter-spacing: 0; }
 .member-list.mode-group .voice-words li::after { margin-left: 7px; font-size: .5em; }
@@ -573,10 +571,9 @@ h1, h2, h3, p { margin-top: 0; }
 .sticker-signature-title { margin: 0; color: var(--muted); font-size: 11px; letter-spacing: .08em; }
 .sticker-signature-body .sticker-count { margin-top: 4px; }
 .sticker-signature-body .sticker-rate { margin: 4px 0 0; }
-.sticker-signature-basis { display: block; margin-top: 6px; color: var(--faint); font-size: 10px; line-height: 1.5; }
 .sticker-top-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px 12px; margin: 0; padding: 0; list-style: none; }
 .sticker-top-list li { min-width: 0; display: flex; flex-direction: column; align-items: flex-start; }
-/* Expanded shared board: one row that scrolls sideways, cards keep their size. */
+/* Expanded group rankings share one scrolling row with fixed-size cards. */
 .sticker-top-list.is-row-scroll { display: flex; flex-wrap: nowrap; overflow-x: auto; overflow-y: hidden; padding-bottom: 6px; scrollbar-width: thin; }
 .sticker-top-list.is-row-scroll > li { flex: 0 0 calc((100% - 24px) / 3); }
 .sticker-group-rankings > div { min-width: 0; }
@@ -720,6 +717,10 @@ h1, h2, h3, p { margin-top: 0; }
 .memory-relay li:nth-child(8n+8) { transform: translateY(58px); }
 .memory-relay .memory-art { width: 64px; }
 .memory-turn-side { color: var(--viewer); font: 10px/1.6 var(--sans); text-align: center; white-space: nowrap; }
+.sticker-group .memory-turn-side { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.sticker-group .memory-style-row { grid-template-columns: minmax(60px, 1fr) minmax(0, 2fr) 100px; }
+.sticker-group .memory-style-label, .sticker-group .memory-person b { overflow-wrap: anywhere; }
+.sticker-group .is-adoption .memory-dates { flex-wrap: wrap; }
 .is-peer .memory-turn-side { color: var(--accent); }
 .memory-turn-number { color: var(--muted); font: 10px/1.4 var(--serif); }
 .is-relay .memory-note { grid-column: 1 / -1; }
@@ -1061,7 +1062,7 @@ h1, h2, h3, p { margin-top: 0; }
   .member-list.mode-private { display: block; }
   .member-list.mode-group { display: block; }
   .mode-private .voice-entry, .mode-private .voice-entry + .voice-entry { min-height: auto; padding-right: 0; padding-left: 0; border-left: 0; }
-  .voice-descriptor, .voice-words, .voice-context { margin-left: 0; }
+  .voice-words, .voice-context { margin-left: 0; }
   .member-list.mode-group .voice-words { gap: 8px 12px; }
   .member-list.mode-group .voice-words li { font-size: 20px; }
   .member-list.mode-group .voice-words li::after { margin-left: 12px; }
@@ -1515,11 +1516,12 @@ document.documentElement.classList.add("js-ready");
   setText(
     "voices-intro",
     languageMode === "group_distinctive"
-      ? "在这段聊天里，这些词更像 TA。它们只描述当前时间范围与当前群聊。"
+      ? ""
       : languageMode === "private_common"
         ? "你们反复说起的词，像两种声音在这段聊天里留下的回声。"
         : "会话类型明确后，才能选择合适的语言画像。"
   );
+  setHidden("voices-intro", languageMode === "group_distinctive");
 
   function appendWords(parent, words) {
     var list = document.createElement("ol");
@@ -1587,12 +1589,6 @@ document.documentElement.classList.add("js-ready");
         header.appendChild(heading);
         article.appendChild(header);
 
-        if (languageMode === "group_distinctive") {
-          var descriptor = document.createElement("p");
-          descriptor.className = "voice-descriptor";
-          descriptor.textContent = "在这段聊天里，这些词更像 TA";
-          article.appendChild(descriptor);
-        }
         appendWords(article, member.primary_words);
 
         if (languageMode === "group_distinctive" && member.context_words.length) {
@@ -1790,15 +1786,11 @@ document.documentElement.classList.add("js-ready");
           facts.last_date.replace(/-/g, ".");
         body.appendChild(range);
       }
-      var basis = document.createElement("small");
-      basis.className = "sticker-signature-basis";
-      basis.textContent = "按出现天数与活跃周挑选，不按发送次数。";
-      body.appendChild(basis);
       block.appendChild(body);
       return block;
     }
 
-    function stickerRanking(container, items, kind) {
+    function stickerRanking(container, items) {
       if (!items.length) {
         var empty = document.createElement("p");
         empty.className = "sticker-member-empty";
@@ -1819,11 +1811,7 @@ document.documentElement.classList.add("js-ready");
       container.appendChild(button);
       function render() {
         container.classList.toggle("is-expanded", expanded);
-        // Group shared rankings retain their horizontally scrolling expansion.
-        list.classList.toggle(
-          "is-row-scroll",
-          expanded && kind === "group-shared"
-        );
+        list.classList.toggle("is-row-scroll", expanded && stickerGroup);
         list.textContent = "";
         items.slice(0, expanded ? items.length : collapsedCount).forEach(function (item, index) {
           var entry = document.createElement("li");
@@ -1917,7 +1905,7 @@ document.documentElement.classList.add("js-ready");
         }
         var signature = stickerGroup ? stickerSignature(member) : null;
         if (signature) { article.appendChild(signature); }
-        stickerRanking(article, member.top_materials || [], "personal");
+        stickerRanking(article, member.top_materials || []);
         stickerMembers.appendChild(article);
       });
       setText("sticker-member-summary", "选择成员 · 已选 " + selectedMembers.size + " 人");
@@ -1953,18 +1941,18 @@ document.documentElement.classList.add("js-ready");
     groupRankings.textContent = "";
     setHidden("sticker-group-rankings", !stickerGroup || noSends);
     if (stickerGroup) {
-      [["全群最常用", stickers.total_top_materials || [], "group-total"],
-       ["群里共同最常用", shared, "group-shared"]].forEach(function (definition) {
+      [["全群最常用", stickers.total_top_materials || []],
+       ["群里共同最常用", shared]].forEach(function (definition) {
         var block = document.createElement("div");
         var title = document.createElement("h4");
         title.textContent = definition[0];
         block.appendChild(title);
-        stickerRanking(block, definition[1], definition[2]);
+        stickerRanking(block, definition[1]);
         groupRankings.appendChild(block);
       });
     }
 
-    var memories = !stickerGroup ? (data.sticker_memories || []) : [];
+    var memories = data.sticker_memories || [];
     setHidden("sticker-memories", !memories.length);
     var stories = document.getElementById("sticker-memory-stories");
     function memoryElement(tag, className, text) {
@@ -2033,7 +2021,7 @@ document.documentElement.classList.add("js-ready");
       return grouped;
     }
     var memoryLabels = {reunion: "久别重逢", signature: "长久的习惯", shared: "共同习惯",
-      relay: "你来我往", trend: "使用变化", adoption: "先后使用", style: "使用风格"};
+      relay: "你来我往", trend: "使用变化", adoption: "先后使用", style: "使用风格", reply: "明确引用"};
     var relayStaffUsed = false;
     memories.forEach(function (memory) {
       var story = memoryElement("article", "sticker-memory-story");
@@ -2050,6 +2038,10 @@ document.documentElement.classList.add("js-ready");
         memory.findings.forEach(function (finding) {
           if (finding !== lead) summaries.push(finding.title);
           finding.points.forEach(function (point) {
+            if (stickerGroup && finding.kind === "style") {
+              summaries.push(point.label + " · 约 " + point.value.toFixed(1) + " 种");
+              return;
+            }
             if (!point.start_date) return;
             var text = point.label + " " + point.start_date;
             if (point.end_date) text += " — " + point.end_date;
@@ -2156,7 +2148,7 @@ document.documentElement.classList.add("js-ready");
             var row = memoryElement("div", "memory-style-row");
             row.appendChild(memoryElement("span", "memory-style-label", point.label));
             row.appendChild(memoryTrack(point.value, point.total));
-            row.appendChild(memoryElement("strong", "", point.value.toFixed(1) + " 种"));
+            row.appendChild(memoryElement("strong", "", "约 " + point.value.toFixed(1) + " 种"));
             chart.appendChild(row);
           });
           body.appendChild(chart);
@@ -2168,7 +2160,7 @@ document.documentElement.classList.add("js-ready");
           var turns = memoryElement("ol", "memory-relay");
           turns.style.setProperty("--turns", String(points.length));
           points.forEach(function (point, index) {
-            var turn = memoryElement("li", point.label === "TA" ? "is-peer" : "");
+            var turn = memoryElement("li", (stickerGroup ? index % 2 === 1 : point.label === "TA") ? "is-peer" : "");
             turn.appendChild(memoryElement("span", "memory-turn-side", point.label + (point.value > 1 ? " · " + point.value + " 次" : "")));
             turn.appendChild(memoryImage(point.materials));
             turn.appendChild(memoryElement("span", "memory-turn-number", String(index + 1).padStart(2, "0")));

@@ -155,7 +155,7 @@ class _SpeakerStats:
             message.sender_contextual_name,
         )
 
-        length = len(clean_text(message.text))
+        length = len(clean_text(message.text, platform=message.platform))
         if length > 0:
             self.text_lengths.append(length)
             self.max_length = max(self.max_length, length)

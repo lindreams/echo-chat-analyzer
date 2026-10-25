@@ -1,4 +1,4 @@
-"""Private, per-run sticker facts. No source parsing, I/O or media selection."""
+"""Per-run sticker facts. No source parsing, I/O or media selection."""
 from __future__ import annotations
 
 from bisect import bisect_left
@@ -70,7 +70,7 @@ class MaterialTimeline:
 
 @dataclass(frozen=True, slots=True)
 class StickerFactIndex:
-    """Private facts only: never serialize this index or its Rich messages.
+    """Local evidence only: never serialize this index or its Rich messages.
 
     An ordinal refers to the kept Rich sequence; source_position refers to the
     imported projection sequence. Neither is a cross-run message identity.
@@ -128,6 +128,7 @@ def build_sticker_fact_index(
     reports: tuple[StickerConversationReport, ...] | None = None,
     source_positions: Sequence[int] | None = None,
     non_sticker_messages: Mapping[int, RichMessage] | None = None,
+    conversation_kind: str = "private",
 ) -> StickerFactIndex:
     """Index exactly the ordered, formally filtered sequence behind ``data``.
 
@@ -142,8 +143,11 @@ def build_sticker_fact_index(
     """
     messages = tuple(messages)
     scopes = {(m.source, m.conversation_type, m.conversation_id) for m in messages}
-    if len(scopes) != 1 or not messages or messages[0].conversation_type != "private" or not messages[0].conversation_id:
-        return StickerFactIndex(False, "not_single_private_conversation")
+    if conversation_kind not in {"private", "group"}:
+        raise ValueError("unsupported sticker conversation kind")
+    private = conversation_kind == "private"
+    if len(scopes) != 1 or not messages or messages[0].conversation_type != conversation_kind or not messages[0].conversation_id:
+        return StickerFactIndex(False, f"not_single_{conversation_kind}_conversation")
     positions = tuple(range(len(messages))) if source_positions is None else tuple(source_positions)
     if len(positions) != len(messages) or any(type(p) is not int or p < 0 for p in positions) or any(a >= b for a, b in zip(positions, positions[1:])):
         raise ValueError("source positions must match ordered kept messages")
@@ -161,13 +165,13 @@ def build_sticker_fact_index(
     for m in messages:
         if m.sender.identity_id:
             markers[m.sender.identity_id].add(m.is_self)
-    if any(len(values) > 1 for values in markers.values()):
+    if private and any(len(values) > 1 for values in markers.values()):
         return StickerFactIndex(False, "conflicting_private_identity")
     sides = tuple(tuple(m.sender_id for m in report.members if m.is_self is own) for own in (True, False))
-    if any(len(side) > 1 for side in sides):
+    if private and any(len(side) > 1 for side in sides):
         return StickerFactIndex(False, "ambiguous_private_members")
-    side_members = tuple(side[0] if side else None for side in sides)
-    reliable = set(side_members) - {None}
+    side_members = tuple(side[0] if side else None for side in sides) if private else (None, None)
+    reliable = (set(side_members) - {None}) if private else {m.sender_id for m in report.members}
     daily = {sender: [Counter() for _ in range(4)] for sender in reliable}
     material_sends = defaultdict(list)
     material_days = defaultdict(Counter)
@@ -207,9 +211,10 @@ def build_sticker_fact_index(
                             side_members[1] if excluded.is_self is False else None)
                     if (not proven or t is None or not left.epoch_seconds <= t <= epoch
                             or (excluded.source, excluded.conversation_type, excluded.conversation_id) not in scopes
-                            or not excluded.sender.identity_id or type(excluded.is_self) is not bool
-                            or (side is not None and excluded.sender.identity_id != side)
-                            or (excluded.sender.identity_id in reliable and excluded.sender.identity_id != side)
+                            or not excluded.sender.identity_id
+                            or (private and (type(excluded.is_self) is not bool
+                                or (side is not None and excluded.sender.identity_id != side)
+                                or (excluded.sender.identity_id in reliable and excluded.sender.identity_id != side)))
                             or not excluded.contents or not all(isinstance(c, TextContent) for c in excluded.contents)):
                         proven = False
                         break

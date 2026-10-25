@@ -28,3 +28,16 @@ def test_wechat_clean_preserves_official_expression_markers() -> None:
         "今天真的崩了[捂脸] [OK] 继续[旺柴]",
         platform="wechat",
     ) == "今天真的崩了[捂脸] [OK] 继续[旺柴]"
+
+
+@pytest.mark.parametrize(("text", "expected"), [
+    ("好的@虚构小明\u2005明天开会", "好的 明天开会"),
+    ("@虚构 张同学\u2005明天开会", "明天开会"),
+    ("开会@虚构，张同学\u2005讨论", "开会 讨论"),
+    ("@虚构甲\u2005@虚构 乙\u2005公园散步[捂脸]", "公园散步[捂脸]"),
+    ("收到@虚构小明 明天开会", "收到 明天开会"),
+    ("@虚构 张同学\u2005", ""),
+    ("发给 person@example.com\u2005明天开会", "发给 person@example.com 明天开会"),
+])
+def test_wechat_clean_removes_complete_mentions_without_losing_body(text, expected):
+    assert clean_text(text, platform="wechat") == expected

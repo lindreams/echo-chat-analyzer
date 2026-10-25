@@ -36,6 +36,7 @@ from ..analysis.stickers import (
 )
 from ..presentation.builders import prepare_expression_report
 from ..presentation.stickers import assemble_sticker_assets, build_echo_stickers, sticker_report_targets
+from ..analysis.group_stickers import GroupStickerFeatures, analyze_group_stickers
 from ..analyzer import (
     WordSpeakerSummary,
     count_word_speakers,
@@ -234,7 +235,9 @@ class AnalysisApplicationService:
             with timed_stage("sticker_aggregation"):
                 sticker_reports = aggregate_stickers(stickers, sticker_scope)
             private_stickers = None
-            if _resolve_conversation_type(kept_messages, request.conversation_kind) == "private":
+            group_stickers = None
+            sticker_kind = _resolve_conversation_type(kept_messages, request.conversation_kind)
+            if sticker_kind in {"private", "group"}:
                 import_positions = {id(message): pos for pos, message in enumerate(outcome.messages)}
                 sticker_positions = tuple(import_positions[id(legacy)]
                                           for legacy, _ in outcome.rich_message_pairs if id(legacy) in kept_instances)
@@ -250,19 +253,25 @@ class AnalysisApplicationService:
                     and type(rich.source_type) is int and rich.source_type & 0xFFFFFFFF == 1
                     and rich.message_type == "text"
                 }
-                with timed_stage("private_sticker_features"):
-                    private_stickers = analyze_private_stickers(build_sticker_fact_index(
+                with timed_stage(f"{sticker_kind}_sticker_features"):
+                    sticker_index = build_sticker_fact_index(
                         stickers, sticker_scope, reports=sticker_reports,
                         source_positions=sticker_positions,
                         non_sticker_messages=non_sticker_messages,
-                    ))
+                        conversation_kind=sticker_kind,
+                    )
+                    if sticker_kind == "private":
+                        private_stickers = analyze_private_stickers(sticker_index)
+                    else:
+                        group_stickers = analyze_group_stickers(sticker_index)
             with timed_stage("sticker_media_resolve"):
                 media_sends = sticker_sends
-                if private_stickers is not None and private_stickers.available and request.sticker_media_roots:
+                features = private_stickers if sticker_kind == "private" else group_stickers
+                if features is not None and features.available and request.sticker_media_roots:
                     # Use the same display projection as the final report;
                     # explicit local roots must not recover the entire catalog.
-                    selected = build_echo_stickers(sticker_reports, (), conversation_kind="private",
-                                                   private_features=private_stickers)
+                    selected = build_echo_stickers(sticker_reports, (), conversation_kind=sticker_kind,
+                                                   private_features=private_stickers, group_features=group_stickers)
                     if any(member.send_count is not None for member in selected.members):
                         keys = {t.media_key for t in sticker_report_targets(selected)}
                         media_sends = tuple(s for s in sticker_sends if s.media_key in keys)
@@ -325,6 +334,7 @@ class AnalysisApplicationService:
                     stickers=stickers,
                     sticker_reports=sticker_reports,
                     private_stickers=private_stickers,
+                    group_stickers=group_stickers,
                 )
             if ranked_words and self._legacy_word_artifacts is not None:
                 with timed_stage("word_speaker_analysis"):
@@ -468,6 +478,7 @@ def _build_reports(
     stickers: StickerData | None = None,
     sticker_reports: tuple[StickerConversationReport, ...] | None = None,
     private_stickers: PrivateStickerFeatures | None = None,
+    group_stickers: GroupStickerFeatures | None = None,
 ) -> AnalysisReports:
     """Run every extended analyzer over the messages kept for analysis.
 
@@ -521,6 +532,7 @@ def _build_reports(
         private_language=private_language,
         stickers=sticker_reports,
         private_stickers=private_stickers,
+        group_stickers=group_stickers,
         expression=prepare_expression_report(
             expression,
             expression_source=(

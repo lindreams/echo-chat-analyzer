@@ -82,7 +82,7 @@ def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
                 } for point in finding.points],
             } for finding in memory.findings],
             "materials": [{"asset_key": item.asset_key} for item in memory.materials],
-        } for memory in view.stickers.memories] if view.stickers and view.conversation_kind == "private" else [],
+        } for memory in view.stickers.memories] if view.stickers and view.conversation_kind in {"private", "group"} else [],
         "members": [
             _member_to_dict(member, view.expression_source)
             for member in view.members

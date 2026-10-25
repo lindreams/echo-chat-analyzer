@@ -759,6 +759,96 @@ def test_wechat_cancel_queued_attempt_cannot_start_key_and_fresh_attempt_can(qt_
     assert len(facade.acquire_wechat_db_key_calls) == 1
 
 
+@pytest.mark.parametrize("request_kind", ["status", "sessions"])
+@pytest.mark.parametrize("completion", ["success", "error"])
+def test_wechat_old_account_callbacks_cannot_replace_a_reconnecting_workspace(qt_app, request_kind, completion):
+    executor = _IndependentDeferredExecutor()
+    facade = StubFacade()
+    workspace = _wechat_guide_module().WeChatWorkspace(facade, executor=executor)
+    old_sessions = [_session(_facade_module().ChatSource.WECHAT, "old-account", "Fictional old account", 10)]
+    workspace._handle_sessions_loaded(old_sessions)
+    if request_kind == "status":
+        workspace.refresh_connection_status(load_sessions_on_ready=True)
+    else:
+        workspace._load_sessions()
+    old = executor.tasks[-1]
+    workspace.disconnect_wechat()
+    disconnect = executor.tasks[-1]
+    disconnect.succeed(_wechat_missing_status())
+    disconnect.finish()
+    workspace._start_wechat_connect(_wechat_connection_config())
+    current = workspace._connection_task
+    status = workspace._status_label.text()
+    submitted = len(executor.tasks)
+    if completion == "success":
+        old.succeed(_wechat_connected_status() if request_kind == "status" else old_sessions)
+    else:
+        old.fail("query_failed", "Fictional old error")
+    old.finish()
+    assert workspace._status_label.text() == status
+    assert workspace._connection_task is current
+    assert len(executor.tasks) == submitted
+    assert not workspace.session_panel._sessions_ready
+    assert not workspace._wechat_connect_button.isHidden()
+
+
+def test_wechat_disconnect_invalidates_the_connection_session_load_immediately(qt_app):
+    executor = _IndependentDeferredExecutor()
+    workspace = _wechat_guide_module().WeChatWorkspace(StubFacade(), executor=executor)
+    workspace._load_sessions(attempt_generation=workspace._wechat_attempt_generation)
+    old = executor.tasks[-1]
+    workspace.disconnect_wechat()
+    old.succeed([_session(_facade_module().ChatSource.WECHAT, "old", "Fictional old", 10)])
+    assert not workspace.session_panel._sessions_ready
+    assert not workspace._sessions_loaded
+    assert "退出" in workspace._status_label.text()
+
+
+@pytest.mark.parametrize("transition", ["connect", "cancel"])
+def test_wechat_connection_transitions_discard_cached_sessions_and_ignore_filter_signals(qt_app, transition):
+    workspace = _wechat_guide_module().WeChatWorkspace(StubFacade(), executor=_IndependentDeferredExecutor())
+    workspace._handle_sessions_loaded([_session(_facade_module().ChatSource.WECHAT, "old", "Fictional old", 10)])
+    if transition == "connect":
+        workspace._start_wechat_connect(_wechat_connection_config())
+    else:
+        workspace.cancel_connection()
+    panel = workspace.session_panel
+    panel._session_search.setText("Fictional old")
+    panel._session_sort.setCurrentIndex(panel._session_sort.findData("name"))
+    assert panel._sessions_data == []
+    assert not panel._sessions_ready and not workspace._sessions_loaded
+    assert all("Fictional old" not in panel._session_list.item(i).text() for i in range(panel._session_list.count()))
+    assert not panel._analyze_button.isEnabled()
+
+
+def test_wechat_cancelled_queued_disconnect_cannot_clear_a_new_connection(qt_app):
+    executor = _IndependentDeferredExecutor()
+    facade = StubFacade()
+    workspace = _wechat_guide_module().WeChatWorkspace(facade, executor=executor)
+    workspace.disconnect_wechat()
+    old = executor.tasks[-1]
+    workspace.cancel_connection()
+    workspace._start_wechat_connect(_wechat_connection_config())
+    current = workspace._connection_task
+    old.operation()
+    assert facade.disconnect_wechat_calls == []
+    old.succeed(_wechat_missing_status())
+    old.finish()
+    assert workspace._connection_task is current
+    assert "准备微信连接" in workspace._status_label.text()
+
+
+def test_wechat_navigation_during_connect_does_not_start_passive_old_account_loading(qt_app):
+    executor = _IndependentDeferredExecutor()
+    workspace = _wechat_guide_module().WeChatWorkspace(StubFacade(), executor=executor)
+    workspace._start_wechat_connect(_wechat_connection_config())
+    before = (workspace._status_label.text(), workspace._wechat_guide_label.text())
+    workspace.select_source(_facade_module().ChatSource.WECHAT)
+    workspace.refresh_connection_status(load_sessions_on_ready=True)
+    assert len(executor.tasks) == 1
+    assert (workspace._status_label.text(), workspace._wechat_guide_label.text()) == before
+
+
 def test_begin_shutdown_signals_wechat_attempt_without_waiting_on_gui(qt_app):
     facade = StubFacade()
     executor = _IndependentDeferredExecutor()

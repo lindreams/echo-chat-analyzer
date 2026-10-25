@@ -111,7 +111,9 @@ ImportService 保存 (ChatMessage 实例, RichMessage) 配对
 **现役实现已满足／已核实**（[analysis_service.py](src/qq_chat_analyzer/application/analysis_service.py)、[ExpressionAnalyzer](src/qq_chat_analyzer/analysis/analyzers/expression_analyzer.py)、[tokenizer.py](src/qq_chat_analyzer/tokenizer.py)）：
 
 - scope、发送者 ignore、模板 ignore、质量过滤均删除整条分析输入；活动、会话、成员、词法和表达统计统一消费 kept_messages，其 Rich 事实也随之排除。过滤器保留实例和顺序，不改正文；模板和质量规则看投影文本，不检查 sticker 资源。导入／范围诊断计数有自己的阶段口径，不能与最终统计混用。
+- 活动口令质量规则同时要求复制指令、奖励信息及结构化口令，独立于模板重复次数；只排除命中的消息，不据此判定发送者为机器人或整体删除其发言。未满足这些组合条件的讨论仍按其他既有过滤规则处理。
 - 停用词只影响 `tokenize()` 的普通词法结果，不删消息、不删表达，也不影响 ExpressionAnalyzer 的邻近词；后者另用内置停用词和噪声规则。结构化表达展示名从不拼入正文；tokenizer 使用同一 Unicode 匹配器将 Emoji 替换为空格，避免 keycap 的 ASCII 部分粘入词语，并屏蔽已知官方方括号表情及通用占位符；普通词再按有效字符等规则筛选。
+- 微信正文的提及清理由共用 `clean_text(..., platform="wechat")` 处理：先按原生 U+2005 结束符移除完整昵称（可含空格、标点），再处理普通空白分隔的提及；中文可紧贴 `@`，ASCII 邮箱保留。替换为空格以免两侧正文粘成新词。全局／成员词语和语言画像复用同一清理结果，画像消息长度也传入来源；不修改原消息或使用昵称黑名单。
 - `_expression_tokens()` 与 ExpressionAnalyzer 重复遍历表达，但共用 `iter_emoji_clusters()` 和 `iter_expression_placeholders()`，并分别读取同一 Rich 的 ExpressionContent。前者扫描投影正文，后者有 Rich 时扫描其 TextContent 拼接；正常投影配对下正文相同，当前未见由两套 Unicode 规则造成的结果分叉。只有 ChatMessage 的输入仍可识别 Unicode／通用占位符，不能恢复来源内置表情事实。
 - `expression:` token 随 sender_tokens 暂存，现役 `_build_reports()` 在传给成员常用词、特色词、私聊语言画像前统一去除；CLI 词语归属也用去除后的 token。该临时表达通道当前不直接生成 Echo 词榜。ExpressionAnalyzer 独立生成表达全局／成员统计，再供 Echo 表达文化消费。
 - 表达出现次数逐次累计；带表达／纯表达消息按消息计数，每个 key 的伴随文字／纯表达次数也按消息去重。纯表达判定只看正文与表达，未将同消息的 NonTextContent 纳入判定。sticker 计入全局与成员总量、种类和纯表达统计，但不进入邻近词及组合统计；组合为同消息不同非 sticker key 的无序对，超过 64 个不同 key 时整条消息跳过组合，其他总量保留。

@@ -10,17 +10,18 @@ from typing import TYPE_CHECKING
 from ..analysis.stickers import StickerConversationReport, StickerMaterialUsage, StickerMedia, StickerHabit
 from ..media_content import StoredMedia
 from .models import EchoStickerAsset, EchoStickerItem, EchoStickerMember, EchoStickers, EchoStickerSignature
-from .sticker_memories import build_sticker_memories
+from .sticker_memories import build_sticker_memories, build_group_sticker_memories
 from ..analysis.sticker_stories import select_additional_sticker_stories
 
 if TYPE_CHECKING:
     from ..analysis.sticker_features import PrivateStickerFeatures
+    from ..analysis.group_stickers import GroupStickerFeatures
 
 
 TOP_MATERIAL_LIMIT = 10
 REPORT_STICKER_BYTE_BUDGET = 16 * 1024 * 1024
 QQ_REPORT_INLINE_BYTES = 8 * 1024 * 1024
-SHARED_RANKING_MIN_MATERIALS = 3  # Experimental UI rule; does not alter aggregate counts.
+SHARED_RANKING_MIN_MATERIALS = 1
 
 
 def sticker_report_targets(chapter: EchoStickers | None) -> tuple[EchoStickerItem, ...]:
@@ -98,6 +99,7 @@ def build_echo_stickers(
     conversation_kind: str,
     member_names: dict[str, str] | None = None,
     private_features: PrivateStickerFeatures | None = None,
+    group_features: GroupStickerFeatures | None = None,
 ) -> EchoStickers:
     if conversation_kind not in {"private", "group"}:
         return EchoStickers(available=False)
@@ -213,6 +215,19 @@ def build_echo_stickers(
         chapter = replace(chapter, memories=build_sticker_memories(private_features,
             {item.media_key: item_view(item, item.count) for item in report.materials if item.media_key in selected_media},
             {side.sender_id: label for side, label in zip(sides, member_labels)}))
+    group_matched = (not private and group_features is not None and group_features.available
+            and group_features.source == report.source and group_features.conversation_id == report.conversation_id)
+    if group_matched:
+        selected_media = {key for story in group_features.stories for key in story.media_keys}
+        chapter = replace(chapter, memories=build_group_sticker_memories(group_features,
+            {item.media_key: item_view(item, item.count) for item in report.materials if item.media_key in selected_media},
+            labels_by_sender))
+    if not private:
+        logging.getLogger("qq_chat_analyzer.desktop.analysis_diagnostics").info(
+            "[group-sticker-projection-counts] available=%d matched_scope=%d stories=%d memories=%d findings=%d",
+            int(bool(group_features and group_features.available)), int(bool(group_matched)),
+            len(group_features.stories) if group_features else 0,
+            len(chapter.memories), sum(len(m.findings) for m in chapter.memories))
     if private:
         logging.getLogger("qq_chat_analyzer.desktop.analysis_diagnostics").info(
             "[sticker-projection-counts] featured=%d matched_scope=%d memories=%d findings=%d",

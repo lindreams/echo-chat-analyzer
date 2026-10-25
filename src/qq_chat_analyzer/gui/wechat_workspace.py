@@ -357,14 +357,21 @@ class WeChatWorkspace(QWidget):
 
     def select_source(self, source: Any) -> None:
         """Configure the panel for WeChat and reset transient state."""
+        if self._connection_task is not None:
+            return
+        self._wechat_attempt_generation += 1
         self.session_panel.configure(
             self._facade,
             ChatSource.WECHAT,
             executor=self._executor,
         )
-        self._sessions_loaded = False
+        self._clear_sessions()
         self._set_stage(None)
         self._wechat_disconnect_button.setVisible(False)
+
+    def _clear_sessions(self) -> None:
+        self._sessions_loaded = False
+        self.session_panel.cancel_analysis()
         self.session_panel.clear()
 
     def refresh_connection_status(
@@ -373,21 +380,27 @@ class WeChatWorkspace(QWidget):
         load_sessions_on_ready: bool = False,
     ) -> None:
         """Ask the facade for WeChat's connection state and render it."""
+        if self._connection_task is not None:
+            return
+        self._wechat_attempt_generation += 1
+        generation = self._wechat_attempt_generation
+        self._clear_sessions()
         self._status_label.setVisible(True)
         self._show_wechat_idle()
         self._status_label.setToolTip("")
         self.session_panel.show_unconnected_placeholder()
         if load_sessions_on_ready:
             self._executor(
-                lambda: self._facade.get_connection_status(ChatSource.WECHAT),
+                lambda: self._facade.get_connection_status(ChatSource.WECHAT)
+                if generation == self._wechat_attempt_generation else None,
                 on_success=lambda status: self._show_connection_status(
                     status,
                     load_sessions_on_ready,
-                ),
+                ) if generation == self._wechat_attempt_generation else None,
                 on_error=lambda code, message: self._handle_connection_status_error(
                     code,
                     message,
-                ),
+                ) if generation == self._wechat_attempt_generation else None,
             )
 
     def _handle_connection_status_error(self, code: str, message: str) -> None:
@@ -590,6 +603,8 @@ class WeChatWorkspace(QWidget):
             self.cancel_connection()
             return
 
+        self._wechat_attempt_generation += 1
+        self._clear_sessions()
         self._set_stage(None)
         detect_roots = detect_data_roots or self._facade.detect_wechat_data_roots
         try:
@@ -632,6 +647,7 @@ class WeChatWorkspace(QWidget):
         """
         self._wechat_attempt_generation += 1
         attempt_generation = self._wechat_attempt_generation
+        self._clear_sessions()
         cancel_event = threading.Event()
         self._connection_cancel_event = cancel_event
         self._wechat_login_progress = WeChatConnectionProgress.PREPARING
@@ -667,8 +683,7 @@ class WeChatWorkspace(QWidget):
                 else None
             ),
             on_finished=lambda: self._finish_wechat_connect(
-                task,
-                attempt_generation,
+                attempt_generation=attempt_generation,
             ),
         )
         self._connection_task = task
@@ -813,22 +828,27 @@ class WeChatWorkspace(QWidget):
             self.cancel_connection()
             return
         _LOGGER.info("[wechat gui] disconnect_wechat requested")
+        self._wechat_attempt_generation += 1
+        generation = self._wechat_attempt_generation
+        self._clear_sessions()
         self._wechat_disconnect_button.setEnabled(False)
         self._set_stage(None)
         self._status_label.setVisible(True)
         self._status_label.setText(_WECHAT_DISCONNECTING)
         self._status_label.setToolTip("")
         self._hide_wechat_guide()
-        self.session_panel.clear()
         self.status_changed.emit(_WECHAT_DISCONNECTING)
         self._connection_task = self._executor(
-            self._facade.disconnect_wechat,
-            on_success=self._after_wechat_disconnect,
+            lambda: self._facade.disconnect_wechat()
+            if generation == self._wechat_attempt_generation else None,
+            on_success=lambda status: self._after_wechat_disconnect(status)
+            if generation == self._wechat_attempt_generation else None,
             on_error=lambda code, message: self._handle_wechat_disconnect_error(
                 code,
                 message,
-            ),
-            on_finished=self._finish_wechat_disconnect,
+            ) if generation == self._wechat_attempt_generation else None,
+            on_finished=lambda: self._finish_wechat_disconnect()
+            if generation == self._wechat_attempt_generation else None,
         )
 
     def _after_wechat_disconnect(self, status: Any) -> None:
@@ -855,6 +875,7 @@ class WeChatWorkspace(QWidget):
     def cancel_connection(self) -> None:
         """Cancel an in-flight WeChat connection."""
         self._wechat_attempt_generation += 1
+        self._clear_sessions()
         if self._connection_cancel_event is not None:
             cancel = getattr(self._facade, "cancel_wechat_connection", None)
             if callable(cancel):
@@ -884,14 +905,13 @@ class WeChatWorkspace(QWidget):
     # ---------------------------------------------------------------- sessions
 
     def _load_sessions(self, *, attempt_generation: int | None = None) -> None:
+        generation = self._wechat_attempt_generation if attempt_generation is None else attempt_generation
+
         def is_current() -> bool:
-            return (
-                attempt_generation is None
-                or attempt_generation == self._wechat_attempt_generation
-            )
+            return generation == self._wechat_attempt_generation
 
         self._executor(
-            self._load_verified_sessions,
+            lambda: self._load_verified_sessions() if is_current() else None,
             on_success=lambda sessions: (
                 self._handle_sessions_loaded(sessions) if is_current() else None
             ),

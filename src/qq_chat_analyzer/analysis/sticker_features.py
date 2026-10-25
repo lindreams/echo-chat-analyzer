@@ -36,6 +36,7 @@ RELAY_MAX_SECONDS = 600
 STYLE_MIN_SENDS = 10
 STYLE_MIN_DATES = 2
 STYLE_MAX_SAMPLE = 100
+STYLE_MIN_KNOWN_SHARE = .80
 STYLE_MIN_RICHNESS_RATIO = 1.8
 STYLE_MIN_RICHNESS_DIFFERENCE = 3
 STYLE_MIN_D2_RATIO = 1.5
@@ -235,10 +236,10 @@ class PrivateStickerFeatures:
 def analyze_private_stickers(index: StickerFactIndex) -> PrivateStickerFeatures:
     """Analyze a shared fact index, independent of media success or UI limits."""
     audit = Counter()
-    if not index.available:
+    if not index.available or index.report is None or index.report.conversation_type != "private":
         logging.getLogger("qq_chat_analyzer.desktop.analysis_diagnostics").info(
             "[sticker-counts] %s", '{"analysis.unavailable": 1}')
-        return PrivateStickerFeatures(False, index.unavailable_reason)
+        return PrivateStickerFeatures(False, index.unavailable_reason or "not_single_private_conversation")
     report = index.report
     qualifiers = ["filtered_observations_only", "history_may_be_truncated", "temporal_claims_use_known_dates"]
     if index.gap_starts:
@@ -587,8 +588,15 @@ def _styles(index: StickerFactIndex, counts: dict[str, dict[str, int]], audit: C
            for sender in index.side_members):
         audit["styles.reject_sample_or_dates"] = 1
         return ()
-    sample = min(STYLE_MAX_SAMPLE, *(totals[sender] for sender in index.side_members))
     unknowns = Counter(s.sender_id for s in index.uncertain_sends if not s.identity_key)
+    if any(totals[sender]/(totals[sender]+unknowns[sender]) < STYLE_MIN_KNOWN_SHARE
+           for sender in index.side_members):
+        audit["styles.reject_material_coverage"] = 1
+        return ()
+    if (index.send_count-index.unattributed_send_count)/index.send_count < STYLE_MIN_KNOWN_SHARE:
+        audit["styles.reject_sender_coverage"] = 1
+        return ()
+    sample = min(STYLE_MAX_SAMPLE, *(totals[sender] for sender in index.side_members))
     members = []
     for sender in index.side_members:
         values = tuple(counts[sender].values())

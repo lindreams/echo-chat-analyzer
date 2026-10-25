@@ -973,6 +973,8 @@ class SessionAnalysisPanel(QWidget):
 
     def _reapply_session_view(self) -> None:
         """Filter and sort the cached sessions for the current controls."""
+        if not self._sessions_ready:
+            return
         query = self._session_search.text().strip().lower()
         sort_mode = self._session_sort.currentData() or _SESSION_SORT_ORDER[0][1]
         indexed = list(enumerate(self._sessions_data))

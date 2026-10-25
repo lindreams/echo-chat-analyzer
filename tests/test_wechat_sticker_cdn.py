@@ -125,6 +125,58 @@ def test_url_policy_accepts_wechat_material_host() -> None:
     assert wechat_cdn_url_rejection(FICTIONAL_URL) is None
 
 
+@pytest.mark.parametrize("earlier_url", [None, "https://fictional.invalid/not-authorized"])
+def test_recovery_uses_a_valid_later_occurrence_of_the_same_material(earlier_url):
+    body = _gif_bytes()
+    digest = hashlib.md5(body).hexdigest()
+    data = StickerData(sends=(
+        _send("sticker:repeated", digest, earlier_url),
+        _send("sticker:repeated", digest, FICTIONAL_URL),
+    ))
+    opener = _Opener(body)
+    result = recover_wechat_sticker_media(data, media_keys=("sticker:repeated",), opener=opener)
+    assert result.media[0].status == "available"
+    assert result.media[0].original_bytes == body
+    assert opener.calls == [FICTIONAL_URL]
+
+
+def test_android_only_sends_reuse_verified_material_in_each_private_relay_turn():
+    from qq_chat_analyzer.wechat_db_adapter import parse_rich_messages
+    from qq_chat_analyzer.analysis.stickers import collect_sticker_sends
+    from qq_chat_analyzer.analysis.sticker_index import build_sticker_fact_index
+    from qq_chat_analyzer.analysis.sticker_features import analyze_private_stickers
+    from qq_chat_analyzer.analysis.models import AnalysisReports
+    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
+    from qq_chat_analyzer.presentation.stickers import sticker_report_targets
+
+    body = _gif_bytes()
+    digest = hashlib.md5(body).hexdigest()
+    rows = [{
+        "local_id": i + 1, "local_type": 47, "create_time": 1760000000 + i * 10,
+        "username": "wxid_fictional_peer", "conversation_type": "private",
+        "user_name": "wxid_fictional_self" if i % 2 == 0 else "wxid_fictional_peer",
+        "self_username": "wxid_fictional_self",
+        "message_content": (f'<msg><emoji androidmd5="{digest}"/></msg>' if i % 2 == 0
+                            else f'<msg><emoji md5="{digest}" cdnurl="{FICTIONAL_URL}"/></msg>'),
+    } for i in range(4)]
+    rich = tuple(parse_rich_messages(rows))
+    data = StickerData(sends=collect_sticker_sends(rich))
+    index = build_sticker_fact_index(data, rich, source_positions=range(len(rich)))
+    features = analyze_private_stickers(index)
+    view = build_echo_report_view(AnalysisReports(stickers=(index.report,), private_stickers=features),
+                                  conversation_kind="private")
+    relay = next(f for m in echo_report_to_dict(view)["sticker_memories"] for f in m["findings"]
+                 if f["kind"] == "relay")
+    assert len(relay["points"]) == 4
+    assert all(len(point["materials"]) == 1 for point in relay["points"])
+    targets = sticker_report_targets(view.stickers)
+    assert len(targets) == 1
+    opener = _Opener(body)
+    recovered = recover_wechat_sticker_media(data, media_keys=tuple(t.media_key for t in targets), opener=opener)
+    assert recovered.media[0].original_bytes == body
+    assert opener.calls == [FICTIONAL_URL]
+
+
 def test_matching_digest_yields_verified_original() -> None:
     body = _gif_bytes()
     opener = _Opener(body)

@@ -356,9 +356,13 @@ def _sticker_expression(
     # Preserve the legacy expression key/counting contract. Only a validated
     # digest may identify a material in the new data channel; fallback IDs and
     # arbitrary XML strings never authorize deduplication or resource matching.
+    # Some Type-47 rows only retain androidmd5. It describes the
+    # same content digest, so they can reuse an already verified original.
+    # A malformed primary attribute must not be hidden by an alternate value.
+    content_md5 = md5 or (_clean_string(emoji.get("androidmd5")) if emoji is not None else None)
     reliable_md5 = (
-        md5.lower()
-        if unambiguous and md5 and re.fullmatch(r"[0-9a-fA-F]{32}", md5)
+        content_md5.lower()
+        if unambiguous and content_md5 and re.fullmatch(r"[0-9a-fA-F]{32}", content_md5)
         else None
     )
     return ExpressionContent(

@@ -205,7 +205,7 @@ def test_analysis_logs_each_timing_stage_without_private_content(
         "import", "scope_filter", "smart_profile", "message_quality_filter",
         "text_analysis", "ExpressionAnalyzer.preflight", "word_ranking", "sticker_data",
         "report_build", "artifact_export", "total",
-        "sticker_media_resolve", "sticker_aggregation", "report_view_assets",
+        "sticker_media_resolve", "sticker_aggregation", "group_sticker_features", "report_view_assets",
         "report_json_export", "report_html_export",
         "ActivityAnalyzer", "UserProfileAnalyzer",
         "ConversationAnalyzer",
@@ -488,7 +488,7 @@ def test_new_report_metadata_records_corrected_expression_semantics(tmp_path):
         result=result, source="wechat", scope=AnalysisScope.all(),
         generated_at=datetime(2026, 10, 16, tzinfo=timezone.utc),
     )
-    assert metadata["analysis_revision"] == "echo-analysis.v8"
+    assert metadata["analysis_revision"] == "echo-analysis.v9"
 
 
 @pytest.mark.parametrize("source", ["wechat", "qq"])
@@ -528,6 +528,82 @@ def test_private_expression_tokens_do_not_reenter_language_profile(tmp_path: Pat
     payload = json.loads((tmp_path / "private-output" / "echo-report.json").read_text(encoding="utf-8"))
     assert payload["expression_culture"] is not None
     assert '"表情"' not in json.dumps(payload["language_profile"], ensure_ascii=False)
+
+
+@pytest.mark.parametrize("conversation_kind", ["private", "group"])
+def test_wechat_mentions_do_not_enter_exported_language_profile(tmp_path, conversation_kind):
+    application = _application_module()
+    path = tmp_path / "fictional-mentions.json"
+    (tmp_path / "private-output").mkdir()
+    rows = [{
+        "local_id": index + 1, "server_id": 9000 + index,
+        "create_time": 1704099600 + index * 60, "local_type": 1,
+        "message_content": text,
+        "user_name": "wxid_fictional_self" if index % 2 else "wxid_fictional_peer",
+    } for index, text in enumerate([
+        "公园散步@银河 宇宙\u2005周末开会",
+        "@银河 宇宙\u2005公园散步 周末开会",
+        "下次@银河 宇宙\u2005公园散步聊聊音乐",
+        "天气不错@银河 宇宙\u2005公园散步拍照",
+    ])]
+    path.write_text(json.dumps({
+        "source": "wechat-db",
+        "conversation": {"username": "wxid_fictional_peer" if conversation_kind == "private"
+                         else "wxid_fictional_room@chatroom",
+                         "session_type": conversation_kind, "self_username": "wxid_fictional_self"},
+        "messages": rows,
+    }, ensure_ascii=False), encoding="utf-8")
+    result = application.AnalysisApplicationService().execute(_request(application, tmp_path, path))
+    words = {item.word for item in result.top_words}
+    assert "公园" in words and "散步" in words
+    assert not words & {"银河", "宇宙"}
+    payload = json.loads((tmp_path / "private-output" / "echo-report.json").read_text(encoding="utf-8"))
+    profile = payload["language_profile"]
+    assert "公园" in json.dumps(payload["members"], ensure_ascii=False)
+    if conversation_kind == "private":
+        assert profile["available"]
+        assert "公园" in json.dumps(profile, ensure_ascii=False)
+        assert [member["expression_habits"]["median_length"] for member in profile["members"]] == [10, 10]
+    assert all(name not in json.dumps(profile, ensure_ascii=False) for name in ("银河", "宇宙"))
+
+
+def test_copy_campaigns_do_not_enter_exported_language_profile(tmp_path):
+    application = _application_module()
+    path = tmp_path / "fictional-campaigns.json"
+    (tmp_path / "private-output").mkdir()
+    texts = [
+        "公园散步 周末一起去拍照",
+        "公园散步 这次想去看看花",
+        "公园散步 记得带上相机",
+        "公园散步 拍完照片一起吃饭",
+        "限时礼包！复制口令【星空福利AbCdEf】参与活动。",
+        "复制【星空礼包Q7w8E9】口令，免费奖励等你来拿！",
+        "皮肤好礼，复制以下口令并粘贴：K9m2P4，和好友一起参与。",
+        "限时奖励，复制兑换码：ABCDEF，前往活动页面使用。",
+    ]
+    rows = [{
+        "local_id": index + 1, "server_id": 9000 + index,
+        "create_time": 1704099600 + index * 120, "local_type": 1,
+        "message_content": text,
+        "user_name": "wxid_fictional_self" if index % 2 else "wxid_fictional_peer",
+    } for index, text in enumerate(texts)]
+    path.write_text(json.dumps({
+        "source": "wechat-db",
+        "conversation": {"username": "wxid_fictional_peer", "session_type": "private",
+                         "self_username": "wxid_fictional_self"},
+        "messages": rows,
+    }, ensure_ascii=False), encoding="utf-8")
+
+    result = application.AnalysisApplicationService().execute(_request(application, tmp_path, path))
+
+    assert result.status is application.AnalysisStatus.COMPLETED
+    assert result.diagnostic_counts.filtered_message_count == 4
+    payload = json.loads((tmp_path / "private-output" / "echo-report.json").read_text(encoding="utf-8"))
+    profile = payload["language_profile"]
+    assert profile["available"]
+    assert "公园" in json.dumps(profile, ensure_ascii=False)
+    assert all(word not in json.dumps(profile, ensure_ascii=False)
+               for word in ("口令", "礼包", "限时", "复制", "兑换码"))
 
 
 def test_content_report_failure_removes_partially_written_artifacts(

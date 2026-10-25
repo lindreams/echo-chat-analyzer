@@ -24,4 +24,6 @@
 # material/member identities, with message denominators from the kept Rich scope.
 # v8: full sticker frequency ordering and experimental per-member longitudinal
 # signature evidence (calendar dates and ISO year/week), shared by conversation kinds.
-ANALYSIS_REVISION = "echo-analysis.v8"
+# v9: copy-and-redeem reward campaigns are excluded by message content even
+# when variable codes and wording keep individual templates below the threshold.
+ANALYSIS_REVISION = "echo-analysis.v9"

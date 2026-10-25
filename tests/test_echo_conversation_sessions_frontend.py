@@ -513,7 +513,7 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
           missing: sheet.querySelectorAll(".sticker-image:not(.has-image)").length,
           overflow: document.documentElement.scrollWidth > window.innerWidth,
           preview: sheet.textContent.includes("预览"),
-          diagnostics: /可靠成员|已知|未知|素材 \d|资格|阈值|排序口径|身份判定/.test(sheet.innerText),
+          diagnostics: /可靠成员|已知|未知|素材 \d|资格|阈值|排序口径|身份判定|按出现天数与活跃周挑选/.test(sheet.innerText),
           signatureCount: sheet.querySelectorAll("#sticker-members .sticker-signature").length,
           signatureText: (sheet.querySelector(".sticker-signature") || {}).innerText || "",
           signatureImage: Boolean(sheet.querySelector(".sticker-signature img")),
@@ -540,6 +540,9 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
         const positions = [...memberList.children].map(x => x.getBoundingClientRect());
         result.memberRows = [...new Set(positions.map(x => Math.round(x.top)))].length;
         result.memberColumns = positions.filter(x => Math.round(x.top) === Math.round(positions[0].top)).length;
+        result.memberDisplay = getComputedStyle(memberList).display;
+        result.memberScrollable = memberList.scrollWidth > memberList.clientWidth;
+        result.overflow = result.overflow || document.documentElement.scrollWidth > window.innerWidth;
         result.memberImageWidths = [...memberList.querySelectorAll(".sticker-image")].map(x => x.getBoundingClientRect().width);
         if (!button.hidden) { button.click(); }
         result.collapsed = memberList.children.length;
@@ -567,6 +570,14 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
           const rankings = document.getElementById("sticker-group-rankings");
           const blocks = [...rankings.children];
           const bounds = () => blocks.map(x => ({top:x.getBoundingClientRect().top, width:x.getBoundingClientRect().width}));
+          const layout = () => {
+            result.overflow = result.overflow || document.documentElement.scrollWidth > window.innerWidth;
+            return blocks.map(x => {
+              const list = x.querySelector(".sticker-top-list");
+              return {rows:rowCount(list), scrollable:list.scrollWidth > list.clientWidth,
+                display:getComputedStyle(list).display};
+            });
+          };
           result.defaultGroupBounds = bounds();
           blocks[1].querySelector("button").click();
           result.sharedExpandedBounds = bounds();
@@ -577,9 +588,18 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
             x => x.getBoundingClientRect().width);
           blocks[0].querySelector("button").click();
           result.bothExpandedBounds = bounds();
+          result.bothExpandedLayout = layout();
           result.groupExpandedCounts = blocks.map(x => x.querySelectorAll("li").length);
           blocks[1].querySelector("button").click();
           result.totalExpandedBounds = bounds();
+          result.totalExpandedLayout = layout();
+          blocks[0].querySelector("button").click();
+          blocks[0].querySelector("button").click();
+          blocks[1].querySelector("button").click();
+          result.reverseExpandedLayout = layout();
+          blocks.forEach(x => x.querySelector("button").click());
+          result.recollapsedRows = blocks.map(x => rowCount(x.querySelector(".sticker-top-list")));
+          result.overflowAfterExpansion = document.documentElement.scrollWidth > window.innerWidth;
           result.pickerBorder = getComputedStyle(document.getElementById("sticker-member-picker")).borderBottomWidth;
         }
         image.src = "data:image/png;base64,broken";
@@ -605,7 +625,10 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
     assert match is not None
     rendered = json.loads(html.unescape(match.group(1)))
     assert rendered["visible"] and rendered["count"] == 1
-    assert not rendered["overflow"] and not rendered["diagnostics"]
+    assert not rendered["overflow"]
+    if kind == "group":
+        for key in ("bothExpandedLayout", "reverseExpandedLayout"):
+            assert rendered[key] == [{"rows": 1, "scrollable": True, "display": "flex"}] * 2
     assert rendered["signatureCount"] == (1 if kind == "group" else 0)
     if kind == "group":
         assert rendered["signatureImage"]
@@ -621,8 +644,8 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
         assert rendered["expandLabel"] == f"展开 Top {limit}"
     assert rendered["expandedState"] == ("true" if limit > default_count else "false")
     assert rendered["collapsed"] == default_count
-    assert rendered["memberColumns"] == min(limit, 5)
-    assert rendered["memberRows"] == (2 if limit == 10 else 1)
+    assert rendered["memberColumns"] == (limit if kind == "group" else 5)
+    assert rendered["memberRows"] == 1
     minimum_image_width = 64 if kind == "private" else 110
     assert all(minimum_image_width <= value <= 120 for value in rendered["memberImageWidths"])
     if kind == "private":
@@ -632,6 +655,8 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
         assert rendered["comparisonInside"] and rendered["comparisonLines"] == pytest.approx(1)
     if kind == "group":
         assert rendered["comparisonHidden"] and rendered["comparisonText"] == ""
+        assert rendered["memberDisplay"] == ("flex" if limit > default_count else "grid")
+        assert rendered["memberScrollable"] == (limit == 10)
         assert rendered["pickerCount"] == senders
         assert rendered["groupExpandedCounts"] == [10, 10]
         assert rendered["comparedMembers"] == 3
@@ -646,8 +671,12 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
         assert all(pair[0]["width"] == pair[1]["width"] > default[0]["width"] for pair in (shared, both, total))
         assert rendered["groupSharedRows"] == 1
         assert rendered["groupSharedScrollable"]
+        assert rendered["totalExpandedLayout"][0] == {"rows": 1, "scrollable": True, "display": "flex"}
+        assert rendered["recollapsedRows"] == [1, 1]
+        assert not rendered["overflowAfterExpansion"]
         assert all(110 <= value <= 120 for value in rendered["groupSharedImageWidths"])
         assert rendered["pickerBorder"] == "0px"
+    assert not rendered["diagnostics"]
     assert rendered["loaded"] and rendered["offline"] and rendered["missing"] >= 2
     assert rendered["brokenFallback"] and rendered["preview"]
     assert rendered["width"] == 1040
@@ -889,7 +918,8 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
         assert sum(len(m["entries"]) for m in result["tops"])==6
         assert result["imageCount"]==9
         assert result["sameResource"] and result["loaded"] and result["nativeSave"] and result["offline"]
-        assert all(word in result["text"] for word in ("70 天","49 天","8 轮","预计","9.7 种","1.0 种","10 次"))
+        assert all(word in result["text"] for word in ("70 天","49 天","8 轮","回音","约 9.7 种","约 1.0 种","10 次"))
+        assert all(word not in result["text"] for word in ("不代表谁带动了谁", "按已有记录估算", "各随机取", "部分发送时间不明"))
     elif leaders:
         assert result["missing"]>0
     assert all(secret not in result["text"] for secret in ("虚构日常","虚构回复","private-body-sentinel"))
@@ -927,6 +957,62 @@ def _run_browser(command: list[str]) -> subprocess.CompletedProcess:
         process.communicate()
         raise
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+@pytest.mark.slow_integration
+@pytest.mark.parametrize("scene", ["relay", "all"])
+def test_group_memories_use_the_same_offline_story_template_without_overflow(tmp_path, scene):
+    from test_group_sticker_features import relay_rows, all_group_story_rows, discover
+    from qq_chat_analyzer.analysis.models import AnalysisReports
+    from qq_chat_analyzer.analysis.stickers import StickerData, collect_sticker_sends, aggregate_stickers
+    from qq_chat_analyzer.presentation import build_echo_report_view
+    chromium = _find_chromium()
+    if chromium is None:
+        pytest.skip("no local Chromium available")
+    rows = relay_rows() if scene == "relay" else all_group_story_rows()
+    data = StickerData(collect_sticker_sends(rows))
+    view = build_echo_report_view(AnalysisReports(stickers=aggregate_stickers(data, rows),
+        group_stickers=discover(rows)), conversation_kind="group")
+    # Long friendly labels must remain readable without exposing internal IDs.
+    from dataclasses import replace
+    chapter = view.stickers
+    memories = tuple(replace(memory, findings=tuple(replace(finding,
+        points=tuple(replace(p, label=p.label+"虚构的较长群昵称"*3) for p in finding.points))
+        for finding in memory.findings)) for memory in chapter.memories)
+    view = replace(view, stickers=replace(chapter, memories=memories))
+    output = export_echo_report_html(view, tmp_path/"group.html")
+    probe = '''<script>addEventListener("load",()=>{setTimeout(()=>{
+      const root=document.getElementById("sticker-memories");
+      const result={visible:!root.hidden,stories:root.querySelectorAll(".sticker-memory-story").length,
+        turns:root.querySelectorAll(".memory-relay li").length,
+        kinds:[...root.querySelectorAll("[data-finding]")].map(x=>x.dataset.finding),
+        text:root.innerText,
+        labels:[...root.querySelectorAll(".memory-turn-side")].map(x=>x.textContent),
+        overflow:document.documentElement.scrollWidth>innerWidth,
+        fits:[...root.querySelectorAll("li,h3,.memory-art")].every(x=>x.scrollWidth<=x.clientWidth+1),
+        clipped:[...root.querySelectorAll("*")].filter(x=>x.scrollWidth>x.clientWidth+1).map(x=>({
+          cls:x.className,width:x.clientWidth,content:x.scrollWidth,whiteSpace:getComputedStyle(x).whiteSpace})),
+        external:[...root.querySelectorAll("img")].some(x=>/^https?:/.test(x.src))};
+      const pre=document.createElement("pre");pre.id="group-probe";pre.hidden=true;
+      pre.textContent=JSON.stringify(result);document.body.appendChild(pre);
+    },300);});</script>'''
+    output.write_text(output.read_text(encoding="utf-8").replace("</body>",probe+"</body>"), encoding="utf-8")
+    browser = _run_browser([chromium,"--headless","--disable-gpu","--no-sandbox","--disable-extensions",
+        f"--user-data-dir={tmp_path/'browser'}","--window-size=1280,1200","--virtual-time-budget=2000",
+        "--dump-dom",output.as_uri()])
+    assert browser.returncode == 0, browser.stderr
+    match = re.search(r'<pre id="group-probe" hidden="">(.*?)</pre>',browser.stdout.decode("utf-8"),re.S)
+    assert match is not None
+    result = json.loads(html.unescape(match.group(1)))
+    assert result["visible"] and result["stories"] == len(memories) and result["turns"] == 6
+    assert len(set(result["labels"])) == 3
+    assert result["fits"] and not result["overflow"] and not result["external"], result
+    assert not re.search(r"仅比较|跨两天|抽取|不包含未知|其他成员合计|不推断|依据 QQ|每轮展示|同期发表情", result["text"])
+    if scene == "all":
+        # Compact stories have one panel; associated findings remain visible as summaries.
+        assert all(finding.title in result["text"] for memory in memories for finding in memory.findings)
+        for finding in (f for m in memories for f in m.findings if f.kind == "style"):
+            assert all(f"约 {point.value:.1f} 种" in result["text"] for point in finding.points)
 
 
 def test_browser_probe_timeout_terminates_owned_process_tree(monkeypatch):
