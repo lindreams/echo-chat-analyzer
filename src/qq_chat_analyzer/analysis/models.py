@@ -52,6 +52,12 @@ class WeekdayActivity:
 
     weekday: int
     count: int
+    calendar_days: int = 0
+
+    @property
+    def average_per_day(self) -> float | None:
+        """Use the shared observation window, including its silent dates."""
+        return self.count / self.calendar_days if self.calendar_days > 0 else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +70,7 @@ class ActivityReport:
     weekday_counts: tuple[WeekdayActivity, ...] = ()
     active_days: int = 0
     average_messages_per_active_day: float = 0.0
+    calendar_day_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)

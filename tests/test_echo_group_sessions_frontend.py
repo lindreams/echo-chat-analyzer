@@ -54,9 +54,8 @@ def _echo_page_flow(html: str) -> list[tuple[str, str]]:
     return [(page_id, folio) for page_id, folio in parser.pages if page_id in wanted]
 
 
-def test_overview_page_and_03_04_05_06_flow_regression(tmp_path: Path) -> None:
-    """Overview must exist unhidden in the self-contained Echo, followed by
-    sessions (04), rhythm (05), and voices (06)."""
+def test_merged_overview_stays_visible_before_sessions_and_voices(tmp_path: Path) -> None:
+    """The first chapter owns rhythm; sessions and voices remain separate."""
     import sys
 
     sys.path.insert(0, "src")
@@ -74,8 +73,7 @@ def test_overview_page_and_03_04_05_06_flow_regression(tmp_path: Path) -> None:
     expected_flow = [
         ("overview", "03"),
         ("conversation-sessions", "04"),
-        ("rhythm", "05"),
-        ("voices", "06"),
+        ("voices", "05"),
     ]
 
     assert 'id="overview"' in ECHO_REPORT_HTML_SKELETON

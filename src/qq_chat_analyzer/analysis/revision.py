@@ -26,4 +26,6 @@
 # signature evidence (calendar dates and ISO year/week), shared by conversation kinds.
 # v9: copy-and-redeem reward campaigns are excluded by message content even
 # when variable codes and wording keep individual templates below the threshold.
-ANALYSIS_REVISION = "echo-analysis.v9"
+# v10: weekday daily averages use one calendar span of kept messages for
+# the conversation and all members; unobserved weekdays remain unavailable.
+ANALYSIS_REVISION = "echo-analysis.v10"

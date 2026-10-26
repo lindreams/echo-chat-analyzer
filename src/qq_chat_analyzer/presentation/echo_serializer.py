@@ -15,6 +15,7 @@ from .echo_report_template import (
     ECHO_REPORT_CSS,
     ECHO_REPORT_HTML_SKELETON,
 )
+from .echo_rhythm import ECHO_RHYTHM_APP_JS, ECHO_RHYTHM_CSS
 from .models import (
     ChartPoint,
     EchoConversationSessions,
@@ -30,7 +31,7 @@ from .expression_assets import (
 )
 
 
-ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.10"
+ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.11"
 
 
 def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
@@ -56,6 +57,8 @@ def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
         "activity": {
             "hourly": _points_to_list(view.hourly_activity),
             "weekday": _points_to_list(view.weekday_activity),
+            "weekday_daily_average": _points_to_list(view.weekday_average_activity),
+            "calendar_day_count": view.calendar_day_count,
         },
         "conversation_sessions": _conversation_sessions_to_dict(
             view.conversation_sessions
@@ -425,6 +428,7 @@ def _member_to_dict(
         "activity": {
             "hourly": _points_to_list(member.hourly_activity),
             "weekday": _points_to_list(member.weekday_activity),
+            "weekday_daily_average": _points_to_list(member.weekday_average_activity),
         },
         "top_words": [
             _word_to_display(word, expression_source)
@@ -486,10 +490,10 @@ def _build_echo_report_html(view: EchoReportView) -> str:
     return (
         ECHO_REPORT_HTML_SKELETON.replace("__ECHO_FAVICON_TAG__", favicon_tag)
         .replace("__ECHO_LOGO_TAG__", logo_tag)
-        .replace("__ECHO_CSS__", ECHO_REPORT_CSS)
+        .replace("__ECHO_CSS__", ECHO_REPORT_CSS + ECHO_RHYTHM_CSS)
         .replace("__ECHO_DATA__", _encode_echo_data(view))
         .replace("__ECHO_ASSETS__", _encode_echo_assets(view))
-        .replace("__ECHO_APP_JS__", ECHO_REPORT_APP_JS)
+        .replace("__ECHO_APP_JS__", ECHO_REPORT_APP_JS + ECHO_RHYTHM_APP_JS)
     )
 
 

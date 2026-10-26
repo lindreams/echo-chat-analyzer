@@ -503,6 +503,7 @@ def _build_reports(
             messages,
             sender_tokens=text_sender_tokens,
             speaker_names=speaker_names,
+            weekday_calendar_days=tuple(point.calendar_days for point in activity.weekday_counts),
         )
     with timed_stage("ConversationAnalyzer"):
         conversations = ConversationAnalyzer().analyze(

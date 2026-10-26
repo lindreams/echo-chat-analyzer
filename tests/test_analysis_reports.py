@@ -169,6 +169,47 @@ def test_activity_counts_and_density_preserve_undated_messages(
     assert [(p.weekday, p.count) for p in report.weekday_counts if p.count] == weekdays
 
 
+def test_weekday_daily_average_uses_calendar_span_and_shared_member_denominators():
+    messages = (
+        [_message(timestamp="2024-01-01 08:00:00")] * 38
+        + [_message(timestamp="2024-01-07 08:00:00")] * 37
+        + [_message(timestamp="2024-05-11 08:00:00"), _message(timestamp="invalid")]
+    )
+    report = _analyzers().ActivityAnalyzer().analyze(messages)
+    assert report.calendar_day_count == 132
+    assert [p.calendar_days for p in report.weekday_counts] == [19, 19, 19, 19, 19, 19, 18]
+    assert report.total_message_count == 77 and report.dated_message_count == 76
+    assert report.active_days == 3
+    monday, sunday = report.weekday_counts[0], report.weekday_counts[6]
+    assert monday.count > sunday.count
+    assert monday.average_per_day == 2
+    assert sunday.average_per_day == pytest.approx(37 / 18)
+    assert sunday.average_per_day > monday.average_per_day
+    assert report.weekday_counts[1].average_per_day == 0
+
+    profiles = _analyzers().UserProfileAnalyzer().analyze(
+        [_message(timestamp="2024-01-01 08:00:00")],
+        weekday_calendar_days=tuple(p.calendar_days for p in report.weekday_counts),
+    )
+    member_monday = profiles.profiles[0].weekday_counts[0]
+    assert member_monday.calendar_days == 19
+    assert member_monday.average_per_day == pytest.approx(1 / 19)
+
+
+def test_weekday_average_distinguishes_unobserved_days_from_silent_days():
+    report = _analyzers().ActivityAnalyzer().analyze([
+        _message(timestamp="2024-02-28 08:00:00"),
+        _message(timestamp="2024-03-01 08:00:00"),
+    ])
+    assert report.calendar_day_count == 3  # Includes leap day, without a message.
+    assert [p.calendar_days for p in report.weekday_counts] == [0, 0, 1, 1, 1, 0, 0]
+    assert report.weekday_counts[3].average_per_day == 0
+    assert report.weekday_counts[0].average_per_day is None
+    undated = _analyzers().ActivityAnalyzer().analyze([_message(timestamp="invalid")])
+    assert undated.calendar_day_count == 0
+    assert all(p.average_per_day is None for p in undated.weekday_counts)
+
+
 def test_user_profile_analyzer_reports_shares_for_multiple_users() -> None:
     messages = (
         _message(sender="Fictional-Alice", text="1234", timestamp=_epoch(hour=8)),

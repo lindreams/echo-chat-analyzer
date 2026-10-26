@@ -565,13 +565,15 @@ def test_activity_analysis_preserves_report_distribution_and_density_contract(tm
         activity=ActivityAnalyzer().analyze(messages),
     ))
     payload = echo_report_to_dict(view)
-    assert payload["schema_version"] == "echo-report.v0.10"
+    assert payload["schema_version"] == "echo-report.v0.11"
     assert payload["overview"] == {
         "has_data": True, "total_message_count": 3, "participant_count": 0,
         "empty_description": "", "active_days": 1,
         "average_messages_per_active_day": 3.0,
     }
-    assert set(payload["activity"]) == {"hourly", "weekday"}
+    assert set(payload["activity"]) == {"hourly", "weekday", "weekday_daily_average", "calendar_day_count"}
+    assert payload["activity"]["calendar_day_count"] == 1
+    assert payload["activity"]["weekday_daily_average"] == [{"label": "周一", "value": 2.0}]
     assert len(payload["activity"]["hourly"]) == 24
     assert len(payload["activity"]["weekday"]) == 7
     assert payload["activity"]["hourly"][8] == {"label": "08:00-08:59", "value": 2.0}

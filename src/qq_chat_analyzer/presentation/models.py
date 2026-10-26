@@ -38,6 +38,7 @@ class EchoMemberCard:
     secondary_name: str | None = None
     remark: str | None = None
     contextual_name: str | None = None
+    weekday_average_activity: tuple[ChartPoint, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -323,3 +324,5 @@ class EchoReportView:
     empty_description: str = ""
     active_days: int = 0
     average_messages_per_active_day: float = 0.0
+    calendar_day_count: int = 0
+    weekday_average_activity: tuple[ChartPoint, ...] = ()

@@ -1015,6 +1015,114 @@ def test_group_memories_use_the_same_offline_story_template_without_overflow(tmp
             assert all(f"约 {point.value:.1f} 种" in result["text"] for point in finding.points)
 
 
+@pytest.mark.slow_integration
+@pytest.mark.parametrize("kind,width,reliable,dated", [
+    ("private", 1280, True, True),
+    ("private", 1280, False, True),
+    ("group", 390, False, True),
+    ("unknown", 1280, False, False),
+])
+def test_merged_rhythm_wheel_scope_and_unknown_time(tmp_path, kind, width, reliable, dated):
+    from qq_chat_analyzer.presentation import ChartPoint, EchoMemberCard
+
+    chromium = _find_chromium()
+    if chromium is None:
+        pytest.skip("no local Chromium available")
+    hours = (ChartPoint("00:00-00:59", 2), ChartPoint("05:00-05:59", 6), ChartPoint("23:00-23:59", 2)) if dated else ()
+    members = tuple(EchoMemberCard(
+        speaker_key=key, display_name=name, is_viewer=reliable and key == "alpha",
+        message_count=count, message_share_percent=0, average_length=0, max_length=0, active_period="",
+        hourly_activity=(ChartPoint("05:00-05:59", count),),
+        weekday_activity=(ChartPoint("周一", count),),
+        weekday_average_activity=(ChartPoint("周一", count / 2),),
+    ) for key, name, count in (("alpha", "Fictional Alpha", 2), ("beta", "Fictional Beta", 6)))
+    view = EchoReportView(
+        title="Fictional rhythm", has_data=True, conversation_kind=kind,
+        total_message_count=12, participant_count=2, active_days=1,
+        average_messages_per_active_day=12, hourly_activity=hours,
+        weekday_activity=(ChartPoint("周一", 6), ChartPoint("周二", 4)) if dated else (),
+        members=members if dated else (),
+        calendar_day_count=8 if dated else 0,
+        weekday_average_activity=(ChartPoint("周一", 3), ChartPoint("周二", 4)) if dated else (),
+    )
+    output = export_echo_report_html(view, tmp_path / "rhythm.html")
+    probe = r'''<script>addEventListener("load",()=>{
+      const result={};
+      try {
+        const get=id=>document.getElementById(id);
+        const dial=get("hour-dial"), bars=get("hour-bars-preview");
+        const range=()=>get("hour-range").textContent;
+        const wheel=(target,delta)=>{const event=new WheelEvent("wheel",{deltaY:delta,bubbles:true,cancelable:true});target.dispatchEvent(event);return event.defaultPrevented;};
+        result.total=get("overview-message-count").textContent;
+        result.initialCount=get("hour-count").textContent;
+        result.initialShare=get("hour-share").textContent;
+        result.noOverflow=document.documentElement.scrollWidth<=innerWidth;
+        result.singleChapter=get("overview").contains(dial)&&!document.querySelector("section#rhythm");
+        result.weekdayAverage=get("rhythm-week-rows").children[0].querySelector("strong").textContent;
+        result.initialAveragePeak=get("rhythm-week-conclusion").textContent.includes("周二");
+        const dated=Boolean(dial.querySelector('[data-hour="5"]:not([aria-disabled="true"])'));
+        if(dated){
+          const before=range();document.activeElement.blur();
+          result.passiveWheel=!wheel(dial,120)&&range()===before;
+          dial.querySelector('[data-hour="5"]').dispatchEvent(new MouseEvent("click",{bubbles:true}));
+          result.noNativeFocusBox=getComputedStyle(document.activeElement).outlineStyle==="none";
+          result.dialWheel=wheel(dial,120)&&range()==="06:00—07:00";
+          result.noOrdinaryTitle=get("hour-context").textContent==="";
+          result.noArrowShortcut=(()=>{dial.dispatchEvent(new KeyboardEvent("keydown",{key:"ArrowRight",bubbles:true,cancelable:true}));return range()==="06:00—07:00";})();
+          dial.querySelector('[data-hour="23"]').dispatchEvent(new MouseEvent("click",{bubbles:true}));
+          result.wrap=wheel(dial,120)&&range()==="00:00—01:00";
+          result.trackpad=!(()=>{wheel(dial,5);return range()!=="00:00—01:00";})();
+          const dialHeight=get("overview").getBoundingClientRect().height;
+          document.querySelector('[data-hour-view="bars"]').click();
+          result.stableViewHeight=Math.abs(get("overview").getBoundingClientRect().height-dialHeight)<1;
+          bars.querySelector('[data-hour="5"]').click();
+          result.barWheel=wheel(bars,120)&&range()==="06:00—07:00"&&!get("bar-wrap").hidden;
+          const controls=get("rhythm-member");
+          const memberButton=document.querySelector('[data-rhythm-member="alpha"]');
+          if(memberButton){memberButton.click();}
+          else{controls.value="alpha";controls.dispatchEvent(new Event("change"));}
+          result.memberCount=get("hour-count").textContent;
+          result.memberLabel=memberButton?memberButton.textContent:controls.selectedOptions[0].textContent;
+          result.summaryUnchanged=get("overview-message-count").textContent==="12";
+          result.noPopups=!document.querySelector("#overview details,#count-note-toggle");
+          result.averagePeak=get("rhythm-week-conclusion").textContent.includes("周一");
+          result.period=get("rhythm-week-note").textContent.includes("约 1 周");
+        }else{
+          result.emptyClock=!get("hour-context").textContent&&get("hour-count").textContent==="—";
+          result.emptyWheel=!wheel(dial,120);
+          result.noPeak=range().includes("暂无");
+        }
+      }catch(error){result.error=String(error);}
+      const out=document.createElement("pre");out.id="rhythm-probe";out.textContent=JSON.stringify(result);document.body.append(out);
+    });</script>'''
+    output.write_text(output.read_text(encoding="utf-8").replace("</body>", probe + "</body>"), encoding="utf-8")
+    completed = _run_browser([
+        chromium, "--headless=new", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+        "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND", "--hide-scrollbars",
+        f"--user-data-dir={tmp_path / 'rhythm-profile'}", "--virtual-time-budget=1500",
+        f"--window-size={width},2400", "--dump-dom", output.as_uri(),
+    ])
+    assert completed.returncode == 0, completed.stderr
+    match = re.search(r'<pre id="rhythm-probe">(.*?)</pre>', completed.stdout.decode("utf-8"), re.S)
+    assert match, "Production report did not execute the rhythm probe"
+    actual = json.loads(html.unescape(match.group(1)))
+    expected = dict(total="12", initialCount="6" if dated else "—",
+                    initialShare="占当前有效时间消息 60.0%" if dated else "",
+                    noOverflow=True, singleChapter=True)
+    expected["weekdayAverage"] = "3.0" if dated else "—"
+    expected["initialAveragePeak"] = dated
+    if dated:
+        expected.update(passiveWheel=True, dialWheel=True, noOrdinaryTitle=True,
+                        noArrowShortcut=True, wrap=True, trackpad=True, barWheel=True, stableViewHeight=True,
+                        noNativeFocusBox=True,
+                        averagePeak=True, period=True,
+                        memberCount="2", memberLabel="你" if reliable else "Fictional Alpha",
+                        summaryUnchanged=True, noPopups=True)
+    else:
+        expected.update(emptyClock=True, emptyWheel=True, noPeak=True)
+    assert actual == expected
+
+
 def test_browser_probe_timeout_terminates_owned_process_tree(monkeypatch):
     calls = []
 

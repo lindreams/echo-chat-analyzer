@@ -30,6 +30,8 @@ class UserProfileAnalyzer:
         sender_tokens: Iterable[tuple[str, Iterable[str]]] | None = None,
         top_words_per_user: int = 10,
         speaker_names: Mapping[str, str] | None = None,
+        *,
+        weekday_calendar_days: Sequence[int] = (),
     ) -> UserProfileReport:
         """Return per-speaker profiles ordered by message volume.
 
@@ -39,6 +41,9 @@ class UserProfileAnalyzer:
         ``speaker_names`` optionally maps a raw sender key to a friendly
         name. Names come from the caller so this analyzer stays independent
         of any chat source.
+
+        ``weekday_calendar_days`` is the conversation's shared observation
+        window; it must not be replaced by each speaker's active dates.
         """
         stats: dict[str, _SpeakerStats] = {}
         runs: dict[str, list[int]] = {}
@@ -86,7 +91,13 @@ class UserProfileAnalyzer:
                     for hour, count in enumerate(speaker_stats.hourly_counts)
                 ),
                 weekday_counts=tuple(
-                    WeekdayActivity(weekday=weekday, count=count)
+                    WeekdayActivity(
+                        weekday=weekday, count=count,
+                        calendar_days=(
+                            weekday_calendar_days[weekday]
+                            if len(weekday_calendar_days) == DAYS_PER_WEEK else 0
+                        ),
+                    )
                     for weekday, count in enumerate(
                         speaker_stats.weekday_counts
                     )

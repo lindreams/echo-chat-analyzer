@@ -148,7 +148,7 @@ message_denominator = data.message_counts.total_messages
 次数／轮次／使用日、等量预计种类等摘要，以及已有资源的不透明 asset_key。
 分享字段为 `sticker_memories[].compact/findings/materials`：finding 仅包含类别、标题、时段、Echo 短句或截断提示、
 展示指标／日期和不透明 `asset_key`；不序列化作者账号、素材身份 key、消息引用、片段序号或私聊正文。
-报告 schema 为 `echo-report.v0.10`，这是摘要展示合同，不是经典瞬间原文分享权限。
+该摘要展示合同自 `echo-report.v0.10` 引入，后续 schema 沿用此隐私边界；它不是经典瞬间原文分享权限。
 接力保留共享索引的 Rich 消息对象引用（包括轮内文字和全部内容段），只供本机进程内追溯，
 没有增加经典瞬间原文导出。不能直接对证据对象使用通用 `asdict` 作为分享格式：
 其中有成员身份、素材 key、occurrence 引用以及接力的原消息引用。

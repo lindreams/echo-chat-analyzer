@@ -712,6 +712,12 @@ def build_echo_report_view(
         participant_count=participant_count,
         hourly_activity=hourly_activity,
         weekday_activity=weekday_activity,
+        weekday_average_activity=tuple(
+            ChartPoint(label=format_weekday(entry.weekday), value=entry.average_per_day)
+            for entry in (activity.weekday_counts if activity else ())
+            if entry.average_per_day is not None
+        ),
+        calendar_day_count=activity.calendar_day_count if activity else 0,
         members=members,
         conversation_sessions=_build_echo_sessions(
             reports.conversation_sessions,
@@ -791,6 +797,11 @@ def _build_echo_member(
         top_words=tuple(
             word.word for word in profile.top_words
             if word.count >= ECHO_MEMBER_WORD_MIN_COUNT
+        ),
+        weekday_average_activity=tuple(
+            ChartPoint(label=format_weekday(entry.weekday), value=entry.average_per_day)
+            for entry in profile.weekday_counts
+            if entry.average_per_day is not None
         ),
     )
 

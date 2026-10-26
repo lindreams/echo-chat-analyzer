@@ -298,6 +298,33 @@ def test_distinctive_report_reuses_pipeline_tokens_and_stable_sender_keys(
     }
 
 
+def test_weekday_period_excludes_out_of_scope_and_cleaned_records(tmp_path):
+    from dataclasses import replace
+    from datetime import date
+
+    application = _application_module()
+    path = tmp_path / "fictional-period.json"
+    # All are Beijing dates; the long first message is removed by quality filtering.
+    _write_fictional_chat(path, [
+        _raw_message(1704099600, "Fictional-Alice", "甲" * 101),  # Jan 1
+        _raw_message(1704618000, "Fictional-Alice", "周末一起讨论项目"),  # Jan 7
+        _raw_message(1704704400, "Fictional-Bob", "周一继续研究数据"),  # Jan 8
+        _raw_message(1705309200, "Fictional-Bob", "范围之外的消息"),  # Jan 15
+    ])
+    request = replace(_request(application, tmp_path, path),
+                      scope=application.AnalysisScope.custom(date(2024, 1, 1), date(2024, 1, 8)))
+    result = application.AnalysisApplicationService().execute(request)
+    activity = result.reports.activity
+    assert activity.calendar_day_count == 2
+    assert activity.total_message_count == 2
+    assert activity.weekday_counts[0].average_per_day == 1
+    assert activity.weekday_counts[6].average_per_day == 1
+    payload = json.loads((request.output_directory / "echo-report.json").read_text(encoding="utf-8"))
+    assert payload["activity"]["calendar_day_count"] == 2
+    assert payload["activity"]["weekday_daily_average"][0] == {"label": "周一", "value": 1}
+    assert all(m["activity"]["weekday_daily_average"] for m in payload["members"])
+
+
 def test_execute_generates_echo_report_json_artifact(tmp_path: Path) -> None:
     application = _application_module()
     input_path = tmp_path / "fictional-chat.json"
@@ -323,7 +350,7 @@ def test_execute_generates_echo_report_json_artifact(tmp_path: Path) -> None:
     report_path = output_directory / "echo-report.json"
     assert report_path.is_file()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "echo-report.v0.10"
+    assert payload["schema_version"] == "echo-report.v0.11"
 
 
 def test_report_boundary_does_not_retain_full_expression_candidates() -> None:
@@ -488,7 +515,7 @@ def test_new_report_metadata_records_corrected_expression_semantics(tmp_path):
         result=result, source="wechat", scope=AnalysisScope.all(),
         generated_at=datetime(2026, 10, 16, tzinfo=timezone.utc),
     )
-    assert metadata["analysis_revision"] == "echo-analysis.v9"
+    assert metadata["analysis_revision"] == "echo-analysis.v10"
 
 
 @pytest.mark.parametrize("source", ["wechat", "qq"])

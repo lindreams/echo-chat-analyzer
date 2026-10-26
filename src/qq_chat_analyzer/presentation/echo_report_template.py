@@ -48,7 +48,7 @@ ECHO_REPORT_HTML_SKELETON = r"""
       <nav class="toc" aria-label="报告目录">
         <a class="toc-row" href="#overview">
           <span class="toc-number">01</span>
-          <span class="toc-copy"><strong>会话概览</strong><small>这段交流的基本轮廓</small></span>
+          <span class="toc-copy"><strong>交流的节奏</strong><small>消息总量与日常的时间纹理</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">03</span>
         </a>
@@ -58,38 +58,32 @@ ECHO_REPORT_HTML_SKELETON = r"""
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">04</span>
         </a>
-        <a class="toc-row" href="#rhythm">
+        <a class="toc-row" href="#voices">
           <span class="toc-number">03</span>
-          <span class="toc-copy"><strong>节奏：活跃轨迹</strong><small>消息在时间中的落点</small></span>
+          <span class="toc-copy"><strong>个人语言画像</strong><small>群聊特色词与私聊中的两种声音</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">05</span>
         </a>
-        <a class="toc-row" href="#voices">
+        <a class="toc-row" id="expression-toc" href="#expression" hidden>
           <span class="toc-number">04</span>
-          <span class="toc-copy"><strong>个人语言画像</strong><small>群聊特色词与私聊中的两种声音</small></span>
+          <span class="toc-copy"><strong>表达文化</strong><small>表情与回应留下的共同语言</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">06</span>
         </a>
-        <a class="toc-row" id="expression-toc" href="#expression" hidden>
+        <a class="toc-row" id="sticker-toc" href="#stickers" hidden>
           <span class="toc-number">05</span>
-          <span class="toc-copy"><strong>表达文化</strong><small>表情与回应留下的共同语言</small></span>
+          <span class="toc-copy"><strong id="sticker-toc-title">表情包</strong><small>平时怎样使用表情包</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">07</span>
         </a>
-        <a class="toc-row" id="sticker-toc" href="#stickers" hidden>
-          <span class="toc-number">06</span>
-          <span class="toc-copy"><strong id="sticker-toc-title">表情包</strong><small>平时怎样使用表情包</small></span>
-          <span class="toc-leader" aria-hidden="true"></span>
-          <span class="toc-page">08</span>
-        </a>
         <div class="toc-row is-future">
-          <span class="toc-number">08</span>
+          <span class="toc-number">06</span>
           <span class="toc-copy"><strong>互动关系</strong><small>未来章节</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">—</span>
         </div>
         <div class="toc-row is-future">
-          <span class="toc-number">09</span>
+          <span class="toc-number">07</span>
           <span class="toc-copy"><strong>余音</strong><small>让那些反复出现的词，成为最后的回响。</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">—</span>
@@ -98,28 +92,36 @@ ECHO_REPORT_HTML_SKELETON = r"""
       <span class="page-number">02</span>
     </section>
 
-    <section class="page chapter" id="overview" aria-labelledby="overview-title">
+    <section class="page chapter rhythm-chapter" id="overview" aria-labelledby="overview-title">
+      <div class="rhythm-paper-meta"><span>ECHO / 聊天记忆</span><span id="rhythm-conversation-name"></span></div>
       <header class="chapter-header">
         <span class="chapter-number">01</span>
-        <div><p class="folio">OVERVIEW</p><h2 id="overview-title">会话概览</h2></div>
+        <div><p class="folio">THE RHYTHM OF US</p><h2 id="overview-title">交流的节奏</h2></div>
       </header>
-      <p class="chapter-intro" id="overview-intro">一段交流的轮廓，从时间、消息与参与者开始。</p>
-
-      <div class="overview-ledger">
-        <div class="primary-figure">
-          <span class="field-label">消息数量</span>
-          <strong id="overview-message-count"></strong>
-          <span class="field-unit">条消息</span>
-        </div>
-        <dl class="archive-fields">
-          <div><dt>时间跨度</dt><dd id="overview-time-span"></dd><small>报告覆盖的时间范围</small></div>
-          <div><dt>参与人数</dt><dd id="overview-participants"></dd><small>在这段会话中留下消息</small></div>
-          <div><dt>活跃天数</dt><dd id="overview-active-days"></dd><small>实际有聊天的日子</small></div>
-          <div><dt>日均消息</dt><dd id="overview-average-per-day"></dd><small>有聊天的日子平均消息数</small></div>
-          <div class="wide"><dt>最活跃时间</dt><dd id="busiest-hour"></dd><small>一天中消息最集中的时段</small></div>
-        </dl>
+      <p class="chapter-intro" id="overview-intro">那些日常的话，慢慢有了自己的节奏。</p>
+      <div class="rhythm-summary" id="rhythm-summary">
+        <div class="rhythm-stat rhythm-stat-primary"><span>消息总量</span><p><strong id="overview-message-count"></strong><span>条</span></p></div>
+        <div class="rhythm-stat"><span>活跃天数</span><p><strong id="overview-active-days"></strong><span>天</span></p></div>
+        <div class="rhythm-stat"><span>活跃日日均</span><p><strong id="overview-average-per-day"></strong><span>条</span></p></div>
+        <div class="rhythm-stat rhythm-participants" id="rhythm-participants" hidden><span>参与成员</span><p><strong id="overview-participants"></strong><span>人</span></p></div>
       </div>
-      <span class="page-number">03</span>
+      <p class="rhythm-count-note">本页统计本次范围内清洗后保留的消息，与会话列表的原始记录数可能不同。</p>
+      <div class="rhythm-toolbar">
+        <h3>日常的时间纹理</h3>
+        <div class="rhythm-scopes" id="rhythm-private-scopes" role="group" aria-label="选择成员消息分布" hidden></div>
+        <select id="rhythm-member" aria-label="选择群聊成员消息分布" hidden></select>
+      </div>
+      <div class="rhythm-charts" id="rhythm">
+        <div class="rhythm-hour-section" role="group" aria-labelledby="rhythm-hour-title">
+          <div class="rhythm-chart-heading"><div><h3 id="rhythm-hour-title">一天中的节奏</h3><p id="rhythm-scope-label">整体 · 消息分布</p></div><div class="rhythm-view-toggle" role="group" aria-label="小时图形状"><button type="button" data-hour-view="dial" aria-pressed="true">表盘</button><button type="button" data-hour-view="bars" aria-pressed="false">条形</button></div></div>
+          <div class="rhythm-dial-wrap" id="dial-wrap"><svg id="hour-dial" viewBox="0 0 340 340" role="group" aria-label="二十四小时消息分布" aria-describedby="rhythm-wheel-hint"></svg><div class="rhythm-dial-center" aria-live="polite"><span id="hour-context"></span><strong id="hour-count"></strong><span>条消息</span><b id="hour-range"></b><span id="hour-share"></span></div></div>
+          <div class="rhythm-bar-wrap" id="bar-wrap" hidden><div id="hour-bars-preview" class="rhythm-hour-bars" role="group" aria-label="二十四小时消息分布" aria-describedby="rhythm-wheel-hint"></div><div class="rhythm-bar-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div><div class="rhythm-bar-readout" id="rhythm-bar-readout" aria-live="polite"></div></div>
+          <p class="rhythm-wheel-hint" id="rhythm-wheel-hint">点选后，用滚轮切换小时。</p>
+        </div>
+        <div class="rhythm-week-section" role="group" aria-labelledby="rhythm-week-title"><div class="rhythm-chart-heading"><div><h3 id="rhythm-week-title">一周里的分布</h3><p id="rhythm-week-note">周一至周日 · 平均每天的消息数</p></div></div><div id="rhythm-week-rows"></div><p class="rhythm-week-conclusion" id="rhythm-week-conclusion"></p></div>
+      </div>
+      <footer class="rhythm-footer"><span>消息分布 · 北京时间</span><span>echo <i>01</i></span></footer>
+      <span class="page-number" hidden>03</span>
     </section>
 
     <section class="page chapter session-chapter" id="conversation-sessions" aria-labelledby="sessions-title" hidden>
@@ -197,32 +199,9 @@ ECHO_REPORT_HTML_SKELETON = r"""
       <span class="page-number">04</span>
     </section>
 
-    <section class="page chapter" id="rhythm" aria-labelledby="rhythm-title">
-      <header class="chapter-header">
-        <span class="chapter-number">03</span>
-        <div><p class="folio">RHYTHM</p><h2 id="rhythm-title">节奏</h2></div>
-      </header>
-      <p class="chapter-intro">消息在一天与一周中的分布，形成这段交流的时间纹理。</p>
-
-      <figure class="figure-block">
-        <figcaption><h3>一天中的活跃轨迹</h3><p>每一格代表一个小时，深浅仅表示消息数量。</p></figcaption>
-        <div class="hourly-track" role="img" aria-label="全天二十四小时活跃分布">
-          <div class="staff-grid" aria-hidden="true"></div>
-          <div class="hour-bars" id="hour-bars" aria-hidden="true"></div>
-          <div class="hour-labels"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>
-        </div>
-      </figure>
-
-      <figure class="figure-block weekday-figure">
-        <figcaption><h3>一周中的活跃轨迹</h3><p>星期顺序保持不变，便于阅读时间节奏。</p></figcaption>
-        <div class="weekday-tracks" id="weekday-tracks" role="img" aria-label="星期一到星期日活跃分布"></div>
-      </figure>
-      <span class="page-number">05</span>
-    </section>
-
     <section class="page chapter" id="voices" aria-labelledby="voices-title">
       <header class="chapter-header">
-        <span class="chapter-number">04</span>
+        <span class="chapter-number">03</span>
         <div><p class="folio">VOICES</p><h2 id="voices-title">语言画像</h2></div>
       </header>
       <p class="chapter-intro" id="voices-intro"></p>
@@ -238,12 +217,12 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <p>同一份习惯里，更常开口的一方。</p>
         <ul class="language-word-list" id="private-side-words-list"></ul>
       </div>
-      <span class="page-number">06</span>
+      <span class="page-number">05</span>
     </section>
 
     <section class="page chapter expression-chapter" id="expression" aria-labelledby="expression-title" hidden>
       <header class="chapter-header">
-        <span class="chapter-number">05</span>
+        <span class="chapter-number">04</span>
         <div><p class="folio">EXPRESSIONS</p><h2 id="expression-title">表达文化</h2></div>
       </header>
       <p class="chapter-intro" id="expression-intro"></p>
@@ -263,12 +242,12 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <ul class="expression-combo-list" id="expression-combo-list"></ul>
       </div>
       <div class="expression-members" id="expression-members"></div>
-      <span class="page-number">07</span>
+      <span class="page-number">06</span>
     </section>
 
     <section class="page chapter sticker-chapter" id="stickers" aria-labelledby="sticker-title" hidden>
       <header class="chapter-header">
-        <span class="chapter-number">06</span>
+        <span class="chapter-number">05</span>
         <div><p class="folio">STICKERS</p><h2 id="sticker-title">表情包</h2></div>
       </header>
       <p class="chapter-intro">有些回应，交给一张图。</p>
@@ -292,17 +271,17 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <h2 id="sticker-memories-title">回忆</h2>
         <div id="sticker-memory-stories"></div>
       </section>
-      <span class="page-number">08</span>
+      <span class="page-number">07</span>
     </section>
 
     <section class="page future" id="future" aria-labelledby="future-title">
       <header class="page-header"><p class="folio">UNWRITTEN</p><h2 id="future-title">尚未展开的部分</h2><p>有些痕迹，将在之后的章节中继续被看见。</p></header>
       <div class="future-list">
-        <div><span>08</span><h3>互动关系</h3><p>交流方向与回应方式。</p></div>
-        <div><span>09</span><h3>余音</h3><p>未来将以聊天词云，为 Echo Report 留下最后的回响。</p></div>
+        <div><span>06</span><h3>互动关系</h3><p>交流方向与回应方式。</p></div>
+        <div><span>07</span><h3>余音</h3><p>未来将以聊天词云，为 Echo Report 留下最后的回响。</p></div>
       </div>
       <footer class="end-mark"><a href="#cover">回到封面 ↑</a><span>余音 Echo · <b data-current-year>2026</b></span></footer>
-      <span class="page-number">10</span>
+      <span class="page-number">08</span>
     </section>
   </main>
 
@@ -380,19 +359,7 @@ h1, h2, h3, p { margin-top: 0; }
 .chapter-number { padding-top: 9px; color: var(--accent); font: 16px/1 var(--serif); letter-spacing: .08em; }
 .chapter-intro { max-width: 540px; margin: 32px 0 62px; color: var(--muted); font: 17px/2 var(--serif); }
 .session-chapter .chapter-intro { margin: 0 0 40px; }
-.overview-ledger { border-top: 1px solid var(--ink); border-bottom: 1px solid var(--ink); }
-.primary-figure { display: grid; grid-template-columns: 1fr auto; align-items: end; min-height: 250px; padding: 42px 0; border-bottom: 1px solid var(--rule); }
-.primary-figure strong { font-size: clamp(72px, 13vw, 132px); font-weight: 400; line-height: .9; letter-spacing: -.06em; }
-.field-label, .field-unit { color: var(--muted); font-size: 13px; letter-spacing: .08em; }
-.field-unit { grid-column: 2; margin-top: 14px; text-align: right; }
-.archive-fields { display: grid; grid-template-columns: 1fr 1fr; margin: 0; }
-.archive-fields div { min-height: 150px; padding: 28px 0; }
-.archive-fields div:nth-child(odd) { padding-right: 34px; border-right: 1px solid var(--rule); }
-.archive-fields div:nth-child(even) { padding-left: 34px; }
-.archive-fields .wide { grid-column: 1 / -1; padding-right: 0; border-top: 1px solid var(--rule); border-right: 0; }
-.archive-fields dt, .member-entry dt { color: var(--muted); font-size: 12px; letter-spacing: .08em; }
-.archive-fields dd { margin: 18px 0 7px; font-size: 29px; }
-.archive-fields small { color: var(--faint); }
+.member-entry dt { color: var(--muted); font-size: 12px; letter-spacing: .08em; }
 
 .session-fields { display: grid; grid-template-columns: 1fr 1fr; margin: 0; }
 .session-fields[hidden] { display: none; }
@@ -415,23 +382,6 @@ h1, h2, h3, p { margin-top: 0; }
   font-size: 13px;
 }
 
-.figure-block { margin: 0 0 72px; }
-.figure-block figcaption { display: flex; align-items: baseline; justify-content: space-between; gap: 24px; margin-bottom: 26px; }
-.figure-block h3 { margin: 0; font-size: 21px; font-weight: 500; }
-.figure-block figcaption p { margin: 0; color: var(--muted); font-size: 12px; }
-.hourly-track { position: relative; height: 230px; padding: 24px 0 28px; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
-.staff-grid { position: absolute; inset: 28px 0 40px; background: repeating-linear-gradient(to bottom, transparent 0 31px, rgb(210 202 189 / 72%) 31px 32px); }
-.hour-bars { position: absolute; inset: 30px 0 41px; display: grid; grid-template-columns: repeat(24, 1fr); gap: clamp(3px, .8vw, 8px); align-items: end; }
-.hour-bars i { height: calc(var(--v) * 1%); min-height: 3px; background: var(--accent-soft); border-radius: 1px 1px 0 0; }
-.hour-bars i.peak { background: var(--accent); }
-.hour-labels { position: absolute; right: 0; bottom: 11px; left: 0; display: flex; justify-content: space-between; color: var(--muted); font: 10px/1 var(--sans); }
-.weekday-tracks { padding: 6px 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
-.weekday-tracks > div { display: grid; grid-template-columns: 48px 1fr 36px; gap: 18px; align-items: center; min-height: 46px; border-bottom: 1px solid rgb(210 202 189 / 55%); }
-.weekday-tracks > div:last-child { border-bottom: 0; }
-.weekday-tracks span, .weekday-tracks em { color: var(--muted); font-size: 12px; font-style: normal; }
-.weekday-tracks em { text-align: right; }
-.weekday-tracks b { position: relative; height: 5px; background: #e5ded2; }
-.weekday-tracks i { position: absolute; inset: 0 auto 0 0; width: var(--v); background: var(--accent); }
 
 .member-list { border-top: 1px solid var(--ink); }
 .member-list.mode-private { display: grid; grid-template-columns: 1fr 1fr; }
@@ -1047,14 +997,6 @@ h1, h2, h3, p { margin-top: 0; }
   .cover { min-height: 100vh; }
   .toc-row { grid-template-columns: 34px minmax(0, 1fr) 22px; }
   .toc-leader { display: none; }
-  .figure-block figcaption { display: block; }
-  .figure-block figcaption p { margin-top: 9px; }
-  .primary-figure { display: block; }
-  .primary-figure strong { display: block; margin-top: 50px; }
-  .field-unit { display: block; text-align: left; }
-  .archive-fields { grid-template-columns: 1fr; }
-  .archive-fields div, .archive-fields div:nth-child(odd), .archive-fields div:nth-child(even) { padding: 24px 0; border-right: 0; border-bottom: 1px solid var(--rule); }
-  .archive-fields .wide { grid-column: auto; }
   .session-fields { grid-template-columns: 1fr; }
   .session-fields div, .session-fields div:nth-child(odd), .session-fields div:nth-child(even) { padding: 24px 0; border-right: 0; border-bottom: 1px solid var(--rule); }
   .highnote-grid { grid-template-columns: 1fr; }
@@ -1212,21 +1154,20 @@ document.documentElement.classList.add("js-ready");
       "overview-message-count",
       hasData ? formatCount(overview.total_message_count) : "—"
     );
-    setText("overview-time-span", timeSpan ? timeSpan : "—");
     setText(
       "overview-participants",
-      hasData ? formatCount(overview.participant_count) + " 人" : "—"
+      hasData ? formatCount(overview.participant_count) : "—"
     );
     setText(
       "overview-active-days",
       hasData && finiteNumber(overview.active_days) > 0
-        ? formatCount(overview.active_days) + " 天"
+        ? formatCount(overview.active_days)
         : "—"
     );
     setText(
       "overview-average-per-day",
       hasData && finiteNumber(overview.average_messages_per_active_day) !== null
-        ? formatAverage(overview.average_messages_per_active_day) + " 条"
+        ? formatAverage(overview.average_messages_per_active_day)
         : "—"
     );
     if (!hasData && emptyDescription) {
@@ -1437,77 +1378,6 @@ document.documentElement.classList.add("js-ready");
       }
     } else {
       container.hidden = true;
-    }
-  }
-
-  var hourly = (data && data.activity && data.activity.hourly) || [];
-  var busiestBlock = document.getElementById("busiest-hour");
-  if (busiestBlock) {
-    var peak = null;
-    hourly.forEach(function (point) {
-      if (!peak || Number(point.value) > Number(peak.value)) {
-        peak = point;
-      }
-    });
-    if (hasData && peak && peak.label) {
-      busiestBlock.textContent = peak.label;
-      busiestBlock.hidden = false;
-    } else {
-      busiestBlock.hidden = true;
-    }
-  }
-
-  var hourBars = document.getElementById("hour-bars");
-  if (hourBars) {
-    hourBars.textContent = "";
-    if (hasData && hourly.length) {
-      var maxHour = 0;
-      hourly.forEach(function (point) {
-        maxHour = Math.max(maxHour, Number(point.value) || 0);
-      });
-      hourly.forEach(function (point) {
-        var value = Number(point.value) || 0;
-        var bar = document.createElement("i");
-        bar.style.setProperty(
-          "--v",
-          String(maxHour > 0 ? Math.round((value / maxHour) * 100) : 0)
-        );
-        if (maxHour > 0 && value === maxHour) {
-          bar.className = "peak";
-        }
-        hourBars.appendChild(bar);
-      });
-    }
-  }
-
-  var weekdayTracks = document.getElementById("weekday-tracks");
-  var weekday = (data && data.activity && data.activity.weekday) || [];
-  if (weekdayTracks) {
-    weekdayTracks.textContent = "";
-    if (hasData && weekday.length) {
-      var maxWeekday = 0;
-      weekday.forEach(function (point) {
-        maxWeekday = Math.max(maxWeekday, Number(point.value) || 0);
-      });
-      weekday.forEach(function (point) {
-        var value = Number(point.value) || 0;
-        var row = document.createElement("div");
-        var label = document.createElement("span");
-        label.textContent = point.label;
-        var track = document.createElement("b");
-        var fill = document.createElement("i");
-        fill.style.setProperty(
-          "--v",
-          String(maxWeekday > 0 ? Math.round((value / maxWeekday) * 100) : 0) + "%"
-        );
-        track.appendChild(fill);
-        var count = document.createElement("em");
-        count.textContent = formatCount(value);
-        row.appendChild(label);
-        row.appendChild(track);
-        row.appendChild(count);
-        weekdayTracks.appendChild(row);
-      });
     }
   }
 
