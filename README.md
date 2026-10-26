@@ -58,19 +58,19 @@ Echo 在 Windows 本机读取和分析聊天数据，无需上传完整聊天记
 
 ## 下载
 
-**v0.2.4 · 0.3 功能预览（发布准备中）。这不是 0.3.0 正式版。**
+**v0.2.4 · 0.3 功能预览。这不是 0.3.0 正式版。**
 
 本次先提供表情包分析、连接与过滤修复，以及第一章“交流的节奏”整理，收集更多电脑上的使用反馈。
 第二章的原文回忆卡、语言画像的原文查看及完整引用回复分析仍待完成。
 
-发布后下载 `Echo-0.2.4-windows-x64-Setup.exe` 运行安装，无需安装 Python。
+下载 `Echo-0.2.4-windows-x64-Setup.exe` 运行安装，无需安装 Python。
 安装后可在软件内检查和下载更新。目前安装更新需在本次启动尚未连接 QQ / 微信且无分析任务时进行；经用户确认、更新包校验与安全清理通过后，才会安装并重启。失败或清理状态无法确认时会拒绝安装，仍可手动下载安装。
 
-[当前已发布版本 v0.2.3](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.3) · [查看所有版本](https://github.com/lindreams/echo-chat-analyzer/releases)
+[下载 Echo v0.2.4 功能预览](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.4) · [查看所有版本](https://github.com/lindreams/echo-chat-analyzer/releases)
 
 v0.1.0 曾以 Windows Portable ZIP 发布，不能通过软件内更新升级，请按上面的 Setup 手动安装；历史 ZIP 发行包仍保留。本地报告与配置独立于程序目录保存，安装和卸载不自动删除这些数据；旧配置和运行路径的自动迁移尚未全面验证。
 
-当前正式版已实现基础聊天分析与报告分享。表情包分析、报告设计和分享体验会继续完善。
+本次预览提供基础聊天分析、表情包报告与分享。报告阅读、引用回复和分享体验会继续完善。
 
 [查看后续开发计划](docs/ROADMAP.md)
 
