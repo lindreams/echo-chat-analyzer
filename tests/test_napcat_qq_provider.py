@@ -319,13 +319,18 @@ def test_optional_rpc_budget_includes_initial_status_handshake(monkeypatch):
 
 def test_expired_acquire_budget_discards_ready_result_even_while_socket_is_open(runtime, tmp_path):
     marker = tmp_path / 'fictional-deadline.txt'
-    base = runtime('blocked-acquire', marker=marker)
+    log = tmp_path / 'snapshot-diagnostics.log'
+    base = runtime('blocked-acquire', marker=marker, nativeLog=str(log))
     boot = provider(base).status().boot_id
     status, payload = request(base, raw=json.dumps({
         'method': 'EchoSnapshotApi.acquire', 'params': [], 'boot_id': boot, 'timeout_ms': 50,
     }).encode())
     assert status == 200 and payload == {'ok': False, 'error': 'qq_runtime_operation_failed'}
     assert marker.read_text().splitlines().count('cleanup') == 1
+    diagnostic = log.read_text()
+    assert 'stage=acquire_response_discarded outcome=deadline_exceeded' in diagnostic
+    assert 'stage=abandoned_acquire_cleanup outcome=success' in diagnostic
+    assert TOKEN not in diagnostic and str(tmp_path) not in diagnostic
 
 
 @pytest.mark.parametrize('budget', [0, -1, 65001, 'PRIVATE_BUDGET', True])

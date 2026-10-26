@@ -724,7 +724,8 @@ def _check_qq_version(qq_path: Path, *, resources: QQResources | None = None) ->
     result = "unknown"
     if version is not None:
         result = "below_minimum" if version[3] < _MIN_WINDOWS_QQ_BUILD else "minimum_met"
-    _LOGGER.info("[qq auth] version_check result=%s elapsed_ms=%s", result,
+    _LOGGER.info("[qq auth] version_check result=%s qq_version=%s elapsed_ms=%s", result,
+                 ".".join(str(part) for part in version) if version is not None else "unknown",
                  max(0, int((time.monotonic() - started) * 1000)))
     if result == "below_minimum":
         major, minor, patch, build = version

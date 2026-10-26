@@ -11,6 +11,28 @@ import pytest
 from qq_chat_analyzer import diagnostics
 
 
+def test_runtime_provenance_is_written_once_without_local_paths(tmp_path, monkeypatch):
+    path = tmp_path / 'echo.log'
+    monkeypatch.setattr(diagnostics, 'log_path', lambda: path)
+    names = set(diagnostics.DESKTOP_DIAGNOSTIC_LOGGERS) | {diagnostics.LOGGER_NAME}
+    saved = {name: list(logging.getLogger(name).handlers) for name in names}
+    try:
+        diagnostics.configure_diagnostics()
+        diagnostics.configure_diagnostics()
+        text = path.read_text(encoding='utf-8')
+        assert text.count('[runtime] echo_version=') == 1
+        assert 'python_version=' in text and 'windows_build=' in text
+        assert str(tmp_path) not in text and sys.executable not in text
+    finally:
+        created = set()
+        for name, handlers in saved.items():
+            logger = logging.getLogger(name)
+            created.update(handler for handler in logger.handlers if handler not in handlers)
+            logger.handlers[:] = handlers
+        for handler in created:
+            handler.close()
+
+
 def test_frozen_log_uses_local_app_data_without_creating_install_files(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

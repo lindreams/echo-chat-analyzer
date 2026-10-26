@@ -28,7 +28,8 @@ import { createWorkspace, workspaceCodeHash } from './workspace.mjs';
 const snapshotCodeHash = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
 const FAILURE_STAGES = new Set(['source_location', 'workspace_isolation', 'shm_witness',
   'wal_identity', 'wal_header', 'wal_prefix', 'wal_checksum', 'commit_boundary',
-  'main_identity', 'main_stability', 'checkpoint_witness', 'cleanup', 'lease', 'input_witness']);
+  'main_identity', 'main_stability', 'checkpoint_witness', 'cleanup', 'lease', 'input_witness',
+  'decrypt', 'plaintext_validation', 'identity_validation', 'manifest', 'publish', 'encrypted_cleanup']);
 const GUARD_STAGES = Object.freeze({
   source_unavailable: 'source_location', workspace_invalid: 'workspace_isolation',
   wal_replaced: 'wal_identity', wal_header_missing: 'wal_header',
@@ -43,12 +44,18 @@ const GUARD_STAGES = Object.freeze({
   main_size_invalid: 'main_identity', main_empty: 'main_identity',
   page_one_salt_mismatch: 'main_identity', new_page_missing_from_wal: 'wal_prefix',
   main_changed_during_read: 'main_stability', checkpoint_state_changed: 'checkpoint_witness',
+  plaintext_snapshot_invalid: 'plaintext_validation', plaintext_header_invalid: 'plaintext_validation',
+  decrypt_rejected: 'decrypt', decrypt_output_missing: 'decrypt',
+  identity_missing: 'identity_validation', identity_changed: 'identity_validation',
 });
 const CONTEXT_GUARDS = new Set(['checkpoint_witness_missing', 'checkpoint_witness_torn',
   'checkpoint_witness_invalid', 'checkpoint_state_invalid', 'short_read',
   'input_witness_invalid_or_changed', 'cleanup_failed', 'lease_failed', 'workspace_busy']);
 const FILE_GUARDS = Object.freeze({ ENOENT: 'file_missing', EACCES: 'access_denied',
-  EPERM: 'access_denied', EBUSY: 'file_busy', EEXIST: 'output_exists', EIO: 'file_io_failed' });
+  EPERM: 'access_denied', EBUSY: 'file_busy', EEXIST: 'output_exists', EIO: 'file_io_failed',
+  ENOSPC: 'disk_full', EROFS: 'read_only_filesystem', EMFILE: 'open_file_limit',
+  ENFILE: 'open_file_limit', ENOTDIR: 'directory_invalid', ERR_DLOPEN_FAILED: 'native_load_failed',
+  ERR_OSSL_BAD_DECRYPT: 'crypto_rejected', ERR_CRYPTO_INVALID_KEYLEN: 'crypto_key_format_invalid' });
 
 function traceAcquisitionDiagnostic(stage, error = null, generationId = null, witness = {}, failed = true) {
   try {
@@ -62,12 +69,14 @@ function traceAcquisitionDiagnostic(stage, error = null, generationId = null, wi
     const failureStage = guard === 'workspace_invalid' && (stage === 'cleanup' || stage === 'lease')
       ? stage : GUARD_STAGES[guard] ?? stage;
     let fields = failed ? ` failure_stage=${failureStage} guard_code=${guard}` : ` capture_stage=${stage}`;
-    for (const name of ['boundary', 'mxFrame', 'nBackfill', 'attempted']) {
+    for (const name of ['boundary', 'mxFrame', 'nBackfill', 'attempted', 'file_bytes', 'expected_pages']) {
       const value = witness[name];
-      if (Number.isInteger(value) && value >= 0 && value <= 0xffffffff) fields += ` ${name}=${value}`;
+      if (Number.isSafeInteger(value) && value >= 0) fields += ` ${name}=${value}`;
     }
     for (const name of ['headerCopiesMatch', 'wal_index_headers_stable', 'nbackfill_stable',
-      'attempted_stable', 'shm_identity_stable', 'dev_equal', 'ino_equal']) {
+      'attempted_stable', 'shm_identity_stable', 'dev_equal', 'ino_equal',
+      'regular_file', 'single_link', 'sidecar_present', 'file_size_matches', 'sqlite_signature_valid',
+      'page_size_valid', 'format_versions_valid', 'page_count_valid']) {
       if (typeof witness[name] === 'boolean') fields += ` ${name}=${witness[name]}`;
     }
     // Record provenance once at the initial detailed SHM witness, and on every failure.
@@ -138,8 +147,8 @@ function canonicalizeUin(value) {
   return text;
 }
 
-function fail(code) {
-  return { ok: false, code, status: 'failed' };
+function fail(code, retryable = false) {
+  return { ok: false, code, status: 'failed', ...(retryable ? { retryable: true } : {}) };
 }
 
 function sleep(milliseconds) {
@@ -183,7 +192,7 @@ function sourceDatabaseState(databaseApi) {
   try {
     const getDirectory = databaseApi?.getNtDbDir;
     if (typeof getDirectory !== 'function') return null;
-    const directory = getDirectory();
+    const directory = getDirectory.call(databaseApi);
     if (typeof directory !== 'string' || !directory) return null;
     const database = join(directory, SOURCE_DATABASE_NAME);
     return {
@@ -425,7 +434,8 @@ export function createEchoSnapshotApi(core, options = {}) {
       // 4. Decrypt into a staging generation on the same filesystem.
       try {
         workspace.createStaging();
-      } catch {
+      } catch (error) {
+        traceAcquisitionDiagnostic('publish', error, generationId);
         logDiagnostic('publish_failed');
         return fail(discardStaging() ? CODES.PUBLISH_FAILED : CODES.CLEANUP_FAILED);
       }
@@ -464,6 +474,7 @@ export function createEchoSnapshotApi(core, options = {}) {
       }
 
       let decrypted = false;
+      let decryptThrew = false;
       const sourceStateBefore = sourceDatabaseState(databaseApi);
       traceSourceDatabaseState('decrypt_source_before', sourceStateBefore, null, generationId);
       const inputBefore = strongFileState(stagingMerged);
@@ -479,8 +490,9 @@ export function createEchoSnapshotApi(core, options = {}) {
         decrypted = Boolean(
           await databaseApi.decryptDatabase(stagingMerged, stagingDatabase),
         );
-      } catch {
-        decrypted = false;
+      } catch (error) {
+        decryptThrew = true;
+        traceAcquisitionDiagnostic('decrypt', error, generationId);
       }
       const inputAfter = strongFileState(stagingMerged);
       traceStage('decrypt_finished');
@@ -503,30 +515,52 @@ export function createEchoSnapshotApi(core, options = {}) {
       }
 
       if (!decrypted || !existsSync(stagingDatabase)) {
+        if (!decryptThrew) {
+          traceAcquisitionDiagnostic('decrypt', {
+            code: decrypted ? 'decrypt_output_missing' : 'decrypt_rejected',
+          }, generationId);
+        }
         const cleaned = discardStaging();
         logDiagnostic('decrypt_failed');
-        return fail(cleaned ? CODES.DECRYPT_FAILED : CODES.CLEANUP_FAILED);
+        return fail(cleaned ? CODES.DECRYPT_FAILED : CODES.CLEANUP_FAILED,
+          cleaned && !decryptThrew && !decrypted);
       }
 
       // Decryption has returned, the independently captured input stayed fixed,
       // and our workspace lease excludes another producer/consumer. Finalize
       // only this staging output before the generation becomes visible.
-      try { finalizeStandaloneSnapshot(stagingDatabase, capturedPages); }
-      catch {
+      let plaintextWitness = {};
+      try { finalizeStandaloneSnapshot(stagingDatabase, capturedPages, witness => {
+        Object.assign(plaintextWitness, witness);
+      }); }
+      catch (error) {
+        traceAcquisitionDiagnostic('plaintext_validation', error, generationId, plaintextWitness);
         logDiagnostic('decrypt_failed');
-        return fail(discardStaging() ? CODES.DECRYPT_FAILED : CODES.CLEANUP_FAILED);
+        const cleaned = discardStaging();
+        // A not-yet-current passphrase can produce an invalid header despite a
+        // stable encrypted input. Permit a bounded fresh capture only after
+        // cleanup; file shape, ownership and I/O failures remain terminal.
+        return fail(cleaned ? CODES.DECRYPT_FAILED : CODES.CLEANUP_FAILED,
+          cleaned && error?.code === 'plaintext_header_invalid');
       }
+      traceAcquisitionDiagnostic('plaintext_validation', null, generationId, plaintextWitness, false);
+      traceStage('plaintext_validated', generationId);
 
       // No encrypted intermediate may enter a published generation.
       try { unlinkSync(stagingMerged); }
-      catch { discardStaging(); return fail(CODES.CLEANUP_FAILED); }
+      catch (error) {
+        traceAcquisitionDiagnostic('encrypted_cleanup', error, generationId);
+        discardStaging(); return fail(CODES.CLEANUP_FAILED);
+      }
 
       // 6. The canonical self identity must still exist and be unchanged.
       const identityAfter = canonicalizeUin(core?.selfInfo?.uin);
       if (identityAfter === null) {
+        traceAcquisitionDiagnostic('identity_validation', {code: 'identity_missing'}, generationId);
         return fail(discardStaging() ? CODES.IDENTITY_MISSING : CODES.CLEANUP_FAILED);
       }
       if (identityAfter !== identityBefore) {
+        traceAcquisitionDiagnostic('identity_validation', {code: 'identity_changed'}, generationId);
         return fail(discardStaging() ? CODES.IDENTITY_CHANGED : CODES.CLEANUP_FAILED);
       }
 
@@ -544,7 +578,8 @@ export function createEchoSnapshotApi(core, options = {}) {
       };
       try {
         writeFileSync(stagingManifest, JSON.stringify(manifest, null, 2), 'utf8');
-      } catch {
+      } catch (error) {
+        traceAcquisitionDiagnostic('manifest', error, generationId);
         return fail(discardStaging() ? CODES.MANIFEST_FAILED : CODES.CLEANUP_FAILED);
       }
 
@@ -552,7 +587,8 @@ export function createEchoSnapshotApi(core, options = {}) {
       try {
         mkdirSync(generationsDirectory, { recursive: true });
         renameSync(stagingDirectory, generationDirectory);
-      } catch {
+      } catch (error) {
+        traceAcquisitionDiagnostic('publish', error, generationId);
         const cleaned = discardStaging();
         logDiagnostic('publish_failed');
         return fail(cleaned ? CODES.PUBLISH_FAILED : CODES.CLEANUP_FAILED);
@@ -584,7 +620,8 @@ export function createEchoSnapshotApi(core, options = {}) {
         workspace.cleanup(id);
         activeGenerationId = null;
         return { ok: true, status: 'cleaned' };
-      } catch {
+      } catch (error) {
+        traceAcquisitionDiagnostic('cleanup', error);
         return fail(CODES.CLEANUP_FAILED);
       } finally {
         await workspace.release();

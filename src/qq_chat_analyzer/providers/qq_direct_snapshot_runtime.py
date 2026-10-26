@@ -63,6 +63,10 @@ DEFAULT_ACQUIRE_RPC_TIMEOUT_SECONDS = 65
 # same all-or-nothing capture contract.
 _SNAPSHOT_UNSTABLE_MAX_ATTEMPTS = 6
 _SNAPSHOT_UNSTABLE_RETRY_DELAY_SECONDS = 0.25
+# Explicitly recoverable decryption failures may reflect a late key update.
+# Never infer recoverability from a generic failure or spend a new timeout.
+_DECRYPT_MAX_ATTEMPTS = 3
+_DECRYPT_RETRY_DELAY_SECONDS = 1.0
 RECOVER_READINESS_ATTEMPTS = 51
 RECOVER_READINESS_POLL_SECONDS = 0.1
 RPC_METHOD_NAMESPACE = "EchoSnapshotApi"
@@ -223,6 +227,7 @@ class QQDirectSnapshotRuntimeClient:
         started_at = time.monotonic()
         deadline = started_at + self._acquire_timeout
         _LOGGER.info("QQ snapshot acquire RPC started timeout=%.1fs", self._acquire_timeout)
+        decrypt_failures = 0
         try:
             for attempt in range(1, _SNAPSHOT_UNSTABLE_MAX_ATTEMPTS + 1):
                 remaining = deadline - time.monotonic()
@@ -243,12 +248,36 @@ class QQDirectSnapshotRuntimeClient:
                             "QQ snapshot acquire RPC attempt=%d max_attempts=%d failure_code=%s",
                             attempt, _SNAPSHOT_UNSTABLE_MAX_ATTEMPTS, code,
                         )
-                    if (result.get("ok") is False and result.get("status") == "failed"
-                            and code == "snapshot_unstable"
-                            and attempt < _SNAPSHOT_UNSTABLE_MAX_ATTEMPTS
-                            # Retry only when the budget still covers the backoff.
-                            and deadline - time.monotonic() > _SNAPSHOT_UNSTABLE_RETRY_DELAY_SECONDS):
-                        time.sleep(_SNAPSHOT_UNSTABLE_RETRY_DELAY_SECONDS)
+                    retry_delay = None
+                    if result.get("ok") is False and result.get("status") == "failed":
+                        if code == "snapshot_unstable":
+                            retry_delay = _SNAPSHOT_UNSTABLE_RETRY_DELAY_SECONDS
+                        elif code == "decrypt_failed" and result.get("retryable") is True:
+                            decrypt_failures += 1
+                            if decrypt_failures < _DECRYPT_MAX_ATTEMPTS:
+                                retry_delay = _DECRYPT_RETRY_DELAY_SECONDS
+                    # Both recovery classes share this acquisition's deadline,
+                    # attempt cap, credential and Worker generation. The runtime
+                    # grants decrypt retries only after owned staging is gone.
+                    remaining = max(0.0, deadline - time.monotonic())
+                    can_retry = (retry_delay is not None
+                                 and attempt < _SNAPSHOT_UNSTABLE_MAX_ATTEMPTS
+                                 and remaining > retry_delay)
+                    reason = (
+                        "transient_failure" if can_retry else
+                        "decrypt_attempt_limit" if decrypt_failures >= _DECRYPT_MAX_ATTEMPTS else
+                        "attempt_limit" if attempt >= _SNAPSHOT_UNSTABLE_MAX_ATTEMPTS else
+                        "budget_exhausted" if remaining <= (retry_delay or 0) else
+                        "terminal_failure"
+                    )
+                    _LOGGER.info(
+                        "QQ snapshot acquire decision=%s reason=%s attempt=%d "
+                        "decrypt_failures=%d remaining_ms=%d retry_delay_ms=%d",
+                        "retry" if can_retry else "stop", reason, attempt, decrypt_failures,
+                        int(remaining * 1000), int((retry_delay or 0) * 1000) if can_retry else 0,
+                    )
+                    if can_retry:
+                        time.sleep(retry_delay)
                         continue
                     raise QQSnapshotRuntimeFailure()
                 generation_id = validate_generation_id(result.get("generation_id"))
@@ -351,11 +380,13 @@ class QQDirectSnapshotRuntimeClient:
         namespace: str = RPC_METHOD_NAMESPACE,
     ) -> Any:
         if self._generation_changed:
+            _LOGGER.info("QQ snapshot stage=rpc_binding failure_code=worker_generation_changed")
             raise QQSnapshotWorkerGenerationChanged()
         if self._credential_source is not None and (
             self._launch_credential is None or
             resolve_bridge_credential(self._credential_source) != self._launch_credential
         ):
+            _LOGGER.info("QQ snapshot stage=rpc_binding failure_code=credential_changed")
             raise QQSnapshotRuntimeUnavailable()
         url = f"{self._base_url}/rpc"
         if self._runtime_id is not None:
@@ -399,6 +430,12 @@ class QQDirectSnapshotRuntimeClient:
         except QQSnapshotRuntimeError:
             raise
         except (urllib.error.URLError, OSError, TimeoutError) as error:
+            cause = error.reason if isinstance(error, urllib.error.URLError) else error
+            category = ("timeout" if isinstance(cause, TimeoutError) else
+                        "connection_refused" if isinstance(cause, ConnectionRefusedError) else
+                        "transport_unavailable")
+            operation = method if method in {_ACQUIRE, _CLEANUP, _RECOVER, _GROUP_MEMBER_ALL} else "other"
+            _LOGGER.info("QQ snapshot stage=rpc_transport operation=%s failure_code=%s", operation, category)
             raise QQSnapshotRuntimeUnavailable() from error
         if deadline is not None and time.monotonic() >= deadline:
             raise QQSnapshotRuntimeUnavailable()

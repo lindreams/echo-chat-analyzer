@@ -37,7 +37,8 @@ def test_audit_cases_reject_before_launch_or_credential(tmp_path, monkeypatch, c
 
 
 @pytest.mark.parametrize("version,build", [("9.9.36-53644", "53644"), ("9.9.36", "53644")])
-def test_base_version_and_wrapper_are_pinned_to_the_launch(tmp_path, monkeypatch, version, build):
+def test_base_version_and_wrapper_are_pinned_to_the_launch(tmp_path, monkeypatch, version, build, caplog):
+    caplog.set_level('INFO')
     config, app = _base(tmp_path, version, build)
     monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
     # A pending tree without an active config is not this installation's target.
@@ -48,6 +49,8 @@ def test_base_version_and_wrapper_are_pinned_to_the_launch(tmp_path, monkeypatch
     launches = []
     monkeypatch.setattr(*_launch_target(bridge), lambda command, **options: launches.append((command, options)) or _FakeProcess(4243))
     bridge.default_auth_window_launcher(config)()
+    assert 'qq_version=9.9.36.53644' in caplog.text
+    assert str(tmp_path) not in caplog.text
     command, options = launches[0]
     env = options["env"]
     assert command[1] == str(config.qq_install_path.resolve())

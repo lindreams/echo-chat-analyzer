@@ -19,7 +19,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any, Iterator
+from typing import Any, Iterator, NoReturn
 
 from ...identity_names import first_identity_name
 from ...diagnostics import log_qq_session_event, qq_session_stage
@@ -478,7 +478,8 @@ class QQDirectDatabaseImportService:
                 finally:
                     if generation_id is not None:
                         try:
-                            client.cleanup(generation_id)
+                            with qq_session_stage(_LOGGER, "cleanup"):
+                                client.cleanup(generation_id)
                         except QQSnapshotWorkerGenerationChanged as error:
                             self._require_reconnect()
                             raise QQReconnectRequired() from error
@@ -728,6 +729,12 @@ class QQDirectDatabaseImportService:
                     _LOGGER.info("QQ Direct DB stage=provider_status outcome=failed failure_code=runtime_identity_mismatch")
                     raise QQDirectDatabaseUnavailable()
                 _LOGGER.info("QQ Direct DB stage=provider_status outcome=success")
+                _LOGGER.info(
+                    "QQ Direct DB readiness bridge=%s online=%s database_api=%s passphrase=%s snapshot_api=%s",
+                    status.bridge_ready is True, status.qq_online is True,
+                    status.database_api_ready is True, status.passphrase_ready is True,
+                    status.snapshot_api_ready is True,
+                )
                 _LOGGER.info("QQ Direct DB stage=snapshot_client outcome=started")
                 try:
                     self._runtime_client = builder(paths.snapshot_root)
@@ -811,41 +818,49 @@ def _validated_generation(
     and `acquired_session`; no second validation path exists.
     """
     with qq_session_stage(_LOGGER, "manifest"):
+        def reject(reason: str) -> NoReturn:
+            # Caller-owned literals only; never serialize the manifest or identity.
+            _LOGGER.info("QQ snapshot stage=manifest outcome=invalid guard_code=%s", reason)
+            raise QQDirectSnapshotInvalid() from None
+
         manifest_path = generation_directory / _GENERATION_MANIFEST_NAME
         try:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            raise QQDirectSnapshotInvalid() from None
+        except OSError:
+            reject("manifest_unreadable")
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            reject("manifest_encoding_invalid")
         if not isinstance(payload, dict):
-            raise QQDirectSnapshotInvalid()
+            reject("manifest_shape_invalid")
         if payload.get("schema_version") != _MANIFEST_SCHEMA_VERSION:
-            raise QQDirectSnapshotInvalid()
+            reject("schema_version_mismatch")
         if payload.get("generation_id") != generation_id:
-            raise QQDirectSnapshotInvalid()
+            reject("generation_mismatch")
         if payload.get("state") != "ready":
-            raise QQDirectSnapshotInvalid()
+            reject("generation_not_ready")
 
         database_name = _safe_relative_name(payload.get("database"))
         if database_name is None:
-            raise QQDirectSnapshotInvalid()
+            reject("database_name_invalid")
 
         identity = payload.get("identity")
         if not isinstance(identity, dict):
-            raise QQDirectSnapshotInvalid()
+            reject("identity_shape_invalid")
         if identity.get("namespace") != QQ_DB_SELF_NAMESPACE:
-            raise QQDirectSnapshotInvalid()
+            reject("identity_namespace_invalid")
         self_uin = canonical_qq_uin(identity.get("value"))
         if self_uin is None:
-            raise QQDirectSnapshotInvalid()
+            reject("identity_value_invalid")
 
         database_path = generation_directory / database_name
         if not database_path.is_file():
-            raise QQDirectSnapshotInvalid()
+            reject("database_missing")
     # Runtime-side file stability telemetry prevents known torn reads. SQLite's
     # own quick_check is the independent final integrity gate before the app
     # exposes the generation to session discovery or materialization.
     with qq_session_stage(_LOGGER, "quick_check"):
         if QQDatabaseProvider.quick_check(database_path) != "ok":
+            _LOGGER.info("QQ snapshot stage=quick_check outcome=invalid guard_code=sqlite_integrity_failed")
             raise QQDirectSnapshotInvalid()
     return database_path, self_uin
 

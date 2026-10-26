@@ -17,6 +17,10 @@ def timed_stage(stage: str) -> Iterator[None]:
     started_at = perf_counter()
     try:
         yield
+    except Exception as error:
+        category = "io_error" if isinstance(error, OSError) else "operation_failed"
+        _LOGGER.info("[analysis-stage] stage=%s outcome=failed failure_code=%s", stage, category)
+        raise
     finally:
         _LOGGER.info(
             "[analysis-timing] stage=%s elapsed_ms=%d",

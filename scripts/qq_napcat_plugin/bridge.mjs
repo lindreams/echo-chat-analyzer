@@ -12,6 +12,13 @@ const uin = value => /^[1-9][0-9]{4,19}$/.test(identifier(value)) ? identifier(v
 const object = value => value !== null && typeof value === 'object';
 const generation = value => typeof value === 'string' && value.length > 0 && value.length <= 128 &&
   value === value.trim() && value !== '.' && value !== '..' && !/[\\/\x00]/.test(value);
+// Internal literal stages/outcomes only; stdout/stderr are intentionally not copied into user logs.
+const logSnapshot = (stage, outcome) => {
+  try {
+    const file = process.env.QCE_LOG_FILE;
+    if (file) appendFileSync(file, `[${new Date().toISOString()}] [echo-snapshot] stage=${stage} outcome=${outcome}\n`);
+  } catch {}
+};
 const MAX_PROBE_CALLS = 64;
 const MEDIA_WINDOW_MS = 60000;
 // Rolling per-bridge limits recover with time; no reset RPC or client-supplied quota.
@@ -592,12 +599,14 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       const cleanupAbandoned = async () => {
         if (cleanupStarted || result?.ok !== true || result.status !== 'ready' || !generation(result.generation_id)) return;
         cleanupStarted = true;
+        logSnapshot('abandoned_acquire_cleanup', 'started');
         try {
           const cleaned = await snapshot.cleanup(result.generation_id);
           if (cleaned?.ok !== true && cleaned?.code !== 'generation_not_found') throw new Error();
+          logSnapshot('abandoned_acquire_cleanup', 'success');
         } catch {
           // Keep snapshot ownership/recovery fail-closed; never log payloads.
-          console.error('[echo-snapshot] stage=abandoned_acquire_cleanup outcome=failed');
+          logSnapshot('abandoned_acquire_cleanup', 'failed');
         }
       };
       if (acquiring) {
@@ -606,6 +615,7 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       try {
         result = await method.call(...params);
         if (acquiring && (res.destroyed || performance.now() >= acquireDeadline)) {
+          logSnapshot('acquire_response_discarded', res.destroyed ? 'client_disconnected' : 'deadline_exceeded');
           await cleanupAbandoned();
           send(200, {ok: false, error: 'qq_runtime_operation_failed'});
           return;
@@ -613,6 +623,7 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
         send(200, {ok: true, result});
       }
       catch (error) {
+        if (acquiring) logSnapshot('acquire_operation', 'failed');
         // Media stages are a fixed whitelist; every other failure stays generic.
         send(200, {ok: false, error: MEDIA_STAGES.has(error?.code) ? error.code : 'qq_runtime_operation_failed'});
       }

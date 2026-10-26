@@ -11,6 +11,7 @@ from pathlib import Path
 from collections.abc import Iterator
 
 from .resources import user_data_root
+from .version import APP_VERSION
 from .logging_config import (
     DESKTOP_DIAGNOSTIC_LOGGERS,
     SensitiveDataFilter,
@@ -92,6 +93,11 @@ def configure_diagnostics() -> logging.Logger:
     )
     if existing is None:
         logger.addHandler(build_diagnostic_handler(path))
+        logger.info(
+            "[runtime] echo_version=%s frozen=%s python_version=%d.%d.%d windows_build=%d",
+            APP_VERSION, bool(getattr(sys, "frozen", False)), *sys.version_info[:3],
+            sys.getwindowsversion().build if sys.platform == "win32" else 0,
+        )
     handlers = tuple(logger.handlers)
     for logger_name in DESKTOP_DIAGNOSTIC_LOGGERS:
         target = logging.getLogger(logger_name)

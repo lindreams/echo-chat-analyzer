@@ -110,3 +110,72 @@ def test_unwritable_diagnostics_cannot_change_acquisition(fictional_source):
                                         'process.env.QCE_LOG_FILE=path.dirname(mainPath); const api=createEchoSnapshotApi')
     result = _interleave(fictional_source, '', driver_transform=driver)
     assert result['ok'] and result['stagingCleaned'] and result['recovered']
+
+
+def test_source_diagnostics_preserve_database_api_receiver(fictional_source):
+    result = diagnose(fictional_source, setup="""
+  core.apis.DatabaseApi.getNtDbDir=function() {
+    if(this!==core.apis.DatabaseApi) throw new Error('fictional lost receiver');
+    return path.dirname(mainPath);
+  };
+""")
+    assert result['ok']
+    assert 'stage=decrypt_source_before' in result['diagnosticLog']
+    assert 'stage=decrypt_source_after' in result['diagnosticLog']
+
+
+@pytest.mark.parametrize('behavior,stage,guard,retryable', [
+    ("throw Object.assign(new Error('PRIVATE_ERROR'),{code:'EACCES'});", 'decrypt', 'access_denied', False),
+    ("throw Object.assign(new Error('PRIVATE_ERROR'),{code:'PRIVATE_CODE'});", 'decrypt', 'unexpected_error', False),
+    ("throw Object.assign(new Error('PRIVATE_ERROR'),{code:'ENOSPC'});", 'decrypt', 'disk_full', False),
+    ("throw Object.assign(new Error('PRIVATE_ERROR'),{code:'ERR_DLOPEN_FAILED'});", 'decrypt', 'native_load_failed', False),
+    ("return false;", 'decrypt', 'decrypt_rejected', True),
+    ("return true;", 'decrypt', 'decrypt_output_missing', False),
+    ("const b=fs.readFileSync(outputPath); b[18]=255; fs.writeFileSync(target,b); return true;",
+     'plaintext_validation', 'plaintext_header_invalid', True),
+])
+def test_decrypt_failure_is_diagnosable_without_private_fields(fictional_source, behavior, stage, guard, retryable):
+    # Produce a valid fictional plaintext once, before replacing only the API operation.
+    from test_qq_direct_main_wal_poc import _run
+    _run('snapshot', fictional_source[0], fictional_source[1], fictional_source[2])
+    result = diagnose(fictional_source, setup=f"""
+  core.apis.DatabaseApi.decryptDatabase=async(source,target)=>{{ {behavior} }};
+""")
+    assert result['code'] == 'decrypt_failed'
+    assert (result.get('retryable') is True) == retryable
+    assert f'failure_stage={stage} guard_code={guard}' in result['diagnosticLog']
+    assert 'PRIVATE' not in result['diagnosticLog']
+    assert str(fictional_source[0]) not in result['diagnosticLog']
+    assert result['manifest'] is None and result['stagingCleaned'] and result['recovered']
+    if stage == 'plaintext_validation':
+        assert 'file_size_matches=true' in result['diagnosticLog']
+        assert 'sqlite_signature_valid=true' in result['diagnosticLog']
+        assert 'format_versions_valid=false' in result['diagnosticLog']
+
+
+@pytest.mark.parametrize('operation,stage', [
+    ('writeFileSync', 'manifest'), ('renameSync', 'publish'), ('unlinkSync', 'encrypted_cleanup'),
+])
+def test_post_decrypt_io_failure_has_a_safe_stage(fictional_source, operation, stage):
+    result = diagnose(fictional_source, setup=f"""
+  const builtin=await import('node:module');
+  const mutableFs=builtin.createRequire(import.meta.url)('node:fs');
+  const original=mutableFs.{operation};
+  let injected=false;
+  mutableFs.{operation}=(p,...args)=>{{
+    const target=String(p);
+    if(!injected && (target.endsWith('manifest.json') ||
+       ('{operation}'==='renameSync' && target.endsWith('staging')) ||
+       ('{operation}'==='unlinkSync' && target.endsWith('merged.db')))) {{
+      injected=true;
+      throw Object.assign(new Error('PRIVATE_ERROR fictional-account fictional-key'),{{code:'EACCES'}});
+    }}
+    return original(p,...args);
+  }};
+  builtin.syncBuiltinESMExports();
+""")
+    assert not result['ok']
+    assert f'failure_stage={stage} guard_code=access_denied' in result['diagnosticLog']
+    assert 'PRIVATE' not in result['diagnosticLog']
+    assert 'fictional-account' not in result['diagnosticLog']
+    assert result['manifest'] is None and result['stagingCleaned'] and result['recovered']

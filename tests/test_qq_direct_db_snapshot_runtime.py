@@ -453,7 +453,10 @@ def test_decrypt_failure_never_publishes_a_ready_generation(
     )
 
     result = output["results"][0]["result"]
-    assert result == {"ok": False, "code": "decrypt_failed", "status": "failed"}
+    expected = {"ok": False, "code": "decrypt_failed", "status": "failed"}
+    if decrypt == 'false':
+        expected['retryable'] = True
+    assert result == expected
     assert _generation_ids(tmp_path) == []
     assert not (tmp_path / "staging").exists()
 

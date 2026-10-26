@@ -86,6 +86,18 @@ def _client(transport, *, base_url: str = "http://127.0.0.1:40654", root: Path |
 
 # ------------------------------------------------------------------ acquire
 
+@pytest.mark.parametrize('error,category', [
+    (TimeoutError('PRIVATE_TRANSPORT'), 'timeout'),
+    (ConnectionRefusedError('PRIVATE_TRANSPORT'), 'connection_refused'),
+    (OSError('PRIVATE_TRANSPORT'), 'transport_unavailable'),
+])
+def test_transport_failure_logs_a_fixed_category(tmp_path, caplog, error, category):
+    caplog.set_level('INFO', logger='qq_chat_analyzer.desktop.qq_direct_snapshot')
+    with pytest.raises(QQSnapshotRuntimeUnavailable):
+        _client(_FakeTransport(error=error), root=tmp_path).acquire()
+    assert f'operation=acquire failure_code={category}' in caplog.text
+    assert 'PRIVATE_TRANSPORT' not in caplog.text and str(tmp_path) not in caplog.text
+
 def test_acquire_timeout_covers_sequential_passphrase_and_identity_waits(tmp_path: Path) -> None:
     transport = _FakeTransport(body=_envelope(_acquire_result("gen-late")))
     original_transport = transport.__call__
@@ -175,6 +187,53 @@ def test_acquire_does_not_retry_a_non_transient_failure_within_budget(
 
     assert len(timeouts) == 1
     assert clock.now == pytest.approx(1000.0)
+
+
+@pytest.mark.parametrize('recovers', [True, False])
+def test_acquire_retries_only_explicitly_recoverable_decrypt_failures(tmp_path, monkeypatch, recovers, caplog):
+    caplog.set_level('INFO', logger='qq_chat_analyzer.desktop.qq_direct_snapshot')
+    clock = _FakeClock()
+    monkeypatch.setattr(snapshot_runtime.time, 'monotonic', clock)
+    monkeypatch.setattr(snapshot_runtime.time, 'sleep', clock.advance)
+    timeouts = []
+
+    def transport(url, body, timeout):
+        timeouts.append(timeout)
+        if recovers and len(timeouts) == 2:
+            return 200, _envelope(_acquire_result('gen-key-ready'))
+        return 200, _envelope({'ok': False, 'status': 'failed', 'code': 'decrypt_failed', 'retryable': True})
+
+    client = _client(transport, root=tmp_path)
+    if recovers:
+        assert client.acquire() == 'gen-key-ready'
+        assert len(timeouts) == 2
+    else:
+        with pytest.raises(QQSnapshotRuntimeFailure):
+            client.acquire()
+        assert len(timeouts) == 3
+    assert timeouts[0] == 65
+    assert all(a > b for a, b in zip(timeouts, timeouts[1:]))
+    assert 'decision=retry reason=transient_failure' in caplog.text
+    if not recovers:
+        assert 'decision=stop reason=decrypt_attempt_limit' in caplog.text
+
+
+def test_decrypt_retries_still_share_the_acquire_deadline(tmp_path, monkeypatch, caplog):
+    caplog.set_level('INFO', logger='qq_chat_analyzer.desktop.qq_direct_snapshot')
+    clock = _FakeClock()
+    monkeypatch.setattr(snapshot_runtime.time, 'monotonic', clock)
+    monkeypatch.setattr(snapshot_runtime.time, 'sleep', clock.advance)
+    timeouts = []
+
+    def transport(url, body, timeout):
+        timeouts.append(timeout)
+        clock.advance(timeout)
+        return 200, _envelope({'ok': False, 'status': 'failed', 'code': 'decrypt_failed', 'retryable': True})
+
+    with pytest.raises(QQSnapshotRuntimeFailure):
+        _client(transport, root=tmp_path).acquire()
+    assert len(timeouts) == 1 and clock.now == 1065
+    assert 'decision=stop reason=budget_exhausted' in caplog.text
 
 
 def test_acquire_unknown_failure_code_does_not_leak_payload(

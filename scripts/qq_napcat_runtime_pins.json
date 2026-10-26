@@ -11,7 +11,7 @@
   "napcatPatch": {
     "path": "napcat.mjs",
     "upstreamSha256": "6a22c93373c8f73462658d57b00bc88164d7e5858c0fe2f178eb97d66d7cb3ba",
-    "patchedSha256": "aaf556ffc60b84760b5b235ac8fc98c64a0bc87b1bf150b99f4450d1c5a740d4",
+    "patchedSha256": "c93a5751fad8cb245e0a6c840984b6670aa706650e20acfbc5ee7e3fbd2af9ba",
     "replacements": [
       {
         "anchor": "  let a;\n  if (r.onCmd(\"OidbSvcTrpcTcp.0xcde_2\"",
@@ -19,7 +19,7 @@
       },
       {
         "anchor": "D.inner?.value && (a = D.inner.value, e.log(",
-        "replacement": "D.inner?.value && (a = D.inner.value, core && (core.dbPassphrase = a), e.log("
+        "replacement": "D.inner?.value?.length > 0 && (a = D.inner.value, core && (core.dbPassphrase = a), e.log("
       },
       {
         "anchor": "  a && (V.core.dbPassphrase = a), await V.InitNapCat();",
@@ -79,12 +79,12 @@
     {
       "source": "qq_direct_db_snapshot/snapshot.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/snapshot.mjs",
-      "sha256": "76bc958499df1ba4dfce694ea60140637abbc45cf670e1e758c18a1f45e1e18e"
+      "sha256": "dd0c0274b09ef7df236396eb912df71a2cbd1bd6d8cd0591c69d10747b67ec3c"
     },
     {
       "source": "qq_direct_db_snapshot/main_wal.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/main_wal.mjs",
-      "sha256": "6e3933d9ff74fb01415739d3287de38ee2e09905d7fae9e35289444e7f5acad9"
+      "sha256": "a94acc2fbce22f035290cdb0adafd70778f5b40825c15ad263fa5cc2189295c2"
     },
     {
       "source": "qq_direct_db_snapshot/workspace.mjs",
@@ -94,7 +94,7 @@
     {
       "source": "qq_napcat_plugin/bridge.mjs",
       "target": "plugins/napcat-plugin-echo/bridge.mjs",
-      "sha256": "248cbfa91b2b7c62baa41e75caa757a2561a5768202df44c3a99400524543fad"
+      "sha256": "1dd34e8c222a9f6b750e6b583b9a452f3f0e83f723946f0003d01589429870fc"
     }
   ],
   "pluginConfigSha256": "83f2f45b62071d5ad84ece29baa2a25654cab204f469e59cc0f44149346b55eb"

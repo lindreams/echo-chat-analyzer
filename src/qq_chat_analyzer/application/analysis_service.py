@@ -307,6 +307,14 @@ class AnalysisApplicationService:
             has_nontext=has_nontext,
             has_expression_report=has_expression_report,
         )
+        _LOGGER.info(
+            "[analysis] counts raw=%d imported=%d scoped=%d filtered=%d "
+            "valid_text=%d tokens=%d expression_messages=%d status=%s",
+            diagnostic_counts.raw_message_count, diagnostic_counts.imported_message_count,
+            diagnostic_counts.scope_message_count, diagnostic_counts.filtered_message_count,
+            analyzed.valid_text_count, len(analyzed.tokens), expression_report.expression_message_count,
+            status.value,
+        )
         if status in (AnalysisStatus.NO_VALID_TEXT, AnalysisStatus.NO_TOKENS):
             return AnalysisResultDTO(
                 status=status,
@@ -513,6 +521,11 @@ def _build_reports(
             text_sender_tokens,
             conversation_type=conversation_type,
         )
+    _LOGGER.info(
+        "[analysis] language_samples group_availability=%s group_eligible_members=%d private_shared_words=%d",
+        distinctive_words.availability.value, distinctive_words.eligible_member_count,
+        len(private_language.shared_words),
+    )
     with timed_stage("ExpressionAnalyzer.report"):
         expression = expression_report
         if expression is None:

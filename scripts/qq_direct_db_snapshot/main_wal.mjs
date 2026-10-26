@@ -289,8 +289,12 @@ function matchesWitness(wal, witness) {
 
 // Only for an owned, completed main+committed-WAL image after decryption.
 // Never call on a live source: changing these bytes there could hide its WAL.
-export function finalizeStandaloneSnapshot(path, pageCount) {
+export function finalizeStandaloneSnapshot(path, pageCount, onDiagnostic = () => {}) {
+  const observe = witness => { try { onDiagnostic(witness); } catch {} };
   const state = lstatSync(path);
+  observe({regular_file: state.isFile(), single_link: state.nlink === 1,
+    file_bytes: state.size, expected_pages: pageCount, file_size_matches: state.size === pageCount * PAGE_SIZE,
+    sidecar_present: ['-wal', '-shm', '-journal'].some(suffix => existsSync(path + suffix))});
   if (!state.isFile() || state.nlink !== 1 ||
       ['-wal', '-shm', '-journal'].some(suffix => existsSync(path + suffix))) {
     fail('plaintext_snapshot_invalid');
@@ -298,13 +302,22 @@ export function finalizeStandaloneSnapshot(path, pageCount) {
   const fd = openSync(path, 'r+');
   try {
     const header = readExactly(fd, 100, 0);
+    const fileBytes = fstatSync(fd).size;
+    observe({file_bytes: fileBytes, file_size_matches: fileBytes === pageCount * PAGE_SIZE,
+      sqlite_signature_valid: header.subarray(0, 16).equals(HEADER),
+      page_size_valid: header.readUInt16BE(16) === PAGE_SIZE,
+      format_versions_valid: [1, 2].includes(header[18]) && header[19] === header[18],
+      page_count_valid: header.readUInt32BE(28) === 0 || header.readUInt32BE(24) !== header.readUInt32BE(92) ||
+        header.readUInt32BE(28) === pageCount});
     if (!Number.isSafeInteger(pageCount) || pageCount < 1 ||
-        fstatSync(fd).size !== pageCount * PAGE_SIZE ||
-        !header.subarray(0, 16).equals(HEADER) || header.readUInt16BE(16) !== PAGE_SIZE ||
+        fileBytes !== pageCount * PAGE_SIZE) {
+      fail('plaintext_snapshot_invalid');
+    }
+    if (!header.subarray(0, 16).equals(HEADER) || header.readUInt16BE(16) !== PAGE_SIZE ||
         ![1, 2].includes(header[18]) || header[19] !== header[18] ||
         (header.readUInt32BE(28) !== 0 && header.readUInt32BE(24) === header.readUInt32BE(92) &&
          header.readUInt32BE(28) !== pageCount)) {
-      fail('plaintext_snapshot_invalid');
+      fail('plaintext_header_invalid');
     }
     // SQLite WAL mode (2/2) can require writable auxiliary files even for
     // mode=ro. All committed pages are already in this image; publish 1/1.

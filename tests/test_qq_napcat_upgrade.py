@@ -31,11 +31,15 @@ async function boot(early) {
   if (r.onCmd("OidbSvcTrpcTcp.0xcde_2", (D) => {
     D.inner?.value && (a = D.inner.value, e.log("ready"));
   })) {}
+  listener({inner: {value: Buffer.alloc(0)}});
+  if (a !== undefined) throw Error("empty key marked ready");
   if (early) listener({inner: {value: "fictional-key"}});
   const V = {core: {}, async InitNapCat() {}};
   a && (V.core.dbPassphrase = a), await V.InitNapCat();
   if (!early) listener({inner: {value: "fictional-key"}});
   if (V.core.dbPassphrase !== "fictional-key") throw Error("G1 not captured");
+  listener({inner: {value: Buffer.alloc(0)}});
+  if (V.core.dbPassphrase !== "fictional-key") throw Error("empty key replaced valid key");
 }
 const allowed = new Set([
   "napcat-plugin-builtin",

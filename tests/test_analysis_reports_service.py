@@ -567,7 +567,8 @@ def test_wechat_mentions_do_not_enter_exported_language_profile(tmp_path, conver
     assert all(name not in json.dumps(profile, ensure_ascii=False) for name in ("银河", "宇宙"))
 
 
-def test_copy_campaigns_do_not_enter_exported_language_profile(tmp_path):
+def test_copy_campaigns_do_not_enter_exported_language_profile(tmp_path, caplog):
+    caplog.set_level('INFO', logger='qq_chat_analyzer.desktop.identity')
     application = _application_module()
     path = tmp_path / "fictional-campaigns.json"
     (tmp_path / "private-output").mkdir()
@@ -598,6 +599,9 @@ def test_copy_campaigns_do_not_enter_exported_language_profile(tmp_path):
 
     assert result.status is application.AnalysisStatus.COMPLETED
     assert result.diagnostic_counts.filtered_message_count == 4
+    assert '[analysis] counts raw=8 imported=8 scoped=8 filtered=4' in caplog.text
+    assert 'status=completed' in caplog.text
+    assert 'wxid_fictional_' not in caplog.text
     payload = json.loads((tmp_path / "private-output" / "echo-report.json").read_text(encoding="utf-8"))
     profile = payload["language_profile"]
     assert profile["available"]
@@ -609,7 +613,9 @@ def test_copy_campaigns_do_not_enter_exported_language_profile(tmp_path):
 def test_content_report_failure_removes_partially_written_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
+    caplog.set_level('INFO', logger='qq_chat_analyzer.desktop.analysis_diagnostics')
     application = _application_module()
     service_module = importlib.import_module(
         "qq_chat_analyzer.application.analysis_service"
@@ -632,3 +638,5 @@ def test_content_report_failure_removes_partially_written_artifacts(
 
     assert not (output_directory / "echo-report.json").exists()
     assert not (output_directory / "echo-report.html").exists()
+    assert '[analysis-stage] stage=artifact_export outcome=failed failure_code=io_error' in caplog.text
+    assert 'fictional export failure' not in caplog.text

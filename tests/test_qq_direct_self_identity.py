@@ -8,12 +8,17 @@ by the acquisition; the legacy ``self_identity.json`` sidecar is gone.
 from __future__ import annotations
 
 import sqlite3
+import json
 from pathlib import Path
+
+import pytest
 
 from qq_chat_analyzer.application.import_request import ImportRequest
 from qq_chat_analyzer.application.import_service import ImportService
 from qq_chat_analyzer.application.qq.qq_direct_database_import_service import (
     QQDirectDatabaseImportService,
+    QQDirectSnapshotInvalid,
+    _validated_generation,
 )
 
 from qq_direct_db_testing import FakeSnapshotRuntime
@@ -28,6 +33,30 @@ from qq_db_test_data import (
 def _text_blob(text: str) -> bytes:
     segment = _varint((45002 << 3) | 0) + _varint(1) + _field(45101, text.encode("utf-8"))
     return _field(40800, segment)
+
+
+@pytest.mark.parametrize('fault,guard', [
+    ('unreadable', 'manifest_unreadable'), ('encoding', 'manifest_encoding_invalid'),
+    ('generation', 'generation_mismatch'), ('identity', 'identity_value_invalid'),
+    ('database', 'database_missing'), ('integrity', 'sqlite_integrity_failed'),
+])
+def test_generation_rejection_logs_a_fixed_reason_only(tmp_path, caplog, fault, guard):
+    caplog.set_level('INFO', logger='qq_chat_analyzer.desktop.qq_direct_database')
+    payload = {'schema_version': 1, 'generation_id': 'fictional-generation', 'state': 'ready',
+               'database': 'snapshot.db', 'identity': {'namespace': 'qq_uin', 'value': '100000001'}}
+    if fault == 'generation':
+        payload['generation_id'] = 'PRIVATE_GENERATION'
+    if fault == 'identity':
+        payload['identity']['value'] = ''
+    manifest = tmp_path / 'manifest.json'
+    if fault != 'unreadable':
+        manifest.write_text('PRIVATE_INVALID_JSON' if fault == 'encoding' else json.dumps(payload), encoding='utf-8')
+    if fault != 'database':
+        (tmp_path / 'snapshot.db').write_bytes(b'PRIVATE_NOT_SQLITE')
+    with pytest.raises(QQDirectSnapshotInvalid):
+        _validated_generation(tmp_path, 'fictional-generation')
+    assert f'guard_code={guard}' in caplog.text
+    assert 'PRIVATE_' not in caplog.text and str(tmp_path) not in caplog.text
 
 
 def _create_snapshot(path: Path, self_uin: str, peer_uin: str) -> None:
