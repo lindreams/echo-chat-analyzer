@@ -482,6 +482,9 @@ def _build_echo_expression_culture(
         )
         for member in report.members
     )
+    # Sticker-only and nonrecurring expression senders can have nonzero
+    # aggregates while the display selection contains nothing to show.
+    culture_members = tuple(member for member in culture_members if member.top_expressions)
     return EchoExpressionCulture(
         available=bool(culture_members),
         expression_message_count=report.expression_message_count,

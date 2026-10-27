@@ -182,7 +182,10 @@ def parse_rich_message(raw_message: Any) -> RichMessage | None:
         _stringify_id(raw_message.get("server_id"))
         or _stringify_id(raw_message.get("local_id"))
     )
+    conversation_type = _conversation_type(raw_message)
     if message_type == _TEXT_TYPE:
+        if conversation_type == "group" and is_self is not True:
+            decoded_content = _strip_sender_prefix(decoded_content, sender_id)
         if decoded_content is None:
             return None
         contents = _text_expression_contents(decoded_content)
@@ -198,7 +201,7 @@ def parse_rich_message(raw_message: Any) -> RichMessage | None:
         message_id=message_id,
         source=WECHAT_PLATFORM,
         conversation_id=_clean_string(raw_message.get("username")),
-        conversation_type=_conversation_type(raw_message),
+        conversation_type=conversation_type,
         sender=SenderIdentity(
             identity_id=sender_id,
             display_name=sender,
@@ -312,7 +315,7 @@ def _decompress_text(raw: bytes) -> str | None:
 
 
 def _strip_sender_prefix(content: str | None, sender_id: str) -> str | None:
-    """Remove the group sender header WeChat stores ahead of sticker XML.
+    """Remove the confirmed group sender header ahead of a message payload.
 
     WeChat 4.x stores another member's group content as ``<username>:\\n``
     followed by the message payload, while the local user's own rows carry no

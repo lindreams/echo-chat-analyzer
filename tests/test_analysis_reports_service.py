@@ -92,6 +92,60 @@ def _request(application, tmp_path: Path, input_path: Path):
     )
 
 
+@pytest.mark.parametrize("source", ["qq", "wechat"])
+def test_language_originals_reach_export_with_exact_tokens_and_filtered_scope(tmp_path, source, caplog):
+    from dataclasses import replace
+    from datetime import date
+    from qq_chat_analyzer.application.scope_filter import AnalysisScope
+
+    application = _application_module()
+    path = tmp_path / "fictional-originals.json"
+    (tmp_path / "private-output").mkdir()
+    texts = [
+        "orchard outside_scope_secret", "orchard orchard fresh meadow",
+        "orchard today garden", "限时礼包！复制口令【星空福利AbCdEf】参与活动。 orchard filtered_secret",
+        "an orchard picnic tonight", "orchard orchard weekend", "pineapple is a different word",
+        "orchard今天终于等到放假啦" * 5,
+    ]
+    if source == "qq":
+        records = [qq_db_record(text, sender_id="100000001" if i % 2 else "100000002",
+            nickname="Fictional A" if i % 2 else "Fictional B", message_id="same-id",
+            timestamp=1704099600 + i * 60 if i else 1704013200) for i, text in enumerate(texts)]
+        payload = qq_db_payload(records, session_type="private", self_uin="100000001")
+    else:
+        payload = {"source": "wechat-db", "conversation": {
+            "username": "wxid_fictional_peer", "session_type": "private", "self_username": "wxid_fictional_self",
+        }, "messages": [{"local_id": i, "server_id": 9000, "local_type": 1,
+            "create_time": 1704099600 + i * 60 if i else 1704013200,
+            "message_content": text, "user_name": "wxid_fictional_self" if i % 2 else "wxid_fictional_peer",
+            "sender_name": "Fictional A" if i % 2 else "Fictional B",
+        } for i, text in enumerate(texts)]}
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    request = replace(_request(application, tmp_path, path),
+        scope=AnalysisScope.custom(date(2024, 1, 1), date(2024, 1, 1)))
+    result = application.AnalysisApplicationService().execute(request)
+    assert result.status is application.AnalysisStatus.COMPLETED
+    exported = json.loads((tmp_path / "private-output" / "echo-report.json").read_text(encoding="utf-8"))
+    assert "language_sources" in exported
+    sources = exported["language_sources"]
+    terms = [t for t in sources["terms"] if t["word"] == "orchard"]
+    combined = next(t for t in terms if t["member_index"] is None)
+    assert combined["occurrence_count"] == 6
+    assert len(combined["message_refs"]) == 4
+    by_ref = {m["ref"]: m for m in sources["messages"]}
+    assert [by_ref[ref]["text"] for ref in combined["message_refs"]] == [texts[i] for i in (1, 2, 4, 5)]
+    assert not by_ref[combined["message_refs"][1]]["after_refs"]
+    serialized = json.dumps(sources, ensure_ascii=False)
+    assert "outside_scope_secret" not in serialized and "filtered_secret" not in serialized
+    assert "今天终于等到放假啦" not in serialized
+    assert "wxid_fictional" not in serialized and "same-id" not in serialized
+    html = (tmp_path / "private-output" / "echo-report.html").read_text(encoding="utf-8")
+    assert "orchard orchard fresh meadow" in html
+    assert "outside_scope_secret" not in html and "filtered_secret" not in html
+    assert "今天终于等到放假啦" not in html
+    assert not any(text in caplog.text for text in texts)
+
+
 def test_private_stickers_reach_actual_json_and_html_from_filtered_rich_chain(tmp_path):
     application = _application_module()
     path = tmp_path / "fictional-stickers.json"
@@ -350,7 +404,7 @@ def test_execute_generates_echo_report_json_artifact(tmp_path: Path) -> None:
     report_path = output_directory / "echo-report.json"
     assert report_path.is_file()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "echo-report.v0.11"
+    assert payload["schema_version"] == "echo-report.v0.12"
 
 
 def test_report_boundary_does_not_retain_full_expression_candidates() -> None:
@@ -453,6 +507,31 @@ def test_sticker_rank_prefix_does_not_starve_official_expression_display(source)
     assert "fictional-sticker" not in json.dumps(payload)
 
 
+def test_expression_member_cards_omit_stickers_and_nonrecurring_expressions():
+    from qq_chat_analyzer.analysis.analyzers import ExpressionAnalyzer
+    from qq_chat_analyzer.application.analysis_service import _build_reports
+    from qq_chat_analyzer.legacy_projection import project_legacy_messages
+    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
+    from qq_chat_analyzer.rich_message import RichMessage, ExpressionContent, SenderIdentity
+
+    rich = [RichMessage(f"fictional-{index}", "qq", "fictional-room",
+        SenderIdentity(f"fictional-{index}", f"Fictional {index}"), index, "text", contents)
+        for index, contents in enumerate((
+            (ExpressionContent("platform_face", "14", "[微笑]"),) * 2,
+            (ExpressionContent("sticker", "fictional-sticker", "[贴图]"),) * 2,
+            (ExpressionContent("platform_face", "1", "[撇嘴]"),),
+        ))]
+    messages = project_legacy_messages(rich)
+    reports = _build_reports(messages, [], expression_source="qq",
+                             expression_report=ExpressionAnalyzer().analyze(messages, rich))
+    culture = echo_report_to_dict(build_echo_report_view(
+        reports, conversation_kind="group", expression_source="qq"))["expression_culture"]
+
+    assert len(reports.expression.members) == 3
+    assert culture["expression_message_count"] == reports.expression.expression_message_count
+    assert [member["speaker_key"] for member in culture["members"]] == ["fictional-0"]
+
+
 def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -496,9 +575,8 @@ def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
     assert "expression_key" not in serialized
     culture = payload["expression_culture"]
     assert culture["top_expressions"] == []
-    assert all(
-        not member["top_expressions"] for member in culture["members"]
-    )
+    assert culture["members"] == []
+    assert culture["available"] is False
     assert "微信自定义表情" not in serialized
 
 
@@ -515,7 +593,7 @@ def test_new_report_metadata_records_corrected_expression_semantics(tmp_path):
         result=result, source="wechat", scope=AnalysisScope.all(),
         generated_at=datetime(2026, 10, 16, tzinfo=timezone.utc),
     )
-    assert metadata["analysis_revision"] == "echo-analysis.v10"
+    assert metadata["analysis_revision"] == "echo-analysis.v12"
 
 
 @pytest.mark.parametrize("source", ["wechat", "qq"])

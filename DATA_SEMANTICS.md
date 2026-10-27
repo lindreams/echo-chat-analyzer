@@ -57,7 +57,7 @@ Adapter / Import 与单向投影保留输入顺序，不统一重排所有来源
 窗口未涉及的星期或全无有效日期时，日均未知，展示“—”；累计消息数与活跃日日均的既有口径保持不变。
 “记录跨度”按窗口日历天数换算为周，四舍五入显示“约 N 周”，不足七天显示“不足 1 周”；不是触及的自然周数，也不证明来源在中间每一天都有完整历史。
 目前来源没有逐日采集完整性标记，不能据此把导入记录之外的日期宣称为零消息。
-计算位于共用分析层，展示仅消费日均与跨度；修订号为 `echo-analysis.v10`，报告 schema 为 `echo-report.v0.11`。
+计算位于共用分析层，展示仅消费日均与跨度；星期日均引入于 `echo-analysis.v10`。第一章整理时的报告 schema 为 `echo-report.v0.11`，当前原话初版为 `echo-report.v0.12`；后续 `echo-analysis.v11` 修正微信文本投影、`echo-analysis.v12` 修正整句重复过滤，未改变上述日均定义。
 
 默认会话阈值为 1800 秒：当前有效时间与上一条有效时间的差 **大于** 1800 才开始新会话，恰好 1800 仍在同一会话。无效时间消息留在当前会话、不更新上一有效时间；输入时间倒退不会触发正向 gap 边界。时长使用本会话有效时间的 min/max，无有效时间时起止未知、时长为零；消息数量仍包含无效时间消息。
 
@@ -84,6 +84,23 @@ QQ Adapter 按段序保留文本与 face，关系单独保存；图片为 NonTex
 结构化表情与 Unicode emoji 有独立表达通道；表达展示文本不能污染词频、独特词或语言画像。MarketFace 由原始 bytes 的 SHA-256 建立独立命名空间的不透明 sticker 身份，不等于已解码 QQ emoji ID。
 
 依据：[legacy_projection.py](src/qq_chat_analyzer/legacy_projection.py)；守护见 [test_qq_db_rich_contents.py](tests/test_qq_db_rich_contents.py)、[test_expression_lexical_boundary.py](tests/test_expression_lexical_boundary.py)、[test_rich_filtering_association.py](tests/test_rich_filtering_association.py)。
+
+### 语言画像原话关联
+
+新报告仅为展示的语言词保存原话关联，直接复用保留消息此次分析的词法 token 与稳定发送者键，不在页面重新分词或做子串搜索。
+同词出现两次计两次出现、一个消息条目；同条消息在共用原文表中只保存一次。报告内部序号与来源 message_id 分离，重复／缺失来源 ID 不合并消息。
+成员词只匹配本人；私聊共同词／偏好词可查看双方。原话保持 `ChatMessage.text` 的用户撰写投影，不是完整来源富媒体复原。
+
+上下文前后各最多两条、距命中不超过十分钟，沿相邻导入位置扩展；过滤缺口、未知或逆序时间、会话／平台／类型变化时停止。
+所有原话及上下文都来自同一过滤后的保留输入，不恢复已排除记录；来源在导入前已略过的类型不在可证明的连续性范围内。
+未知时间命中仍可展示正文，不编造上下文。按导入顺序分批显示全部匹配，无暗中截断，也不伪造词语高亮。
+
+原话只保存于已有离线 HTML / JSON 报告包，分享报告也会分享这些文字；不新增来源读取或原文缓存，旧报告不自动回填。
+微信数据库的群聊文本在来源适配处移除已确认的非本人发送者 `sender_id:\n` 存储头部，之后再进入过滤、词法、表达邻近词及原话关联。
+只移除开头与该行发送者完全匹配的一层头部；私聊、未知会话、确认的本人发言及不匹配头部保留原文。正文换行、空格及正常账号示例不作全局删除。
+这修正了原话暴露存储头部，以及头部参与过滤和文字长度等计算的问题，纳入 `echo-analysis.v11`；schema 为 `echo-report.v0.12`。
+当前分析修订 `echo-analysis.v12` 另去掉重复噪声检测中 12 字的单元长度上限：规范化空白后，整条消息精确由同一片段重复至少三遍组成且总长至少八字时，沿用既有整条排除规则。两遍强调或含不同补充文字不因此排除，原始导入消息不改写。
+代码与验证见 [language_sources.py](src/qq_chat_analyzer/presentation/language_sources.py)、[test_language_sources.py](tests/test_language_sources.py) 和 [来源审查](docs/LANGUAGE_ORIGINALS_AND_REPLY_AUDIT.md)。
 
 ## 5. 表达数据流向与消费契约
 

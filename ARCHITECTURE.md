@@ -182,6 +182,12 @@ CLI 仍通过向 AnalysisApplicationService 注入 legacy writer，按条件生�
 
 [presentation/builders.py](src/qq_chat_analyzer/presentation/builders.py) 负责报告到视图的选择、格式化与名称解析；其职责不等于重新分析原始消息。Presentation 不只是“只依赖报告模型的纯函数”：builders 使用共享 identity_names 与表达资产模块，[expression_assets.py](src/qq_chat_analyzer/presentation/expression_assets.py) 读取资源，[echo_serializer.py](src/qq_chat_analyzer/presentation/echo_serializer.py) 装配前端／图片资源并写 JSON / HTML。它不读取来源数据库、不拥有连接，也不依赖 Qt。
 
+语言画像原话由应用层将本次保留消息、实际词法 token 和导入位置交给
+[language_sources.py](src/qq_chat_analyzer/presentation/language_sources.py) 做展示词的关联投影。
+它不重新分词或改变排名，按报告内部引用共用原文与有边界的上下文；
+[echo_language.py](src/qq_chat_analyzer/presentation/echo_language.py) 只消费这些关联，离线分批展示。
+原话进入现有报告包并沿用其生命周期，不另建检索服务、缓存或来源查询通道。
+
 ### 报告包与历史所有权
 
 [package_echo_report](src/qq_chat_analyzer/application/echo_report_export.py) 发布四文件包：echo-report.html、echo-report.json、metadata.json、README.txt。Report Package 是持久分析历史的事实来源；不存在另一套 analysis_history.jsonl 历史索引。

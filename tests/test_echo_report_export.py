@@ -132,6 +132,9 @@ def test_package_creates_echo_report_directory_with_expected_files(
     assert (target / "echo-report.html").is_file()
     assert (target / "echo-report.json").is_file()
     assert (target / "README.txt").is_file()
+    readme = (target / "README.txt").read_text(encoding="utf-8")
+    assert "原话" in readme and "分享" in readme
+    assert "不包含原始聊天记录" not in readme
     assert {path.name for path in target.iterdir()} == {
         "echo-report.html", "echo-report.json", "metadata.json", "README.txt",
     }

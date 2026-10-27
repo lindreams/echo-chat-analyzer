@@ -220,6 +220,19 @@ ECHO_REPORT_HTML_SKELETON = r"""
       <span class="page-number">05</span>
     </section>
 
+    <dialog id="language-originals" aria-labelledby="language-original-title">
+      <header class="language-original-header">
+        <div><p class="folio">VOICES / 原话</p><h3 id="language-original-title"></h3><p class="language-original-summary"></p></div>
+        <button type="button" class="language-original-close" aria-label="关闭原话">关闭 ×</button>
+      </header>
+      <div class="language-original-results" tabindex="0" aria-label="匹配的原话"></div>
+      <footer class="language-original-footer">
+        <span class="language-original-progress" role="status"></span>
+        <button type="button" class="language-all" hidden>查看全部原话</button>
+        <button type="button" class="language-more" hidden>继续查看</button>
+      </footer>
+    </dialog>
+
     <section class="page chapter expression-chapter" id="expression" aria-labelledby="expression-title" hidden>
       <header class="chapter-header">
         <span class="chapter-number">04</span>
@@ -321,6 +334,8 @@ ECHO_REPORT_CSS = r"""
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; }
 body { margin: 0; color: var(--ink); background: var(--canvas); font-family: var(--sans); }
+:where(a, button, input, select, summary, [tabindex], dialog):focus { outline: none; }
+:where(a, button, input, select, summary, [tabindex]):focus-visible { outline: 1px solid var(--viewer); outline-offset: 3px; }
 a { color: inherit; text-decoration: none; }
 
 .report { width: min(100% - 32px, 1040px); margin: 32px auto 80px; }
@@ -407,13 +422,13 @@ h1, h2, h3, p { margin-top: 0; }
   background: var(--accent-soft);
 }
 .member-list.mode-group::-webkit-scrollbar-thumb:hover { background: var(--accent); }
-.voice-entry { position: relative; min-width: 0; padding: 34px 0 42px; border-bottom: 1px solid var(--rule); }
-.mode-private .voice-entry { min-height: 340px; padding-right: 34px; }
+.voice-entry { position: relative; min-width: 0; padding: 24px 0 26px; border-bottom: 1px solid var(--rule); }
+.mode-private .voice-entry { min-height: 0; padding-right: 34px; }
 .mode-private .voice-entry + .voice-entry { padding-right: 0; padding-left: 34px; border-left: 1px solid var(--rule); }
 .voice-entry header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 18px; }
 .voice-entry h3 { min-width: 0; margin: 0; overflow-wrap: anywhere; font: 500 25px/1.3 var(--sans); }
 .member-index { color: var(--accent); font: 13px/1.8 var(--serif); }
-.voice-words { display: flex; flex-wrap: wrap; min-width: 0; gap: 12px 28px; margin: 34px 0 0 40px; padding: 0; list-style: none; }
+.voice-words { display: flex; flex-wrap: wrap; min-width: 0; gap: 12px 28px; margin: 24px 0 0 40px; padding: 0; list-style: none; }
 .voice-words li { position: relative; min-width: 0; max-width: 100%; overflow-wrap: anywhere; color: var(--ink); font: 400 clamp(25px, 4vw, 39px)/1.25 var(--serif); letter-spacing: -.02em; }
 .voice-word-token {
   display: inline-flex;
@@ -439,11 +454,11 @@ h1, h2, h3, p { margin-top: 0; }
   display: flex;
   flex-wrap: wrap;
   gap: 12px 24px;
-  margin-top: 42px;
+  margin-top: 24px;
 }
 .mode-private .voice-words li { margin: 0; font-size: 30px; }
 .mode-private .voice-words li::after { content: ""; }
-.voice-context { margin: 30px 0 0 40px; color: var(--faint); font: 13px/1.8 var(--serif); overflow-wrap: anywhere; }
+.voice-context { margin: 18px 0 0 40px; color: var(--faint); font: 13px/1.8 var(--serif); overflow-wrap: anywhere; }
 /* Group portraits stay compact so one screen shows six voices: five words share
    one line, and the statistics line keeps its place under them. */
 .member-list.mode-group .voice-entry { padding: 20px 0 18px; }
@@ -457,8 +472,8 @@ h1, h2, h3, p { margin-top: 0; }
 .language-unavailable { margin: 0; padding: 52px 0; color: var(--muted); font: 17px/2 var(--serif); border-bottom: 1px solid var(--rule); }
 
 .private-language-blocks {
-  margin-top: 36px;
-  padding-top: 24px;
+  margin-top: 24px;
+  padding-top: 18px;
   border-top: 1px solid var(--rule);
 }
 
@@ -650,7 +665,7 @@ h1, h2, h3, p { margin-top: 0; }
 .memory-style-row:last-child .memory-style-label { color: var(--accent); }
 .memory-style-row .memory-track { height: 8px; background: rgb(210 202 189 / 35%); }
 .memory-style-row:last-child .memory-fill { background: var(--accent); }
-.memory-style-row strong { text-align: right; font: 32px/1 var(--serif); font-weight: 400; }
+.memory-style-row strong { text-align: right; font: 18px/1.4 var(--serif); font-weight: 400; }
 .is-relay .memory-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0 20px; }
 .is-relay .memory-copy { grid-column: 1; }
 .sticker-memory-period { grid-column: 2; margin: 0; max-width: 260px; color: var(--muted); font: 10px/1.6 var(--sans); overflow-wrap: anywhere; }
@@ -682,7 +697,7 @@ h1, h2, h3, p { margin-top: 0; }
 .sticker-memory-story.is-compact:last-child { padding-bottom: 0; }
 
 
-.expression-chapter .chapter-intro { margin: 0 0 44px; }
+.expression-chapter .chapter-intro { margin: 18px 0 26px; }
 .expression-fields {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -691,8 +706,8 @@ h1, h2, h3, p { margin-top: 0; }
   border-bottom: 1px solid var(--ink);
 }
 .expression-fields div {
-  min-height: 150px;
-  padding: 30px 24px;
+  min-height: 0;
+  padding: 20px 24px;
   border-right: 1px solid var(--rule);
 }
 .expression-fields div:last-child { border-right: 0; }
@@ -715,7 +730,7 @@ h1, h2, h3, p { margin-top: 0; }
   width: 100%;
   max-width: 100%;
 }
-.expression-top { margin-top: 52px; }
+.expression-top { margin-top: 28px; }
 .expression-top h3 {
   margin: 0 0 18px;
   font-size: 22px;
@@ -782,7 +797,7 @@ h1, h2, h3, p { margin-top: 0; }
   color: var(--faint);
   font-size: 12px;
 }
-.expression-combos { margin-top: 42px; }
+.expression-combos { margin-top: 26px; }
 .expression-combos h3 {
   margin: 0 0 18px;
   font-size: 22px;
@@ -833,13 +848,15 @@ h1, h2, h3, p { margin-top: 0; }
   font-size: 12px;
 }
 .expression-members {
-  height: 460px;
-  margin-top: 58px;
-  overflow-y: hidden;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 32px;
+  max-height: 460px;
+  margin-top: 28px;
+  overflow-y: auto;
   border-top: 1px solid var(--ink);
 }
-.expression-members:hover { overflow-y: auto; }
-.expression-member { padding: 28px 0; border-bottom: 1px solid var(--rule); }
+.expression-member { min-width: 0; padding: 20px 0; border-bottom: 1px solid var(--rule); }
 .expression-member header { display: flex; align-items: baseline; gap: 18px; }
 .expression-member h3 { margin: 0; font: 500 24px/1.3 var(--sans); }
 .expression-summary { margin: 12px 0 0; color: var(--muted); font: 14px/1.8 var(--serif); }
@@ -1009,6 +1026,7 @@ h1, h2, h3, p { margin-top: 0; }
   .member-list.mode-group .voice-words li { font-size: 20px; }
   .member-list.mode-group .voice-words li::after { margin-left: 12px; }
   .expression-fields { grid-template-columns: 1fr; }
+  .expression-members { grid-template-columns: 1fr; }
   .sticker-members { grid-template-columns: 1fr; gap: 28px; }
   .sticker-member + .sticker-member { border-left: 0; padding-left: 0; border-top: 1px solid var(--rule); padding-top: 24px; }
   .sticker-section-heading { display: block; }
@@ -1035,6 +1053,7 @@ h1, h2, h3, p { margin-top: 0; }
   .cover-footer a, .end-mark a { display: none; }
   /* On paper the group list unfolds completely instead of scrolling. */
   .member-list.mode-group { max-height: none; overflow: visible; }
+  .expression-members { max-height: none; overflow: visible; }
 }
 
 """
@@ -1393,14 +1412,29 @@ document.documentElement.classList.add("js-ready");
   );
   setHidden("voices-intro", languageMode === "group_distinctive");
 
-  function appendWords(parent, words) {
+  function appendLanguageWord(container, word, memberIndex) {
+    var target = container;
+    if (typeof word === "string" && data && data.language_sources) {
+      target = document.createElement("button");
+      target.type = "button";
+      target.className = "language-word-button";
+      target.dataset.languageWord = word;
+      target.dataset.languageMember = memberIndex === null ? "all" : String(memberIndex);
+      target.setAttribute("aria-haspopup", "dialog");
+      target.setAttribute("aria-label", "查看“" + word + "”的原话");
+      container.appendChild(target);
+    }
+    appendInlineWord(target, word);
+  }
+
+  function appendWords(parent, words, memberIndex) {
     var list = document.createElement("ol");
     list.className = "voice-words";
     (words || []).forEach(function (word) {
       var item = document.createElement("li");
       var token = document.createElement("span");
       token.className = "voice-word-token";
-      appendInlineWord(token, word);
+      appendLanguageWord(token, word, memberIndex);
       item.appendChild(token);
       list.appendChild(item);
     });
@@ -1459,14 +1493,14 @@ document.documentElement.classList.add("js-ready");
         header.appendChild(heading);
         article.appendChild(header);
 
-        appendWords(article, member.primary_words);
+        appendWords(article, member.primary_words, index);
 
         if (languageMode === "group_distinctive" && member.context_words.length) {
           var context = document.createElement("p");
           context.className = "voice-context";
           context.appendChild(document.createTextNode("常聊："));
           member.context_words.forEach(function (word) {
-            appendInlineWord(context, word);
+            appendLanguageWord(context, word, index);
             context.appendChild(document.createTextNode(" "));
           });
           article.appendChild(context);
@@ -1509,7 +1543,7 @@ document.documentElement.classList.add("js-ready");
         var entry = document.createElement("li");
         var selfCount = finiteNumber(item.self_count);
         var peerCount = finiteNumber(item.peer_count);
-        appendInlineWord(entry, item.word);
+        appendLanguageWord(entry, item.word, null);
         entry.appendChild(
           document.createTextNode(
             " · 你 " + (selfCount === null ? "—" : formatCount(selfCount)) +
@@ -1533,7 +1567,7 @@ document.documentElement.classList.add("js-ready");
       sideWords.forEach(function (item) {
         var entry = document.createElement("li");
         var sideLabel = item.emphasis === "self" ? "你更常说" : "TA 更常说";
-        appendInlineWord(entry, item.word);
+        appendLanguageWord(entry, item.word, null);
         entry.appendChild(document.createTextNode(" · " + sideLabel));
         sideWordsList.appendChild(entry);
       });

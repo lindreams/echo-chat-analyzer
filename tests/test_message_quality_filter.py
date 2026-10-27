@@ -46,6 +46,26 @@ def test_single_character_repeat_spam_is_filtered() -> None:
     assert result.reasons[0].reason == "noise_single_character_repeat"
 
 
+def test_long_sentence_repetition_is_filtered_without_losing_ordinary_emphasis() -> None:
+    phrase = "明天终于可以带着小狗出去散步啦！"
+    spam_text = phrase * 6
+    assert len(phrase) > 12 and len(spam_text) < LONG_TEXT_THRESHOLD
+    spam = _message("虚构用户", spam_text, 1_700_000_000)
+    ordinary = [
+        _message("虚构用户", phrase * 2, 1_700_000_120),
+        _message("虚构用户", phrase * 3 + "还要带点零食", 1_700_000_240),
+    ]
+    messages = [spam, *ordinary]
+
+    result = apply_message_quality_filter(messages)
+
+    assert result.kept_messages == ordinary
+    assert result.filtered_messages == [spam]
+    assert result.reasons[0].reason == "noise_repeated_fragment"
+    assert result.reasons[0].metadata["repeat_count"] == 6
+    assert messages == [spam, *ordinary] and spam.text == spam_text
+
+
 def test_same_text_burst_within_60_seconds_keeps_only_first() -> None:
     first = _message("虚构用户甲", "这句话被连续复制", 1_700_000_000)
     second = _message("虚构用户甲", "这句话被连续复制", 1_700_000_015)

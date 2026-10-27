@@ -217,6 +217,7 @@ DOMAIN_MODULES = {
         "test_wx_key_helper_powershell",
     },
     "ui_report": {
+        "test_language_sources",
         "test_cli",
         "test_echo_conversation_sessions_frontend",
         "test_echo_group_sessions_frontend",

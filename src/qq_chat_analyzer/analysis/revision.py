@@ -28,4 +28,8 @@
 # when variable codes and wording keep individual templates below the threshold.
 # v10: weekday daily averages use one calendar span of kept messages for
 # the conversation and all members; unobserved weekdays remain unavailable.
-ANALYSIS_REVISION = "echo-analysis.v10"
+# v11: WeChat group text strips the confirmed non-self sender storage header
+# before authored projection, filtering, expression context and lexical analysis.
+# v12: exact whole-message repetitions also recognize sentence-length units,
+# retaining the three-repeat minimum without the old 12-character unit cap.
+ANALYSIS_REVISION = "echo-analysis.v12"

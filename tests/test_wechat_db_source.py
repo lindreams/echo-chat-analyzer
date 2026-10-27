@@ -328,6 +328,41 @@ def test_text_row_becomes_rich_message_then_projects_to_legacy(
     assert legacy_message.timestamp == 1753412807
 
 
+@pytest.mark.parametrize("compressed", [False, True])
+def test_group_text_sender_header_is_metadata_not_authored_original(tmp_path, compressed):
+    sender = "wxid_fictional_sender"
+    body = "周末去公园散步[微笑]\n原话里的换行和  空格都保留。"
+    content = f"{sender}:\n{body}"
+    row = _db_row(message_content=content)
+    row["sender_name"] = "Fictional Alice"
+    if compressed:
+        row["message_content"] = zstd.ZstdCompressor().compress(content.encode("utf-8")).hex()
+        row["WCDB_CT_message_content"] = 4
+    export = tmp_path / "sender-header.json"
+    _write_db_export(export, [row])
+    outcome = ImportService().execute(ImportRequest(input_path=export, platform="wechat"))
+    assert outcome.messages[0].text == body
+    assert outcome.messages[0].sender == "Fictional Alice"
+    assert outcome.messages[0].sender_id == sender
+    rich = outcome.rich_message_pairs[0][1]
+    assert next(item.text for item in rich.contents if isinstance(item, TextContent)) == body
+    assert all(sender not in item.text_before for item in rich.contents if isinstance(item, ExpressionContent))
+
+
+@pytest.mark.parametrize("kind,is_self,body", [
+    ("private", False, "wxid_fictional_sender:\n用户写下的账号示例"),
+    ("unknown", False, "wxid_fictional_sender:\n不能确认属于群聊"),
+    ("group", True, "wxid_fictional_sender:\n本人写下的账号示例"),
+    ("group", False, "wxid_fictional_other:\n另一个人的账号原话"),
+])
+def test_text_header_normalization_preserves_unproven_or_authored_prefixes(kind, is_self, body):
+    row = _db_row(message_content=body)
+    row["conversation_type"] = kind
+    row["self_username"] = "wxid_fictional_sender" if is_self else "wxid_fictional_owner"
+    rich = wechat_db_adapter.parse_rich_message(row)
+    assert project_legacy_message(rich).text == body
+
+
 def test_sticker_row_becomes_rich_expression_and_legacy_message(
     tmp_path: Path,
 ) -> None:

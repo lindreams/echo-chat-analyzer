@@ -151,6 +151,37 @@ class EchoLanguageProfile:
 
 
 @dataclass(frozen=True, slots=True)
+class EchoLanguageMessage:
+    """One authored projection, shared by selected words and bounded context."""
+
+    ref: int
+    speaker_label: str
+    timestamp: str
+    text: str
+    message_type: str
+    before_refs: tuple[int, ...] = ()
+    after_refs: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class EchoLanguageTerm:
+    """Exact lexical matches; member_index addresses language_profile.members."""
+
+    word: str
+    member_index: int | None
+    occurrence_count: int
+    message_refs: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class EchoLanguageSources:
+    """Offline originals for displayed language words, not a full chat export."""
+
+    messages: tuple[EchoLanguageMessage, ...]
+    terms: tuple[EchoLanguageTerm, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class EchoConversationSession:
     """Display-neutral session detail carried to Echo serialization."""
 
@@ -318,6 +349,7 @@ class EchoReportView:
     members: tuple[EchoMemberCard, ...] = ()
     conversation_sessions: EchoConversationSessions | None = None
     language_profile: EchoLanguageProfile | None = None
+    language_sources: EchoLanguageSources | None = None
     expression_culture: EchoExpressionCulture | None = None
     expression_source: str | None = None
     stickers: EchoStickers | None = None

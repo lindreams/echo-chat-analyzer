@@ -14,7 +14,6 @@ from ..message import ChatMessage
 MIN_SINGLE_CHARACTER_REPETITIONS = 6
 MIN_FRAGMENT_REPETITIONS = 3
 MIN_REPEATED_FRAGMENT_TEXT_LENGTH = 8
-MAX_REPEATED_FRAGMENT_LENGTH = 12
 MIN_BURST_REPETITIONS = 3
 BURST_WINDOW_SECONDS = 60
 MAX_EXAMPLES = 3
@@ -198,15 +197,14 @@ def _repeated_fragment(text: str) -> str | None:
     if len(text) < MIN_REPEATED_FRAGMENT_TEXT_LENGTH:
         return None
 
-    upper_bound = min(MAX_REPEATED_FRAGMENT_LENGTH, len(text) // 3)
-    for fragment_length in range(2, upper_bound + 1):
-        if len(text) % fragment_length != 0:
-            continue
-        fragment = text[:fragment_length]
-        repeat_count = len(text) // fragment_length
-        if (
-            repeat_count >= MIN_FRAGMENT_REPETITIONS
-            and fragment * repeat_count == text
-        ):
-            return fragment
-    return None
+    # The next occurrence in the doubled string gives the shortest exact
+    # period. A non-repeated text only matches again at its full length.
+    # Avoid a fragment-length cap that misses copied whole sentences.
+    fragment_length = (text + text).find(text, 1)
+    if (
+        fragment_length < 2
+        or len(text) % fragment_length != 0
+        or len(text) // fragment_length < MIN_FRAGMENT_REPETITIONS
+    ):
+        return None
+    return text[:fragment_length]

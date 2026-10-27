@@ -53,6 +53,8 @@ def _fictional_payload(source, conversation_type, expression_heavy, include_unic
                 (47, '<msg><emoji md5="fictional-other-sticker"/></msg>'),
             ))
         for kind, content in contents:
+            if kind == 1 and conversation_type == "group" and index % sender_count != 1:
+                content = f"wxid_fictional_{index % sender_count}:\n{content}"
             rows.append({
                 "local_id": len(rows) + 1, "server_id": 9000 + len(rows),
                 "create_time": 1704099600 + len(rows) * 60,
@@ -128,3 +130,23 @@ def test_unicode_and_structured_expressions_preserve_lexical_consumers(
     assert [profile.top_words for profile in heavy.reports.user_profiles.profiles] == [
         profile.top_words for profile in baseline.reports.user_profiles.profiles
     ]
+    # The original-message lookup follows the same lexical facts even when
+    # source expressions add rows or use a separate structured content channel.
+    for result in (baseline, heavy):
+        view = result.echo_report_view
+        sources = view.language_sources
+        assert sources is not None
+        if source == "wechat" and conversation_type == "group":
+            assert all(not message.text.startswith("wxid_fictional_") for message in sources.messages)
+        by_ref = {message.ref: message for message in sources.messages}
+        sender_count = 3 if conversation_type == "group" else 2
+        for index, member in enumerate(view.language_profile.members):
+            for word in member.primary_words:
+                term = next(t for t in sources.terms if t.member_index == index and t.word == word)
+                assert len(term.message_refs) == 120 // sender_count
+                matched_texts = [next(text for text in _LEXICAL_TEXTS if by_ref[ref].text.startswith(text))
+                                 + (" garden" if conversation_type == "private" else "")
+                                 for ref in term.message_refs]
+                assert all(word in text.split() for text in matched_texts)
+                expected = sum(text.split().count(word) for text in matched_texts)
+                assert term.occurrence_count == expected

@@ -35,6 +35,7 @@ from ..analysis.stickers import (
     count_sticker_messages,
 )
 from ..presentation.builders import prepare_expression_report
+from ..presentation.language_sources import build_language_sources
 from ..presentation.stickers import assemble_sticker_assets, build_echo_stickers, sticker_report_targets
 from ..analysis.group_stickers import GroupStickerFeatures, analyze_group_stickers
 from ..analyzer import (
@@ -117,6 +118,7 @@ class _AnalyzedMessages:
     valid_text_count: int
     tokens: list[str]
     sender_tokens: list[tuple[str, list[str]]]
+    message_tokens: list[list[str]]
 
 
 class AnalysisApplicationService:
@@ -211,6 +213,7 @@ class AnalysisApplicationService:
                 filtering_result.kept_messages
             )
         kept_messages = quality_result.kept_messages
+        import_positions = {id(message): pos for pos, message in enumerate(outcome.messages)}
         # Filters retain projection instances. The outcome keeps them alive,
         # so object identity cannot be reused during this analysis run.
         kept_instances = {id(message) for message in kept_messages}
@@ -238,7 +241,6 @@ class AnalysisApplicationService:
             group_stickers = None
             sticker_kind = _resolve_conversation_type(kept_messages, request.conversation_kind)
             if sticker_kind in {"private", "group"}:
-                import_positions = {id(message): pos for pos, message in enumerate(outcome.messages)}
                 sticker_positions = tuple(import_positions[id(legacy)]
                                           for legacy, _ in outcome.rich_message_pairs if id(legacy) in kept_instances)
                 # WeChat's native Type 1 declares text, unlike QQ's content-
@@ -385,6 +387,9 @@ class AnalysisApplicationService:
                         ),
                         conversation_kind=conversation_type,
                         expression_source=outcome.result.platform,
+                        messages=kept_messages,
+                        message_tokens=analyzed.message_tokens,
+                        source_positions=[import_positions[id(message)] for message in kept_messages],
                         sticker_media=stickers.media,
                         write=request.export_echo_report,
                     )
@@ -592,6 +597,7 @@ def _analyze_kept_messages(
     valid_text_count = 0
     tokens: list[str] = []
     sender_tokens: list[tuple[str, list[str]]] = []
+    per_message_tokens: list[list[str]] = []
     stopwords: set[str] | None = None
 
     for message in messages:
@@ -604,6 +610,7 @@ def _analyze_kept_messages(
         if cleaned_text:
             valid_text_count += 1
         tokens.extend(message_tokens)
+        per_message_tokens.append(message_tokens)
         expression_tokens = _expression_tokens(
             message,
             rich_by_instance or {},
@@ -618,6 +625,7 @@ def _analyze_kept_messages(
         valid_text_count=valid_text_count,
         tokens=tokens,
         sender_tokens=sender_tokens,
+        message_tokens=per_message_tokens,
     )
 
 
@@ -747,6 +755,9 @@ def _export_echo_artifacts(
     viewer_speaker_key: str | None,
     conversation_kind: str,
     expression_source: str | None,
+    messages: list[ChatMessage],
+    message_tokens: list[list[str]],
+    source_positions: list[int],
     sticker_media: tuple[StickerMedia, ...] = (),
     write: bool = True,
 ) -> EchoReportView:
@@ -760,6 +771,9 @@ def _export_echo_artifacts(
             expression_source=expression_source,
             sticker_media=sticker_media,
         )
+        view = replace(view, language_sources=build_language_sources(
+            view, messages, message_tokens, source_positions=source_positions,
+        ))
     if write:
         _write_echo_view(view, output_directory)
     return view
