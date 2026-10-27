@@ -69,15 +69,22 @@ function traceAcquisitionDiagnostic(stage, error = null, generationId = null, wi
     const failureStage = guard === 'workspace_invalid' && (stage === 'cleanup' || stage === 'lease')
       ? stage : GUARD_STAGES[guard] ?? stage;
     let fields = failed ? ` failure_stage=${failureStage} guard_code=${guard}` : ` capture_stage=${stage}`;
-    for (const name of ['boundary', 'mxFrame', 'nBackfill', 'attempted', 'file_bytes', 'expected_pages']) {
+    for (const name of ['boundary', 'mxFrame', 'nBackfill', 'attempted', 'file_bytes', 'expected_pages',
+      'committed_pages', 'shm_pages', 'main_pages', 'selected_commit_frame', 'page_one_frame', 'header_pages']) {
       const value = witness[name];
       if (Number.isSafeInteger(value) && value >= 0) fields += ` ${name}=${value}`;
     }
     for (const name of ['headerCopiesMatch', 'wal_index_headers_stable', 'nbackfill_stable',
       'attempted_stable', 'shm_identity_stable', 'dev_equal', 'ino_equal',
       'regular_file', 'single_link', 'sidecar_present', 'file_size_matches', 'sqlite_signature_valid',
-      'page_size_valid', 'format_versions_valid', 'page_count_valid']) {
+      'page_size_valid', 'format_versions_valid', 'page_count_valid', 'page_one_in_committed_wal',
+      'merged_page_one_matches_selected', 'header_count_nonzero', 'header_counters_equal',
+      'header_pages_match_commit']) {
       if (typeof witness[name] === 'boolean') fields += ` ${name}=${witness[name]}`;
+    }
+    if (['main', 'wal'].includes(witness.page_one_source)) fields += ` page_one_source=${witness.page_one_source}`;
+    for (const name of ['key_change_since_previous_decrypt', 'key_change_during_decrypt']) {
+      if (['unknown', 'unchanged', 'changed'].includes(witness[name])) fields += ` ${name}=${witness[name]}`;
     }
     // Record provenance once at the initial detailed SHM witness, and on every failure.
     if (failed || (stage === 'shm_witness' && typeof witness.shm_identity_stable === 'boolean')) {
@@ -96,6 +103,15 @@ const IDENTITY_NAMESPACE = 'qq_uin';
 const DATABASE_NAME = 'snapshot.db';
 const MANIFEST_NAME = 'manifest.json';
 const SOURCE_DATABASE_NAME = 'nt_msg.db';
+
+// The key owner exposes only a process-local revision. Never retrieve key
+// material here, and never interpret unavailable revision evidence as stable.
+function passphraseVersion(core) {
+  try {
+    const version = core?.echoDbPassphraseVersion;
+    return Number.isSafeInteger(version) && version > 0 ? version : null;
+  } catch { return null; }
+}
 
 const DEFAULT_TIMEOUTS = Object.freeze({
   passphraseMs: 30000,
@@ -295,6 +311,7 @@ export function createEchoSnapshotApi(core, options = {}) {
   // chain, so decrypt can never run concurrently (max concurrency = 1).
   let lockTail = Promise.resolve();
   let activeGenerationId = null;
+  let previousDecryptKeyVersion = null;
   function withLock(task, releaseOnFailure = false) {
     const guarded = async () => {
       try {
@@ -459,7 +476,7 @@ export function createEchoSnapshotApi(core, options = {}) {
           onPhase: onCapturePhase,
           onDiagnostic: ({ failureStage: stage, ...witness }) => {
             failureStage = stage;
-            captureWitness = witness;
+            Object.assign(captureWitness, witness);
             traceAcquisitionDiagnostic(stage, null, generationId, witness, false);
           },
         });
@@ -486,6 +503,12 @@ export function createEchoSnapshotApi(core, options = {}) {
         return fail(cleaned ? CODES.SNAPSHOT_UNSTABLE : CODES.CLEANUP_FAILED);
       }
       traceStage('decrypt_started');
+      const keyVersionBefore = passphraseVersion(core);
+      const keyWitness = {
+        key_change_since_previous_decrypt: keyVersionBefore === null || previousDecryptKeyVersion === null
+          ? 'unknown' : keyVersionBefore === previousDecryptKeyVersion ? 'unchanged' : 'changed',
+      };
+      previousDecryptKeyVersion = keyVersionBefore;
       try {
         decrypted = Boolean(
           await databaseApi.decryptDatabase(stagingMerged, stagingDatabase),
@@ -494,6 +517,11 @@ export function createEchoSnapshotApi(core, options = {}) {
         decryptThrew = true;
         traceAcquisitionDiagnostic('decrypt', error, generationId);
       }
+      const keyVersionAfter = passphraseVersion(core);
+      keyWitness.key_change_during_decrypt = keyVersionBefore === null || keyVersionAfter === null
+        ? 'unknown' : keyVersionBefore === keyVersionAfter ? 'unchanged' : 'changed';
+      Object.assign(captureWitness, keyWitness);
+      traceAcquisitionDiagnostic('decrypt', null, generationId, keyWitness, false);
       const inputAfter = strongFileState(stagingMerged);
       traceStage('decrypt_finished');
       try { workspace.assertLease(); }
@@ -529,7 +557,7 @@ export function createEchoSnapshotApi(core, options = {}) {
       // Decryption has returned, the independently captured input stayed fixed,
       // and our workspace lease excludes another producer/consumer. Finalize
       // only this staging output before the generation becomes visible.
-      let plaintextWitness = {};
+      let plaintextWitness = { ...captureWitness };
       try { finalizeStandaloneSnapshot(stagingDatabase, capturedPages, witness => {
         Object.assign(plaintextWitness, witness);
       }); }

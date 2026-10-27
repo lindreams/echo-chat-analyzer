@@ -111,6 +111,8 @@ function readCommittedWal(path, boundary, onPhase = () => {}, retainPages = true
     let lastCommitFrame = 0;
     let committedPageCount = 0;
     let lastCommitChecksum = null;
+    let transactionPageOneFrame = 0;
+    let pageOneFrame = 0;
     // Read only through B, in bounded batches. Per-frame salt/checksum/commit
     // validation is unchanged; avoid one synchronous filesystem call per page.
     let batch = Buffer.alloc(0), batchStart = 0;
@@ -133,6 +135,7 @@ function readCommittedWal(path, boundary, onPhase = () => {}, retainPages = true
       digest.update(frame);
       running = candidate;
       validFrames++;
+      if (pageNumber === 1) transactionPageOneFrame = validFrames;
       // Own just the retained page, not the whole batch behind a subarray.
       if (retainPages) transactionPages.set(pageNumber, Buffer.from(frame.subarray(24)));
       const sizeAfterCommit = frame.readUInt32BE(4);
@@ -148,6 +151,8 @@ function readCommittedWal(path, boundary, onPhase = () => {}, retainPages = true
           transactionPages.clear();
         }
         commitMarkers++;
+        if (transactionPageOneFrame) pageOneFrame = transactionPageOneFrame;
+        transactionPageOneFrame = 0;
         lastCommitFrame = validFrames;
         committedPageCount = sizeAfterCommit;
         lastCommitChecksum = Buffer.from(frame.subarray(16, 24));
@@ -157,7 +162,7 @@ function readCommittedWal(path, boundary, onPhase = () => {}, retainPages = true
     if (lastCommitFrame === 0) fail('wal_has_no_complete_transaction');
     return {
       header, salt: parsed.salt, pages: committedPages, validFrames,
-      commitMarkers, lastCommitFrame, committedPageCount,
+      commitMarkers, lastCommitFrame, committedPageCount, pageOneFrame,
       lastCommitChecksum, fingerprint: digest.digest('hex'), identity: identity(fd),
     };
   } finally {
@@ -307,6 +312,10 @@ export function finalizeStandaloneSnapshot(path, pageCount, onDiagnostic = () =>
       sqlite_signature_valid: header.subarray(0, 16).equals(HEADER),
       page_size_valid: header.readUInt16BE(16) === PAGE_SIZE,
       format_versions_valid: [1, 2].includes(header[18]) && header[19] === header[18],
+      header_pages: header.readUInt32BE(28),
+      header_count_nonzero: header.readUInt32BE(28) !== 0,
+      header_counters_equal: header.readUInt32BE(24) === header.readUInt32BE(92),
+      header_pages_match_commit: header.readUInt32BE(28) === pageCount,
       page_count_valid: header.readUInt32BE(28) === 0 || header.readUInt32BE(24) !== header.readUInt32BE(92) ||
         header.readUInt32BE(28) === pageCount});
     if (!Number.isSafeInteger(pageCount) || pageCount < 1 ||
@@ -375,6 +384,11 @@ function capture({ mainPath, walPath, outputPath, passphrase, onPhase = () => {}
     const key = plaintext ? keyFor(passphrase, salt) : null;
     const pageCount = wal.committedPageCount;
     if (pageCount < 1 || pageCount > 10_000_000) fail('committed_page_count_invalid');
+    observe('commit_boundary', { selected_commit_frame: wal.lastCommitFrame, committed_pages: pageCount,
+      shm_pages: before.pageCount, main_pages: mainPages,
+      page_one_source: wal.pages.has(1) ? 'wal' : 'main',
+      page_one_in_committed_wal: wal.pages.has(1), page_one_frame: wal.pageOneFrame });
+    let selectedPageOne;
     outputFd = openSync(outputPath, 'wx', 0o600);
     ownedOutput = true;
     if (!plaintext) writeExactly(outputFd, prefix);
@@ -385,12 +399,23 @@ function capture({ mainPath, walPath, outputPath, passphrase, onPhase = () => {}
           : null);
       if (!encrypted) fail('new_page_missing_from_wal');
       if (number === 1 && !encrypted.subarray(0, 16).equals(salt)) fail('page_one_salt_mismatch');
+      if (number === 1) selectedPageOne = encrypted;
       writeExactly(outputFd, plaintext ? decryptPage(encrypted, number, key, salt) : encrypted);
       onPhase('output_page_written');
     }
     closeSync(outputFd);
     outputFd = null;
     onPhase('output_complete');
+    if (!plaintext) {
+      // Best-effort comparison of owned bytes only. Do not log either page or
+      // a data fingerprint, or change the existing capture acceptance guards.
+      try {
+        const fd = openSync(outputPath, 'r');
+        try { observe('commit_boundary', {
+          merged_page_one_matches_selected: readExactly(fd, PAGE_SIZE, PREFIX_SIZE).equals(selectedPageOne),
+        }); } finally { closeSync(fd); }
+      } catch { /* Missing diagnostic evidence is not a successful comparison. */ }
+    }
     observe('main_stability');
     if (initialMainState !== fileState(mainPath) || identity(mainFd) !== mainPathIdentity(mainPath) ||
         initialDigest !== mainFingerprint(mainFd)) fail('main_changed_during_read');

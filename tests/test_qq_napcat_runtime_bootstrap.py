@@ -43,7 +43,7 @@ def test_official_pins_and_correctness_templates():
     assert pins["napcatPatch"]["upstreamSha256"] == "6a22c93373c8f73462658d57b00bc88164d7e5858c0fe2f178eb97d66d7cb3ba"
     assert "upstream.version -ne '4.18.34'" in (ROOT / "scripts/build_windows_exe.ps1").read_text(encoding="utf-8-sig")
     assert load_builder().OFFICIAL_URL == pins["upstream"]["archiveUrl"]
-    assert "core && (core.dbPassphrase = a)" in pins["napcatPatch"]["replacements"][1]["replacement"]
+    assert "core.dbPassphrase = a" in pins["napcatPatch"]["replacements"][1]["replacement"]
     whitelist = pins["napcatPatch"]["replacements"][3]
     assert '"napcat-plugin-echo"' in whitelist["replacement"]
     assert '"napcat-plugin-echo"' not in whitelist["anchor"]

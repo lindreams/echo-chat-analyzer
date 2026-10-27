@@ -124,6 +124,81 @@ def test_source_diagnostics_preserve_database_api_receiver(fictional_source):
     assert 'stage=decrypt_source_after' in result['diagnosticLog']
 
 
+@pytest.mark.parametrize('wal_page_one', [False, True])
+def test_page_count_mismatch_identifies_selected_page_one_and_cleans(fictional_source, wal_page_one):
+    action = """
+  const wal=fs.readFileSync(walPath), last=wal.subarray(wal.length-4120);
+  const next=Buffer.from(last); next.writeUInt32BE(1,0);
+  fs.readFileSync(mainPath).subarray(1024,5120).copy(next,24);
+  const sum=checksum(Buffer.concat([next.subarray(0,8),next.subarray(24)]),
+    wal.readUInt32BE(0)===0x377f0682,[last.readUInt32BE(16),last.readUInt32BE(20)]);
+  next.writeUInt32BE(sum[0],16); next.writeUInt32BE(sum[1],20);fs.appendFileSync(walPath,next);
+  const index=fs.readFileSync(mainPath+'-shm');
+  index.writeUInt32LE(index.readUInt32LE(16)+1,16);
+  index.writeUInt32LE(sum[0],24);index.writeUInt32LE(sum[1],28);updateIndex(index);
+""" if wal_page_one else ""
+    result = diagnose(fictional_source, setup=action + """
+  const decrypt=core.apis.DatabaseApi.decryptDatabase;
+  core.apis.DatabaseApi.decryptDatabase=async function(source,target) {
+    const result=await decrypt.call(this,source,target);
+    const bytes=fs.readFileSync(target);bytes.writeUInt32BE(99,28);fs.writeFileSync(target,bytes);
+    return result;
+  };
+""")
+    log = result['diagnosticLog']
+    failure = next(line for line in log.splitlines() if 'guard_code=plaintext_header_invalid' in line)
+    for field in ('committed_pages=2', 'shm_pages=2', 'main_pages=2', 'header_pages=99',
+                  'merged_page_one_matches_selected=true', 'header_count_nonzero=true',
+                  'header_counters_equal=true', 'header_pages_match_commit=false', 'page_count_valid=false'):
+        assert field in failure
+    assert f"page_one_source={'wal' if wal_page_one else 'main'}" in failure
+    assert f"page_one_in_committed_wal={str(wal_page_one).lower()}" in failure
+    assert f"page_one_frame={2 if wal_page_one else 0}" in failure
+    assert 'key_change_since_previous_decrypt=unknown' in log
+    for private in ('fictional-local-passphrase', str(fictional_source[0]), '10086',
+                    'file_change_counter=', 'version_valid_for=', 'salt=', 'sourceHash='):
+        assert private not in log
+    assert not result['ok'] and result['retryable'] and result['manifest'] is None
+    assert result['stagingCleaned'] and result['recovered']
+
+
+def test_key_version_diagnostics_distinguish_retry_updates_without_reading_keys(fictional_source):
+    def driver(program):
+        program = _formal(program).replace('const api=createEchoSnapshotApi', """
+  const diagnosticLog=path.join(path.dirname(outputPath),'diagnostics.log');
+  process.env.QCE_LOG_FILE=diagnosticLog;
+  core.echoDbPassphraseVersion=1;
+  core.apis.DatabaseApi.getPassphraseBuffer=()=>{throw Error('PRIVATE_KEY_MUST_NOT_BE_READ');};
+  core.apis.DatabaseApi.decryptDatabase=async()=>false;
+  const api=createEchoSnapshotApi""")
+        program = program.replace('const result=await api.acquire();', """
+  const attempts=[await api.acquire(),await api.acquire()];
+  core.echoDbPassphraseVersion=2;
+  core.apis.DatabaseApi.decryptDatabase=async()=>{core.echoDbPassphraseVersion=3;return false;};
+  attempts.push(await api.acquire());
+  delete core.echoDbPassphraseVersion;
+  core.apis.DatabaseApi.decryptDatabase=async()=>false;
+  attempts.push(await api.acquire());
+  const result=attempts.at(-1);
+""")
+        return program.replace('result.recovered=recovered.ok;', """
+  result.recovered=recovered.ok;
+  result.attempts=attempts.map(a=>a.code);
+  result.diagnosticLog=fs.readFileSync(diagnosticLog,'utf8');
+""")
+    result = _interleave(fictional_source, '', driver_transform=driver)
+    lines = [line for line in result['diagnosticLog'].splitlines()
+             if 'capture_stage=decrypt' in line]
+    assert len(lines) == 4
+    for line, expected, during in zip(lines, ('unknown', 'unchanged', 'changed', 'unknown'),
+                                      ('unchanged', 'unchanged', 'changed', 'unknown')):
+        assert f'key_change_since_previous_decrypt={expected}' in line
+        assert f'key_change_during_decrypt={during}' in line
+    assert result['attempts'] == ['decrypt_failed'] * 4
+    assert result['stagingCleaned'] and result['recovered'] and result['manifest'] is None
+    assert 'PRIVATE_KEY_MUST_NOT_BE_READ' not in result['diagnosticLog']
+
+
 @pytest.mark.parametrize('behavior,stage,guard,retryable', [
     ("throw Object.assign(new Error('PRIVATE_ERROR'),{code:'EACCES'});", 'decrypt', 'access_denied', False),
     ("throw Object.assign(new Error('PRIVATE_ERROR'),{code:'PRIVATE_CODE'});", 'decrypt', 'unexpected_error', False),

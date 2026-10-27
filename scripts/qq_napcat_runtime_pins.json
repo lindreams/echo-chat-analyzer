@@ -11,19 +11,19 @@
   "napcatPatch": {
     "path": "napcat.mjs",
     "upstreamSha256": "6a22c93373c8f73462658d57b00bc88164d7e5858c0fe2f178eb97d66d7cb3ba",
-    "patchedSha256": "c93a5751fad8cb245e0a6c840984b6670aa706650e20acfbc5ee7e3fbd2af9ba",
+    "patchedSha256": "0e4b554c4a2aea65c5b7625bee65c097f453e26ee8eaa1e13923f70ad73c6dde",
     "replacements": [
       {
         "anchor": "  let a;\n  if (r.onCmd(\"OidbSvcTrpcTcp.0xcde_2\"",
-        "replacement": "  let a, core;\n  if (r.onCmd(\"OidbSvcTrpcTcp.0xcde_2\""
+        "replacement": "  let a, core;\n  const echoObserveDbPassphrase = (target, value) => {\n    try {\n      const previous = target.echoDbPassphraseVersion;\n      target.echoDbPassphraseVersion = null;\n      const changed = !Buffer.from(target.dbPassphrase ?? []).equals(Buffer.from(value));\n      target.echoDbPassphraseVersion = Number.isSafeInteger(previous) && previous > 0 ? previous + Number(changed) : 1;\n    } catch {}\n  };\n  if (r.onCmd(\"OidbSvcTrpcTcp.0xcde_2\""
       },
       {
         "anchor": "D.inner?.value && (a = D.inner.value, e.log(",
-        "replacement": "D.inner?.value?.length > 0 && (a = D.inner.value, core && (core.dbPassphrase = a), e.log("
+        "replacement": "D.inner?.value?.length > 0 && (a = D.inner.value, core && (echoObserveDbPassphrase(core, a), core.dbPassphrase = a), e.log("
       },
       {
         "anchor": "  a && (V.core.dbPassphrase = a), await V.InitNapCat();",
-        "replacement": "  core = V.core, a && (core.dbPassphrase = a), await V.InitNapCat();"
+        "replacement": "  core = V.core, a && (echoObserveDbPassphrase(core, a), core.dbPassphrase = a), await V.InitNapCat();"
       },
       {
         "anchor": "new Set([\n  \"napcat-plugin-builtin\",\n  \"napcat-plugin-cleaner\",\n  \"napcat-plugin-ssqq\",\n  \"napcat-plugin-qce\"\n])",
@@ -79,12 +79,12 @@
     {
       "source": "qq_direct_db_snapshot/snapshot.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/snapshot.mjs",
-      "sha256": "dd0c0274b09ef7df236396eb912df71a2cbd1bd6d8cd0591c69d10747b67ec3c"
+      "sha256": "7ec9e9d952fefc8fb0f216310c1ca779d7a2de26ae28ceae8152c668a7378f19"
     },
     {
       "source": "qq_direct_db_snapshot/main_wal.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/main_wal.mjs",
-      "sha256": "a94acc2fbce22f035290cdb0adafd70778f5b40825c15ad263fa5cc2189295c2"
+      "sha256": "c113ba257f59c64a9b730e673efdc4b0c4187778bf26390e2431177a97f40780"
     },
     {
       "source": "qq_direct_db_snapshot/workspace.mjs",

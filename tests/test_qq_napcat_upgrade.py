@@ -38,8 +38,16 @@ async function boot(early) {
   a && (V.core.dbPassphrase = a), await V.InitNapCat();
   if (!early) listener({inner: {value: "fictional-key"}});
   if (V.core.dbPassphrase !== "fictional-key") throw Error("G1 not captured");
+  const firstVersion = V.core.echoDbPassphraseVersion;
+  if (firstVersion !== 1) throw Error("key version not initialized");
+  listener({inner: {value: Buffer.from("fictional-key")}});
+  if (V.core.echoDbPassphraseVersion !== firstVersion) throw Error("same key changed version");
+  listener({inner: {value: "fictional-new-key"}});
+  if (V.core.echoDbPassphraseVersion !== firstVersion + 1) throw Error("new key version not observed");
+  if (V.core.dbPassphrase !== "fictional-new-key") throw Error("new key not captured");
   listener({inner: {value: Buffer.alloc(0)}});
-  if (V.core.dbPassphrase !== "fictional-key") throw Error("empty key replaced valid key");
+  if (V.core.dbPassphrase !== "fictional-new-key") throw Error("empty key replaced valid key");
+  if (V.core.echoDbPassphraseVersion !== firstVersion + 1) throw Error("empty key changed version");
 }
 const allowed = new Set([
   "napcat-plugin-builtin",
