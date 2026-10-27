@@ -32,4 +32,6 @@
 # before authored projection, filtering, expression context and lexical analysis.
 # v12: exact whole-message repetitions also recognize sentence-length units,
 # retaining the three-repeat minimum without the old 12-character unit cap.
-ANALYSIS_REVISION = "echo-analysis.v12"
+# v13: member profiles expose their first appearance order in the retained
+# imported records, independent of the existing message-volume ranking.
+ANALYSIS_REVISION = "echo-analysis.v13"

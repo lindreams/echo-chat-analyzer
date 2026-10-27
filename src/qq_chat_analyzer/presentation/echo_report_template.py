@@ -109,8 +109,12 @@ ECHO_REPORT_HTML_SKELETON = r"""
       <div class="rhythm-toolbar">
         <h3>日常的时间纹理</h3>
         <div class="rhythm-scopes" id="rhythm-private-scopes" role="group" aria-label="选择成员消息分布" hidden></div>
-        <select id="rhythm-member" aria-label="选择群聊成员消息分布" hidden></select>
+        <div id="rhythm-group-controls" class="rhythm-group-controls" hidden>
+          <div id="rhythm-member-tools" class="member-tools" hidden></div>
+          <select id="rhythm-member" aria-label="选择群聊成员消息分布" hidden></select>
+        </div>
       </div>
+      <p id="rhythm-member-empty" class="member-search-empty" role="status" hidden>没有匹配的成员</p>
       <div class="rhythm-charts" id="rhythm">
         <div class="rhythm-hour-section" role="group" aria-labelledby="rhythm-hour-title">
           <div class="rhythm-chart-heading"><div><h3 id="rhythm-hour-title">一天中的节奏</h3><p id="rhythm-scope-label">整体 · 消息分布</p></div><div class="rhythm-view-toggle" role="group" aria-label="小时图形状"><button type="button" data-hour-view="dial" aria-pressed="true">表盘</button><button type="button" data-hour-view="bars" aria-pressed="false">条形</button></div></div>
@@ -206,6 +210,8 @@ ECHO_REPORT_HTML_SKELETON = r"""
       </header>
       <p class="chapter-intro" id="voices-intro"></p>
 
+      <div id="voices-member-tools" class="member-tools" hidden></div>
+      <p id="voices-member-empty" class="member-search-empty" role="status" hidden>没有匹配的成员</p>
       <div class="member-list" id="member-list"></div>
       <div class="private-language-blocks" id="private-shared-words" hidden>
         <h3>同频</h3>
@@ -254,6 +260,8 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <h3>常一起出现的表达</h3>
         <ul class="expression-combo-list" id="expression-combo-list"></ul>
       </div>
+      <div id="expression-member-tools" class="member-tools" hidden></div>
+      <p id="expression-member-empty" class="member-search-empty" role="status" hidden>没有匹配的成员</p>
       <div class="expression-members" id="expression-members"></div>
       <span class="page-number">06</span>
     </section>
@@ -1481,6 +1489,7 @@ document.documentElement.classList.add("js-ready");
       (languageProfile.members || []).forEach(function (member, index) {
         var article = document.createElement("article");
         article.className = "voice-entry";
+        article.dataset.speakerKey = member.speaker_key;
 
         var header = document.createElement("header");
         var number = document.createElement("span");
@@ -2194,6 +2203,7 @@ document.documentElement.classList.add("js-ready");
       (expressionCulture.members || []).forEach(function (member) {
         var article = document.createElement("article");
         article.className = "expression-member";
+        article.dataset.speakerKey = member.speaker_key;
         var header = document.createElement("header");
         var name = document.createElement("h3");
         name.textContent = member.display_name;

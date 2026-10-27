@@ -113,6 +113,7 @@ class UserProfile:
     contextual_name: str | None = field(default=None, repr=False)
     median_length: float = 0.0
     consecutive_runs: ConsecutiveRunStats | None = None
+    first_seen_order: int | None = None
 
     @property
     def resolved_display_name(self) -> str:

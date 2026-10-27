@@ -779,6 +779,7 @@ def _build_echo_member(
             and speaker_key == viewer_speaker_key
         ),
         message_count=profile.message_count,
+        first_seen_order=profile.first_seen_order,
         message_share_percent=profile.message_share_percent,
         average_length=profile.average_length,
         max_length=profile.max_length,

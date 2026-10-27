@@ -7,9 +7,9 @@ equal file-change and version-valid-for counters that differs from the selected
 commit count. It does not establish which source page or decryption behavior
 caused that discrepancy.
 
-These diagnostics are scheduled for the **0.3.0** update. If QQ acquisition
-still fails after that update, deliver the resulting verified fix in a separate
-small version, such as 0.3.1; do not defer it until another large feature release.
+These diagnostics are included in the **0.2.5 · 0.3 feature preview** update.
+If QQ acquisition still fails after that update, deliver the resulting verified
+fix in a separate small version; do not defer it until another large feature release.
 This change does not claim to fix the affected machine's connection failure.
 
 ## Fields and interpretation

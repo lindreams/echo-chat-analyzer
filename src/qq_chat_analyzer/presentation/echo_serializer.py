@@ -17,6 +17,7 @@ from .echo_report_template import (
 )
 from .echo_rhythm import ECHO_RHYTHM_APP_JS, ECHO_RHYTHM_CSS
 from .echo_language import ECHO_LANGUAGE_APP_JS, ECHO_LANGUAGE_CSS
+from .echo_member_controls import ECHO_MEMBER_CONTROLS_CSS, ECHO_MEMBER_CONTROLS_JS
 from .models import (
     ChartPoint,
     EchoConversationSessions,
@@ -32,7 +33,7 @@ from .expression_assets import (
 )
 
 
-ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.12"
+ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.13"
 
 
 def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
@@ -423,6 +424,7 @@ def _member_to_dict(
         "contextual_name": member.contextual_name,
         "is_viewer": member.is_viewer,
         "message_count": member.message_count,
+        "first_seen_order": member.first_seen_order,
         "message_share_percent": member.message_share_percent,
         "average_length": member.average_length,
         "max_length": member.max_length,
@@ -492,9 +494,9 @@ def _build_echo_report_html(view: EchoReportView) -> str:
     return (
         ECHO_REPORT_HTML_SKELETON.replace("__ECHO_FAVICON_TAG__", favicon_tag)
         .replace("__ECHO_LOGO_TAG__", logo_tag)
-        .replace("__ECHO_CSS__", ECHO_REPORT_CSS + ECHO_RHYTHM_CSS + ECHO_LANGUAGE_CSS)
+        .replace("__ECHO_CSS__", ECHO_REPORT_CSS + ECHO_RHYTHM_CSS + ECHO_LANGUAGE_CSS + ECHO_MEMBER_CONTROLS_CSS)
         .replace("__ECHO_ASSETS__", _encode_echo_assets(view))
-        .replace("__ECHO_APP_JS__", ECHO_REPORT_APP_JS + ECHO_RHYTHM_APP_JS + ECHO_LANGUAGE_APP_JS)
+        .replace("__ECHO_APP_JS__", ECHO_REPORT_APP_JS + ECHO_RHYTHM_APP_JS + ECHO_LANGUAGE_APP_JS + ECHO_MEMBER_CONTROLS_JS)
         # Authored text may contain any template marker. Insert it last so it
         # can never be interpreted as another template substitution.
         .replace("__ECHO_DATA__", _encode_echo_data(view))

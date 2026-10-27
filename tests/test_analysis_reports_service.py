@@ -146,6 +146,23 @@ def test_language_originals_reach_export_with_exact_tokens_and_filtered_scope(tm
     assert not any(text in caplog.text for text in texts)
 
 
+def test_member_first_seen_order_survives_volume_sorting_and_report_projection():
+    from qq_chat_analyzer.message import ChatMessage
+    from qq_chat_analyzer.application.analysis_service import _build_reports
+    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
+
+    messages = [ChatMessage(timestamp=1700000000 + index, sender=sender,
+        sender_id=sender, message_type="text", text="虚构的普通发言")
+        for index, sender in enumerate(("fictional-a", "fictional-c", "fictional-b",
+                                        "fictional-b", "fictional-a", "fictional-b"))]
+    payload = echo_report_to_dict(build_echo_report_view(_build_reports(messages, [])))
+    assert [member["speaker_key"] for member in payload["members"]] == [
+        "fictional-b", "fictional-a", "fictional-c"]
+    assert {member["speaker_key"]: member.get("first_seen_order")
+            for member in payload["members"]} == {
+        "fictional-a": 0, "fictional-c": 1, "fictional-b": 2}
+
+
 def test_private_stickers_reach_actual_json_and_html_from_filtered_rich_chain(tmp_path):
     application = _application_module()
     path = tmp_path / "fictional-stickers.json"
@@ -404,7 +421,7 @@ def test_execute_generates_echo_report_json_artifact(tmp_path: Path) -> None:
     report_path = output_directory / "echo-report.json"
     assert report_path.is_file()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "echo-report.v0.12"
+    assert payload["schema_version"] == "echo-report.v0.13"
 
 
 def test_report_boundary_does_not_retain_full_expression_candidates() -> None:
@@ -593,7 +610,7 @@ def test_new_report_metadata_records_corrected_expression_semantics(tmp_path):
         result=result, source="wechat", scope=AnalysisScope.all(),
         generated_at=datetime(2026, 10, 16, tzinfo=timezone.utc),
     )
-    assert metadata["analysis_revision"] == "echo-analysis.v12"
+    assert metadata["analysis_revision"] == "echo-analysis.v13"
 
 
 @pytest.mark.parametrize("source", ["wechat", "qq"])

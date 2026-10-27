@@ -39,6 +39,7 @@ class EchoMemberCard:
     remark: str | None = None
     contextual_name: str | None = None
     weekday_average_activity: tuple[ChartPoint, ...] = ()
+    first_seen_order: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

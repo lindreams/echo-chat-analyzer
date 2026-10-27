@@ -75,6 +75,7 @@ class UserProfileAnalyzer:
                 speaker=speaker_stats.speaker or speaker,
                 speaker_key=speaker_stats.speaker_key or speaker,
                 message_count=speaker_stats.message_count,
+                first_seen_order=first_seen_order,
                 message_share_percent=_share_percent(
                     speaker_stats.message_count,
                     total_message_count,
@@ -111,7 +112,7 @@ class UserProfileAnalyzer:
                     else None
                 ),
             )
-            for speaker, speaker_stats in stats.items()
+            for first_seen_order, (speaker, speaker_stats) in enumerate(stats.items())
         ]
         profiles.sort(key=lambda profile: -profile.message_count)
 

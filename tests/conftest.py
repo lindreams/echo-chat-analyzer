@@ -218,6 +218,7 @@ DOMAIN_MODULES = {
     },
     "ui_report": {
         "test_language_sources",
+        "test_echo_member_controls",
         "test_cli",
         "test_echo_conversation_sessions_frontend",
         "test_echo_group_sessions_frontend",

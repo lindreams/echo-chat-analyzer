@@ -4,9 +4,9 @@
 
 Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连接聊天来源，选择一段会话，把聊天节奏、表达习惯和常用表情包整理成可以慢慢回看的 **Echo Report**。
 
-**[下载 Windows x64 安装版](https://github.com/lindreams/echo-chat-analyzer/releases/download/v0.2.4/Echo-0.2.4-windows-x64-Setup.exe)** · [查看版本说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.4) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
+**[下载 Windows x64 安装版](https://github.com/lindreams/echo-chat-analyzer/releases/download/v0.2.5/Echo-0.2.5-windows-x64-Setup.exe)** · [查看版本说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.5) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
 
-当前版本为 **v0.2.4 · 0.3 功能预览**，包含部分 0.3 规划功能，尚非完整的 0.3.0。无需安装 Python。
+当前版本为 **v0.2.5 · 0.3 功能预览**，包含部分 0.3 规划功能，尚非完整的 0.3.0。无需安装 Python。
 
 ![Echo Report：交流的节奏](docs/screenshots/echo-report.png)
 
@@ -16,11 +16,12 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 
 - **交流的节奏**：消息数量、活跃情况，以及一天和一周里的聊天分布。
 - **聊天轮次**：谁更常开启聊天，一次通常聊多久。
-- **语言画像**：群聊成员的特色词，以及私聊双方的常用表达。
+- **语言画像**：群聊成员的特色词，以及私聊双方的常用表达；点词查看原话，按需展开前后几句。
 - **表达习惯**：Emoji 和已支持的 QQ / 微信表情使用情况。
 - **表情包里的回音**：常用与共同常用的表情包，以及有记录支撑的招牌、接力、先后采用和流行变化。
 
 部分发现需要足够记录才会展示；表情包图片无法取得时，仍保留统计和排名。
+群聊的交流节奏、语言画像和表达文化支持成员排序与昵称、备注、群名片查找。
 
 ![Echo Report：群聊表情包](docs/screenshots/stickers.png)
 
@@ -30,7 +31,7 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 
 **连接 QQ / 微信 → 选择会话与时间范围 → 生成报告 → 阅读或分享**
 
-1. 下载并运行 `Echo-0.2.4-windows-x64-Setup.exe`，完成安装。
+1. 下载并运行 `Echo-0.2.5-windows-x64-Setup.exe`，完成安装。
 2. 在 Echo 中选择 QQ 或微信，按提示完成连接与授权。
 3. 选择会话和时间范围，生成回顾报告。
 
@@ -51,7 +52,7 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 
 报告保存在本机，可从 Echo 中重新打开，也可用浏览器打开报告目录中的 `echo-report.html`。
 
-你可以将整个报告目录复制或压缩后，作为文件分享给曾经一起聊天的人。发送前请检查其中的昵称、聊天内容、表情包及其他个人信息。
+你可以将整个报告目录复制或压缩后，作为文件分享给曾经一起聊天的人。词语原话和邻近上下文也会随报告一起分享；发送前请检查其中的昵称、聊天内容、表情包及其他个人信息。
 
 ## 隐私与联网
 
@@ -65,11 +66,11 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 
 ## 版本、更新与反馈
 
-v0.2.4 带来了表情包分析、连接与过滤修复，以及第一章“交流的节奏”整理。原文回忆卡、语言画像原文查看和完整引用回复分析仍待完成。旧报告需要重新生成，才能显示新版内容。
+v0.2.5 带来了语言画像原话查看、群聊成员排序和查找、语言画像与表达文化的紧凑排版，修复微信群文本头部残留和整句重复刷屏漏滤，并补充 QQ 快照页数及密钥变化的匿名诊断。诊断增强不代表所有 QQ 读取故障均已修复。第二章原文回忆卡和群聊引用回复分析仍待完成。旧报告需要重新生成，才能显示新版内容。
 
 不同电脑与 QQ / 微信版本的兼容性仍在收集反馈。
 
-[查看发布说明与所有下载文件](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.4) · [查看所有版本](https://github.com/lindreams/echo-chat-analyzer/releases) · [后续开发计划](docs/ROADMAP.md)
+[查看发布说明与所有下载文件](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.5) · [查看所有版本](https://github.com/lindreams/echo-chat-analyzer/releases) · [后续开发计划](docs/ROADMAP.md)
 
 <details>
 <summary>已安装用户如何更新？</summary>
