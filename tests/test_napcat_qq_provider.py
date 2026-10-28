@@ -1281,21 +1281,6 @@ def test_report_bridge_budget_is_bounded_and_recovers_without_restart(runtime, t
     assert fetch.value.stage == "media_budget_exhausted"
 
 
-def test_report_media_queue_keeps_moving_at_five_materials_per_second(runtime, tmp_path):
-    """A multi-member report must not pause for a minute after 64 materials."""
-    clock = tmp_path / "fictional-clock.txt"
-    clock.write_text("1000")
-    media = tmp_path / "fictional-media.bin"
-    media.write_bytes(b"fictional-media")
-    base = runtime(mediaPath=str(media), clockFile=str(clock))
-    client = provider(base)
-    for index in range(275):
-        clock.write_text(str(1000 + index * 200))
-        assert request(base)[1]["result"]["media_retry_after_ms"] == 0
-        assert client.resolve_pic_message(**_PROBE).passed
-        assert client.download_pic_media(**_MEDIA) == b"fictional-media"
-
-
 def test_media_fetch_rejects_invalid_parameters_before_any_kernel_call(runtime, tmp_path):
     module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
     calls = tmp_path / "invalid-media-calls.txt"

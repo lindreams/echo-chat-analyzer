@@ -324,6 +324,11 @@ def test_execute_attaches_every_report_to_the_result(tmp_path: Path) -> None:
     assert reports.conversations.conversation_count == 1
     assert reports.conversation_sessions is not None
     assert reports.conversation_sessions.session_count == 3
+    assert ("echo_report_json", "echo-report.json") in {
+        (artifact.kind, artifact.filename) for artifact in result.artifacts
+    }
+    payload = json.loads((output_directory / "echo-report.json").read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "echo-report.v0.16"
 
 
 def test_distinctive_report_reuses_pipeline_tokens_and_stable_sender_keys(
@@ -394,34 +399,6 @@ def test_weekday_period_excludes_out_of_scope_and_cleaned_records(tmp_path):
     assert payload["activity"]["calendar_day_count"] == 2
     assert payload["activity"]["weekday_daily_average"][0] == {"label": "周一", "value": 1}
     assert all(m["activity"]["weekday_daily_average"] for m in payload["members"])
-
-
-def test_execute_generates_echo_report_json_artifact(tmp_path: Path) -> None:
-    application = _application_module()
-    input_path = tmp_path / "fictional-chat.json"
-    output_directory = tmp_path / "private-output"
-    output_directory.mkdir()
-    _write_fictional_chat(
-        input_path,
-        [
-            _raw_message(1704099600, "Fictional-Alice", "Python 数据分析 很有趣"),
-            _raw_message(1704103200, "Fictional-Alice", "Python 项目 讨论"),
-            _raw_message(1704106800, "Fictional-Bob", "Python 项目 讨论 很好"),
-        ],
-    )
-
-    result = application.AnalysisApplicationService().execute(
-        _request(application, tmp_path, input_path)
-    )
-
-    assert result.status is application.AnalysisStatus.COMPLETED
-    assert ("echo_report_json", "echo-report.json") in {
-        (artifact.kind, artifact.filename) for artifact in result.artifacts
-    }
-    report_path = output_directory / "echo-report.json"
-    assert report_path.is_file()
-    payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "echo-report.v0.16"
 
 
 def test_report_boundary_does_not_retain_full_expression_candidates() -> None:
@@ -552,7 +529,10 @@ def test_expression_member_cards_omit_stickers_and_nonrecurring_expressions():
 def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from datetime import datetime, timezone
     from qq_chat_analyzer.analysis.analyzers import ExpressionAnalyzer
+    from qq_chat_analyzer.application.report_package_metadata import build_report_metadata
+    from qq_chat_analyzer.application.scope_filter import AnalysisScope
     original_analyze = ExpressionAnalyzer.analyze
     analyzed_reports = []
 
@@ -595,17 +575,6 @@ def test_sticker_only_chat_returns_expression_only_with_echo_artifacts(
     assert culture["members"] == []
     assert culture["available"] is False
     assert "微信自定义表情" not in serialized
-
-
-def test_new_report_metadata_records_corrected_expression_semantics(tmp_path):
-    from datetime import datetime, timezone
-    from qq_chat_analyzer.application.report_package_metadata import build_report_metadata
-    from qq_chat_analyzer.application.scope_filter import AnalysisScope
-
-    app = _application_module()
-    path = tmp_path / "fictional-stickers.json"
-    _write_wechat_db_sticker_export(path)
-    result = app.AnalysisApplicationService().execute(_request(app, tmp_path, path))
     metadata = build_report_metadata(
         result=result, source="wechat", scope=AnalysisScope.all(),
         generated_at=datetime(2026, 10, 16, tzinfo=timezone.utc),

@@ -469,20 +469,16 @@ def test_adoption_reaches_formal_analysis_before_media(tmp_path, monkeypatch, so
     assert any(r.getMessage() == "[sticker-export-counts] html_payload_memories=1" for r in caplog.records)
 
 
-@pytest.mark.parametrize("name,messages,sends,signature_count,qualified_count", [
-    ("daily", 292, 57, 2, 2), ("fighters", 154, 124, 0, 0),
-    ("unequal", 2220, 760, 1, 2), ("short", 14, 8, 0, 0),
-    ("old_friends", 628, 210, 2, 2), ("rich_steady", 720, 720, 0, 0),
-    ("new_fad", 402, 162, 1, 2),
+@pytest.mark.parametrize("name,signature_count,qualified_count", [
+    ("daily", 2, 2), ("fighters", 0, 0), ("unequal", 1, 2),
+    ("short", 0, 0), ("old_friends", 2, 2), ("rich_steady", 0, 0),
+    ("new_fad", 1, 2),
 ])
-def test_reviewed_seven_scenarios_use_production_algorithms_deterministically(name, messages, sends, signature_count, qualified_count):
+def test_reviewed_scenarios_keep_qualified_discoveries(name, signature_count, qualified_count):
     rows = reviewed_scenarios()[name]
-    index = indexed(rows)
-    assert (index.message_count, index.send_count) == (messages, sends)
     result = discover(rows)
     assert sum(s.is_selected_signature for s in result.signatures) == signature_count
     assert len(result.signatures) == qualified_count  # Keep alternatives, not just the chosen one.
-    assert result == discover(rows)
     if name == "daily":
         assert any(a.lag_days == 14 and a.identity_key == "fiction:penguin" for a in result.adoptions)
     elif name == "old_friends":

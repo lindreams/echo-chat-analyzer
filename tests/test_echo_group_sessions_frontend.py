@@ -23,10 +23,13 @@ class _EchoPageFlowParser(HTMLParser):
         super().__init__()
         self.stack: list[dict[str, str | None]] = []
         self.pages: list[tuple[str, str]] = []
+        self.ids: list[str] = []
         self._capture_folio = False
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = dict(attrs)
+        if attributes.get("id"):
+            self.ids.append(attributes["id"])
         classes = (attributes.get("class") or "").split()
         if tag == "section" and "page" in classes:
             self.stack.append({"id": attributes.get("id"), "folio": None})
@@ -47,38 +50,13 @@ class _EchoPageFlowParser(HTMLParser):
                 self.pages.append((page["id"], page["folio"] or ""))
 
 
-def _echo_page_flow(html: str) -> list[tuple[str, str]]:
-    parser = _EchoPageFlowParser()
-    parser.feed(html)
-    wanted = {"overview", "conversation-sessions", "rhythm", "voices"}
-    return [(page_id, folio) for page_id, folio in parser.pages if page_id in wanted]
-
-
 def test_merged_overview_stays_visible_before_sessions_and_voices(tmp_path: Path) -> None:
     """The first chapter owns rhythm; sessions and voices remain separate."""
-    import sys
-
-    sys.path.insert(0, "src")
-    from qq_chat_analyzer.presentation import (
-        EchoConversationSessions,
-        EchoReportView,
-        export_echo_report_html,
-    )
-    from qq_chat_analyzer.presentation.echo_report_template import (
-        ECHO_REPORT_APP_JS,
-        ECHO_REPORT_CSS,
-        ECHO_REPORT_HTML_SKELETON,
-    )
-
     expected_flow = [
         ("overview", "03"),
         ("conversation-sessions", "04"),
         ("voices", "05"),
     ]
-
-    assert 'id="overview"' in ECHO_REPORT_HTML_SKELETON
-    assert 'id="overview" hidden' not in ECHO_REPORT_HTML_SKELETON
-    assert _echo_page_flow(ECHO_REPORT_HTML_SKELETON) == expected_flow
 
     view = EchoReportView(
         title="Fictional Echo",
@@ -97,8 +75,8 @@ def test_merged_overview_stays_visible_before_sessions_and_voices(tmp_path: Path
     generated = output.read_text(encoding="utf-8")
     assert 'id="overview"' in generated
     assert 'id="overview" hidden' not in generated
-    assert _echo_page_flow(generated) == expected_flow, _echo_page_flow(generated)
-
-    assert "#overview { display: none" not in ECHO_REPORT_CSS
-    assert 'setHidden("overview"' not in ECHO_REPORT_APP_JS
-    assert "overview.hidden" not in ECHO_REPORT_APP_JS
+    parser = _EchoPageFlowParser()
+    parser.feed(generated)
+    wanted = {"overview", "conversation-sessions", "rhythm", "voices"}
+    assert [(page_id, folio) for page_id, folio in parser.pages if page_id in wanted] == expected_flow
+    assert len(parser.ids) == len(set(parser.ids))

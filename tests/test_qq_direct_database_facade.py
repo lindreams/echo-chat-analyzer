@@ -23,6 +23,11 @@ from qq_chat_analyzer.application.qq.qq_direct_database_import_service import (
 )
 
 from qq_direct_db_testing import FakeSnapshotRuntime
+from qq_db_test_data import (
+    encode_varint as _varint,
+    length_delimited_field as _field,
+    synthetic_text_message_blob as _message_blob,
+)
 
 
 @pytest.mark.parametrize("fails", [False, True])
@@ -49,28 +54,6 @@ def test_qq_facade_conversion_diagnostics_preserve_results_and_errors(tmp_path, 
     assert f"stage=facade_convert outcome={'failed' if fails else 'success'}" in log
     assert "PRIVATE" not in log and str(tmp_path) not in log
     assert runtime.cleaned == ["gen-0001"]
-
-
-def _varint(value: int) -> bytes:
-    output = bytearray()
-    while value > 0x7F:
-        output.append((value & 0x7F) | 0x80)
-        value >>= 7
-    output.append(value)
-    return bytes(output)
-
-
-def _field(field_number: int, value: bytes) -> bytes:
-    return _varint((field_number << 3) | 2) + _varint(len(value)) + value
-
-
-def _message_blob(text: str) -> bytes:
-    segment = (
-        _varint((45002 << 3) | 0)
-        + _varint(1)
-        + _field(45101, text.encode("utf-8"))
-    )
-    return _field(40800, segment)
 
 
 def _create_plaintext_snapshot(path: Path) -> None:

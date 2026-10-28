@@ -353,16 +353,30 @@ def test_rarefaction_handles_single_material_full_and_empty_samples(counts, m, e
 
 @pytest.mark.parametrize("source", ["qq", "wechat"])
 @pytest.mark.parametrize("group", [False, True])
-def test_private_features_reach_real_adapters_without_exporting_evidence(tmp_path, source, group):
+def test_private_features_reach_real_adapters_without_exporting_evidence(tmp_path, monkeypatch, source, group):
     from qq_chat_analyzer.application import AnalysisRequestDTO
-    from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
+    from qq_chat_analyzer.application import analysis_service as service
+    from qq_chat_analyzer.presentation.stickers import sticker_report_targets
+
+    requested = []
+    resolve = service.resolve_sticker_media
+
+    def observe(sends, **kwargs):
+        sends = tuple(sends)
+        requested.extend(send.media_key for send in sends)
+        return resolve(sends, **kwargs)
+
+    monkeypatch.setattr(service, "resolve_sticker_media", observe)
     payload = formal_payload(combined_scene(), source, group=group)
     path = tmp_path/"fictional.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
     stopwords = tmp_path/"stopwords.txt"
     stopwords.write_text("", encoding="utf-8")
-    result = AnalysisApplicationService().execute(AnalysisRequestDTO(
+    roots = tmp_path / "authorized-media"
+    roots.mkdir()
+    result = service.AnalysisApplicationService().execute(AnalysisRequestDTO(
         input_path=path, output_directory=tmp_path/"out", stopwords_path=stopwords,
+        sticker_media_roots=(roots,),
     ))
     f = result.reports.private_stickers
     assert result.stickers.sends
@@ -375,6 +389,9 @@ def test_private_features_reach_real_adapters_without_exporting_evidence(tmp_pat
         assert f.styles[0].sample_size == 10
         assert f.stories.featured_ids and f.stories.moments
         assert [(u.send_count, u.known_send_count) for u in f.shared_habits[0].members] == [(10, 100), (10, 10)]
+        expected = {target.media_key for target in sticker_report_targets(result.echo_report_view.stickers)}
+        assert set(requested) == expected
+        assert len(expected) < len({send.media_key for send in result.stickers.sends})
     assert all(m.status not in {"available", "preview"} for m in result.stickers.media)
     exported = (tmp_path/"out"/"echo-report.json").read_text(encoding="utf-8")
     for private_field in ("start_ordinal", "occurrence_id", "shared_habits", "known_materials_only", "barrier_reasons",

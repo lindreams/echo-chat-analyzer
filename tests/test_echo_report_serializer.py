@@ -243,59 +243,6 @@ def test_private_common_markers_use_the_two_sides_instead_of_other_members():
     assert leader["side_counts"] == [3, 0]
 
 
-def test_private_local_media_resolution_uses_the_final_report_targets(tmp_path, monkeypatch):
-    from sticker_feature_samples import formal_payload
-    from test_sticker_features_batch2 import combined_scene
-    from qq_chat_analyzer.application import analysis_service as service
-    from qq_chat_analyzer.application.dto import AnalysisRequestDTO
-    from qq_chat_analyzer.presentation.stickers import sticker_report_targets
-
-    path = tmp_path / "fiction.json"
-    path.write_text(json.dumps(formal_payload(combined_scene(), "qq")), encoding="utf-8")
-    stopwords = tmp_path / "stopwords.txt"
-    stopwords.write_text("", encoding="utf-8")
-    roots = tmp_path / "authorized-media"
-    roots.mkdir()
-    requested = []
-    resolve = service.resolve_sticker_media
-    def observe(sends, **kwargs):
-        sends = tuple(sends)
-        requested.extend(s.media_key for s in sends)
-        return resolve(sends, **kwargs)
-    monkeypatch.setattr(service, "resolve_sticker_media", observe)
-    result = service.AnalysisApplicationService().execute(AnalysisRequestDTO(
-        input_path=path, output_directory=tmp_path / "output", stopwords_path=stopwords,
-        conversation_kind="private", sticker_media_roots=(roots,), export_echo_report=False))
-    expected = {t.media_key for t in sticker_report_targets(result.echo_report_view.stickers)}
-    assert set(requested) == expected
-    assert len(expected) < len({s.media_key for s in result.stickers.sends})
-
-
-@pytest.mark.parametrize("kind", ["private", "group"])
-def test_report_media_targets_cover_top_ten_and_outside_signature_once(kind):
-    from qq_chat_analyzer.analysis.stickers import (
-        StickerConversationReport, StickerMaterialUsage, StickerParticipant, StickerHabit,
-    )
-    from qq_chat_analyzer.presentation.stickers import sticker_report_targets
-
-    report = StickerConversationReport(
-        "qq", "fiction-room", kind, 100, 200, 0, 0,
-        members=(StickerParticipant("a", True, 50, 100), StickerParticipant("b", False, 50, 100)),
-        materials=tuple(StickerMaterialUsage(f"key-{i:02}", f"media-{i:02}", 24 - i,
-                                           (("a", 24 - i), ("b", 24 - i))) for i in range(12)),
-        habits=(StickerHabit("a", "key-11", 4, 4, 4, 35, 4, .2,
-                             "2025-01-01", "2025-02-05", ()),),
-    )
-    view = build_echo_report_view(analysis_models.AnalysisReports(stickers=(report,)), conversation_kind=kind)
-    assert all(member.unique_material_count == 12 for member in view.stickers.members)
-    targets = sticker_report_targets(view.stickers)
-    expected = (*range(10), 11) if kind == "group" else range(5)
-    assert {t.media_key for t in targets} == {f"media-{i:02}" for i in expected}
-    assert len(targets) == len({t.asset_key for t in targets}) == (11 if kind == "group" else 5)
-    serialized = json.dumps(echo_report_to_dict(view))
-    assert "media-" not in serialized and "key-" not in serialized
-
-
 def test_group_report_budget_reaches_global_leaders_before_member_long_tail():
     from qq_chat_analyzer.presentation.models import EchoStickers, EchoStickerItem, EchoStickerMember
     from qq_chat_analyzer.presentation.stickers import sticker_report_targets
@@ -337,8 +284,8 @@ def test_member_top_limit_uses_scoped_sticker_senders_and_bounds_media_targets(k
         habits=(StickerHabit("m000", "own-000-11", 9, 9, 4, 35, 4, .2,
                              "2025-01-01", "2025-02-05", ()),),
     )
-    chapter = build_echo_report_view(analysis_models.AnalysisReports(stickers=(report,)),
-                                     conversation_kind=kind).stickers
+    view = build_echo_report_view(analysis_models.AnalysisReports(stickers=(report,)), conversation_kind=kind)
+    chapter = view.stickers
     active = [member for member in chapter.members if member.send_count > 0]
     assert len(active) == senders
     assert all([item.count for item in member.top_materials] == list(range(20, 20 - limit, -1))
@@ -356,6 +303,9 @@ def test_member_top_limit_uses_scoped_sticker_senders_and_bounds_media_targets(k
     assert {item.media_key for item in targets} == expected
     assert len(targets) == len(expected) == len(chapter.assets)
     assert {asset.key for asset in chapter.assets} == {item.asset_key for item in targets}
+    assert len({item.asset_key for item in targets}) == len(targets)
+    serialized = json.dumps(echo_report_to_dict(view))
+    assert all(key not in serialized for key in expected)
 
 
 @pytest.mark.parametrize("encoded_format,verified_format,mime", [
@@ -636,73 +586,6 @@ def test_group_openers_keep_each_identity_unknowns_and_display_names():
     assert "fictional" not in repr(report.group_stats)
 
 
-def _echo_view() -> EchoReportView:
-    return EchoReportView(
-        title="余音 Echo",
-        has_data=True,
-        conversation_kind="group",
-        conversation_name="虚构讨论组",
-        time_span="2 小时 0 分钟",
-        total_message_count=3,
-        participant_count=2,
-        hourly_activity=(ChartPoint(label="09:00-09:59", value=3.0),),
-        weekday_activity=(ChartPoint(label="周一", value=3.0),),
-        language_profile=EchoLanguageProfile(
-            mode="group_distinctive",
-            available=True,
-            members=(
-                EchoLanguageMember(
-                    speaker_key="fictional-alice",
-                    display_name="虚构 Alice",
-                    heading="虚构 Alice",
-                    primary_words=("风格词", "回声"),
-                    context_words=("讨论", "项目"),
-                ),
-            ),
-        ),
-        members=(
-            EchoMemberCard(
-                speaker_key="fictional-alice",
-                display_name="虚构 Alice",
-                is_viewer=True,
-                message_count=2,
-                message_share_percent=66.67,
-                average_length=4.5,
-                max_length=6,
-                active_period="周一 09:00-09:59",
-                hourly_activity=(
-                    ChartPoint(label="09:00-09:59", value=2.0),
-                ),
-                weekday_activity=(ChartPoint(label="周一", value=2.0),),
-                top_words=("讨论", "项目"),
-            ),
-        ),
-    )
-
-
-def test_echo_report_html_is_self_contained_with_real_data(
-    tmp_path: Path,
-) -> None:
-    output_path = tmp_path / "echo-report.html"
-
-    result_path = export_echo_report_html(_echo_view(), output_path)
-
-    assert result_path == output_path
-    html = output_path.read_text(encoding="utf-8")
-    assert "window.ECHO_DATA" in html
-    assert "window.ECHO_ASSETS" in html
-    assert "虚构讨论组" in html
-    assert "虚构 Alice" in html
-    assert "data:image/png;base64," in html
-    assert "fetch(" not in html
-    assert "frontend/echo_report" not in html
-    assert "assets/branding" not in html
-    assert 'href="style.css"' not in html
-    assert 'src="app.js"' not in html
-    assert 'id="voices-intro"' in html
-    assert '"mode":"group_distinctive"' in html
-
-
 def test_echo_report_html_escapes_injected_user_text(tmp_path: Path) -> None:
     view = EchoReportView(
         title="余音 Echo",
@@ -747,7 +630,7 @@ def test_echo_report_html_escapes_injected_user_text(tmp_path: Path) -> None:
     assert "<\\/script>" in html
 
 
-def test_echo_report_html_inlines_expression_assets_without_local_paths(
+def test_echo_report_html_inlines_data_and_expression_assets_without_local_paths(
     tmp_path: Path,
 ) -> None:
     culture = EchoExpressionCulture(
@@ -770,19 +653,35 @@ def test_echo_report_html_inlines_expression_assets_without_local_paths(
     )
     output_path = tmp_path / "echo-report.html"
 
-    export_echo_report_html(
+    result_path = export_echo_report_html(
         EchoReportView(
             title="Echo Report",
             has_data=True,
+            conversation_kind="group",
+            conversation_name="虚构讨论组",
+            language_profile=EchoLanguageProfile(
+                mode="group_distinctive", available=True,
+                members=(EchoLanguageMember(
+                    speaker_key="fictional-alice", display_name="虚构 Alice",
+                    heading="虚构 Alice", primary_words=("回声",),
+                ),),
+            ),
             expression_culture=culture,
         ),
         output_path,
     )
 
+    assert result_path == output_path
     html = output_path.read_text(encoding="utf-8")
+    assert "window.ECHO_DATA" in html
     assert "window.ECHO_ASSETS" in html
     assert "wechat:捂脸" in html
     assert "data:image/png;base64," in html
+    assert "虚构讨论组" in html and "虚构 Alice" in html
+    assert "fetch(" not in html
+    assert "frontend/echo_report" not in html and "assets/branding" not in html
+    assert 'href="style.css"' not in html and 'src="app.js"' not in html
+    assert 'id="voices-intro"' in html and '"mode":"group_distinctive"' in html
     assert "D:" not in html
     assert "references" not in html
 
@@ -797,7 +696,3 @@ def test_expression_token_fallback_uses_the_same_unicode_contract(key, expected)
     ))
     payload = echo_report_to_dict(view)
     assert payload["language_profile"]["members"][0]["primary_words"] == [{"text": expected}]
-
-
-#: A throwaway payload; tests only assert it round-trips through base64.
-_FAKE_PNG_BYTES = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDRfake-minimal-png"

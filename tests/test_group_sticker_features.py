@@ -222,24 +222,12 @@ def test_explicit_qq_reply_resolves_only_unique_kept_targets_without_adjacency_c
     assert not discover([m for i, m in enumerate(rows) if i != 1]).replies
 
 
-def test_group_results_are_projected_into_shared_memories_without_internal_evidence():
-    from qq_chat_analyzer.analysis.stickers import aggregate_stickers
-    from qq_chat_analyzer.presentation.stickers import build_echo_stickers, sticker_report_targets
-    rows = relay_rows()
-    data = StickerData(collect_sticker_sends(rows))
-    chapter = build_echo_stickers(aggregate_stickers(data, rows), (), conversation_kind="group",
-        group_features=discover(rows))
-    assert chapter.memories[0].findings[0].kind == "relay"
-    assert len(chapter.memories[0].findings[0].points) == 6
-    assert len(sticker_report_targets(chapter)) == 1
-    assert all("fiction" not in p.label for p in chapter.memories[0].findings[0].points)
-
-
 @pytest.mark.parametrize("source", ["qq", "wechat"])
 def test_group_discovery_reaches_formal_source_pipeline_and_share_export(tmp_path, source, monkeypatch):
     from sticker_feature_samples import formal_payload
     from qq_chat_analyzer.application import AnalysisRequestDTO
     from qq_chat_analyzer.application import analysis_service as service
+    from qq_chat_analyzer.presentation.stickers import sticker_report_targets
     rows = relay_rows()
     payload = formal_payload(rows, source, group=True)
     identities = {"fiction-A": "10001", "fiction-B": "20002", "fiction-C": "30003"}
@@ -274,6 +262,8 @@ def test_group_discovery_reaches_formal_source_pipeline_and_share_export(tmp_pat
     memory, = exported["sticker_memories"]
     assert memory["findings"][0]["kind"] == "relay"
     assert len(memory["findings"][0]["points"]) == 6
+    assert len(sticker_report_targets(result.echo_report_view.stickers)) == 1
+    assert all("fiction" not in point["label"] for point in memory["findings"][0]["points"])
     serialized = json.dumps(memory, ensure_ascii=False)
     for forbidden in ("identity_key", "sender_id", "message_id", "fiction-", "observed_order_only", relay.media_key):
         assert forbidden not in serialized
