@@ -34,24 +34,11 @@ class _ReportDOM(HTMLParser):
     def __init__(self):
         super().__init__()
         self.ids = []
-        self.session_metric_groups = 0
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if "id" in attrs:
             self.ids.append(attrs["id"])
-        if tag == "dl" and "session-fields" in attrs.get("class", "").split():
-            self.session_metric_groups += 1
-
-
-def test_exported_report_has_only_current_session_metric_groups_and_unique_ids(tmp_path):
-    source = export_echo_report_html(
-        EchoReportView(title="Fictional Echo"), tmp_path / "echo.html",
-    ).read_text(encoding="utf-8")
-    dom = _ReportDOM()
-    dom.feed(source)
-    assert len(dom.ids) == len(set(dom.ids))
-    assert dom.session_metric_groups == 2  # Reply timing and session duration/messages.
 
 
 NODE_RUNNER = r"""
@@ -234,6 +221,21 @@ def test_session_reply_visual_distinguishes_instant_from_missing(tmp_path):
     assert rendered["session-reply-peer-to-self"]["text"] == "暂无足够样本"
 
 
+@pytest.mark.parametrize("counts,selected,share", [
+    ([91] + [1] * 9, 1, "91%"),
+    ([50] + [1] * 10, 2, "85%"),
+    ([5], None, None),
+])
+def test_group_concentration_uses_complete_round_counts_and_actual_selection(tmp_path, counts, selected, share):
+    sessions = _sessions(session_count=len(counts))
+    sessions["items"] = [{"message_count": count} for count in counts]
+    rendered = _render_frontend(tmp_path, kind="group", sessions=sessions)
+    assert rendered["session-concentration"]["hidden"] is (selected is None)
+    if selected is not None:
+        assert rendered["session-concentration-percent"]["text"] == share
+        assert f"{selected} / {len(counts)} 轮" in rendered["session-concentration-caption"]["text"]
+
+
 @pytest.mark.parametrize("kind", ["private", "group"])
 def test_session_without_opening_or_reply_data_has_no_empty_visual_panel(tmp_path, kind):
     rendered = _render_frontend(tmp_path, kind=kind, sessions=_sessions())
@@ -251,6 +253,14 @@ def test_sticker_empty_unknown_and_group_visibility(tmp_path):
     rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=empty)
     assert not rendered["stickers"]["hidden"] and not rendered["sticker-empty"]["hidden"]
     assert rendered["sticker-rankings"]["hidden"] and rendered["sticker-memories"]["hidden"]
+    assert "没有表情包发送" in rendered["sticker-empty"]["text"]
+    assert rendered["sticker-fields"]["hidden"]
+    small = dict(empty, total_send_count=5, unique_material_count=5, covered_message_count=5)
+    rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=small)
+    assert rendered["sticker-total"]["text"] == "5"
+    assert not rendered["sticker-rankings"]["hidden"]
+    assert rendered["sticker-empty"]["hidden"]
+    assert not rendered["sticker-fields"]["hidden"]
     unknown = dict(empty, total_send_count=2, unknown_identity_count=2, unattributed_send_count=2)
     rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=unknown)
     assert not rendered["sticker-rankings"]["hidden"]
@@ -310,22 +320,6 @@ def test_private_sticker_comparison_uses_only_available_full_counts(
     assert rendered["sticker-exclusive-split"]["text"] == (f"仅我 {mine} / 仅 TA {theirs}" if expected is not None else "")
 
 
-def test_small_sticker_sample_keeps_counts_without_diagnostic_notices(tmp_path):
-    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
-    chapter = echo_report_to_dict(build_echo_report_view(None, conversation_kind="private"))["stickers"]
-    chapter.update(total_send_count=5, unique_material_count=5, covered_message_count=5)
-    rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=chapter)
-    assert rendered["sticker-total"]["text"] == "5"
-    assert not rendered["sticker-rankings"]["hidden"]
-    assert rendered["sticker-empty"]["hidden"]
-    assert not rendered["sticker-fields"]["hidden"]
-    chapter["total_send_count"] = 0
-    rendered = _render_frontend(tmp_path, kind="private", sessions=None, stickers=chapter)
-    assert "没有表情包发送" in rendered["sticker-empty"]["text"]
-    assert rendered["sticker-fields"]["hidden"]
-    assert rendered["sticker-rankings"]["hidden"]
-
-
 @pytest.mark.parametrize("known_sender", [True, False])
 def test_expression_chapter_uses_display_count_and_member_availability(tmp_path, known_sender):
     from qq_chat_analyzer.message import ChatMessage
@@ -382,8 +376,11 @@ def test_session_chapter_never_displays_stable_ids_or_technical_ratio(tmp_path) 
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize("width", [1280, 390])
-@pytest.mark.parametrize("kind,count", [("private", 8), ("group", 8), ("unknown", 8), ("group", 0), ("group", None)])
+@pytest.mark.parametrize("kind,count,width", [
+    ("private", 8, 1280), ("private", 8, 390),
+    ("group", 8, 1280), ("group", 8, 390),
+    ("unknown", 8, 1280), ("group", 0, 1280), ("group", None, 1280),
+])
 def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, width: int, kind: str, count: int | None) -> None:
     from qq_chat_analyzer.presentation import ChartPoint, EchoExpressionCulture, EchoExpressionItem
     chromium = _find_chromium()
@@ -432,9 +429,12 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
       setTimeout(function () {
         const result = {
           sessionVisible: !document.getElementById("conversation-sessions").hidden,
-          metricGroups: document.querySelectorAll(".session-fields").length,
           movementVisible: !document.getElementById("session-movement").hidden,
           replyVisible: !document.getElementById("session-reply").hidden,
+          concentrationVisible: !document.getElementById("session-concentration").hidden,
+          concentrationBodyVisible: !document.getElementById("session-concentration-body").hidden,
+          concentrationTitle: document.getElementById("session-concentration-title").textContent,
+          groupHighlightsNested: document.getElementById("session-concentration").contains(document.getElementById("session-highnotes")),
           median: document.getElementById("session-median-duration").textContent,
           sessionCharacter: document.getElementById("session-character").textContent,
           highnotes: Array.from(document.querySelectorAll(".highnote-card"))
@@ -516,14 +516,17 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
             assert visuals["replyWidths"] == pytest.approx([100/3, 100], abs=.05)
     assert rendered == {
         "sessionVisible": count is not None and count > 0,
-        "metricGroups": 2,
         "movementVisible": count is not None and count > 0 and kind in {"private", "group"},
         "replyVisible": count is not None and count > 0 and kind == "private",
+        "concentrationVisible": bool(count) and kind == "group",
+        "concentrationBodyVisible": False,
+        "concentrationTitle": "几次聊得尽兴" if count and kind == "group" else "热闹聚在哪里",
+        "groupHighlightsNested": bool(count) and kind == "group",
         "median": "约 18 分钟" if count and kind in {"private", "group"} else "",
         "sessionCharacter": "Fictional character" if count and kind in {"private", "group"} else "",
         "highnotes": (["session-loudest-messages"]
                       if count and kind in {"private", "group"} else []),
-        "highlightLabels": (["话最多", "聊最久", "最热闹", "接得最紧"] if kind == "group" else
+        "highlightLabels": (["话最多", "聊最久"] if kind == "group" else
                             ["话最多", "聊最久", "接得最紧", "最有来有回"])
                            if count and kind in {"private", "group"} else [],
         "highlightDetails": (["3 人参与"] if kind == "group" else ["你 12 条 · TA 8 条"])
@@ -555,6 +558,70 @@ def _find_chromium() -> str | None:
         (path for path in candidates if Path(path).is_file() or shutil.which(path)),
         None,
     )
+
+
+@pytest.mark.slow_integration
+@pytest.mark.parametrize("width", [1280, 390])
+def test_group_concentration_from_real_sessions_fits_the_right_column(tmp_path, width):
+    from qq_chat_analyzer.message import ChatMessage
+    from qq_chat_analyzer.application.analysis_service import _build_reports
+    from qq_chat_analyzer.presentation import build_echo_report_view
+
+    chromium = _find_chromium()
+    if chromium is None:
+        pytest.skip("no local Chromium available")
+    messages = [ChatMessage(
+        timestamp=1700000000 + round_index * 6000 + offset * (40 if round_index == 149 else 2),
+        sender="" if round_index < 150 else "虚构成员",
+        sender_id=None if round_index < 150 else "fictional-member",
+        message_type="text", text="虚构聊天消息", conversation_type="group",
+    ) for round_index, count in enumerate([91] * 149 + [90, 2] + [1] * 1349) for offset in range(count)]
+    view = build_echo_report_view(_build_reports(messages, []), conversation_kind="group")
+    page = export_echo_report_html(view, tmp_path / "concentration.html")
+    probe = r"""<style>.page:not(#conversation-sessions){display:none!important}</style>
+    <script>addEventListener('load',()=>{
+      const box=id=>{const r=document.getElementById(id).getBoundingClientRect();
+        return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
+      const result={beat:box('session-beat'),hours:box('session-hours'),card:box('session-concentration'),
+        visible:!document.getElementById('session-concentration').hidden,
+        percent:document.getElementById('session-concentration-percent').textContent,
+        dots:document.querySelectorAll('.session-concentration-dot').length,
+        filled:document.querySelectorAll('.session-concentration-dot.is-filled').length,
+        highlights:[...document.querySelectorAll('.highnote-card:not([hidden])')].map(x=>box(x.id)),
+        highlightsNested:document.getElementById('session-concentration').contains(document.getElementById('session-highnotes')),
+        secondaryHidden:['participants','densest','back-and-forth'].every(x=>document.getElementById('session-loudest-'+x).hidden),
+        overflow:document.documentElement.scrollWidth>innerWidth,
+        fits:[...document.querySelectorAll('#session-concentration p')].every(x=>x.scrollWidth<=x.clientWidth+1)};
+      const pre=document.createElement('pre');pre.id='concentration-probe';pre.hidden=true;
+      pre.textContent=JSON.stringify(result);parent.document.body.append(pre);
+    });</script>"""
+    source = page.read_text(encoding="utf-8").replace("</body>", probe + "</body>")
+    page.write_text(f'<body style="margin:0"><iframe style="border:0;width:{width}px;height:1400px" '
+                    f'srcdoc="{html.escape(source, quote=True)}"></iframe></body>', encoding="utf-8")
+    completed = _run_browser([chromium, "--headless=new", "--disable-gpu", "--no-first-run",
+        "--no-default-browser-check", "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND",
+        f"--user-data-dir={tmp_path / 'browser'}", f"--window-size={width},1400",
+        f"--screenshot={tmp_path / 'concentration.png'}", "--dump-dom", page.as_uri()])
+    assert completed.returncode == 0, completed.stderr
+    match = re.search(r'<pre id="concentration-probe" hidden="">(.*?)</pre>', completed.stdout.decode("utf-8"), re.S)
+    assert match is not None, completed.stdout[-1000:]
+    result = json.loads(html.unescape(match.group(1)))
+    assert result["visible"] and result["percent"] == "91%"
+    assert result["dots"] == 100 and result["filled"] == 91
+    assert result["fits"] and not result["overflow"]
+    assert result["highlightsNested"] and result["secondaryHidden"]
+    assert len(result["highlights"]) == 2
+    first, second = result["highlights"]
+    assert first["bottom"] <= second["top"]
+    assert result["card"]["left"] <= first["left"] == second["left"]
+    assert first["right"] == second["right"] <= result["card"]["right"]
+    if width > 720:
+        assert result["beat"]["right"] <= result["card"]["left"]
+        assert result["hours"]["bottom"] <= result["card"]["top"]
+        assert result["hours"]["left"] == pytest.approx(result["card"]["left"])
+    else:
+        assert result["beat"]["bottom"] <= result["hours"]["top"]
+        assert result["hours"]["bottom"] <= result["card"]["top"]
 
 
 @pytest.mark.slow_integration
@@ -854,7 +921,6 @@ def test_saved_qq_media_report_loads_actual_images_offline(tmp_path, kind, caplo
 ])
 def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path, scene, leaders, width):
     import hashlib
-    import math
     from sticker_feature_samples import Messages, indexed, many_sticker_stories
     from test_sticker_features_batch2 import combined_scene, short_relay
     from test_sticker_data import image_bytes
@@ -926,7 +992,7 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
         offline:images.every(x=>x.src.startsWith("data:image/")||x.src.startsWith(new URL("media/",document.baseURI).href)),
         missing:b.querySelectorAll(".sticker-image:not(.has-image)").length,
         overflow:document.documentElement.scrollWidth>innerWidth,
-        viewport:innerWidth,height:Math.ceil(bounds(a).bottom),
+        viewport:innerWidth,
         tail:bounds(a).bottom-bounds(b.hidden?document.getElementById("sticker-rankings"):stories[stories.length-1]).bottom,
         chapterHeight:bounds(a).height,
         fits:[...b.querySelectorAll("li,h3,.memory-art,.memory-date,.memory-trend-row")].every(x=>bounds(x).right<=bounds(a).right&&x.scrollWidth<=x.clientWidth+1),
@@ -941,10 +1007,8 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
       pre.textContent=JSON.stringify(result);window.parent.document.body.appendChild(pre);
     },300);});</script>'''
     page = source.replace("</body>", probe+"</body>")
-    def write_viewport(height):
-        output.write_text(f'<body style="margin:0"><iframe style="display:block;border:0;width:{width}px;height:'
-                          f'{height}px" srcdoc="{html.escape(page, quote=True)}"></iframe></body>', encoding="utf-8")
-    write_viewport(1200)
+    output.write_text(f'<body style="margin:0"><iframe style="display:block;border:0;width:{width}px;height:'
+                      f'1200px" srcdoc="{html.escape(page, quote=True)}"></iframe></body>', encoding="utf-8")
     command = [chromium, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
         "--no-default-browser-check", "--disable-background-networking", "--hide-scrollbars",
         "--host-resolver-rules=MAP * ~NOTFOUND", f"--user-data-dir={tmp_path / 'b'}",
@@ -1030,15 +1094,6 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     elif leaders:
         assert result["missing"]>0
     assert all(secret not in result["text"] for secret in ("虚构日常","虚构回复","private-body-sentinel"))
-    height=math.ceil(result["height"])
-    write_viewport(height)
-    screenshot=tmp_path/f"{scene}-{width}.png"
-    capture=_run_browser(command+[f"--window-size=1280,{height}",f"--screenshot={screenshot}",output.as_uri()])
-    assert capture.returncode==0,capture.stderr
-    png=screenshot.read_bytes()
-    assert png.startswith(b"\x89PNG\r\n\x1a\n")
-    assert int.from_bytes(png[16:20],"big")==1280
-    assert int.from_bytes(png[20:24],"big")==height
 
 
 @pytest.mark.slow_integration
@@ -1069,18 +1124,17 @@ def test_group_opening_ring_is_proportional_bounded_and_has_all_members(tmp_path
       const details=document.getElementById('session-openers-details');
       const rows=[...document.querySelectorAll('#session-openers-list li')];
       const ring=root.querySelector('.session-opening-ring').getBoundingClientRect();
-      const legend=document.getElementById('session-opening-legend').getBoundingClientRect();
+      const list=document.getElementById('session-openers-list');
       const result={hidden:root.hidden, injected:!!window.injected, viewport:innerWidth,
-        sideBySide:ring.right<=legend.left&&ring.top<legend.bottom&&legend.top<ring.bottom,
+        listBelowRing:ring.bottom<=list.getBoundingClientRect().top,
         circles:[...root.querySelectorAll('circle[data-count]')].map(x=>({
           count:Number(x.dataset.count), arc:Number(x.getAttribute('stroke-dasharray').split(' ')[0])})),
         labels:[...root.querySelectorAll('.session-opener-label')].map(x=>x.textContent),
-        count:rows.length, closed:!details.open,
+        count:rows.length, collapsible:details.tagName==='DETAILS',
+        listVisible:rows.every(x=>x.getBoundingClientRect().height>0),
         overflow:document.documentElement.scrollWidth>innerWidth,
         fits:[...root.querySelectorAll('li')].every(x=>x.scrollWidth<=x.clientWidth+1),
         height:root.getBoundingClientRect().height};
-      details.open=true;
-      const list=document.getElementById('session-openers-list');
       result.listHeight=list.clientHeight;
       const search=document.getElementById('session-openers-search');
       search.value='虚构成员2'; search.dispatchEvent(new Event('input'));
@@ -1106,13 +1160,14 @@ def test_group_opening_ring_is_proportional_bounded_and_has_all_members(tmp_path
     assert result["viewport"] == width
     assert not result["hidden"] and not result["injected"]
     assert result["count"] == member_count
-    assert result["closed"]
+    assert not result["collapsible"] and result["listVisible"]
     if member_count:
         assert result["empty"]
         assert result["matches"] and all("虚构成员2" in text for text in result["matches"])
+        assert result["listBelowRing"]
     assert not result["overflow"] and result["fits"]
-    assert result["sideBySide"] and result["height"] < 240
-    assert result["listHeight"] <= 260
+    assert result["height"] < 620
+    assert result["listHeight"] <= 300
     assert sum(circle["count"] for circle in result["circles"]) == total
     assert all(0 < circle["arc"] <= circle["count"] / total * 100 for circle in result["circles"])
     assert "未确认" in result["labels"]

@@ -156,12 +156,12 @@ ECHO_REPORT_HTML_SKELETON = r"""
           <div class="session-group-opening" id="session-group-opening" hidden>
             <div class="session-opening-ring"><svg id="session-opening-svg" viewBox="0 0 200 200" role="img" aria-label="群成员发起聊天的份额"></svg><div class="session-opening-center"><strong id="session-opening-total"></strong><span>次聊起来</span></div></div>
             <ul class="session-opening-legend" id="session-opening-legend"></ul>
-            <details class="session-openers-details" id="session-openers-details" hidden>
-              <summary id="session-openers-summary"></summary>
+            <div class="session-openers-details" id="session-openers-details" hidden>
+              <p id="session-openers-summary"></p>
               <input id="session-openers-search" type="search" placeholder="查找成员" aria-label="查找发起聊天的成员" autocomplete="off">
               <ul id="session-openers-list" class="session-openers-list"></ul>
               <p id="session-openers-empty" hidden>没有找到这位成员</p>
-            </details>
+            </div>
           </div>
           <div class="session-opening-hours"><p class="peak-hour-note" id="session-self-peak-hour" hidden></p><p class="peak-hour-note" id="session-peer-peak-hour" hidden></p></div>
           <p class="session-viewer-identity" id="session-viewer-identity" hidden></p>
@@ -181,6 +181,16 @@ ECHO_REPORT_HTML_SKELETON = r"""
           <div class="session-hour-axis" aria-hidden="true"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
           <p class="session-hour-caption">有时间记录的开场 · 北京时间</p>
           <p class="peak-hour-note" id="session-peak-hour" hidden></p>
+        </div>
+        <div class="session-movement" id="session-concentration" hidden>
+          <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span><span id="session-concentration-title">热闹聚在哪里</span></h3>
+          <div class="session-concentration-body" id="session-concentration-body" hidden>
+            <div class="session-concentration-dots" id="session-concentration-dots" role="img"></div>
+            <div class="session-concentration-copy">
+              <p class="session-concentration-stat"><strong id="session-concentration-percent"></strong><span>的消息</span></p>
+              <p class="session-concentration-caption" id="session-concentration-caption"></p>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -938,6 +948,30 @@ h1, h2, h3, p { margin-top: 0; }
 .session-duet > .session-movement:not([hidden]) ~ .session-movement:not([hidden]) { border-left: 1px solid var(--rule); padding-left: 28px; }
 .session-duet .movement-heading { gap: 8px; font-size: 20px; }
 .session-duet .movement-icon { width: 20px; height: 24px; }
+.session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])):has(#session-beat:not([hidden])) { grid-template-rows: auto auto; row-gap: 24px; }
+.session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-beat { grid-column: 1; grid-row: 1 / span 2; }
+.session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-hours { grid-column: 2; grid-row: 1; }
+.session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-concentration { grid-column: 2; grid-row: 2; }
+.session-chapter.is-group .session-duet:has(#session-hours[hidden]) #session-concentration { grid-row: 1 / span 2; }
+.session-chapter.is-group .session-duet:has(#session-beat[hidden]) #session-hours,
+.session-chapter.is-group .session-duet:has(#session-beat[hidden]) #session-concentration { grid-column: 1 / -1; }
+.session-chapter.is-group #session-highnotes { margin-top: 20px; padding-top: 0; border-top: 0; }
+.session-chapter.is-group #session-highnotes > .movement-heading { display: none; }
+.session-chapter.is-group .highnote-grid { display: flex; flex-direction: column; gap: 0; border: 0; background: transparent; }
+.session-chapter.is-group .highnote-card { padding: 14px 0; border-top: 1px solid var(--rule); background: transparent; }
+.session-chapter.is-group .highnote-badge { padding: 0; border: 0; font-size: 11px; letter-spacing: .06em; }
+.session-chapter.is-group .highnote-badges { margin-bottom: 6px; }
+.session-chapter.is-group .highnote-stat { font-size: 18px; }
+.session-chapter.is-group .highnote-time { margin-top: 5px; }
+.session-concentration-body { display: flex; align-items: center; gap: 22px; margin-top: 14px; }
+.session-concentration-dots { display: grid; grid-template-columns: repeat(10, 5px); gap: 5px; flex: 0 0 auto; }
+.session-concentration-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--rule); }
+.session-concentration-dot.is-filled { background: var(--accent); }
+.session-concentration-copy { min-width: 0; }
+.session-concentration-stat { display: flex; align-items: baseline; flex-wrap: wrap; gap: 7px; margin: 0; }
+.session-concentration-stat strong { font: 400 42px/1.15 var(--serif); letter-spacing: -.03em; }
+.session-concentration-stat > span { color: var(--muted); font: 12px/1.5 var(--sans); }
+.session-concentration-caption { margin: 8px 0 0; color: var(--muted); font: 12px/1.7 var(--sans); overflow-wrap: anywhere; }
 .session-start-graphic { margin-top: 18px; }
 .session-start-bar { display: flex; height: 12px; overflow: hidden; border-radius: 2px; background: var(--rule); }
 .session-start-bar > span { display: block; flex: 0 0 auto; background: var(--viewer); }
@@ -951,14 +985,15 @@ h1, h2, h3, p { margin-top: 0; }
 #session-start-unknown-label::before { background: #c7beaf; }
 .session-opening-hours { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 12px; }
 .session-chapter.is-group .session-opening-hours { display: none; }
-.session-group-opening { display: grid; grid-template-columns: 136px minmax(0, 1fr); align-items: center; gap: 10px 16px; margin-top: 14px; }
-.session-opening-ring { width: 136px; height: 136px; position: relative; margin: 0; }
+.session-group-opening { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; margin-top: 20px; }
+.session-opening-ring { width: 176px; height: 176px; position: relative; margin: 0 auto; }
 .session-opening-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
 .session-opening-ring circle { fill: none; stroke-width: 21; }
 .session-opening-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
 .session-opening-center strong { font: 400 clamp(17px, 1.8vw, 23px)/1.2 var(--serif); font-variant-numeric: tabular-nums; }
 .session-opening-center span { margin-top: 7px; color: var(--muted); font: 10px/1.4 var(--sans); }
 .session-opening-legend { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; list-style: none; margin: 0; padding: 0; }
+.session-opening-legend:empty { display: none; }
 .session-opening-legend li { min-height: 22px; }
 .session-opening-legend li, .session-openers-list li { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; gap: 7px; align-items: center; min-width: 0; }
 .session-opener-swatch { width: 6px; height: 6px; background: var(--opener-color, var(--rule)); }
@@ -972,11 +1007,13 @@ h1, h2, h3, p { margin-top: 0; }
 .session-opening-legend .session-opener-count strong { font-size: 14px; }
 .session-opening-legend .session-opener-count small { margin-top: 0; }
 .session-openers-details { grid-column: 1 / -1; margin-top: 0; color: var(--muted); font: 11px/1.6 var(--sans); }
-.session-openers-details summary { width: fit-content; cursor: pointer; padding: 4px 0; }
-.session-openers-details summary:focus-visible, #session-openers-search:focus-visible { outline: 1px solid var(--viewer); outline-offset: 3px; }
+#session-openers-summary { margin: 0; color: var(--faint); font: 10px/1.6 var(--sans); }
+#session-openers-search:focus-visible { outline: 1px solid var(--viewer); outline-offset: 3px; }
 #session-openers-search { display: block; width: 100%; margin: 10px 0; border: 0; border-bottom: 1px solid var(--rule); border-radius: 0; background: transparent; color: var(--ink); padding: 7px 0; font: 12px/1.5 var(--sans); }
-.session-openers-list { max-height: 260px; overflow-y: auto; overscroll-behavior: contain; list-style: none; padding: 0 8px 0 0; margin: 0; scrollbar-width: thin; }
+.session-openers-list { max-height: 300px; overflow-y: auto; overscroll-behavior: contain; list-style: none; padding: 0 8px 0 0; margin: 0; scrollbar-width: thin; }
 .session-openers-list li { padding: 7px 0; border-bottom: 1px solid var(--rule); }
+.session-openers-list .session-opener-count { display: flex; align-items: baseline; gap: 9px; }
+.session-openers-list .session-opener-count small { margin-top: 0; }
 .session-openers-list .session-opener-label { -webkit-line-clamp: unset; }
 .session-hour-bars { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); align-items: end; gap: 4px; height: 84px; padding-top: 8px; border-bottom: 1px solid var(--rule); }
 .session-hour-column { display: block; min-width: 0; height: var(--hour-height); background: #c49f8c; }
@@ -1138,7 +1175,6 @@ h1, h2, h3, p { margin-top: 0; }
 .session-chapter { padding-top: 52px; padding-bottom: 58px; }
 
 @media (max-width: 420px) {
-  .session-group-opening { grid-template-columns: 112px minmax(0, 1fr); column-gap: 12px; }
   .session-opening-ring { width: 112px; height: 112px; }
 }
 
@@ -1157,6 +1193,10 @@ h1, h2, h3, p { margin-top: 0; }
   #session-movement dd { font-size: 23px; }
   .session-duet { grid-template-columns: 1fr; gap: 22px; }
   .session-duet > .session-movement:not([hidden]) ~ .session-movement:not([hidden]) { border-left: 0; border-top: 1px solid var(--rule); padding: 20px 0 0; }
+  .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
+  .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-beat,
+  .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-hours,
+  .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-concentration { grid-column: auto; grid-row: auto; }
   #sticker-memory-stories { grid-template-columns: 1fr; }
   .sticker-memory.has-art { grid-template-columns: 64px minmax(0, 1fr); gap: 16px; }
   .sticker-memory.is-reunion.has-art { grid-template-columns: 80px minmax(0, 1fr); gap: 16px; min-height: 0; }
@@ -1358,7 +1398,7 @@ document.documentElement.classList.add("js-ready");
     sessions && sessionCount !== null && sessionCount > 0
   );
   ["session-summary", "session-duet", "session-start-graphic", "session-group-opening", "session-hours",
-    "session-reply-self-track", "session-reply-peer-track"].forEach(function (id) { setHidden(id, true); });
+    "session-reply-self-track", "session-reply-peer-track", "session-concentration", "session-concentration-body"].forEach(function (id) { setHidden(id, true); });
   var nudges = data && data.private_nudges;
   var hasNudges = Boolean(conversation && conversation.kind === "private" && nudges &&
     finiteNumber(nudges.self_count) + finiteNumber(nudges.peer_count) > 0);
@@ -1519,22 +1559,16 @@ document.documentElement.classList.add("js-ready");
         setHidden("session-peak-hour", true);
       }
       renderSessionStartHours(sessions.start_hour_distribution);
+      renderSessionConcentration(sessions.items);
       setHidden("session-beat", !(hasGroupOpening || groupInitiators && groupInitiators.top_member || peakHour !== null ||
         viewerIdentityReliable && groupInitiators && finiteNumber(groupInitiators.self_count) !== null));
 
-      // 聊天里的几个高音
-      setText("session-highnotes-title", "聊天里的几个高音");
-      renderLoudest("session-loudest-participants", sessions.loudest_most_participants,
-        function (s) {
-          return String(s.participant_count) + " 人参与 · " + formatSessionMessages(s.message_count) + " 条消息";
-        });
+      renderLoudest("session-loudest-participants", null, function () { return ""; });
       renderLoudest("session-loudest-back-and-forth", null, function () { return ""; });
 
     }
     if (isPrivate || isGroup) {
       setHidden("session-summary", false);
-      setHidden("session-duet", document.getElementById("session-beat").hidden &&
-        document.getElementById("session-reply").hidden && document.getElementById("session-hours").hidden);
       setText("session-round-count", formatCount(sessionCount));
       setHidden("session-movement", false);
       setText("session-median-duration", "约 " + formatSessionDuration(sessions.median_duration_seconds));
@@ -1556,11 +1590,24 @@ document.documentElement.classList.add("js-ready");
         function (s) {
           return formatSessionDuration(s.duration_seconds) + " · " + formatSessionMessages(s.message_count) + " 条消息";
         });
-      renderLoudest("session-loudest-densest", sessions.loudest_densest,
+      renderLoudest("session-loudest-densest", isGroup ? null : sessions.loudest_densest,
         function (s) {
           return formatSessionMessages(s.message_count) + " 条消息 · " + formatSessionDuration(s.duration_seconds);
         });
       mergeSessionHighnotes();
+      if (isGroup) {
+        var highlights = document.getElementById("session-highnotes");
+        document.getElementById("session-concentration").appendChild(highlights);
+        if (!highlights.hidden) {
+          if (document.getElementById("session-concentration-body").hidden) {
+            setText("session-concentration-title", "几次聊得尽兴");
+          }
+          setHidden("session-concentration", false);
+        }
+      }
+      setHidden("session-duet", document.getElementById("session-beat").hidden &&
+        document.getElementById("session-reply").hidden && document.getElementById("session-hours").hidden &&
+        document.getElementById("session-concentration").hidden);
       setHidden("session-rest", false);
       var thresholdSeconds = finiteNumber(sessions.threshold_seconds);
       var thresholdMinutes = thresholdSeconds !== null && thresholdSeconds > 0 ? Math.round(thresholdSeconds / 60) : 30;
@@ -1585,8 +1632,8 @@ document.documentElement.classList.add("js-ready");
         color: p.is_viewer ? "#527066" : palette[i]};
     });
     if (people.length > limit) entries.push({display_name: "其他 " + (people.length - limit) + " 位成员",
-      count: people.slice(limit).reduce(function (sum, p) { return sum + p.count; }, 0), color: "#c9bfae"});
-    if (unknown) entries.push({display_name: "未确认", count: unknown, color: "#ded7ca"});
+      count: people.slice(limit).reduce(function (sum, p) { return sum + p.count; }, 0), color: "#c9bfae", is_summary: true});
+    if (unknown) entries.push({display_name: "未确认", count: unknown, color: "#ded7ca", is_summary: true});
     var svg = document.getElementById("session-opening-svg"), offset = 0;
     var legend = document.getElementById("session-opening-legend");
     entries.forEach(function (entry) {
@@ -1601,7 +1648,7 @@ document.documentElement.classList.add("js-ready");
       var title = document.createElementNS("http://www.w3.org/2000/svg", "title");
       title.textContent = entry.display_name + " · " + formatCount(entry.count) + " 轮 · " + formatPercent(entry.count / sessionCount);
       circle.appendChild(title); svg.appendChild(circle);
-      legend.appendChild(openerRow(entry, entry.color));
+      if (entry.is_summary) legend.appendChild(openerRow(entry, entry.color));
       offset += share;
     });
     setText("session-opening-total", formatCount(sessionCount));
@@ -1612,7 +1659,7 @@ document.documentElement.classList.add("js-ready");
         var row = openerRow(p, p.is_viewer ? "#527066" : index < limit ? palette[index] : "#c9bfae");
         list.appendChild(row); return row;
       });
-      setText("session-openers-summary", "查看全部 " + people.length + " 位成员的开场");
+      setText("session-openers-summary", people.length + " 位成员的开场 · 按发起轮数排列");
       setHidden("session-openers-details", false);
       document.getElementById("session-openers-search").addEventListener("input", function (event) {
         var query = event.target.value.trim().toLowerCase(), matches = 0;
@@ -1654,6 +1701,33 @@ document.documentElement.classList.add("js-ready");
     setHidden("session-start-unknown-label", counts[2] === 0);
     setHidden("session-start-graphic", false);
     return true;
+  }
+
+  function renderSessionConcentration(items) {
+    if (!Array.isArray(items) || items.length !== sessionCount || sessionCount < 2) return;
+    var counts = items.map(function (item) { return item && finiteNumber(item.message_count); });
+    if (counts.some(function (count) { return !Number.isSafeInteger(count) || count <= 0; })) return;
+    var total = counts.reduce(function (sum, count) { return sum + count; }, 0);
+    if (!Number.isSafeInteger(total)) return;
+    counts.sort(function (a, b) { return b - a; });
+    var selected = Math.ceil(sessionCount / 10);
+    var messages = counts.slice(0, selected).reduce(function (sum, count) { return sum + count; }, 0);
+    var share = messages / total;
+    var percent = (share * 100).toFixed(1).replace(/\.0$/, "") + "%";
+    var caption = "来自消息最多的 " + formatCount(selected) + " / " + formatCount(sessionCount) + " 轮聊天";
+    var dots = document.getElementById("session-concentration-dots");
+    if (!dots) return;
+    for (var index = 0; index < 100; index += 1) {
+      var dot = document.createElement("span");
+      dot.className = "session-concentration-dot" + (index < Math.round(share * 100) ? " is-filled" : "");
+      dot.setAttribute("aria-hidden", "true");
+      dots.appendChild(dot);
+    }
+    dots.setAttribute("aria-label", percent + " 的消息，" + caption + "；点阵表示消息份额");
+    setText("session-concentration-percent", percent);
+    setText("session-concentration-caption", caption);
+    setHidden("session-concentration-body", false);
+    setHidden("session-concentration", false);
   }
 
   function renderSessionStartHours(points) {
@@ -1705,6 +1779,12 @@ document.documentElement.classList.add("js-ready");
       var textNode = document.getElementById(textId);
       if (textNode) {
         textNode.textContent = formatFn(session);
+      }
+      if (isGroup && Number.isSafeInteger(session.participant_count) && session.participant_count > 1) {
+        var detail = document.createElement("span");
+        detail.className = "highnote-detail";
+        detail.textContent = String(session.participant_count) + " 人参与";
+        container.appendChild(detail);
       }
       // Set time anchor
       var timeId = containerId + "-time";
