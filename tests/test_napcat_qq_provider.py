@@ -1226,7 +1226,8 @@ def test_report_bridge_budget_is_bounded_and_recovers_without_restart(runtime, t
     clock.write_text("1000")
     media = tmp_path / "fictional-media.bin"
     media.write_bytes(b"fictional-media")
-    client = provider(runtime(mediaPath=str(media), clockFile=str(clock)))
+    base = runtime(mediaPath=str(media), clockFile=str(clock))
+    client = provider(base)
     for _ in range(64):
         assert client.resolve_pic_message(**_PROBE).passed
         assert client.download_pic_media(**_MEDIA) == b"fictional-media"
@@ -1236,6 +1237,11 @@ def test_report_bridge_budget_is_bounded_and_recovers_without_restart(runtime, t
     with pytest.raises(module.NapCatQQMediaStageError) as fetch:
         client.download_pic_media(**_MEDIA)
     assert fetch.value.stage == "media_budget_exhausted"
+    # Status polling and a new client cannot reset the bridge-owned allowance.
+    assert request(base)[1]["result"]["media_retry_after_ms"] == 125
+    with pytest.raises(module.NapCatQQError) as query:
+        provider(base).resolve_pic_message(**_PROBE)
+    assert query.value.rpc_error == "media_budget_exhausted"
     import threading
     from concurrent.futures import ThreadPoolExecutor
     stop = threading.Event()
@@ -1245,10 +1251,49 @@ def test_report_bridge_budget_is_bounded_and_recovers_without_restart(runtime, t
         with pytest.raises(module.NapCatQQMediaStageError) as interrupted:
             waiting.result(timeout=1)
         assert interrupted.value.stage == "media_cancelled"
-    clock.write_text("61001")
+    clock.write_text("1124")
+    assert request(base)[1]["result"]["media_retry_after_ms"] == 1
+    with pytest.raises(module.NapCatQQError) as query:
+        client.resolve_pic_message(**_PROBE)
+    assert query.value.rpc_error == "media_budget_exhausted"
+    with pytest.raises(module.NapCatQQMediaStageError) as fetch:
+        client.download_pic_media(**_MEDIA)
+    assert fetch.value.stage == "media_budget_exhausted"
+    clock.write_text("1125")
     client.wait_media_ready()
     assert client.resolve_pic_message(**_PROBE).passed
     assert client.download_pic_media(**_MEDIA) == b"fictional-media"
+    # Only one call per budget recovered, rather than an entire fresh burst.
+    with pytest.raises(module.NapCatQQError):
+        client.resolve_pic_message(**_PROBE)
+    with pytest.raises(module.NapCatQQMediaStageError):
+        client.download_pic_media(**_MEDIA)
+    # Long idle periods replenish at most the fixed burst capacity.
+    clock.write_text("61001")
+    for _ in range(64):
+        assert client.resolve_pic_message(**_PROBE).passed
+        assert client.download_pic_media(**_MEDIA) == b"fictional-media"
+    with pytest.raises(module.NapCatQQError) as query:
+        client.resolve_pic_message(**_PROBE)
+    assert query.value.rpc_error == "media_budget_exhausted"
+    with pytest.raises(module.NapCatQQMediaStageError) as fetch:
+        client.download_pic_media(**_MEDIA)
+    assert fetch.value.stage == "media_budget_exhausted"
+
+
+def test_report_media_queue_keeps_moving_at_five_materials_per_second(runtime, tmp_path):
+    """A multi-member report must not pause for a minute after 64 materials."""
+    clock = tmp_path / "fictional-clock.txt"
+    clock.write_text("1000")
+    media = tmp_path / "fictional-media.bin"
+    media.write_bytes(b"fictional-media")
+    base = runtime(mediaPath=str(media), clockFile=str(clock))
+    client = provider(base)
+    for index in range(275):
+        clock.write_text(str(1000 + index * 200))
+        assert request(base)[1]["result"]["media_retry_after_ms"] == 0
+        assert client.resolve_pic_message(**_PROBE).passed
+        assert client.download_pic_media(**_MEDIA) == b"fictional-media"
 
 
 def test_media_fetch_rejects_invalid_parameters_before_any_kernel_call(runtime, tmp_path):

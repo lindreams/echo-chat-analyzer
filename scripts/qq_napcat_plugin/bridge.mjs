@@ -19,25 +19,30 @@ const logSnapshot = (stage, outcome) => {
     if (file) appendFileSync(file, `[${new Date().toISOString()}] [echo-snapshot] stage=${stage} outcome=${outcome}\n`);
   } catch {}
 };
-const MAX_PROBE_CALLS = 64;
-const MEDIA_WINDOW_MS = 60000;
-// Rolling per-bridge limits recover with time; no reset RPC or client-supplied quota.
-const callWindow = maximum => {
-  const started = [];
-  const prune = () => {
+const MEDIA_CALL_BURST = 64;
+const MEDIA_CALL_INTERVAL_MS = 125;
+// Independent bridge-owned token buckets for probes and downloads. Smooth
+// refill avoids minute-long pauses in serial multi-member report queues;
+// bursts stay bounded, with no reset RPC or caller-supplied allowance.
+const mediaCallBudget = () => {
+  // Keep credits in milliseconds to avoid fractional-token rounding at refill.
+  const capacity = MEDIA_CALL_BURST * MEDIA_CALL_INTERVAL_MS;
+  let creditMs = capacity;
+  let updatedAt = performance.now();
+  const refill = () => {
     const now = performance.now();
-    while (started.length && started[0] <= now - MEDIA_WINDOW_MS) started.shift();
-    return now;
+    creditMs = Math.min(capacity, creditMs + now - updatedAt);
+    updatedAt = now;
   };
   const allow = () => {
-    const now = prune();
-    if (started.length >= maximum) return false;
-    started.push(now);
+    refill();
+    if (creditMs < MEDIA_CALL_INTERVAL_MS) return false;
+    creditMs -= MEDIA_CALL_INTERVAL_MS;
     return true;
   };
   allow.retryAfter = () => {
-    const now = prune();
-    return started.length < maximum ? 0 : Math.max(1, Math.ceil(started[0] + MEDIA_WINDOW_MS - now));
+    refill();
+    return Math.max(0, Math.ceil(MEDIA_CALL_INTERVAL_MS - creditMs));
   };
   return allow;
 };
@@ -92,7 +97,6 @@ const probeRequest = value => {
 const MAX_MEDIA_BYTES = 32 * 1024 * 1024;
 const MEDIA_CHUNK_BYTES = 256 * 1024;
 const MEDIA_TRANSFER_IDLE_MS = 30000;
-const MAX_MEDIA_CALLS = 64;
 const MEDIA_TIMEOUT_MS = 120000;
 // Fixed, sanitised stage codes. Only these may cross the bridge; anything else
 // is reported as the generic operation failure so no path or kernel message leaks.
@@ -415,7 +419,7 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       match_basis: bases.length ? bases.join('+') : 'none', element: matched,
     };
   };
-  const allowProbe = callWindow(MAX_PROBE_CALLS);
+  const allowProbe = mediaCallBudget();
   const probePicMessage = async value => {
     if (!allowProbe()) throw mediaError('media_budget_exhausted');
     const {element, ...facts} = await inspectPicMessage(value);
@@ -427,7 +431,7 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
         facts.segment_id_matches === true && facts.file_uuid_matches === true));
     return {...facts, passed};
   };
-  const allowMedia = callWindow(MAX_MEDIA_CALLS);
+  const allowMedia = mediaCallBudget();
   let mediaBusy = false;
   let transfer = null;
   const closeTransfer = async current => {
