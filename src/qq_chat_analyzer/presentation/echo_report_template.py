@@ -948,13 +948,20 @@ h1, h2, h3, p { margin-top: 0; }
 .session-duet > .session-movement:not([hidden]) ~ .session-movement:not([hidden]) { border-left: 1px solid var(--rule); padding-left: 28px; }
 .session-duet .movement-heading { gap: 8px; font-size: 20px; }
 .session-duet .movement-icon { width: 20px; height: 24px; }
-.session-duet:has(#private-nudges:not([hidden])) { row-gap: 24px; }
-.session-duet:has(#private-nudges:not([hidden])) #session-beat { grid-column: 1; grid-row: 1 / span 2; }
-.session-duet:has(#private-nudges:not([hidden])) #session-reply { grid-column: 2; grid-row: 1; }
-.session-duet:has(#private-nudges:not([hidden])) #private-nudges { grid-column: 2; grid-row: 2; }
-.session-duet:has(#session-reply[hidden]) #private-nudges { grid-row: 1 / span 2; }
-.session-duet:has(#session-beat[hidden]) #session-reply,
-.session-duet:has(#session-beat[hidden]) #private-nudges { grid-column: 1 / -1; }
+.session-chapter.is-private .session-duet { align-items: start; row-gap: 24px; }
+@media (min-width: 721px) {
+  .session-chapter.is-private #session-beat { grid-column: 1; grid-row: 1; }
+  .session-chapter.is-private #session-reply { grid-column: 2; grid-row: 1; }
+  .session-chapter.is-private #private-nudges { grid-column: 1; grid-row: 2; border-left: 0; border-top: 1px solid var(--rule); padding: 20px 0 0; }
+  .session-chapter.is-private #session-highnotes { grid-column: 2; grid-row: 2; }
+  .session-chapter.is-private .session-duet:has(#private-nudges[hidden]) #session-highnotes { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--rule); padding: 20px 0 0; }
+  .session-chapter.is-private .session-duet:has(#private-nudges[hidden]) .highnote-grid:has(.highnote-card:not([hidden]) ~ .highnote-card:not([hidden])) { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .session-chapter.is-private .session-duet:has(#session-beat[hidden]) #session-reply,
+  .session-chapter.is-private .session-duet:has(#session-reply[hidden]) #session-beat { grid-column: 1 / -1; border-left: 0; padding-left: 0; }
+  .session-chapter.is-private .session-duet:has(#session-beat[hidden]):has(#session-reply[hidden]) #private-nudges { grid-row: 1; }
+  .session-chapter.is-private .session-duet:has(#session-beat[hidden]):has(#session-reply[hidden]) #session-highnotes { grid-row: 1; }
+  .session-chapter.is-private .session-duet:has(#session-highnotes[hidden]):has(#session-beat[hidden]):has(#session-reply[hidden]) #private-nudges { grid-column: 1 / -1; border-top: 0; padding-top: 0; }
+}
 .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])):has(#session-beat:not([hidden])) { grid-template-rows: auto auto; row-gap: 24px; }
 .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-beat { grid-column: 1; grid-row: 1 / span 2; }
 .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-hours { grid-column: 2; grid-row: 1; }
@@ -965,11 +972,12 @@ h1, h2, h3, p { margin-top: 0; }
 .session-chapter.is-group #session-highnotes { margin-top: 20px; padding-top: 0; border-top: 0; }
 .session-chapter.is-group #session-highnotes > .movement-heading { display: none; }
 .session-chapter.is-group .highnote-grid { display: flex; flex-direction: column; gap: 0; border: 0; background: transparent; }
-.session-chapter.is-group .highnote-card { padding: 14px 0; border-top: 1px solid var(--rule); background: transparent; }
-.session-chapter.is-group .highnote-badge { padding: 0; border: 0; font-size: 11px; letter-spacing: .06em; }
-.session-chapter.is-group .highnote-badges { margin-bottom: 6px; }
-.session-chapter.is-group .highnote-stat { font-size: 18px; }
-.session-chapter.is-group .highnote-time { margin-top: 5px; }
+.session-chapter.is-private .highnote-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 24px; border: 0; background: transparent; }
+.session-chapter .highnote-card { padding: 14px 0; border-top: 1px solid var(--rule); background: transparent; }
+.session-chapter .highnote-badge { padding: 0; border: 0; font-size: 11px; letter-spacing: .06em; }
+.session-chapter .highnote-badges { margin-bottom: 6px; }
+.session-chapter .highnote-stat { font-size: 18px; }
+.session-chapter .highnote-time { margin-top: 5px; }
 .session-concentration-body { display: flex; align-items: center; gap: 22px; margin-top: 14px; }
 .session-concentration-dots { display: grid; grid-template-columns: repeat(10, 5px); gap: 5px; flex: 0 0 auto; }
 .session-concentration-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--rule); }
@@ -1201,9 +1209,6 @@ h1, h2, h3, p { margin-top: 0; }
   #session-movement dd { font-size: 23px; }
   .session-duet { grid-template-columns: 1fr; gap: 22px; }
   .session-duet > .session-movement:not([hidden]) ~ .session-movement:not([hidden]) { border-left: 0; border-top: 1px solid var(--rule); padding: 20px 0 0; }
-  .session-duet:has(#private-nudges:not([hidden])) #session-beat,
-  .session-duet:has(#private-nudges:not([hidden])) #session-reply,
-  .session-duet:has(#private-nudges:not([hidden])) #private-nudges { grid-column: auto; grid-row: auto; }
   .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
   .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-beat,
   .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-hours,
@@ -1415,6 +1420,7 @@ document.documentElement.classList.add("js-ready");
     finiteNumber(nudges.self_count) + finiteNumber(nudges.peer_count) > 0);
   if (sessionsChapter) {
     sessionsChapter.hidden = !(hasSessions || hasNudges);
+    sessionsChapter.classList.toggle("is-private", Boolean(conversation && conversation.kind === "private"));
   }
   if (sessionsToc) {
     sessionsToc.hidden = !(hasSessions || hasNudges);
@@ -1531,13 +1537,6 @@ document.documentElement.classList.add("js-ready");
       // 几段特别的聊天
       setText("session-highnotes-title", "特别的聊天");
       renderLoudest("session-loudest-participants", null, function () { return ""; });
-      renderLoudest("session-loudest-back-and-forth", sessions.loudest_most_back_and_forth,
-        function (s) {
-          var selfMessages = finiteNumber(s.self_message_count);
-          var peerMessages = finiteNumber(s.peer_message_count);
-          var counts = "你 " + (selfMessages === null ? "—" : formatCount(selfMessages)) + " 条 · TA " + (peerMessages === null ? "—" : formatCount(peerMessages)) + " 条";
-          return counts + " · " + formatSessionDuration(s.duration_seconds);
-        });
 
     }
 
@@ -1576,7 +1575,6 @@ document.documentElement.classList.add("js-ready");
         viewerIdentityReliable && groupInitiators && finiteNumber(groupInitiators.self_count) !== null));
 
       renderLoudest("session-loudest-participants", null, function () { return ""; });
-      renderLoudest("session-loudest-back-and-forth", null, function () { return ""; });
 
     }
     if (isPrivate || isGroup) {
@@ -1602,10 +1600,8 @@ document.documentElement.classList.add("js-ready");
         function (s) {
           return formatSessionDuration(s.duration_seconds) + " · " + formatSessionMessages(s.message_count) + " 条消息";
         });
-      renderLoudest("session-loudest-densest", isGroup ? null : sessions.loudest_densest,
-        function (s) {
-          return formatSessionMessages(s.message_count) + " 条消息 · " + formatSessionDuration(s.duration_seconds);
-        });
+      setHidden("session-loudest-densest", true);
+      setHidden("session-loudest-back-and-forth", true);
       mergeSessionHighnotes();
       if (isGroup) {
         var highlights = document.getElementById("session-highnotes");
@@ -1616,10 +1612,13 @@ document.documentElement.classList.add("js-ready");
           }
           setHidden("session-concentration", false);
         }
+      } else if (isPrivate) {
+        document.getElementById("session-duet").appendChild(document.getElementById("session-highnotes"));
       }
       setHidden("session-duet", document.getElementById("session-beat").hidden &&
         document.getElementById("session-reply").hidden && document.getElementById("session-hours").hidden &&
-        document.getElementById("session-concentration").hidden && !hasNudges);
+        document.getElementById("session-concentration").hidden && !hasNudges &&
+        (!isPrivate || document.getElementById("session-highnotes").hidden));
       setHidden("session-rest", false);
       var thresholdSeconds = finiteNumber(sessions.threshold_seconds);
       var thresholdMinutes = thresholdSeconds !== null && thresholdSeconds > 0 ? Math.round(thresholdSeconds / 60) : 30;

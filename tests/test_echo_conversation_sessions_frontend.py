@@ -464,6 +464,8 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
             return parseFloat(getComputedStyle(node,"::before").width)/node.getBoundingClientRect().width*100||0;}),
           clipped:[...document.querySelectorAll("#conversation-sessions h3,#conversation-sessions .session-fields>div,.session-beat-lead,.highnote-card")]
             .filter(x=>x.getBoundingClientRect().width&&x.scrollWidth>x.clientWidth+1).map(x=>x.id||x.className)};
+        const highlights=[...document.querySelectorAll('.highnote-card:not([hidden])')];
+        result.visuals.singleHighlightFills=highlights.length!==1||Math.abs(highlights[0].getBoundingClientRect().width-highlights[0].parentElement.getBoundingClientRect().width)<1;
         const second=document.getElementById(window.ECHO_DATA.conversation.kind==="private"?"session-reply":"session-hours");
         const first=document.getElementById("session-beat"), wasHidden=first.hidden;
         result.visuals.singlePanelFills=true;
@@ -501,6 +503,7 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
     visuals = rendered.pop("visuals")
     assert visuals["width"] == width and not visuals["clipped"], visuals
     assert visuals["singlePanelFills"]
+    assert visuals["singleHighlightFills"]
     known = bool(count) and kind in {"private", "group"}
     assert visuals["summary"] is known
     assert visuals["hourCount"] == (24 if known and kind == "group" else 0)
@@ -526,10 +529,9 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
         "sessionCharacter": "Fictional character" if count and kind in {"private", "group"} else "",
         "highnotes": (["session-loudest-messages"]
                       if count and kind in {"private", "group"} else []),
-        "highlightLabels": (["话最多", "聊最久"] if kind == "group" else
-                            ["话最多", "聊最久", "接得最紧", "最有来有回"])
+        "highlightLabels": ["话最多", "聊最久"]
                            if count and kind in {"private", "group"} else [],
-        "highlightDetails": (["3 人参与"] if kind == "group" else ["你 12 条 · TA 8 条"])
+        "highlightDetails": (["3 人参与"] if kind == "group" else [])
                             if count and kind in {"private", "group"} else [],
         "viewerVisible": bool(count) and kind == "group",
         "top": ("你开启 3 轮 · TA 开启 5 轮" if kind == "private" else

@@ -191,7 +191,7 @@ def test_pat_report_is_readonly_offline_and_hides_unavailable_actions(
 ):
     from qq_chat_analyzer.presentation import export_echo_report_html
     from qq_chat_analyzer.presentation.models import (
-        EchoConversationSessions, EchoNudgeMoment, EchoPrivateNudges, EchoReportView,
+        EchoConversationSession, EchoConversationSessions, EchoNudgeMoment, EchoPrivateNudges, EchoReportView,
     )
     from test_echo_conversation_sessions_frontend import _find_chromium, _run_browser
 
@@ -199,12 +199,19 @@ def test_pat_report_is_readonly_offline_and_hides_unavailable_actions(
     if chromium is None:
         pytest.skip("no local Chromium available")
     suffix = '</script><img id="fictional-attack" onerror="window.fictionalAttack=true">' + '虚构' * 80
+    highlights = [EchoConversationSession(
+        start_timestamp=STAMP + index * 7200, end_timestamp=STAMP + index * 7200 + 120,
+        duration_seconds=120, message_count=20 + index, participant_count=2, initiator="self",
+        self_message_count=10, peer_message_count=10 + index,
+    ) for index in range(4)]
     view = EchoReportView(
         title="Fictional Echo", has_data=True, conversation_kind=kind,
         conversation_sessions=EchoConversationSessions(
             1800, 1, 120, 120, 120, 2, private_self_count=1, private_peer_count=0,
             private_unknown_count=0, private_reply_median_self_to_peer_seconds=12,
             private_reply_median_peer_to_self_seconds=36,
+            loudest_most_messages=highlights[0], loudest_longest_duration=highlights[1],
+            loudest_densest=highlights[2], loudest_most_back_and_forth=highlights[3],
         ) if has_sessions else None,
         private_nudges=EchoPrivateNudges(2, 1, (
             EchoNudgeMoment(STAMP + 2, True, suffix),
@@ -234,7 +241,13 @@ window.addEventListener('load',()=>{
  };
  const box=id=>{const r=document.getElementById(id).getBoundingClientRect();
    return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
+ const highnotes=document.getElementById('session-highnotes');
  r.layout={beat:box('session-beat'),reply:box('session-reply'),nudges:box('private-nudges'),
+   highlights:box('session-highnotes'),
+   highlightsNested:document.getElementById('session-duet').contains(highnotes),
+   cards:[...highnotes.querySelectorAll('.highnote-card:not([hidden])')].map(x=>box(x.id)),
+   labels:[...highnotes.querySelectorAll('.highnote-card:not([hidden]) .highnote-badge')].map(x=>x.textContent.replace(/[♪𝅝♫♬]/gu,'')),
+   highlightsFit:[...highnotes.querySelectorAll('.highnote-card')].every(x=>x.scrollWidth<=x.clientWidth+1),
    nested:document.getElementById('session-duet').contains(block),
    duetVisible:!document.getElementById('session-duet').hidden,
    listHeight:block.querySelector('.nudge-memories').clientHeight,
@@ -257,13 +270,28 @@ window.addEventListener('load',()=>{
     visible = has_actions and kind == "private"
     layout = rendered.pop("layout")
     assert layout["nested"]
+    if kind == "private" and has_sessions:
+        assert layout["highlightsNested"] and layout["highlightsFit"]
+        assert len(layout["cards"]) == 2
+        assert layout["labels"] == ["话最多", "聊最久"]
+        assert layout["reply"]["bottom"] <= layout["highlights"]["top"]
+        if width > 720:
+            if has_actions:
+                assert layout["highlights"]["left"] == pytest.approx(layout["reply"]["left"])
+                assert layout["highlights"]["top"] == pytest.approx(layout["nudges"]["top"])
+                assert all(a["bottom"] <= b["top"] for a, b in zip(layout["cards"], layout["cards"][1:]))
+            else:
+                assert layout["highlights"]["left"] == pytest.approx(layout["beat"]["left"])
+                assert layout["highlights"]["right"] == pytest.approx(layout["reply"]["right"])
+        elif has_actions:
+            assert layout["nudges"]["bottom"] <= layout["highlights"]["top"]
     if visible:
         assert layout["duetVisible"] and layout["fits"] and layout["listHeight"] <= 180
         if has_sessions:
             assert layout["reply"]["bottom"] <= layout["nudges"]["top"]
             if width > 720:
                 assert layout["beat"]["right"] <= layout["reply"]["left"]
-                assert layout["reply"]["left"] == pytest.approx(layout["nudges"]["left"])
+                assert layout["beat"]["left"] == pytest.approx(layout["nudges"]["left"])
             else:
                 assert layout["beat"]["bottom"] <= layout["reply"]["top"]
     labels = ["你戳了戳 TA", "TA 戳了戳你"] if source == "qq" else ["你拍了拍 TA", "TA 拍了拍你"]
