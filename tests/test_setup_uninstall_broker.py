@@ -39,20 +39,21 @@ public class Recorder {
     return executable
 
 
-@pytest.mark.parametrize('outcome', ['success', 'crash', 'changed', 'cancel', 'native_failure', 'other_instance'])
+@pytest.mark.parametrize('outcome', ['success', 'crash', 'changed', 'cancel', 'native_failure', 'cleaner_failure', 'other_instance'])
 def test_broker_waits_for_normal_exit_and_rechecks_files(tmp_path, monkeypatch, outcome, recording_exe):
     import winreg
     from qq_chat_analyzer.application import setup_uninstall_service as module
     service, root, data, _, _ = installation(tmp_path)
     substitute = root / 'Update.exe'
     substitute.write_bytes(recording_exe.read_bytes())
-    if outcome == 'other_instance':
-        (root / 'current' / 'Echo.exe').write_bytes(recording_exe.read_bytes())
+    (root / 'current' / 'Echo.exe').write_bytes(recording_exe.read_bytes())
     snapshot = dataclasses.replace(service._inspect(),
         package_id='Echo.FictionalBroker.' + str(os.getpid()) + '.' + outcome)
     record = root / 'invocations.txt'
     if outcome == 'native_failure':
         (root / 'fail').touch()
+    elif outcome == 'cleaner_failure':
+        (root / 'current/fail').touch()
     key_path = 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\' + snapshot.package_id
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
         for name, value in snapshot.registration.items():
@@ -60,7 +61,7 @@ def test_broker_waits_for_normal_exit_and_rechecks_files(tmp_path, monkeypatch, 
     # Keep failure feedback out of the interactive desktop in this protocol test.
     monkeypatch.setattr(module, '_BROKER', module._BROKER.replace(
         'Add-Type -AssemblyName System.Windows.Forms', '').replace(
-        "[void][System.Windows.Forms.MessageBox]::Show('无法完成卸载。请通过 Windows 设置中的应用列表重试。','Echo 卸载未完成')",
+        "[void][System.Windows.Forms.MessageBox]::Show('数据清理或卸载未完成，可能已有部分数据被删除。未确认全部清除；请重新打开 Echo 后重试。','Echo 卸载未完成')",
         "[Console]::Error.WriteLine('UNINSTALL_FAILED')"))
     owner = subprocess.Popen([sys.executable, '-c',
         'import sys; sys.stdin.readline(); sys.exit(' + ('7' if outcome == 'crash' else '0') + ')'],
@@ -98,6 +99,8 @@ def test_broker_waits_for_normal_exit_and_rechecks_files(tmp_path, monkeypatch, 
         assert record.exists() == (outcome in ('success', 'native_failure'))
         if record.exists():
             assert record.read_text() == '--uninstall'
+        if outcome == 'cleaner_failure':
+            assert (root / 'current/invocations.txt').read_text() == '--echo-uninstall-cleanup|keep'
         assert (data / 'report.html').read_bytes() == b'fictional report'
     finally:
         if other is not None:
@@ -125,6 +128,81 @@ def test_reads_pinned_pe_version_without_executing(recording_exe, tmp_path):
     invalid.write_bytes(b'not executable')
     with pytest.raises(ValueError):
         module._updater_version(invalid)
+
+
+def test_maintenance_gate_blocks_new_startups_but_authorizes_the_broker_child():
+    from qq_chat_analyzer.application.setup_uninstall_service import maintenance_gate
+    script = '''
+from qq_chat_analyzer.application.setup_uninstall_service import maintenance_gate
+with maintenance_gate(require_held=True): pass
+try:
+    with maintenance_gate(): pass
+except OSError:
+    raise SystemExit(0)
+raise SystemExit(9)
+'''
+    with maintenance_gate():
+        result = subprocess.run([sys.executable, '-c', script], capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW, timeout=15)
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize('outcome', ['success', 'crash', 'changed', 'foreign_registration'])
+def test_registration_waits_for_setup_and_only_rewrites_attested_entry(tmp_path, outcome):
+    import base64
+    import json
+    import winreg
+    from qq_chat_analyzer.application import setup_uninstall_service as module
+    service, root, _, _, _ = installation(tmp_path)
+    snapshot = dataclasses.replace(service._inspect(),
+        package_id='Echo.FictionalRegistration.' + str(os.getpid()) + '.' + outcome)
+    key_path = 'Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\' + snapshot.package_id
+    owner = subprocess.Popen([sys.executable, '-c',
+        'import sys; sys.stdin.readline(); sys.exit(' + ('7' if outcome == 'crash' else '0') + ')'],
+        stdin=subprocess.PIPE, creationflags=subprocess.CREATE_NO_WINDOW)
+    command = f'"{root / "current/Echo.exe"}" --echo-uninstall'
+    spec = dict(pid=owner.pid, hashes=snapshot.hashes, package_id=snapshot.package_id,
+                registration=snapshot.registration, command=command)
+    payload = base64.b64encode(json.dumps(spec).encode()).decode()
+    broker = None
+    try:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+            for name, value in snapshot.registration.items():
+                winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+            winreg.SetValueEx(key, 'QuietUninstallString', 0, winreg.REG_SZ, 'fictional quiet')
+        broker = subprocess.Popen(module._powershell_command(
+            module._REGISTER_BROKER.replace('__SPEC__', payload)),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW, cwd=tmp_path)
+        assert broker.stdout.readline().strip() == 'READY'
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+            assert winreg.QueryValueEx(key, 'UninstallString')[0] == snapshot.registration['UninstallString']
+        if outcome == 'changed':
+            (root / 'current/Echo.exe').write_bytes(b'replaced fictional executable')
+        elif outcome == 'foreign_registration':
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.SetValueEx(key, 'DisplayName', 0, winreg.REG_SZ, 'Other app')
+        owner.stdin.write(b'exit\n')
+        owner.stdin.flush()
+        assert broker.wait(timeout=15) == (0 if outcome == 'success' else 1)
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+            assert winreg.QueryValueEx(key, 'UninstallString')[0] == (
+                command if outcome == 'success' else snapshot.registration['UninstallString'])
+            if outcome == 'success':
+                with pytest.raises(FileNotFoundError):
+                    winreg.QueryValueEx(key, 'QuietUninstallString')
+    finally:
+        if broker is not None:
+            if broker.poll() is None:
+                broker.kill()
+            broker.wait(timeout=5)
+            broker.stdout.close()
+            broker.stderr.close()
+        if owner.poll() is None:
+            owner.kill()
+        owner.wait(timeout=5)
+        owner.stdin.close()
+        winreg.DeleteKey(winreg.HKEY_CURRENT_USER, key_path)
 
 
 @pytest.mark.parametrize('reply', ['armed', 'failed', 'eof', 'timeout'])

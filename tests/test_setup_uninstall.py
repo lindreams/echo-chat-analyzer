@@ -125,6 +125,19 @@ def test_facade_needs_its_own_shutdown_evidence(tmp_path):
     assert facade.handoff_setup_uninstall(prepared.token, final).status == "started"
 
 
+def test_cleanup_choice_is_bound_to_one_prepared_handoff(tmp_path):
+    service, _, _, registration, calls = installation(tmp_path)
+    executable = registration['DisplayIcon']
+    registration['UninstallString'] = f'"{executable}" --echo-uninstall'
+    prepared = service.prepare('purge')
+    assert prepared.status == 'ready'
+    assert service.handoff(prepared.token, evidence()).status == 'started'
+    assert calls[0].cleanup_mode == 'purge'
+    invalid, _, _, _, calls = installation(tmp_path / 'other')
+    assert invalid.prepare('anything-else').status == 'denied'
+    assert calls == []
+
+
 @pytest.mark.slow_integration
 def test_junction_in_current_installation_is_rejected(tmp_path):
     import os

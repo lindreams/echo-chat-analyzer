@@ -531,7 +531,7 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
                       if count and kind in {"private", "group"} else []),
         "highlightLabels": ["话最多", "聊最久"]
                            if count and kind in {"private", "group"} else [],
-        "highlightDetails": (["3 人参与"] if kind == "group" else [])
+        "highlightDetails": (["已识别 3 人"] if kind == "group" else [])
                             if count and kind in {"private", "group"} else [],
         "viewerVisible": bool(count) and kind == "group",
         "top": ("你开启 3 轮 · TA 开启 5 轮" if kind == "private" else

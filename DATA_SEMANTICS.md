@@ -70,6 +70,8 @@ Adapter / Import 与单向投影保留输入顺序，不统一重排所有来源
 | unknown | 不推断私聊双方或群聊身份。 |
 
 私聊会话只要有一条 is_self=None，该会话 self_message_count / peer_message_count 就保持 None，不能用不完整身份给出完整双方计数。参与者计数独立采用可归属成员身份。
+每轮 `participant_count` 是已识别参与者数，未知发送者不合并成一个成员；其消息仍计入轮次消息量。
+群聊高光标为“已识别 N 人”，不将它表述为该轮完整参与人数。
 
 会话划分、时长、发起者及聚合统计由核心计算；AnalysisApplicationService 调用核心，Presentation / Echo Report 消费结果，不重新计算另一套 session statistics。
 

@@ -1794,7 +1794,8 @@ document.documentElement.classList.add("js-ready");
       if (isGroup && Number.isSafeInteger(session.participant_count) && session.participant_count > 1) {
         var detail = document.createElement("span");
         detail.className = "highnote-detail";
-        detail.textContent = String(session.participant_count) + " 人参与";
+        detail.textContent = "已识别 " + String(session.participant_count) + " 人";
+        detail.title = "仅计能够确认身份的发送者；未知身份消息仍计入本轮消息总数。";
         container.appendChild(detail);
       }
       // Set time anchor

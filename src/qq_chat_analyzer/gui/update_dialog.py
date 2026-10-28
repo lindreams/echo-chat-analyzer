@@ -59,7 +59,7 @@ PROGRAM_TITLE_DEVELOPMENT = "程序位置"
 DATA_TITLE = "本地数据目录"
 OPEN_DIRECTORY_TEXT = "打开目录"
 PORTABLE_REMOVAL_NOTE = "便携版不需要卸载：删除解压出的 Echo 文件夹即可移除程序。"
-DATA_FOOTER_NOTE = "卸载程序不会自动删除独立保存的本地数据。"
+DATA_FOOTER_NOTE = "卸载时可选择保留报告和普通设置，或清除 Echo 本地数据；另存文件不受影响。"
 OPEN_PROGRAM_FAILED_MESSAGE = "无法打开程序目录，请在文件管理器中手动查看。"
 OPEN_DATA_FAILED_MESSAGE = "无法打开本地数据目录，请在文件管理器中手动查看。"
 
@@ -249,7 +249,8 @@ def update_presentation(
         text = ("正在下载更新…" if shown_percent is None
                 else f"正在下载更新…  {shown_percent}%")
     elif phase is UpdatePhase.DOWNLOAD_COMPLETE:
-        text = "更新已下载完成。Echo 将关闭、安装更新并自动重启。仅支持未连接、无分析任务时安装。"
+        text = ("更新已下载完成。Echo 将关闭、安装更新并自动重启。仅支持未连接、无分析任务时安装。"
+                "本次打开后若已连接过 QQ／微信，请先关闭并重新打开 Echo，不连接来源再安装。")
     if note:
         text = f"{text}\n{note}"
     busy = phase in (UpdatePhase.CHECKING, UpdatePhase.DOWNLOADING)
@@ -572,7 +573,7 @@ class UpdatePage(QWidget):
             can_uninstall = False
         self.maintenance_section.uninstall_button.setEnabled(bool(can_uninstall))
         self.maintenance_section.uninstall_button.setToolTip(
-            '卸载程序并保留本地报告与配置。' if can_uninstall else '当前安装身份或卸载器未通过验证。')
+            '选择保留报告和普通设置，或清除 Echo 本地数据后卸载。' if can_uninstall else '当前安装身份或卸载器未通过验证。')
         self.maintenance_section.uninstall_button.clicked.connect(self.uninstall_requested.emit)
         # Polish the complete widget tree, as Home does. Applying scoped font
         # rules before adding/reparenting the content can retain generic fonts.

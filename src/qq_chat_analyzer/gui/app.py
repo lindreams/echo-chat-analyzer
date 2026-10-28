@@ -212,6 +212,10 @@ def _run_gui(argv: list[str] | None = None) -> int:
         app.setStyleSheet(BASE_QSS)
         window = MainWindow(build_facade())
         window.show()
+        if arguments == ['--echo-uninstall']:
+            from PySide6.QtCore import QTimer
+            window.show_about_page()
+            QTimer.singleShot(0, window.request_setup_uninstall)
         exit_code = app.exec()
         _finish_process_exit(exit_code, window=window)
         return exit_code

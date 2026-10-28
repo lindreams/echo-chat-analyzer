@@ -1011,10 +1011,10 @@ class ChatAnalyzerFacade:
     def can_uninstall_setup(self) -> bool:
         return self._setup_uninstall_service.is_available()
 
-    def prepare_setup_uninstall(self) -> UninstallResult:
+    def prepare_setup_uninstall(self, cleanup_mode: str = 'keep') -> UninstallResult:
         if self._sources_closing.is_set():
             return UninstallResult('denied', public_message='Echo 已在退出，请重新启动后再试。')
-        return self._setup_uninstall_service.prepare()
+        return self._setup_uninstall_service.prepare(cleanup_mode)
 
     def handoff_setup_uninstall(self, token: str, result: ShutdownResult) -> UninstallResult:
         if (not isinstance(result, ShutdownResult) or not result.can_apply_update

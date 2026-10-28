@@ -141,6 +141,16 @@ def test_main_starts_gui_even_when_logging_initialization_fails(
     startup.configure.assert_called_once_with()
 
 
+def test_windows_uninstall_entry_opens_the_shared_confirmation(desktop_startup, monkeypatch):
+    from PySide6.QtCore import QTimer
+    callbacks = []
+    monkeypatch.setattr(QTimer, 'singleShot', lambda delay, callback: callbacks.append(callback))
+    startup = desktop_startup
+    assert startup.entry._run_gui(['--echo-uninstall']) == 7
+    startup.window.show_about_page.assert_called_once_with()
+    assert callbacks == [startup.window.request_setup_uninstall]
+
+
 @pytest.mark.parametrize("logging_fails", [False, True])
 def test_startup_failure_only_mentions_a_log_that_was_configured(
     desktop_startup, logging_fails: bool,

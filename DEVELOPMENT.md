@@ -326,7 +326,13 @@ image is shipped.
 For real acceptance, use a lab-only packId, external `--installto`, isolated
 process-local `LOCALAPPDATA` and fictional configuration. Check install and
 user-data paths independently. Use the test installation's registered
-`Update.exe --uninstall --silent` command, and verify data hashes afterward.
+`Echo.exe --echo-uninstall` entry and the in-app entry, checking both explicit
+choices and cancellation. Retain report/ordinary-setting hashes in keep mode;
+verify saved keys, owned runtime state, logs and update records are gone in
+both modes. Purge must remove owned reports only after explicit confirmation.
+Check Windows registration after both install and upgrade, including a silent
+install before first GUI launch. Never substitute raw `Update.exe --uninstall`
+for this acceptance: it bypasses Echo's confirmation and shutdown evidence.
 Never infer a clean exit from disappearance of the window: record the native
 process exit code. For update acceptance, verify isolated A-to-B installation,
 cleanup evidence, automatic restart and data retention. Keep source, Frozen,

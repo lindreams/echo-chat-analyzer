@@ -62,6 +62,14 @@ def test_bootstrap_disables_auto_apply_before_gui(monkeypatch, entry, hook):
             events.append("auto-apply-disabled")
             return self
 
+        def on_after_install_fast_callback(self, callback):
+            assert callable(callback)
+            return self
+
+        def on_after_update_fast_callback(self, callback):
+            assert callable(callback)
+            return self
+
         def run(self):
             assert "qq_chat_analyzer.gui.app" not in sys.modules
             events.append("bootstrap")

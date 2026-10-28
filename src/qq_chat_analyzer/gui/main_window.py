@@ -45,6 +45,24 @@ from .workers import is_idle as workers_idle
 from ..application.facade import ChatSource, InstallHandoffResult
 
 
+def _confirm_setup_uninstall(parent) -> str | None:
+    dialog = QMessageBox(parent)
+    dialog.setWindowTitle('卸载 Echo')
+    dialog.setIcon(QMessageBox.Warning)
+    dialog.setText('移除 Echo 程序和快捷方式，并选择如何处理本地数据。')
+    dialog.setInformativeText(
+        '两种选择都会清除已保存的数据库密钥、连接凭据、受管理的 QQ 工作副本、临时数据、日志和更新记录。\n'
+        '“清除”还会永久删除 Echo 内的报告和配置，无法撤销；另存文件和自定义 QQ／微信目录不受影响。\n'
+        '本次打开后若已连接过 QQ／微信，请先关闭并重新打开 Echo，不连接来源再卸载。')
+    keep = dialog.addButton('卸载，保留报告和普通设置', QMessageBox.AcceptRole)
+    purge = dialog.addButton('卸载并清除 Echo 本地数据', QMessageBox.DestructiveRole)
+    cancel = dialog.addButton(QMessageBox.Cancel)
+    dialog.setDefaultButton(cancel)
+    dialog.setEscapeButton(cancel)
+    dialog.exec()
+    return 'keep' if dialog.clickedButton() is keep else 'purge' if dialog.clickedButton() is purge else None
+
+
 WINDOW_TITLE = "\u4f59\u97f3 Echo"
 _HOME_LABEL = "\u9996\u9875"
 _BACK_LABEL = "\u8fd4\u56de\u9009\u62e9"
@@ -312,16 +330,14 @@ class MainWindow(QMainWindow):
             if not workers_idle() or self.about_page._local_operation:
                 QMessageBox.warning(self, '暂不能卸载 Echo', '请等待后台任务完成，再重试卸载。')
                 return
-            answer = QMessageBox.question(self, '卸载 Echo',
-                '将移除 Echo 程序和快捷方式，保留本地报告与配置。\n确认后 Echo 将安全退出并启动卸载。是否继续？',
-                QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if answer != QMessageBox.Yes:
+            cleanup_mode = _confirm_setup_uninstall(self)
+            if cleanup_mode is None:
                 return
             # A modal dialog runs a nested event loop: check work again.
             if not workers_idle() or self.about_page._local_operation:
                 QMessageBox.warning(self, '暂不能卸载 Echo', '请等待后台任务完成，再重试卸载。')
                 return
-            prepared = self._facade.prepare_setup_uninstall()
+            prepared = self._facade.prepare_setup_uninstall(cleanup_mode)
             if prepared.status != 'ready' or not prepared.token:
                 QMessageBox.warning(self, '无法卸载 Echo', prepared.public_message or '当前无法准备卸载。')
                 return

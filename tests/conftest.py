@@ -258,6 +258,7 @@ DOMAIN_MODULES = {
         "test_portable_runtime_copy",
         "test_setup_uninstall",
         "test_setup_uninstall_broker",
+        "test_uninstall_data",
         "test_shutdown_diagnostics",
         "test_shutdown_ownership",
         "test_shutdown_results",
