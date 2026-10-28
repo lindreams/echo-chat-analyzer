@@ -75,6 +75,48 @@ Adapter / Import 与单向投影保留输入顺序，不统一重排所有来源
 
 依据：[conversation_sessions.py](src/qq_chat_analyzer/analysis/conversation_sessions.py)、[timestamps.py](src/qq_chat_analyzer/analysis/timestamps.py)；边界与三态守护见 [test_conversation_sessions.py](tests/test_conversation_sessions.py)。
 
+### 私聊拍一拍／戳一戳（独立互动事实）
+
+微信数据库来源仅接入已核实的完整 `local_type=266287972401`、XML appmsg/type=62。
+Adapter 将其映射为无正文、无表达段的系统动作及 `NudgeRelation`；其他 appmsg 类型、群聊拍一拍仍不接入。
+必须同时有可靠本人、当前私聊对方、数据库发送者及唯一结构化发起者／目标，且方向一致；
+`patinfo/chatusername` 属于发送者视角，不能代替本地私聊上下文。自拍、身份缺失／冲突、
+不可解析时间、非正整数 server_id 及不安全／有歧义 XML 均跳过，不从标题、template 或 local_id 猜测。
+
+QQ Direct DB 仅接入私聊、单一灰条段 `45002=8`、`48273=1061`：
+`48271.items` 中两个非空 UID 的顺序必须与两个 `48210.1005` 一致；
+重复必要字段、有歧义 JSON、混合内容段、自拍及非法时间／消息 ID 不产生互动事实。
+消息 ID 必须与原始 `40001` 相同，记录的私聊分区与上下文一致。
+同一快照客户端通过绑定认证、runtime_id 与 boot_id 的现有 Core.status / EchoMetadata.listFriends
+核对本人 UIN，并通过会话 peer_uin 或外部对象精确匹配唯一好友 UIN／UID。
+有冲突或无法确认时不猜测；认证／代际／传输失败中止本次取数，保留现有清理与重连边界。
+该映射仅写入受本次获取生命周期管理的临时来源载荷，不缓存或输出到报告；
+普通发送者 `40033` 不用于判断戳一戳发起者。QQ 暂不展示未核实的自定义动作后缀。
+
+应用层先应用同一日期范围，再将动作与普通消息分开；动作不参与 Smart Profile 规则发现、
+正文质量过滤、普通消息量、聊天轮次、词频、语言画像、表达或表情包分母。
+已有发送者排除决定同时作用于发起者及被拍者，不能由互动通道恢复已排除成员。
+原始／导入／范围诊断数量仍包含接入的动作，普通分析数量不包含；动作另有匿名计数日志。
+
+在同一可靠平台、双方与会话内，以来源消息 ID 去重；同 ID 的时间、方向或后缀冲突时不计该 ID，
+混入不同双方／会话，或同一分析范围包含其他平台／会话的普通消息，则隐藏整个能力。
+群聊视图即使误带互动字段，序列化也不输出私聊动作。只统计保留记录，不声称覆盖全部历史或恢复被撤销动作。
+报告展示双方次数及按时间倒序的最近三次，时间按北京时间显示，自定义后缀仅作可选择复制的纯文本。
+不序列化账号、UID、来源消息 ID、XML、template 或灰条 JSON；缺少可靠动作时隐藏整块，不能把未知写成双方零次。
+只有可靠动作而无普通消息时，仍允许生成互动报告；旧报告不自动补齐。
+当前 schema 为 `echo-report.v0.16`、分析语义为 `echo-analysis.v15`。
+
+群聊开场分布复用同一轮次划分与发起者键，完整保留各成员的发起次数；空归属单列为未确认，
+成员同名不合并，展示名单不输出身份键。圆环以全部轮次为分母，小群直接展示所有发起者，
+超过六位时展示前五位与其余成员合计，未确认始终独立；完整名单可展开查找，次数不会因折叠丢失。
+只改变现有统计的展示范围与结构，不调整轮次阈值或重新推断本人身份。
+
+依据：[wechat_db_adapter.py](src/qq_chat_analyzer/wechat_db_adapter.py)、
+[private_nudges.py](src/qq_chat_analyzer/analysis/private_nudges.py)；
+虚构回归见 [test_private_nudges.py](tests/test_private_nudges.py)、
+[test_qq_private_nudges.py](tests/test_qq_private_nudges.py)、
+[test_wechat_db_source.py](tests/test_wechat_db_source.py)。
+
 ## 4. QQ authored lexical text
 
 ReplyRelation、MentionRelation 是结构化关系，不等于用户当前输入的正文。reply 自动附带的 mention、引用片段和结构化 mention 的 display name 不应作为正文重复计入词法；用户实际输入的普通 TextContent 必须保留。
