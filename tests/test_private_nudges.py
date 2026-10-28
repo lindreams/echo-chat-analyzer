@@ -182,6 +182,7 @@ def test_sender_exclusion_covers_actor_and_target(tmp_path, monkeypatch, ignored
 @pytest.mark.slow_integration
 @pytest.mark.parametrize("kind,width,has_actions,has_sessions,source", [
     ("private", 390, True, True, "wechat"), ("private", 1280, True, False, "wechat"),
+    ("private", 1280, True, True, "wechat"),
     ("private", 1280, False, True, "wechat"), ("group", 390, True, True, "wechat"),
     ("private", 390, True, True, "qq"),
 ])
@@ -200,7 +201,11 @@ def test_pat_report_is_readonly_offline_and_hides_unavailable_actions(
     suffix = '</script><img id="fictional-attack" onerror="window.fictionalAttack=true">' + '虚构' * 80
     view = EchoReportView(
         title="Fictional Echo", has_data=True, conversation_kind=kind,
-        conversation_sessions=EchoConversationSessions(1800, 1, 120, 120, 120, 2) if has_sessions else None,
+        conversation_sessions=EchoConversationSessions(
+            1800, 1, 120, 120, 120, 2, private_self_count=1, private_peer_count=0,
+            private_unknown_count=0, private_reply_median_self_to_peer_seconds=12,
+            private_reply_median_peer_to_self_seconds=36,
+        ) if has_sessions else None,
         private_nudges=EchoPrivateNudges(2, 1, (
             EchoNudgeMoment(STAMP + 2, True, suffix),
             EchoNudgeMoment(STAMP + 1, False, "肩膀"), EchoNudgeMoment(STAMP, True),
@@ -227,6 +232,13 @@ window.addEventListener('load',()=>{
   overflow:document.documentElement.scrollWidth>innerWidth,
   time:block.querySelector('time')?.textContent||''
  };
+ const box=id=>{const r=document.getElementById(id).getBoundingClientRect();
+   return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
+ r.layout={beat:box('session-beat'),reply:box('session-reply'),nudges:box('private-nudges'),
+   nested:document.getElementById('session-duet').contains(block),
+   duetVisible:!document.getElementById('session-duet').hidden,
+   listHeight:block.querySelector('.nudge-memories').clientHeight,
+   fits:[...block.querySelectorAll('li,dt,dd')].every(x=>x.scrollWidth<=x.clientWidth+1)};
  const pre=document.createElement('pre');pre.id='nudge-probe';pre.hidden=true;
  pre.textContent=JSON.stringify(r);document.body.appendChild(pre);
 });</script>"""
@@ -243,6 +255,17 @@ window.addEventListener('load',()=>{
     assert match is not None
     rendered = json.loads(html.unescape(match.group(1)))
     visible = has_actions and kind == "private"
+    layout = rendered.pop("layout")
+    assert layout["nested"]
+    if visible:
+        assert layout["duetVisible"] and layout["fits"] and layout["listHeight"] <= 180
+        if has_sessions:
+            assert layout["reply"]["bottom"] <= layout["nudges"]["top"]
+            if width > 720:
+                assert layout["beat"]["right"] <= layout["reply"]["left"]
+                assert layout["reply"]["left"] == pytest.approx(layout["nudges"]["left"])
+            else:
+                assert layout["beat"]["bottom"] <= layout["reply"]["top"]
     labels = ["你戳了戳 TA", "TA 戳了戳你"] if source == "qq" else ["你拍了拍 TA", "TA 拍了拍你"]
     assert rendered == dict(
         visible=visible, chapter=has_sessions or visible, toc=has_sessions or visible,

@@ -192,6 +192,15 @@ ECHO_REPORT_HTML_SKELETON = r"""
             </div>
           </div>
         </div>
+        <div class="session-movement" id="private-nudges" hidden>
+          <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span>轻轻叫你一声</h3>
+          <dl class="nudge-counts">
+            <div><dt id="nudge-self-label"></dt><dd id="nudge-self-count"></dd></div>
+            <div><dt id="nudge-peer-label"></dt><dd id="nudge-peer-count"></dd></div>
+          </dl>
+          <p class="nudge-recent-label" id="nudge-recent-label"></p>
+          <ul class="nudge-memories" id="nudge-memories"></ul>
+        </div>
       </div>
 
       <!-- 聊天里的几个高音 -->
@@ -226,15 +235,6 @@ ECHO_REPORT_HTML_SKELETON = r"""
         </div>
       </div>
 
-      <div class="session-movement" id="private-nudges" hidden>
-        <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span>轻轻叫你一声</h3>
-        <dl class="nudge-counts">
-          <div><dt id="nudge-self-label"></dt><dd id="nudge-self-count"></dd></div>
-          <div><dt id="nudge-peer-label"></dt><dd id="nudge-peer-count"></dd></div>
-        </dl>
-        <p class="nudge-recent-label" id="nudge-recent-label"></p>
-        <ul class="nudge-memories" id="nudge-memories"></ul>
-      </div>
       <p class="session-rest-note" id="session-rest" hidden>
         <span class="session-rest-symbol" aria-hidden="true">𝄽</span> 休止 · <span id="session-threshold-note"></span>
       </p>
@@ -948,6 +948,13 @@ h1, h2, h3, p { margin-top: 0; }
 .session-duet > .session-movement:not([hidden]) ~ .session-movement:not([hidden]) { border-left: 1px solid var(--rule); padding-left: 28px; }
 .session-duet .movement-heading { gap: 8px; font-size: 20px; }
 .session-duet .movement-icon { width: 20px; height: 24px; }
+.session-duet:has(#private-nudges:not([hidden])) { row-gap: 24px; }
+.session-duet:has(#private-nudges:not([hidden])) #session-beat { grid-column: 1; grid-row: 1 / span 2; }
+.session-duet:has(#private-nudges:not([hidden])) #session-reply { grid-column: 2; grid-row: 1; }
+.session-duet:has(#private-nudges:not([hidden])) #private-nudges { grid-column: 2; grid-row: 2; }
+.session-duet:has(#session-reply[hidden]) #private-nudges { grid-row: 1 / span 2; }
+.session-duet:has(#session-beat[hidden]) #session-reply,
+.session-duet:has(#session-beat[hidden]) #private-nudges { grid-column: 1 / -1; }
 .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])):has(#session-beat:not([hidden])) { grid-template-rows: auto auto; row-gap: 24px; }
 .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-beat { grid-column: 1; grid-row: 1 / span 2; }
 .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-hours { grid-column: 2; grid-row: 1; }
@@ -1035,13 +1042,14 @@ h1, h2, h3, p { margin-top: 0; }
 }
 
 .nudge-counts { display: grid; grid-template-columns: 1fr 1fr; margin: 0; }
-.nudge-counts > div { padding: 12px 20px; }
+.nudge-counts > div { padding: 8px 12px; }
+.nudge-counts > div:first-child { padding-left: 0; }
 .nudge-counts > div + div { border-left: 1px solid var(--rule); }
 .nudge-counts dt, .nudge-recent-label { color: var(--muted); font: 12px/1.8 var(--sans); }
 .nudge-counts dd { margin: 10px 0 0; font: 24px/1.4 var(--serif); }
-.nudge-recent-label { margin: 22px 0 8px; }
-.nudge-memories { margin: 0; padding: 0; list-style: none; }
-.nudge-memories li { display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 6px 0; font: 13px/1.8 var(--sans); }
+.nudge-recent-label { margin: 14px 0 6px; }
+.nudge-memories { max-height: 180px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; margin: 0; padding: 0; list-style: none; }
+.nudge-memories li { display: grid; gap: 2px; padding: 6px 0; font: 12px/1.7 var(--sans); }
 .nudge-memories time { color: var(--faint); }
 .nudge-memories span { overflow-wrap: anywhere; white-space: pre-wrap; }
 
@@ -1193,6 +1201,9 @@ h1, h2, h3, p { margin-top: 0; }
   #session-movement dd { font-size: 23px; }
   .session-duet { grid-template-columns: 1fr; gap: 22px; }
   .session-duet > .session-movement:not([hidden]) ~ .session-movement:not([hidden]) { border-left: 0; border-top: 1px solid var(--rule); padding: 20px 0 0; }
+  .session-duet:has(#private-nudges:not([hidden])) #session-beat,
+  .session-duet:has(#private-nudges:not([hidden])) #session-reply,
+  .session-duet:has(#private-nudges:not([hidden])) #private-nudges { grid-column: auto; grid-row: auto; }
   .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) { grid-template-columns: minmax(0, 1fr); grid-template-rows: none; }
   .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-beat,
   .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-hours,
@@ -1410,6 +1421,7 @@ document.documentElement.classList.add("js-ready");
   }
   setHidden("private-nudges", !hasNudges);
   if (hasNudges) {
+    setHidden("session-duet", false);
     var selfNudgeLabel = nudges.source === "qq" ? "你戳了戳 TA" : "你拍了拍 TA";
     var peerNudgeLabel = nudges.source === "qq" ? "TA 戳了戳你" : "TA 拍了拍你";
     setText("nudge-self-label", selfNudgeLabel);
@@ -1607,7 +1619,7 @@ document.documentElement.classList.add("js-ready");
       }
       setHidden("session-duet", document.getElementById("session-beat").hidden &&
         document.getElementById("session-reply").hidden && document.getElementById("session-hours").hidden &&
-        document.getElementById("session-concentration").hidden);
+        document.getElementById("session-concentration").hidden && !hasNudges);
       setHidden("session-rest", false);
       var thresholdSeconds = finiteNumber(sessions.threshold_seconds);
       var thresholdMinutes = thresholdSeconds !== null && thresholdSeconds > 0 ? Math.round(thresholdSeconds / 60) : 30;
