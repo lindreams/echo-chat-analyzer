@@ -854,7 +854,6 @@ def test_wechat_type47_reaches_formal_report_through_provider_and_facade(tmp_pat
     )
     from qq_chat_analyzer.application.wechat.wechat_provider_factory import WeChatProviderFactory
     from qq_chat_analyzer.application.wechat.wechat_export_import_service import WeChatExportImportService
-    import base64
     import zstandard
     from qq_chat_analyzer.providers.wechat_database_provider import WeChatDatabaseProvider, WeChatSession
 
@@ -916,7 +915,8 @@ def test_wechat_type47_reaches_formal_report_through_provider_and_facade(tmp_pat
     assert sorted(member.send_count for member in chapter.members) == [1, 2]
     asset, = chapter.assets
     assert asset.status == "available"
-    assert base64.b64decode(asset.data_uri.split(",", 1)[1]) == raw
+    assert asset.data_uri.startswith("media/")
+    assert (outcome.report_directory / asset.data_uri).read_bytes() == raw
     report_json = (outcome.report_directory / "echo-report.json").read_text(encoding="utf-8")
     report_html = outcome.report_path.read_text(encoding="utf-8")
     assert json.loads(report_json)["stickers"]["total_send_count"] == 3

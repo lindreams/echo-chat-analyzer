@@ -76,6 +76,8 @@ class GroupSessionStats:
     top_initiator_sender_key: str | None = field(repr=False)
     top_initiated_count: int
     top_initiated_share: float
+    initiator_counts: tuple[tuple[str, int], ...] = field(default=(), repr=False)
+    unknown_initiated_count: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -427,6 +429,8 @@ def _group_stats(
         else None
     )
     return GroupSessionStats(
+        initiator_counts=tuple(sorted(initiator_counts.items(), key=lambda item: -item[1])),
+        unknown_initiated_count=session_count - sum(initiator_counts.values()),
         self_initiated_count=self_count,
         self_initiated_share=(
             self_count / session_count

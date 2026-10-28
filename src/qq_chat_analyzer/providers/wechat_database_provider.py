@@ -515,7 +515,7 @@ class WeChatDatabaseProvider:
 
         table = message_table_name(cleaned_session)
         message_dbs = self._find_all_message_dbs(table)
-        conditions = ["(m.local_type & 0xFFFFFFFF) IN (1, 47)"]
+        conditions = [_supported_message_types_sql(cleaned_session, prefix="m.")]
         if isinstance(start_time, int) and not isinstance(start_time, bool):
             conditions.append(f"m.create_time >= {start_time}")
         if isinstance(end_time, int) and not isinstance(end_time, bool):
@@ -544,6 +544,10 @@ class WeChatDatabaseProvider:
         if limit > 0 and limit < len(all_rows):
             all_rows = all_rows[:limit]
 
+        if _session_type(cleaned_session) == "private":
+            _LOGGER.info("wechat.pats.read rows=%d candidates=%d shards=%d", len(all_rows),
+                         sum(isinstance(row, Mapping) and row.get("local_type") == 266287972401
+                             for row in all_rows), len(message_dbs))
         return all_rows
 
     def read_session_time_bounds(self, session_id: str) -> list[Any]:
@@ -560,7 +564,7 @@ class WeChatDatabaseProvider:
         table = message_table_name(cleaned_session)
         sql = (
             "WITH times AS (SELECT create_time FROM "
-            f"{table} WHERE (local_type & 0xFFFFFFFF) IN (1, 47)) "
+            f"{table} WHERE {_supported_message_types_sql(cleaned_session)}) "
             "SELECT MIN(create_time) AS min_time, MAX(create_time) AS max_time "
             "FROM times WHERE typeof(create_time) IN ('integer', 'real') "
             "AND create_time > 0 AND create_time < 1e999 "
@@ -992,6 +996,14 @@ def _owning_data_root(root: Path, db_directory: Path) -> Path:
     if db_directory.parent.name in _DB_STORAGE_DIR_NAMES:
         return db_directory.parent.parent
     return root
+
+
+def _supported_message_types_sql(username: str, prefix: str = "") -> str:
+    supported = f"({prefix}local_type & 0xFFFFFFFF) IN (1, 47)"
+    if _session_type(username) == "private":
+        # Exact verified appmsg subtype 62; other app/system types stay excluded.
+        return f"({supported} OR {prefix}local_type = 266287972401)"
+    return supported
 
 
 def _session_type(username: str) -> str:

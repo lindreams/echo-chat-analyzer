@@ -134,34 +134,54 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <div><p class="folio">SESSIONS</p><h2 id="sessions-title">聊天轮次</h2></div>
       </header>
       <p class="chapter-intro" id="session-lead"></p>
-      <p class="session-viewer-identity" id="session-viewer-identity" hidden></p>
-
-      <!-- 谁来起拍 -->
-      <div class="session-movement" id="session-beat" hidden>
-        <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span><span id="session-beat-title">谁来起拍</span></h3>
-        <p class="session-beat-lead" id="session-group-top"></p>
-        <p class="peak-hour-note" id="session-peak-hour" hidden></p>
-        <p class="peak-hour-note" id="session-self-peak-hour" hidden></p>
-        <p class="peak-hour-note" id="session-peer-peak-hour" hidden></p>
+      <div class="session-summary" id="session-summary" hidden>
+        <div class="session-total"><span>这段时间，一共聊起</span><p><strong id="session-round-count"></strong><span>轮</span></p></div>
+        <div id="session-movement" hidden>
+          <dl class="session-fields">
+            <div><dt>通常会聊多久</dt><dd id="session-median-duration"></dd><small>每轮时长 · 中位数</small></div>
+            <div><dt>平均每轮消息</dt><dd id="session-average-messages"></dd><small>每轮消息 · 平均数</small></div>
+          </dl>
+        </div>
       </div>
+      <p class="session-character" id="session-character" hidden></p>
 
-      <!-- 接住第一句话 -->
-      <div class="session-movement" id="session-reply" hidden>
-        <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span><span id="session-reply-title">接住第一句话</span></h3>
-        <dl class="session-fields">
-          <div><dt>你开口之后</dt><dd id="session-reply-self-to-peer"></dd><small>TA 通常接住第一句</small></div>
-          <div><dt>TA 开口之后</dt><dd id="session-reply-peer-to-self"></dd><small>你通常接住第一句</small></div>
-        </dl>
-      </div>
+      <div class="session-duet" id="session-duet" hidden>
+        <div class="session-movement" id="session-beat" hidden>
+          <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span><span id="session-beat-title">谁来起拍</span></h3>
+          <p class="session-beat-lead" id="session-group-top"></p>
+          <div class="session-start-graphic" id="session-start-graphic" hidden>
+            <div class="session-start-bar" aria-hidden="true"><span id="session-start-self"></span><span id="session-start-peer"></span><span id="session-start-unknown"></span></div>
+            <div class="session-start-legend"><span id="session-start-self-label"></span><span id="session-start-peer-label"></span><span id="session-start-unknown-label" hidden></span></div>
+          </div>
+          <div class="session-group-opening" id="session-group-opening" hidden>
+            <div class="session-opening-ring"><svg id="session-opening-svg" viewBox="0 0 200 200" role="img" aria-label="群成员发起聊天的份额"></svg><div class="session-opening-center"><strong id="session-opening-total"></strong><span>次聊起来</span></div></div>
+            <ul class="session-opening-legend" id="session-opening-legend"></ul>
+            <details class="session-openers-details" id="session-openers-details" hidden>
+              <summary id="session-openers-summary"></summary>
+              <input id="session-openers-search" type="search" placeholder="查找成员" aria-label="查找发起聊天的成员" autocomplete="off">
+              <ul id="session-openers-list" class="session-openers-list"></ul>
+              <p id="session-openers-empty" hidden>没有找到这位成员</p>
+            </details>
+          </div>
+          <div class="session-opening-hours"><p class="peak-hour-note" id="session-self-peak-hour" hidden></p><p class="peak-hour-note" id="session-peer-peak-hour" hidden></p></div>
+          <p class="session-viewer-identity" id="session-viewer-identity" hidden></p>
+        </div>
 
-      <!-- 一段乐句 -->
-      <div class="session-movement" id="session-movement" hidden>
-        <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span>一段乐句</h3>
-        <dl class="session-fields">
-          <div><dt>通常会聊多久</dt><dd id="session-median-duration"></dd><small>所有聊天轮次的中位时长</small></div>
-          <div><dt>平均每轮消息</dt><dd id="session-average-messages"></dd><small>平均每轮留下的消息数量</small></div>
-        </dl>
-        <p class="session-character" id="session-character" hidden></p>
+        <div class="session-movement" id="session-reply" hidden>
+          <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span><span id="session-reply-title">接住第一句话</span></h3>
+          <dl class="session-fields">
+            <div><dt>你 <span aria-hidden="true">→</span> TA</dt><dd id="session-reply-self-to-peer"></dd><span class="session-reply-track" id="session-reply-self-track" aria-hidden="true" hidden></span><small>TA 通常接住第一句 · 中位等待</small></div>
+            <div><dt>TA <span aria-hidden="true">→</span> 你</dt><dd id="session-reply-peer-to-self"></dd><span class="session-reply-track" id="session-reply-peer-track" aria-hidden="true" hidden></span><small>你通常接住第一句 · 中位等待</small></div>
+          </dl>
+        </div>
+
+        <div class="session-movement" id="session-hours" hidden>
+          <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span>下一段，从几点开始</h3>
+          <div class="session-hour-bars" id="session-hour-bars" role="img" aria-label="一天中各小时开启的聊天轮次"></div>
+          <div class="session-hour-axis" aria-hidden="true"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div>
+          <p class="session-hour-caption">有时间记录的开场 · 北京时间</p>
+          <p class="peak-hour-note" id="session-peak-hour" hidden></p>
+        </div>
       </div>
 
       <!-- 聊天里的几个高音 -->
@@ -169,34 +189,42 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span><span id="session-highnotes-title">聊天里的几个高音</span></h3>
         <div class="highnote-grid">
           <div class="highnote-card" id="session-loudest-messages" hidden>
-            <span class="highnote-badge"><span class="highnote-note" aria-hidden="true">♪</span>话最多</span>
+            <div class="highnote-badges" id="session-loudest-messages-badges"><span class="highnote-badge"><span class="highnote-note" aria-hidden="true">♪</span>话最多</span></div>
             <span class="highnote-stat" id="session-loudest-messages-text"></span>
             <span class="highnote-time" id="session-loudest-messages-time"></span>
           </div>
           <div class="highnote-card" id="session-loudest-duration" hidden>
-            <span class="highnote-badge"><span class="highnote-note" aria-hidden="true">𝅝</span>聊最久</span>
+            <div class="highnote-badges" id="session-loudest-duration-badges"><span class="highnote-badge"><span class="highnote-note" aria-hidden="true">𝅝</span>聊最久</span></div>
             <span class="highnote-stat" id="session-loudest-duration-text"></span>
             <span class="highnote-time" id="session-loudest-duration-time"></span>
           </div>
           <div class="highnote-card" id="session-loudest-participants" hidden>
-            <span class="highnote-badge"><span class="highnote-note" aria-hidden="true">♫</span>最热闹</span>
+            <div class="highnote-badges" id="session-loudest-participants-badges"><span class="highnote-badge"><span class="highnote-note" aria-hidden="true">♫</span>最热闹</span></div>
             <span class="highnote-stat" id="session-loudest-participants-text"></span>
             <span class="highnote-time" id="session-loudest-participants-time"></span>
           </div>
           <div class="highnote-card" id="session-loudest-densest" hidden>
-            <span class="highnote-badge"><span class="highnote-note" aria-hidden="true">♬</span>接得最紧</span>
+            <div class="highnote-badges" id="session-loudest-densest-badges"><span class="highnote-badge"><span class="highnote-note" aria-hidden="true">♬</span>接得最紧</span></div>
             <span class="highnote-stat" id="session-loudest-densest-text"></span>
             <span class="highnote-time" id="session-loudest-densest-time"></span>
           </div>
           <div class="highnote-card" id="session-loudest-back-and-forth" hidden>
-            <span class="highnote-badge"><span class="highnote-note" aria-hidden="true">♫</span>最有来有回</span>
+            <div class="highnote-badges" id="session-loudest-back-and-forth-badges"><span class="highnote-badge"><span class="highnote-note" aria-hidden="true">♫</span>最有来有回</span></div>
             <span class="highnote-stat" id="session-loudest-back-and-forth-text"></span>
             <span class="highnote-time" id="session-loudest-back-and-forth-time"></span>
           </div>
         </div>
       </div>
 
-      <!-- 休止 -->
+      <div class="session-movement" id="private-nudges" hidden>
+        <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span>轻轻叫你一声</h3>
+        <dl class="nudge-counts">
+          <div><dt id="nudge-self-label"></dt><dd id="nudge-self-count"></dd></div>
+          <div><dt id="nudge-peer-label"></dt><dd id="nudge-peer-count"></dd></div>
+        </dl>
+        <p class="nudge-recent-label" id="nudge-recent-label"></p>
+        <ul class="nudge-memories" id="nudge-memories"></ul>
+      </div>
       <p class="session-rest-note" id="session-rest" hidden>
         <span class="session-rest-symbol" aria-hidden="true">𝄽</span> 休止 · <span id="session-threshold-note"></span>
       </p>
@@ -209,6 +237,7 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <div><p class="folio">VOICES</p><h2 id="voices-title">语言画像</h2></div>
       </header>
       <p class="chapter-intro" id="voices-intro"></p>
+      <p class="language-original-hint" id="language-original-hint" hidden>点击词语，回看说过它的原话。</p>
 
       <div id="voices-member-tools" class="member-tools" hidden></div>
       <p id="voices-member-empty" class="member-search-empty" role="status" hidden>没有匹配的成员</p>
@@ -381,7 +410,7 @@ h1, h2, h3, p { margin-top: 0; }
 .chapter-header { display: flex; gap: 26px; align-items: flex-start; padding-bottom: 24px; border-bottom: 1px solid var(--rule); }
 .chapter-number { padding-top: 9px; color: var(--accent); font: 16px/1 var(--serif); letter-spacing: .08em; }
 .chapter-intro { max-width: 540px; margin: 32px 0 62px; color: var(--muted); font: 17px/2 var(--serif); }
-.session-chapter .chapter-intro { margin: 0 0 40px; }
+.session-chapter .chapter-intro { margin: 0 0 22px; }
 .member-entry dt { color: var(--muted); font-size: 12px; letter-spacing: .08em; }
 
 .session-fields { display: grid; grid-template-columns: 1fr 1fr; margin: 0; }
@@ -390,10 +419,10 @@ h1, h2, h3, p { margin-top: 0; }
 .session-fields div:nth-child(odd) { padding-right: 34px; border-right: 1px solid var(--rule); }
 .session-fields div:nth-child(even) { padding-left: 34px; }
 .session-fields dt { color: var(--muted); font-size: 12px; letter-spacing: .08em; }
-.session-fields dd { margin: 18px 0 7px; font-size: 25px; }
+.session-fields dd { margin: 10px 0 7px; font-size: 25px; }
 .session-fields small { color: var(--faint); font-size: 12px; }
 .session-rest-note {
-  margin: 48px 0 0;
+  margin: 24px 0 0;
   color: var(--faint);
   font: 12px/1.8 var(--sans);
   letter-spacing: 0.02em;
@@ -613,17 +642,17 @@ h1, h2, h3, p { margin-top: 0; }
 .sticker-memories > h2 { margin: 0 0 22px; font: 500 28px/1.4 var(--serif); }
 .sticker-memories > h2::after { content: "MEMORIES"; margin-left: 17px; color: var(--faint); font: 10px var(--sans); letter-spacing: .16em; }
 #sticker-memory-stories { display: grid; grid-template-columns: 1fr 1fr; column-gap: 28px; }
-.sticker-memory-story { grid-column: 1 / -1; min-width: 0; margin: 0; padding: 23px 0; border-top: 1px solid var(--rule); }
+.sticker-memory-story { grid-column: 1 / -1; min-width: 0; margin: 0; padding: 18px 0; border-top: 1px solid var(--rule); }
 .sticker-memory-story:first-child { padding-top: 0; border-top: 0; }
 .sticker-memory-story:last-child { padding-bottom: 0; }
 .sticker-memory { min-width: 0; }
-.sticker-memory + .sticker-memory { margin-top: 18px; padding-top: 17px; border-top: 1px solid var(--rule); }
+.sticker-memory + .sticker-memory { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--rule); }
 .sticker-memory.has-art { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 25px; align-items: center; }
 .sticker-memory.is-reunion.has-art { grid-template-columns: 154px minmax(0, 1fr); gap: 30px; min-height: 165px; }
 .sticker-memory.is-related { margin-left: 121px; }
 .sticker-memory-story.has-reunion .sticker-memory.is-related { margin-left: 184px; }
 .memory-body, .memory-copy { min-width: 0; }
-.memory-copy { margin-bottom: 14px; }
+.memory-copy { margin-bottom: 10px; }
 .memory-kicker { margin: 0 0 9px; color: var(--accent); font: 11px/1.5 var(--sans); letter-spacing: .1em; }
 .sticker-memory h3 { min-width: 0; margin: 0; font: 500 25px/1.5 var(--serif); overflow-wrap: anywhere; }
 .sticker-memory h3 em { color: var(--accent); font-style: normal; font-weight: 400; }
@@ -636,7 +665,7 @@ h1, h2, h3, p { margin-top: 0; }
 .memory-art .sticker-placeholder { padding: 6px; text-align: center; font-size: 10px; }
 .memory-art figcaption { margin-top: 5px; text-align: center; color: var(--muted); font: 10px/1.5 var(--sans); overflow-wrap: anywhere; }
 .memory-art.is-original figcaption { display: none; }
-.memory-dates { display: flex; align-items: center; gap: 16px; margin-top: 21px; }
+.memory-dates { display: flex; align-items: center; gap: 16px; margin-top: 12px; }
 .memory-date { min-width: 0; color: var(--muted); font: 11px/1.7 var(--sans); }
 .memory-date strong { display: block; margin-top: 4px; color: var(--ink); font: 14px/1.6 var(--serif); }
 .memory-date-rule { flex: 1; min-width: 24px; height: 1px; border-top: 1px solid var(--rule); }
@@ -648,7 +677,7 @@ h1, h2, h3, p { margin-top: 0; }
 .memory-note { margin: 10px 0 0; color: var(--muted); font: 10px/1.8 var(--sans); overflow-wrap: anywhere; }
 .memory-habit-count { margin: 0; color: var(--muted); font: 12px/1.7 var(--sans); }
 .memory-habit-count strong { color: var(--ink); font: 28px/1.2 var(--serif); }
-.memory-habit-pair { margin: 18px 0 0 121px; padding-top: 17px; border-top: 1px solid var(--rule); display: grid; grid-template-columns: 1fr 1.15fr; gap: 26px; }
+.memory-habit-pair { margin: 12px 0 0 121px; padding-top: 12px; border-top: 1px solid var(--rule); display: grid; grid-template-columns: 1fr 1.15fr; gap: 26px; }
 .has-reunion .memory-habit-pair { margin-left: 184px; }
 .sticker-memory-story .memory-habit-pair .sticker-memory.is-related { margin: 0; padding: 0; border: 0; }
 .memory-habit-pair .memory-kicker { color: var(--muted); }
@@ -667,7 +696,7 @@ h1, h2, h3, p { margin-top: 0; }
 .memory-bar-value small { color: var(--muted); font: 10px/1.5 var(--sans); }
 .memory-track { width: 100%; height: 5px; background: var(--rule); }
 .memory-fill { height: 100%; background: var(--viewer); }
-.memory-style-chart { display: grid; gap: 18px; margin-top: 20px; }
+.memory-style-chart { display: grid; gap: 12px; margin-top: 12px; }
 .memory-style-row { display: grid; grid-template-columns: 36px minmax(0, 1fr) 100px; align-items: center; gap: 18px; }
 .memory-style-label { color: var(--viewer); font: 12px/1.5 var(--sans); }
 .memory-style-row:last-child .memory-style-label { color: var(--accent); }
@@ -703,6 +732,17 @@ h1, h2, h3, p { margin-top: 0; }
 .is-compact .memory-kicker { margin-bottom: 6px; }
 .is-compact .memory-note { margin-top: 7px; }
 .sticker-memory-story.is-compact:last-child { padding-bottom: 0; }
+
+/* Related group discoveries share a row; the main memory and relay keep their width. */
+@media (min-width: 721px) {
+  .sticker-group .sticker-memory-story:not(.is-compact) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; align-items: start; }
+  .sticker-group .sticker-memory-story:not(.is-compact) > .sticker-memory:not(.is-related),
+  .sticker-group .memory-habit-pair { grid-column: 1 / -1; }
+  .sticker-group .sticker-memory-story > .sticker-memory.is-related { margin-left: 0; }
+  .sticker-group .memory-habit-pair { margin-left: 0; }
+  .sticker-group .memory-habit-pair:has(> :only-child) { grid-column: auto; }
+  .sticker-group .memory-shared { grid-template-columns: repeat(auto-fit, minmax(95px, 1fr)); gap: 14px; }
+}
 
 
 .expression-chapter .chapter-intro { margin: 18px 0 26px; }
@@ -885,19 +925,88 @@ h1, h2, h3, p { margin-top: 0; }
 .end-mark b { font-weight: 400; }
 
 
-/* === Session 5-section narrative === */
+/* === Sessions: summary, opening balance and directional replies === */
+.session-chapter[hidden], .session-chapter [hidden] { display: none !important; }
+.session-summary { display: grid; grid-template-columns: 1fr 2.4fr; align-items: center; gap: 24px; padding: 4px 0 22px; border-bottom: 1px solid var(--rule); }
+.session-total > span { color: var(--muted); font: 12px/1.6 var(--sans); }
+.session-total p { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; margin: 9px 0 0; }
+.session-total strong { font: 400 68px/1 var(--serif); letter-spacing: -.04em; overflow-wrap: anywhere; }
+.session-total p > span { color: var(--muted); font-size: 13px; }
+.session-duet { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 22px; padding-bottom: 4px; }
+.session-duet:not(:has(> .session-movement:not([hidden]) ~ .session-movement:not([hidden]))) { grid-template-columns: 1fr; }
+.session-duet > .session-movement { min-width: 0; margin: 0; padding: 0; border: 0; }
+.session-duet > .session-movement:not([hidden]) ~ .session-movement:not([hidden]) { border-left: 1px solid var(--rule); padding-left: 28px; }
+.session-duet .movement-heading { gap: 8px; font-size: 20px; }
+.session-duet .movement-icon { width: 20px; height: 24px; }
+.session-start-graphic { margin-top: 18px; }
+.session-start-bar { display: flex; height: 12px; overflow: hidden; border-radius: 2px; background: var(--rule); }
+.session-start-bar > span { display: block; flex: 0 0 auto; background: var(--viewer); }
+#session-start-peer { background: var(--accent); }
+.session-chapter.is-group #session-start-peer { background: #d7cfc1; }
+#session-start-unknown { background: #c7beaf; }
+.session-start-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 9px; color: var(--muted); font: 11px/1.6 var(--sans); }
+.session-start-legend > span::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; background: var(--viewer); }
+#session-start-peer-label::before { background: var(--accent); }
+.session-chapter.is-group #session-start-peer-label::before { background: #d7cfc1; }
+#session-start-unknown-label::before { background: #c7beaf; }
+.session-opening-hours { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 12px; }
+.session-chapter.is-group .session-opening-hours { display: none; }
+.session-group-opening { display: grid; grid-template-columns: 136px minmax(0, 1fr); align-items: center; gap: 10px 16px; margin-top: 14px; }
+.session-opening-ring { width: 136px; height: 136px; position: relative; margin: 0; }
+.session-opening-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.session-opening-ring circle { fill: none; stroke-width: 21; }
+.session-opening-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; pointer-events: none; }
+.session-opening-center strong { font: 400 clamp(17px, 1.8vw, 23px)/1.2 var(--serif); font-variant-numeric: tabular-nums; }
+.session-opening-center span { margin-top: 7px; color: var(--muted); font: 10px/1.4 var(--sans); }
+.session-opening-legend { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; list-style: none; margin: 0; padding: 0; }
+.session-opening-legend li { min-height: 22px; }
+.session-opening-legend li, .session-openers-list li { display: grid; grid-template-columns: 6px minmax(0, 1fr) auto; gap: 7px; align-items: center; min-width: 0; }
+.session-opener-swatch { width: 6px; height: 6px; background: var(--opener-color, var(--rule)); }
+.session-opener-label { min-width: 0; overflow-wrap: anywhere; font: 12px/1.5 var(--serif); display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+.session-opener-label.is-viewer { color: var(--viewer); }
+.session-opener-count { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.session-opener-count strong { display: block; font: 400 16px/1.2 var(--serif); }
+.session-opener-count small { display: block; margin-top: 3px; color: var(--muted); font: 9px/1.3 var(--sans); }
+.session-opening-legend .session-opener-label { display: block; white-space: nowrap; text-overflow: ellipsis; }
+.session-opening-legend .session-opener-count { display: flex; align-items: baseline; gap: 7px; }
+.session-opening-legend .session-opener-count strong { font-size: 14px; }
+.session-opening-legend .session-opener-count small { margin-top: 0; }
+.session-openers-details { grid-column: 1 / -1; margin-top: 0; color: var(--muted); font: 11px/1.6 var(--sans); }
+.session-openers-details summary { width: fit-content; cursor: pointer; padding: 4px 0; }
+.session-openers-details summary:focus-visible, #session-openers-search:focus-visible { outline: 1px solid var(--viewer); outline-offset: 3px; }
+#session-openers-search { display: block; width: 100%; margin: 10px 0; border: 0; border-bottom: 1px solid var(--rule); border-radius: 0; background: transparent; color: var(--ink); padding: 7px 0; font: 12px/1.5 var(--sans); }
+.session-openers-list { max-height: 260px; overflow-y: auto; overscroll-behavior: contain; list-style: none; padding: 0 8px 0 0; margin: 0; scrollbar-width: thin; }
+.session-openers-list li { padding: 7px 0; border-bottom: 1px solid var(--rule); }
+.session-openers-list .session-opener-label { -webkit-line-clamp: unset; }
+.session-hour-bars { display: grid; grid-template-columns: repeat(24, minmax(0, 1fr)); align-items: end; gap: 4px; height: 84px; padding-top: 8px; border-bottom: 1px solid var(--rule); }
+.session-hour-column { display: block; min-width: 0; height: var(--hour-height); background: #c49f8c; }
+.session-hour-column.is-peak { background: var(--accent); }
+.session-hour-axis { display: flex; justify-content: space-between; margin-top: 7px; color: var(--faint); font: 10px/1.6 var(--sans); }
+.session-hour-caption { margin: 9px 0 0; color: var(--muted); font: 10px/1.6 var(--sans); }
 .session-viewer-identity {
-  margin: 0 0 30px;
+  margin: 12px 0 0;
   color: var(--muted);
-  font: 15px/1.8 var(--serif);
+  font: 12px/1.8 var(--serif);
   letter-spacing: 0.04em;
 }
+.session-chapter.is-group .session-viewer-identity { margin-top: 8px; }
 
 .session-movement {
-  margin-top: 36px;
-  padding-top: 22px;
+  margin-top: 24px;
+  padding-top: 16px;
   border-top: 1px solid var(--rule);
 }
+
+.nudge-counts { display: grid; grid-template-columns: 1fr 1fr; margin: 0; }
+.nudge-counts > div { padding: 12px 20px; }
+.nudge-counts > div + div { border-left: 1px solid var(--rule); }
+.nudge-counts dt, .nudge-recent-label { color: var(--muted); font: 12px/1.8 var(--sans); }
+.nudge-counts dd { margin: 10px 0 0; font: 24px/1.4 var(--serif); }
+.nudge-recent-label { margin: 22px 0 8px; }
+.nudge-memories { margin: 0; padding: 0; list-style: none; }
+.nudge-memories li { display: flex; flex-wrap: wrap; gap: 4px 18px; padding: 6px 0; font: 13px/1.8 var(--sans); }
+.nudge-memories time { color: var(--faint); }
+.nudge-memories span { overflow-wrap: anywhere; white-space: pre-wrap; }
 
 .movement-heading {
   display: flex;
@@ -928,43 +1037,47 @@ h1, h2, h3, p { margin-top: 0; }
 .session-beat-lead {
   margin: 0;
   color: var(--ink);
-  font: 17px/1.8 var(--serif);
+  font: 16px/1.8 var(--serif);
+  overflow-wrap: anywhere;
   letter-spacing: 0.01em;
 }
 
 .peak-hour-note {
-  margin: 8px 0 0;
+  margin: 0;
   color: var(--muted);
-  font: 14px/1.8 var(--serif);
+  font: 12px/1.8 var(--serif);
 }
 
-#session-movement .session-fields div,
-#session-reply .session-fields div,
-#session-movement .session-fields div:nth-child(odd),
-#session-reply .session-fields div:nth-child(odd),
-#session-movement .session-fields div:nth-child(even),
-#session-reply .session-fields div:nth-child(even) {
+#session-movement .session-fields > div {
+  min-width: 0;
   min-height: auto;
-  padding: 18px 20px;
+  padding: 8px 22px;
   border-top: 0;
   border-bottom: 0;
   border-right: 1px solid var(--rule);
 }
 
-#session-movement .session-fields div:last-child,
-#session-reply .session-fields div:last-child {
+#session-movement .session-fields > div:last-child {
   border-right: 0;
 }
+#session-movement dd { overflow-wrap: anywhere; font: 400 28px/1.3 var(--serif); }
+#session-movement small { font-size: 10px; }
+#session-reply .session-fields { grid-template-columns: 1fr; gap: 16px; }
+#session-reply .session-fields > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 12px; min-width: 0; min-height: 0; padding: 0; border: 0; }
+#session-reply dt { align-self: center; color: var(--muted); font-size: 12px; letter-spacing: .03em; }
+#session-reply dt span { padding: 0 8px; color: var(--accent); }
+#session-reply dd { margin: 0; max-width: 210px; font: 400 22px/1.3 var(--serif); overflow-wrap: anywhere; }
+#session-reply small { grid-column: 1 / -1; font-size: 10px; }
+.session-reply-track { --reply-color: var(--accent); position: relative; display: block; grid-column: 1 / -1; height: 2px; margin: 7px 5px 5px; background: var(--rule); }
+#session-reply-peer-track { --reply-color: var(--viewer); }
+.session-reply-track::before { position: absolute; inset: 0 auto 0 0; width: var(--reply-width); background: var(--reply-color); content: ""; }
+.session-reply-track::after { position: absolute; left: var(--reply-width); top: 50%; width: 6px; height: 6px; border: 2px solid var(--reply-color); border-radius: 50%; background: var(--paper); transform: translate(-50%, -50%); content: ""; }
 
 .session-character {
-  margin: 16px 0 0;
-  padding: 16px 20px;
-  color: var(--ink);
-  font: 17px/1.7 var(--serif);
+  margin: 10px 0 0;
+  color: var(--muted);
+  font: 14px/1.7 var(--serif);
   letter-spacing: 0.03em;
-  background: var(--paper-light);
-  border-left: 3px solid var(--accent-soft);
-  border-radius: 2px;
 }
 
 /* === Highnote grid === */
@@ -975,9 +1088,11 @@ h1, h2, h3, p { margin-top: 0; }
   border: 1px solid var(--rule);
   background: var(--rule);
 }
+.highnote-grid:not(:has(.highnote-card:not([hidden]) ~ .highnote-card:not([hidden]))) { grid-template-columns: 1fr; }
 
 .highnote-card {
-  padding: 20px 18px;
+  min-width: 0;
+  padding: 16px 18px;
   background: var(--paper);
 }
 
@@ -989,11 +1104,14 @@ h1, h2, h3, p { margin-top: 0; }
   letter-spacing: 0.04em;
 }
 
+.highnote-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.highnote-badges > .highnote-badges { display: contents; }
+.highnote-detail { display: block; margin-top: 6px; color: var(--muted); font: 12px/1.6 var(--sans); }
 .highnote-badge {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  margin-bottom: 12px;
+  margin-bottom: 0;
   padding: 3px 12px;
   color: var(--accent);
   font: 600 11px/1.6 var(--sans);
@@ -1016,16 +1134,46 @@ h1, h2, h3, p { margin-top: 0; }
   letter-spacing: -0.01em;
 }
 
+.session-chapter, .sticker-chapter { min-height: 0; }
+.session-chapter { padding-top: 52px; padding-bottom: 58px; }
+
+@media (max-width: 420px) {
+  .session-group-opening { grid-template-columns: 112px minmax(0, 1fr); column-gap: 12px; }
+  .session-opening-ring { width: 112px; height: 112px; }
+}
+
 @media (max-width: 720px) {
   .report { width: 100%; margin: 0; }
   .page { min-height: auto; margin: 0; padding: 48px 22px 72px; box-shadow: none; }
   .cover { min-height: 100vh; }
+  .session-chapter, .sticker-chapter, .sticker-chapter:not(.sticker-group) { padding: 36px 22px 52px; }
+  .session-summary { grid-template-columns: 1fr; gap: 18px; }
+  .session-total { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .session-total p { margin: 0; }
+  .session-total strong { font-size: 52px; }
+  #session-movement .session-fields { grid-template-columns: 1fr 1fr; }
+  #session-movement .session-fields > div { padding: 4px 14px; }
+  #session-movement .session-fields > div:first-child { padding-left: 0; }
+  #session-movement dd { font-size: 23px; }
+  .session-duet { grid-template-columns: 1fr; gap: 22px; }
+  .session-duet > .session-movement:not([hidden]) ~ .session-movement:not([hidden]) { border-left: 0; border-top: 1px solid var(--rule); padding: 20px 0 0; }
+  #sticker-memory-stories { grid-template-columns: 1fr; }
+  .sticker-memory.has-art { grid-template-columns: 64px minmax(0, 1fr); gap: 16px; }
+  .sticker-memory.is-reunion.has-art { grid-template-columns: 80px minmax(0, 1fr); gap: 16px; min-height: 0; }
+  .sticker-memory.is-related, .sticker-memory-story.has-reunion .sticker-memory.is-related,
+  .memory-habit-pair, .has-reunion .memory-habit-pair { margin-left: 0; }
+  .memory-habit-pair { gap: 16px; }
+  .sticker-memory h3 { font-size: 21px; }
+  .is-reunion h3 em { font-size: 36px; }
+  .is-relay .memory-body { grid-template-columns: minmax(0, 1fr); }
+  .sticker-memory-period { grid-column: 1; margin-bottom: 8px; }
+  .memory-relay { gap: 6px; }
+  .memory-turn-side { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
   .toc-row { grid-template-columns: 34px minmax(0, 1fr) 22px; }
   .toc-leader { display: none; }
   .session-fields { grid-template-columns: 1fr; }
   .session-fields div, .session-fields div:nth-child(odd), .session-fields div:nth-child(even) { padding: 24px 0; border-right: 0; border-bottom: 1px solid var(--rule); }
   .highnote-grid { grid-template-columns: 1fr; }
-  .session-rest-note { margin-top: 40px; }
   .member-list.mode-private { display: block; }
   .member-list.mode-group { display: block; }
   .mode-private .voice-entry, .mode-private .voice-entry + .voice-entry { min-height: auto; padding-right: 0; padding-left: 0; border-left: 0; }
@@ -1209,23 +1357,52 @@ document.documentElement.classList.add("js-ready");
   var hasSessions = Boolean(
     sessions && sessionCount !== null && sessionCount > 0
   );
+  ["session-summary", "session-duet", "session-start-graphic", "session-group-opening", "session-hours",
+    "session-reply-self-track", "session-reply-peer-track"].forEach(function (id) { setHidden(id, true); });
+  var nudges = data && data.private_nudges;
+  var hasNudges = Boolean(conversation && conversation.kind === "private" && nudges &&
+    finiteNumber(nudges.self_count) + finiteNumber(nudges.peer_count) > 0);
   if (sessionsChapter) {
-    sessionsChapter.hidden = !hasSessions;
+    sessionsChapter.hidden = !(hasSessions || hasNudges);
   }
   if (sessionsToc) {
-    sessionsToc.hidden = !hasSessions;
+    sessionsToc.hidden = !(hasSessions || hasNudges);
+  }
+  setHidden("private-nudges", !hasNudges);
+  if (hasNudges) {
+    var selfNudgeLabel = nudges.source === "qq" ? "你戳了戳 TA" : "你拍了拍 TA";
+    var peerNudgeLabel = nudges.source === "qq" ? "TA 戳了戳你" : "TA 拍了拍你";
+    setText("nudge-self-label", selfNudgeLabel);
+    setText("nudge-peer-label", peerNudgeLabel);
+    setText("nudge-recent-label", nudges.source === "qq" ? "最近的几次戳一戳" : "最近的几次拍一拍");
+    setText("nudge-self-count", formatCount(nudges.self_count) + " 次");
+    setText("nudge-peer-count", formatCount(nudges.peer_count) + " 次");
+    var nudgeList = document.getElementById("nudge-memories");
+    (nudges.recent || []).slice(0, 3).forEach(function (moment) {
+      if (!nudgeList) return;
+      var item = document.createElement("li");
+      var time = document.createElement("time");
+      time.textContent = new Intl.DateTimeFormat("zh-CN", {
+        timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
+        hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
+      }).format(new Date(moment.timestamp * 1000));
+      var action = document.createElement("span");
+      action.textContent = (moment.is_self ? selfNudgeLabel : peerNudgeLabel) +
+        (moment.suffix ? " · " + moment.suffix : "");
+      item.appendChild(time);
+      item.appendChild(action);
+      nudgeList.appendChild(item);
+    });
   }
   if (hasSessions) {
     var conversationKind = conversation && conversation.kind;
     var isPrivate = conversationKind === "private";
     var isGroup = conversationKind === "group";
+    if (sessionsChapter) sessionsChapter.classList.toggle("is-group", isGroup);
     setText(
       "session-lead",
-      isPrivate
-        ? "过去这段时间，你们一共聊起了 " + formatCount(sessionCount) + " 轮"
-        : isGroup
-          ? "过去这段时间，群里一共聊起了 " + formatCount(sessionCount) + " 轮"
-          : "过去这段时间，一共聊起了 " + formatCount(sessionCount) + " 轮"
+      isPrivate || isGroup ? "有些回音，从一句话开始。" :
+        "过去这段时间，一共聊起了 " + formatCount(sessionCount) + " 轮"
     );
 
     // Viewer identity (secondary text, group only)
@@ -1245,15 +1422,18 @@ document.documentElement.classList.add("js-ready");
       setHidden("session-viewer-identity", true);
     }
 
-    // === Private mode: five-section narrative ===
+    // Private opening balance and first-response waiting times.
     if (isPrivate) {
 
       // 总览 / 第一句话
-      setText("session-beat-title", "总览 · 第一句话");
+      setText("session-beat-title", "谁先开口");
       setHidden("session-beat", false);
       var initiators = sessions.private_initiators;
       var selfCount = initiators ? finiteNumber(initiators.self_count) : null;
       var peerCount = initiators ? finiteNumber(initiators.peer_count) : null;
+      var unknownStarts = initiators ? finiteNumber(initiators.unknown_count) : null;
+      if (unknownStarts === null && selfCount !== null && peerCount !== null && selfCount + peerCount === sessionCount) unknownStarts = 0;
+      var hasOpeningGraphic = renderSessionOpening([selfCount, peerCount, unknownStarts], ["你", "TA", "未确认"]);
       if (selfCount !== null && peerCount !== null && selfCount + peerCount > 0) {
         setText("session-group-top", "你开启 " + formatCount(selfCount) + " 轮 · TA 开启 " + formatCount(peerCount) + " 轮");
         setHidden("session-group-top", false);
@@ -1276,6 +1456,9 @@ document.documentElement.classList.add("js-ready");
         setHidden("session-peer-peak-hour", true);
       }
       setHidden("session-peak-hour", true);
+      setHidden("session-beat", !(hasOpeningGraphic ||
+        (selfCount !== null && peerCount !== null && selfCount + peerCount > 0) ||
+        selfPeakHour !== null || peerPeakHour !== null));
 
       // 接住第一句话
       var selfToPeer = finiteNumber(sessions.private_reply_median_self_to_peer_seconds);
@@ -1284,9 +1467,17 @@ document.documentElement.classList.add("js-ready");
       setHidden("session-reply", !hasReplyData);
       setText("session-reply-self-to-peer", selfToPeer !== null ? "约 " + formatReplyDuration(selfToPeer) : "暂无足够样本");
       setText("session-reply-peer-to-self", peerToSelf !== null ? "约 " + formatReplyDuration(peerToSelf) : "暂无足够样本");
+      var replyScale = Math.max(selfToPeer || 0, peerToSelf || 0);
+      [["session-reply-self-track", selfToPeer], ["session-reply-peer-track", peerToSelf]].forEach(function (entry) {
+        if (entry[1] === null || entry[1] < 0) return;
+        var track = document.getElementById(entry[0]);
+        if (!track) return;
+        track.style.setProperty("--reply-width", (replyScale > 0 ? entry[1] / replyScale * 100 : 0) + "%");
+        track.hidden = false;
+      });
 
       // 几段特别的聊天
-      setText("session-highnotes-title", "几段特别的聊天");
+      setText("session-highnotes-title", "特别的聊天");
       renderLoudest("session-loudest-participants", null, function () { return ""; });
       renderLoudest("session-loudest-back-and-forth", sessions.loudest_most_back_and_forth,
         function (s) {
@@ -1298,7 +1489,7 @@ document.documentElement.classList.add("js-ready");
 
     }
 
-    // === Group mode: 5-section narrative ===
+    // Group opening counts and the existing start-hour distribution.
     if (isGroup) {
       setHidden("session-reply", true);
       setHidden("session-self-peak-hour", true);
@@ -1307,12 +1498,16 @@ document.documentElement.classList.add("js-ready");
       // 谁来起拍
       setText("session-beat-title", "谁来起拍");
       setHidden("session-beat", false);
+      var hasGroupOpening = renderGroupSessionOpening(groupInitiators);
       if (groupInitiators && groupInitiators.top_member) {
         var topMember = groupInitiators.top_member;
         setText("session-group-top",
           "最常发起聊天：" + topMember.display_name +
           "（" + formatCount(topMember.count) + " 轮，" + formatPercent(topMember.share) + "）"
         );
+        var topStarts = finiteNumber(topMember.count);
+        if (!hasGroupOpening) renderSessionOpening([topStarts, topStarts === null ? null : sessionCount - topStarts, 0],
+          ["最常开场", "其余轮次", "未确认"]);
       } else {
         setText("session-group-top", "");
       }
@@ -1323,6 +1518,9 @@ document.documentElement.classList.add("js-ready");
       } else {
         setHidden("session-peak-hour", true);
       }
+      renderSessionStartHours(sessions.start_hour_distribution);
+      setHidden("session-beat", !(hasGroupOpening || groupInitiators && groupInitiators.top_member || peakHour !== null ||
+        viewerIdentityReliable && groupInitiators && finiteNumber(groupInitiators.self_count) !== null));
 
       // 聊天里的几个高音
       setText("session-highnotes-title", "聊天里的几个高音");
@@ -1334,6 +1532,10 @@ document.documentElement.classList.add("js-ready");
 
     }
     if (isPrivate || isGroup) {
+      setHidden("session-summary", false);
+      setHidden("session-duet", document.getElementById("session-beat").hidden &&
+        document.getElementById("session-reply").hidden && document.getElementById("session-hours").hidden);
+      setText("session-round-count", formatCount(sessionCount));
       setHidden("session-movement", false);
       setText("session-median-duration", "约 " + formatSessionDuration(sessions.median_duration_seconds));
       setText("session-average-messages", "约 " + formatSessionMessages(sessions.average_message_count) + " 条");
@@ -1358,6 +1560,7 @@ document.documentElement.classList.add("js-ready");
         function (s) {
           return formatSessionMessages(s.message_count) + " 条消息 · " + formatSessionDuration(s.duration_seconds);
         });
+      mergeSessionHighnotes();
       setHidden("session-rest", false);
       var thresholdSeconds = finiteNumber(sessions.threshold_seconds);
       var thresholdMinutes = thresholdSeconds !== null && thresholdSeconds > 0 ? Math.round(thresholdSeconds / 60) : 30;
@@ -1365,6 +1568,117 @@ document.documentElement.classList.add("js-ready");
         "超过 " + String(thresholdMinutes) + " 分钟未继续交流，会视作下一轮聊天。"
       );
     }
+  }
+
+  function renderGroupSessionOpening(initiators) {
+    if (!initiators || !Array.isArray(initiators.members)) return false;
+    var people = initiators.members, unknown = initiators.unknown_count;
+    if (!Number.isSafeInteger(unknown) || unknown < 0 || people.some(function (p) {
+      return !p || typeof p.display_name !== "string" || !p.display_name.trim() ||
+        !Number.isSafeInteger(p.count) || p.count <= 0;
+    }) || people.reduce(function (sum, p) { return sum + p.count; }, unknown) !== sessionCount) return false;
+    people = people.slice().sort(function (a, b) { return b.count - a.count; });
+    var limit = people.length > 6 ? 5 : 6;
+    var palette = ["#9b5b45", "#c39b78", "#8c8472", "#a4aa92", "#b78980", "#c7b99f"];
+    var entries = people.slice(0, limit).map(function (p, i) {
+      return {display_name: p.display_name, count: p.count, is_viewer: p.is_viewer,
+        color: p.is_viewer ? "#527066" : palette[i]};
+    });
+    if (people.length > limit) entries.push({display_name: "其他 " + (people.length - limit) + " 位成员",
+      count: people.slice(limit).reduce(function (sum, p) { return sum + p.count; }, 0), color: "#c9bfae"});
+    if (unknown) entries.push({display_name: "未确认", count: unknown, color: "#ded7ca"});
+    var svg = document.getElementById("session-opening-svg"), offset = 0;
+    var legend = document.getElementById("session-opening-legend");
+    entries.forEach(function (entry) {
+      var share = entry.count / sessionCount * 100;
+      var arc = entries.length === 1 ? share : share - Math.min(.4, share * .08);
+      var circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      [["cx", 100], ["cy", 100], ["r", 75], ["pathLength", 100], ["stroke", entry.color],
+        ["stroke-dasharray", arc + " " + (100 - arc)], ["stroke-dashoffset", -offset]].forEach(function (a) {
+        circle.setAttribute(a[0], String(a[1]));
+      });
+      circle.dataset.count = entry.count;
+      var title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      title.textContent = entry.display_name + " · " + formatCount(entry.count) + " 轮 · " + formatPercent(entry.count / sessionCount);
+      circle.appendChild(title); svg.appendChild(circle);
+      legend.appendChild(openerRow(entry, entry.color));
+      offset += share;
+    });
+    setText("session-opening-total", formatCount(sessionCount));
+    setHidden("session-group-opening", false);
+    if (people.length > 0) {
+      var list = document.getElementById("session-openers-list");
+      var rows = people.map(function (p, index) {
+        var row = openerRow(p, p.is_viewer ? "#527066" : index < limit ? palette[index] : "#c9bfae");
+        list.appendChild(row); return row;
+      });
+      setText("session-openers-summary", "查看全部 " + people.length + " 位成员的开场");
+      setHidden("session-openers-details", false);
+      document.getElementById("session-openers-search").addEventListener("input", function (event) {
+        var query = event.target.value.trim().toLowerCase(), matches = 0;
+        rows.forEach(function (row, index) {
+          row.hidden = !people[index].display_name.toLowerCase().includes(query);
+          if (!row.hidden) matches++;
+        });
+        setHidden("session-openers-empty", matches > 0);
+      });
+    }
+    return true;
+  }
+
+  function openerRow(entry, color) {
+    var row = document.createElement("li"), swatch = document.createElement("span");
+    swatch.className = "session-opener-swatch"; swatch.style.setProperty("--opener-color", color);
+    swatch.setAttribute("aria-hidden", "true"); row.appendChild(swatch);
+    var label = document.createElement("span");
+    label.className = "session-opener-label" + (entry.is_viewer ? " is-viewer" : "");
+    label.textContent = entry.display_name + (entry.is_viewer && entry.display_name !== "你" && entry.display_name !== "我" ? " · 你" : "");
+    label.title = label.textContent; row.appendChild(label);
+    var measure = document.createElement("span"), count = document.createElement("strong"), share = document.createElement("small");
+    measure.className = "session-opener-count";
+    count.textContent = formatCount(entry.count) + " 轮";
+    share.textContent = formatPercent(entry.count / sessionCount);
+    measure.appendChild(count); measure.appendChild(share); row.appendChild(measure);
+    return row;
+  }
+
+  function renderSessionOpening(counts, labels) {
+    if (counts.some(function (count) { return count === null || count < 0; }) ||
+        counts.reduce(function (total, count) { return total + count; }, 0) !== sessionCount) return false;
+    ["self", "peer", "unknown"].forEach(function (side, index) {
+      var segment = document.getElementById("session-start-" + side);
+      if (segment) segment.style.width = (counts[index] / sessionCount * 100) + "%";
+      var countLabel = conversation.kind === "private" && index < 2 ? "" : " · " + formatCount(counts[index]) + " 轮";
+      setText("session-start-" + side + "-label", labels[index] + countLabel);
+    });
+    setHidden("session-start-unknown-label", counts[2] === 0);
+    setHidden("session-start-graphic", false);
+    return true;
+  }
+
+  function renderSessionStartHours(points) {
+    if (!Array.isArray(points) || !points.length) return;
+    var counts = Array(24).fill(0), seen = new Set(), valid = true;
+    points.forEach(function (point) {
+      var match = /^(\d{2}):00-\d{2}:59$/.exec(point.label), value = finiteNumber(point.value);
+      var hour = match ? Number(match[1]) : -1;
+      if (hour < 0 || hour > 23 || seen.has(hour) || value === null || value < 0) { valid = false; return; }
+      seen.add(hour);
+      counts[hour] = value;
+    });
+    var max = Math.max.apply(null, counts), root = document.getElementById("session-hour-bars");
+    if (!valid || max <= 0 || !root) return;
+    counts.forEach(function (count, hour) {
+      var bar = document.createElement("span");
+      bar.className = "session-hour-column" + (count === max ? " is-peak" : "");
+      bar.style.setProperty("--hour-height", (count / max * 100) + "%");
+      bar.setAttribute("title", String(hour).padStart(2, "0") + ":00 · " + formatCount(count) + " 轮开场");
+      root.appendChild(bar);
+    });
+    root.setAttribute("aria-label", "各小时开启的聊天轮次：" + counts.map(function (count, hour) {
+      return hour + " 点 " + formatCount(count) + " 轮";
+    }).join("，"));
+    setHidden("session-hours", false);
   }
 
   function formatTimestamp(ts) {
@@ -1384,6 +1698,7 @@ document.documentElement.classList.add("js-ready");
   function renderLoudest(containerId, session, formatFn) {
     var container = document.getElementById(containerId);
     if (!container) return;
+    container.echoSession = session;
     if (session && session.message_count > 0) {
       container.hidden = false;
       var textId = containerId + "-text";
@@ -1406,6 +1721,37 @@ document.documentElement.classList.add("js-ready");
     } else {
       container.hidden = true;
     }
+  }
+
+  function mergeSessionHighnotes() {
+    var rounds = new Map();
+    var kinds = ["messages", "duration", "participants", "densest", "back-and-forth"];
+    kinds.forEach(function (kind) {
+      var id = "session-loudest-" + kind, card = document.getElementById(id);
+      var session = card && card.echoSession;
+      if (!session || card.hidden) return;
+      var start = finiteNumber(session.start_timestamp), end = finiteNumber(session.end_timestamp);
+      // Equal counts alone do not establish that these are the same round.
+      if (start === null || end === null || start <= 0 || end < start) return;
+      var key = JSON.stringify([start, end, session.message_count, session.duration_seconds,
+        session.participant_count, session.self_message_count, session.peer_message_count]);
+      var first = rounds.get(key);
+      if (!first) { rounds.set(key, id); return; }
+      card.hidden = true;
+      document.getElementById(first + "-badges").appendChild(document.getElementById(id + "-badges"));
+      if (kind === "participants" || kind === "back-and-forth") {
+        var detail = document.createElement("span");
+        detail.className = "highnote-detail";
+        detail.textContent = kind === "participants" ? String(session.participant_count) + " 人参与" :
+          "你 " + (session.self_message_count == null ? "—" : formatCount(session.self_message_count)) +
+          " 条 · TA " + (session.peer_message_count == null ? "—" : formatCount(session.peer_message_count)) + " 条";
+        document.getElementById(first).appendChild(detail);
+      }
+    });
+    setHidden("session-highnotes", !kinds.some(function (kind) {
+      var card = document.getElementById("session-loudest-" + kind);
+      return card && !card.hidden;
+    }));
   }
 
   var languageProfile = data && data.language_profile;

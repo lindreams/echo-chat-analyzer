@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from enum import Enum
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Mapping
@@ -497,6 +498,17 @@ class QQDirectDatabaseImportService:
                         raise QQReconnectRequired() from error
                 else:
                     sender_names = friend_names
+                    try:
+                        context = _private_nudge_identity_context(client, session, self_uin)
+                    except QQSnapshotWorkerGenerationChanged as error:
+                        self._require_reconnect()
+                        raise QQReconnectRequired() from error
+                    except QQSnapshotRuntimeError as error:
+                        # Authentication/transport failure cannot authorize identity
+                        # inference from an unbound source or stale account.
+                        raise QQDirectSnapshotAcquireFailed() from error
+                    if context is not None:
+                        payload["private_nudge_context"] = context
                 members_at = time.perf_counter()
                 named_session = self._named_sessions(
                     [session], group_names=group_names, friend_names=friend_names
@@ -756,6 +768,56 @@ class QQDirectDatabaseImportService:
             return self._config_loader.load_or_default()
         except Exception:
             raise QQDirectDatabaseUnavailable() from None
+
+
+def _private_nudge_identity_context(client: Any, session: QQSession, self_uin: str) -> dict[str, str] | None:
+    """Bind the selected private partition to a unique authenticated UID pair."""
+    fetch = getattr(client, "get_private_identity_metadata", None)
+    if session.session_type != "private" or not callable(fetch):
+        log_qq_session_event(_LOGGER, "private_nudge_identity", "skipped", failure_code="metadata_unavailable")
+        return None
+    with qq_session_stage(_LOGGER, "private_nudge_metadata"):
+        metadata = fetch(timeout=DEFAULT_METADATA_TIMEOUT_SECONDS)
+    if not isinstance(metadata, Mapping):
+        return None
+    owner, friends = metadata.get("self_info"), metadata.get("friends")
+    if not isinstance(owner, Mapping) or not isinstance(friends, list):
+        return None
+    if owner.get("uin") != self_uin:
+        log_qq_session_event(_LOGGER, "private_nudge_identity", "skipped", failure_code="identity_mismatch")
+        return None
+    # The external session object may be a UID rather than a UIN. Only exact
+    # authenticated metadata matches are useful; display names are never keys.
+    peers = [row for row in friends if isinstance(row, Mapping) and (
+        (session.peer_uin and row.get("uin") == session.peer_uin)
+        or (session.session_object and session.session_object in (row.get("uin"), row.get("uid")))
+    )]
+    if len(peers) != 1:
+        log_qq_session_event(_LOGGER, "private_nudge_identity", "skipped", failure_code="peer_ambiguous")
+        return None
+    peer = peers[0]
+    for row in (owner, peer):
+        if (not isinstance(row.get("uin"), str) or re.fullmatch(r"[1-9][0-9]{4,19}", row["uin"]) is None
+                or not isinstance(row.get("uid"), str) or re.fullmatch(r"u_[A-Za-z0-9_-]{10,64}", row["uid"]) is None):
+            return None
+    if owner["uid"] == peer["uid"] or owner["uin"] == peer["uin"]:
+        return None
+    for row in friends:
+        if not isinstance(row, Mapping):
+            continue
+        for party in (owner, peer):
+            if ((row.get("uid") == party["uid"] and row.get("uin") != party["uin"])
+                    or (row.get("uin") == party["uin"] and row.get("uid") != party["uid"])):
+                log_qq_session_event(_LOGGER, "private_nudge_identity", "skipped", failure_code="identity_conflict")
+                return None
+    log_qq_session_event(_LOGGER, "private_nudge_identity", "ok")
+    return {
+        "namespace": QQ_DB_SELF_NAMESPACE, "session_key": session.internal_key,
+        "conversation_id": session.conversation_id,
+        "owner_uin": self_uin, "owner_uid": owner["uid"],
+        "peer_uin": peer["uin"], "peer_uid": peer["uid"],
+        "peer_name": first_identity_name(peer.get("remark"), peer.get("nickname")) or "对方",
+    }
 
 
 def _group_sender_names_with_diagnostics(

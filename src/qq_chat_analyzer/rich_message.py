@@ -86,6 +86,14 @@ class MentionRelation:
 
 
 @dataclass(frozen=True, slots=True)
+class NudgeRelation:
+    """A structured pat from the message sender to a confirmed identity."""
+
+    target_identity_id: str = field(repr=False)
+    suffix: str = field(default="", repr=False)
+
+
+@dataclass(frozen=True, slots=True)
 class RecallState:
     """Known recall state of a message; absence means the source did not say."""
 
@@ -119,7 +127,7 @@ class NonTextContent:
 
 
 RichContent = TextContent | ExpressionContent | NonTextContent
-MessageRelation = ReplyRelation | MentionRelation
+MessageRelation = ReplyRelation | MentionRelation | NudgeRelation
 
 
 @dataclass(frozen=True, slots=True)

@@ -22,6 +22,7 @@ from ..analysis.analyzers import (
 )
 from ..analysis.analyzers.expression_analyzer import iter_emoji_clusters
 from ..analysis.models import AnalysisReports, ExpressionReport
+from ..analysis.private_nudges import PrivateNudges, analyze_private_nudges
 from ..analysis.sticker_features import (
     PrivateStickerFeatures, analyze_private_stickers,
 )
@@ -47,6 +48,7 @@ from ..analyzer import (
 from ..cleaner import clean_text
 from ..message import ChatMessage
 from ..message_quality_filter import apply_message_quality_filter
+from ..filter_pipeline import FilterPipeline
 from ..rich_message import ExpressionContent, NonTextContent, RichMessage
 from ..presentation import (
     EchoReportView,
@@ -206,8 +208,46 @@ class AnalysisApplicationService:
             raise NoMessagesInScope()
         if request.scope.mode is not AnalysisScopeMode.ALL:
             processed_message_count = len(scoped_messages)
+        nudge_pairs = [(legacy, rich) for legacy, rich in outcome.rich_message_pairs
+                       if rich.message_type == "nudge"]
+        nudge_instances = {id(legacy) for legacy, _ in nudge_pairs}
         with timed_stage("smart_profile"):
-            filtering_result = run_smart_profile(scoped_messages)
+            filtering_result = run_smart_profile(
+                [message for message in scoped_messages if id(message) not in nudge_instances]
+                if nudge_instances else scoped_messages
+            )
+        scoped_instances = (
+            {id(message) for message in scoped_messages if id(message) in nudge_instances}
+            if nudge_instances else set()
+        )
+        nudge_pairs = [(legacy, rich) for legacy, rich in nudge_pairs
+                       if id(legacy) in scoped_instances]
+        # Reuse sender exclusion semantics for both ends of an action. Templates
+        # and lexical quality rules apply only to authored messages, not pats.
+        sender_decisions = [decision for decision in filtering_result.applied_decisions
+                            if decision.target_type == "sender" and decision.action == "ignore"]
+        if nudge_pairs and sender_decisions:
+            allowed_actors = {id(message) for message in FilterPipeline().apply_filter_decisions(
+                [legacy for legacy, _ in nudge_pairs], sender_decisions,
+            ).kept_messages}
+            target_projections = [replace(legacy, sender_id=rich.relations[0].target_identity_id, sender="")
+                                  for legacy, rich in nudge_pairs]
+            allowed_targets = {id(message) for message in FilterPipeline().apply_filter_decisions(
+                target_projections, sender_decisions,
+            ).kept_messages}
+            nudge_pairs = [(legacy, rich) for (legacy, rich), target in zip(nudge_pairs, target_projections)
+                           if id(legacy) in allowed_actors and id(target) in allowed_targets]
+        private_nudges = None
+        if (nudge_pairs
+                and _resolve_conversation_type(scoped_messages, request.conversation_kind) == "private"
+                and all(message.platform == nudge_pairs[0][1].source
+                        and message.conversation_id == nudge_pairs[0][1].conversation_id
+                        for message in scoped_messages)):
+            private_nudges = analyze_private_nudges(rich for _, rich in nudge_pairs)
+        _LOGGER.info("[analysis] private_nudges scoped=%d eligible=%d self=%d peer=%d",
+                     len(nudge_instances & scoped_instances), len(nudge_pairs),
+                     private_nudges.self_count if private_nudges else 0,
+                     private_nudges.peer_count if private_nudges else 0)
         with timed_stage("message_quality_filter"):
             quality_result = apply_message_quality_filter(
                 filtering_result.kept_messages
@@ -299,7 +339,7 @@ class AnalysisApplicationService:
             )
         has_expression_report = expression_report.expression_message_count > 0
 
-        has_nontext = any(
+        has_nontext = private_nudges is not None or any(
             any(isinstance(part, NonTextContent) for part in message.contents)
             for message in rich_by_instance.values()
         )
@@ -327,7 +367,7 @@ class AnalysisApplicationService:
             )
 
         conversation_type = _resolve_conversation_type(
-            kept_messages,
+            kept_messages or [legacy for legacy, _ in nudge_pairs],
             request.conversation_kind,
         )
         try:
@@ -345,6 +385,7 @@ class AnalysisApplicationService:
                     sticker_reports=sticker_reports,
                     private_stickers=private_stickers,
                     group_stickers=group_stickers,
+                    private_nudges=private_nudges,
                 )
             if ranked_words and self._legacy_word_artifacts is not None:
                 with timed_stage("word_speaker_analysis"):
@@ -492,6 +533,7 @@ def _build_reports(
     sticker_reports: tuple[StickerConversationReport, ...] | None = None,
     private_stickers: PrivateStickerFeatures | None = None,
     group_stickers: GroupStickerFeatures | None = None,
+    private_nudges: PrivateNudges | None = None,
 ) -> AnalysisReports:
     """Run every extended analyzer over the messages kept for analysis.
 
@@ -552,6 +594,7 @@ def _build_reports(
         stickers=sticker_reports,
         private_stickers=private_stickers,
         group_stickers=group_stickers,
+        private_nudges=private_nudges,
         expression=prepare_expression_report(
             expression,
             expression_source=(

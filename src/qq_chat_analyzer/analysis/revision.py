@@ -34,4 +34,8 @@
 # retaining the three-repeat minimum without the old 12-character unit cap.
 # v13: member profiles expose their first appearance order in the retained
 # imported records, independent of the existing message-volume ranking.
-ANALYSIS_REVISION = "echo-analysis.v13"
+# v14: verified WeChat private pats have their own scoped interaction channel;
+# they never contribute to ordinary message, session or lexical statistics.
+# v15: QQ private pokes share the independent interaction channel after
+# authenticated UID/UIN binding and agreement of both gray-tip representations.
+ANALYSIS_REVISION = "echo-analysis.v15"

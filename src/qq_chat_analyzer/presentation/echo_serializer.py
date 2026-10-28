@@ -33,7 +33,7 @@ from .expression_assets import (
 )
 
 
-ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.13"
+ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.16"
 
 
 def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
@@ -64,6 +64,10 @@ def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
         },
         "conversation_sessions": _conversation_sessions_to_dict(
             view.conversation_sessions
+        ),
+        "private_nudges": (
+            asdict(view.private_nudges)
+            if view.conversation_kind == "private" and view.private_nudges is not None else None
         ),
         "language_profile": _language_profile_to_dict(
             view.language_profile,
@@ -325,6 +329,8 @@ def _conversation_sessions_to_dict(
     if (
         sessions.group_self_count is not None
         or sessions.group_top_initiator_name is not None
+        or sessions.group_initiators
+        or sessions.group_unknown_count
     ):
         top_member = None
         if sessions.group_top_initiator_name is not None:
@@ -337,6 +343,8 @@ def _conversation_sessions_to_dict(
             "self_count": sessions.group_self_count,
             "self_share": sessions.group_self_share,
             "top_member": top_member,
+            "members": [asdict(member) for member in sessions.group_initiators],
+            "unknown_count": sessions.group_unknown_count,
         }
     return {
         "threshold_seconds": sessions.threshold_seconds,
@@ -448,7 +456,7 @@ def _points_to_list(points: tuple[ChartPoint, ...]) -> list[dict[str, object]]:
     ]
 
 
-_ECHO_WORDMARK_RELATIVE_PATH = "assets/branding/echo/echo_wordmark_with_slogan.png"
+_ECHO_WORDMARK_RELATIVE_PATH = "assets/branding/echo/echo_wordmark_report.webp"
 _ECHO_FAVICON_RELATIVE_PATH = "assets/branding/echo/echo_icon_32.png"
 
 
@@ -457,7 +465,7 @@ def export_echo_report_html(
     output_path: str | Path,
     *, cancelled=lambda: False,
 ) -> Path:
-    """Write offline HTML, publishing relative media for larger QQ reports."""
+    """Write offline HTML and its shared, byte-identical sticker files."""
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
     _export_sticker_files(view, destination.parent, cancelled=cancelled)
@@ -479,8 +487,8 @@ def _export_sticker_files(view: EchoReportView, directory: Path, *, cancelled=la
 
 
 def _build_echo_report_html(view: EchoReportView) -> str:
-    favicon_data_uri = _png_data_uri(_ECHO_FAVICON_RELATIVE_PATH)
-    wordmark_data_uri = _png_data_uri(_ECHO_WORDMARK_RELATIVE_PATH)
+    favicon_data_uri = _brand_data_uri(_ECHO_FAVICON_RELATIVE_PATH)
+    wordmark_data_uri = _brand_data_uri(_ECHO_WORDMARK_RELATIVE_PATH)
     favicon_tag = (
         f'<link rel="icon" type="image/png" href="{favicon_data_uri}">'
         if favicon_data_uri
@@ -552,10 +560,11 @@ def _iter_expression_items(view: EchoReportView):
         yield from getattr(member, "top_expressions", ())
 
 
-def _png_data_uri(relative_path: str) -> str:
-    """Return a base64 PNG data URI for a bundled brand asset, or empty text."""
+def _brand_data_uri(relative_path: str) -> str:
+    """Inline a bundled brand image with its actual encoding."""
     source = resource_path(relative_path)
     if not source.is_file():
         return ""
     encoded = base64.b64encode(source.read_bytes()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
+    mime = {".png": "image/png", ".webp": "image/webp"}[source.suffix.lower()]
+    return f"data:{mime};base64,{encoded}"

@@ -224,7 +224,6 @@ class _ProviderConnection:
 
 @pytest.mark.parametrize("kind,local", [("private", False), ("group", False), ("group", True)])
 def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monkeypatch, kind, local):
-    import base64
     import json
     from qq_chat_analyzer.presentation import echo_serializer
 
@@ -255,7 +254,8 @@ def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monk
     chapter = json.loads((outcome.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]
     asset, = chapter["assets"].values()
     assert asset["status"] == "available"
-    assert base64.b64decode(asset["data_uri"].split(",", 1)[1]) == raw
+    assert asset["data_uri"].startswith("media/")
+    assert (outcome.report_directory / asset["data_uri"]).read_bytes() == raw
     assert asset["data_uri"] in outcome.report_path.read_text(encoding="utf-8")
     assert "正在获取表情包素材..." in progress
 
@@ -400,9 +400,9 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
             assert not any("code=report_media_time_budget" in line for line in results)
         if limit == "transport":
             assert all("code=qq_media_transport_timeout" in line for line in results)
-            assert not any("code=embedded" in line for line in details)
+            assert not any("code=external_file" in line for line in details)
         else:
-            assert any("code=embedded" in line for line in details)
+            assert any("code=external_file" in line for line in details)
     assert runtime.acquired == runtime.cleaned and len(runtime.acquired) == 1
     assert historical.read_bytes() == b"fictional old report"
 

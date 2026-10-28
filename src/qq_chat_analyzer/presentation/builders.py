@@ -7,6 +7,7 @@ computed. It performs no counting, averaging, or sorting of raw messages.
 from __future__ import annotations
 
 from dataclasses import replace
+from collections import Counter
 from itertools import islice
 from ..identity_names import resolve_member_names
 from ..analysis.stickers import StickerMedia
@@ -46,8 +47,11 @@ from .models import (
     EchoLanguageProfile,
     EchoConversationSession,
     EchoConversationSessions,
+    EchoSessionInitiator,
     EchoExpressionHabits,
     EchoReportView,
+    EchoNudgeMoment,
+    EchoPrivateNudges,
     EchoSharedWord,
 )
 
@@ -300,6 +304,26 @@ def _build_echo_sessions(
         return None
     private = report.private_stats
     group = report.group_stats
+    member_by_key = {member.speaker_key: member for member in members}
+    openers = []
+    if group is not None:
+        names = []
+        for index, (key, _) in enumerate(group.initiator_counts):
+            member = member_by_key.get(key)
+            name = member.display_name.strip() if member else ""
+            names.append(name if name and name != key else f"未命名成员（{index + 1}）")
+        name_counts, ordinals, reserved = Counter(names), Counter(), set(names)
+        for (key, count), name in zip(group.initiator_counts, names):
+            label = name
+            if name_counts[name] > 1:
+                ordinals[name] += 1
+                label = f"{name}（{ordinals[name]}）"
+                while label in reserved:
+                    ordinals[name] += 1
+                    label = f"{name}（{ordinals[name]}）"
+            reserved.add(label)
+            member = member_by_key.get(key)
+            openers.append(EchoSessionInitiator(label, count, bool(member and member.is_viewer)))
     top_member = (
         next(
             (
@@ -361,6 +385,8 @@ def _build_echo_sessions(
             if group is not None and top_member is not None
             else None
         ),
+        group_initiators=tuple(openers),
+        group_unknown_count=group.unknown_initiated_count if group else 0,
         viewer_identity_reliable=(
             group is not None and group.self_initiated_count is not None
         ),
@@ -725,6 +751,15 @@ def build_echo_report_view(
         conversation_sessions=_build_echo_sessions(
             reports.conversation_sessions,
             members=members,
+        ),
+        private_nudges=(
+            EchoPrivateNudges(
+                self_count=reports.private_nudges.self_count,
+                peer_count=reports.private_nudges.peer_count,
+                source=reports.private_nudges.source,
+                recent=tuple(EchoNudgeMoment(item.timestamp, item.is_self, item.suffix)
+                             for item in reports.private_nudges.recent),
+            ) if conversation_kind == "private" and reports.private_nudges is not None else None
         ),
         language_profile=_build_echo_language_profile(
             reports,

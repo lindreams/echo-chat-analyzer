@@ -12,8 +12,8 @@ thin client that may only invoke the three frozen methods `acquire` /
 It never accepts an absolute database path from the runtime.  Callers compute a
 generation directory from the returned opaque id under a known snapshot root,
 and the id is strictly validated so path traversal can never escape that root.
-The only additional NapCat API call exposed here is the fixed
-``GroupApi.getGroupMemberAll`` request used to resolve Direct DB group senders.
+Additional fixed metadata requests resolve group senders and bind private
+action UIDs to the same launch/account as the acquired snapshot.
 
 Privacy contract: error objects may only carry stable codes and privacy-safe
 messages.  A runtime error message, the QQ UIN, nicknames, message text, the
@@ -371,6 +371,22 @@ class QQDirectSnapshotRuntimeClient:
         if not isinstance(result, Mapping):
             raise QQSnapshotRuntimeInvalidResponse()
         return result
+
+    def get_private_identity_metadata(self, *, timeout: float) -> Mapping[str, Any]:
+        """Read identity metadata with this snapshot client's launch binding."""
+        deadline = time.monotonic() + timeout
+        status = self._rpc("status", [], namespace="Core", deadline=deadline)
+        if not isinstance(status, Mapping) or not isinstance(status.get("self_info"), Mapping):
+            raise QQSnapshotRuntimeInvalidResponse()
+        if status.get("boot_id") != self._boot_id or status.get("runtime_id") != self._runtime_id:
+            self._generation_changed = True
+            raise QQSnapshotWorkerGenerationChanged()
+        if status.get("rpc_auth") != "bearer-v1":
+            raise QQSnapshotRuntimeUnauthorized()
+        friends = self._rpc("listFriends", [], namespace="EchoMetadata", deadline=deadline)
+        if not isinstance(friends, list):
+            raise QQSnapshotRuntimeInvalidResponse()
+        return {"self_info": status["self_info"], "friends": friends}
 
     # ------------------------------------------------------------------ internals
 

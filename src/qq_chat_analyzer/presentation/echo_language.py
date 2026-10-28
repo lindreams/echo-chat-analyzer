@@ -3,6 +3,7 @@
 ECHO_LANGUAGE_CSS = r"""
 #voices, #expression { min-height: 0; padding: 34px 64px 64px; }
 #voices .chapter-intro { margin: 18px 0 26px; }
+.language-original-hint { margin: 16px 0; color: var(--muted); font: 12px/1.8 var(--sans); }
 .language-word-button { appearance: none; border: 0; border-radius: 0; background: transparent; padding: 0; color: inherit; font: inherit; line-height: inherit; letter-spacing: inherit; cursor: pointer; text-align: inherit; overflow-wrap: anywhere; }
 .language-word-button:hover { color: var(--accent); }
 .language-word-button:focus-visible, #language-originals button:focus-visible { outline: 1px solid var(--viewer); outline-offset: 3px; }
@@ -45,6 +46,7 @@ ECHO_LANGUAGE_CSS = r"""
   .language-original-meta { font-size: 10px; }
 }
 @media print {
+  .language-original-hint { display: none; }
   #language-originals { display: none !important; }
   .language-word-button { color: inherit; }
 }
@@ -59,6 +61,8 @@ ECHO_LANGUAGE_APP_JS = r"""
   var chapter = document.getElementById("voices");
   var dialog = document.getElementById("language-originals");
   if (!sources || !chapter || !dialog) return;
+  var hint = document.getElementById("language-original-hint");
+  if (hint) hint.hidden = !chapter.querySelector(".language-word-button");
   var originals = new Map((sources.messages || []).map(function (message) { return [message.ref, message]; }));
   var terms = new Map((sources.terms || []).map(function (term) {
     return [JSON.stringify([term.member_index, term.word]), term];

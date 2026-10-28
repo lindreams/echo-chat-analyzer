@@ -1556,7 +1556,14 @@ def test_every_literal_qq_failure_code_is_reviewed_for_display() -> None:
         for match in pattern.finditer(path.read_text(encoding="utf-8"))
     }
 
-    assert produced <= module._REVIEWED_QQ_FAILURE_CODES
+    # Private-nudge identity failures only skip that optional statistic. These
+    # diagnostic-only codes must stay out of the connection-error display list.
+    diagnostic_only = {
+        "metadata_unavailable", "identity_mismatch", "peer_ambiguous", "identity_conflict",
+    }
+    assert produced <= module._REVIEWED_QQ_FAILURE_CODES | diagnostic_only
+    assert not diagnostic_only & module._REVIEWED_QQ_FAILURE_CODES
+    assert all(module._failure_code_suffix(code) == "" for code in diagnostic_only)
     # Facade-owned codes that reach the same page from connect/session paths.
     assert {"qq_install_path_invalid", "source_unavailable"} <= (
         module._REVIEWED_QQ_FAILURE_CODES
@@ -2286,10 +2293,9 @@ def test_wechat_structured_progress_crosses_real_facade_and_worker(
     ("private", "PNG", True, False, False), ("group", "WEBP", True, False, False),
     ("group", "GIF", False, False, True),
 ])
-def test_generate_button_opens_only_final_embedded_report(
+def test_generate_button_opens_only_final_report_with_media(
     qt_app, tmp_path, monkeypatch, kind, fmt, local, preview, cancel,
 ):
-    import base64
     import hashlib
     import json
     from test_sticker_data import image_bytes
@@ -2345,7 +2351,8 @@ def test_generate_button_opens_only_final_embedded_report(
     assert len(provider.calls) == (0 if local else 2)
     asset, = json.loads((outcome.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]["assets"].values()
     assert asset["status"] == ("preview" if preview else "available")
-    assert base64.b64decode(asset["data_uri"].split(",", 1)[1]) == raw
+    assert asset["data_uri"].startswith("media/")
+    assert (outcome.report_directory / asset["data_uri"]).read_bytes() == raw
     assert asset["data_uri"] in outcome.report_path.read_text(encoding="utf-8")
     assert "表情包图片 1/1" in window._status_label.text()
     assert "预算受限" not in window._status_label.text()

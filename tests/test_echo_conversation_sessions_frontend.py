@@ -184,6 +184,66 @@ def _render_frontend(
     return json.loads(completed.stdout)
 
 
+@pytest.mark.parametrize("variation,merged", [
+    ("same-round", True), ("different-time", False),
+    ("unknown-time", False), ("different-count", False),
+])
+def test_session_highnotes_merge_only_confirmed_same_round(tmp_path, variation, merged):
+    round_a = dict(start_timestamp=1700000000, end_timestamp=1700001080,
+                   duration_seconds=1080, message_count=20, participant_count=2)
+    round_b = dict(round_a)
+    if variation == "different-time":
+        round_b.update(start_timestamp=1700010000, end_timestamp=1700011080)
+    elif variation == "unknown-time":
+        round_a.update(start_timestamp=None, end_timestamp=None)
+        round_b.update(start_timestamp=None, end_timestamp=None)
+    elif variation == "different-count":
+        round_b["message_count"] = 21
+    sessions = _sessions(loudest_longest_duration=round_b)
+    sessions["loudest_most_messages"] = round_a
+    rendered = _render_frontend(tmp_path, kind="private", sessions=sessions)
+    assert not rendered["session-loudest-messages"]["hidden"]
+    assert rendered["session-loudest-duration"]["hidden"] is merged
+    assert rendered["session-loudest-messages-text"]["text"] == "20 条消息 · 18 分钟"
+
+
+@pytest.mark.parametrize("self_count,peer_count,unknown_count,visible", [
+    (3, 5, 0, True), (3, 3, 2, True), (0, 0, 8, True),
+    (3, 3, None, False), (3, 3, 1, False),
+])
+def test_session_opening_visual_keeps_unknown_rounds_separate(tmp_path, self_count, peer_count, unknown_count, visible):
+    sessions = _sessions(private_initiators=dict(
+        self_count=self_count, peer_count=peer_count, unknown_count=unknown_count))
+    rendered = _render_frontend(tmp_path, kind="private", sessions=sessions)
+    assert not rendered["session-summary"]["hidden"]
+    assert rendered["session-round-count"]["text"] == "8"
+    assert rendered["session-start-graphic"]["hidden"] is not visible
+    if visible:
+        assert rendered["session-start-unknown-label"]["hidden"] is (unknown_count == 0)
+        if unknown_count:
+            assert rendered["session-start-unknown-label"]["text"] == f"未确认 · {unknown_count} 轮"
+
+
+def test_session_reply_visual_distinguishes_instant_from_missing(tmp_path):
+    sessions = _sessions(private_reply_median_self_to_peer_seconds=0,
+                         private_reply_median_peer_to_self_seconds=None)
+    rendered = _render_frontend(tmp_path, kind="private", sessions=sessions)
+    assert not rendered["session-reply"]["hidden"]
+    assert not rendered["session-reply-self-track"]["hidden"]
+    assert rendered["session-reply-peer-track"]["hidden"]
+    assert rendered["session-reply-peer-to-self"]["text"] == "暂无足够样本"
+
+
+@pytest.mark.parametrize("kind", ["private", "group"])
+def test_session_without_opening_or_reply_data_has_no_empty_visual_panel(tmp_path, kind):
+    rendered = _render_frontend(tmp_path, kind=kind, sessions=_sessions())
+    assert not rendered["session-summary"]["hidden"]
+    assert rendered["session-beat"]["hidden"]
+    assert rendered["session-reply"]["hidden"]
+    assert rendered["session-duet"]["hidden"]
+    assert rendered["session-highnotes"]["hidden"]
+
+
 def test_sticker_empty_unknown_and_group_visibility(tmp_path):
     from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
 
@@ -325,7 +385,7 @@ def test_session_chapter_never_displays_stable_ids_or_technical_ratio(tmp_path) 
 @pytest.mark.parametrize("width", [1280, 390])
 @pytest.mark.parametrize("kind,count", [("private", 8), ("group", 8), ("unknown", 8), ("group", 0), ("group", None)])
 def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, width: int, kind: str, count: int | None) -> None:
-    from qq_chat_analyzer.presentation import EchoExpressionCulture, EchoExpressionItem
+    from qq_chat_analyzer.presentation import ChartPoint, EchoExpressionCulture, EchoExpressionItem
     chromium = _find_chromium()
     if chromium is None:
         pytest.skip("no local Chromium available")
@@ -343,7 +403,9 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
             average_message_count=12.5, private_self_count=3, private_peer_count=5,
             private_unknown_count=0, private_self_share=.375, private_peer_share=.625,
             private_unknown_share=0, private_self_peak_start_hour=9,
-            private_reply_median_self_to_peer_seconds=12, session_character="Fictional character",
+            private_reply_median_self_to_peer_seconds=12, private_reply_median_peer_to_self_seconds=36,
+            session_character="Fictional character",
+            start_hour_distribution=(ChartPoint("09:00-09:59", 2), ChartPoint("20:00-20:59", 6)),
             group_top_initiator_name=injected_name, group_top_initiator_count=3,
             group_top_initiator_share=.375, peak_start_hour=20,
             viewer_identity_reliable=True, group_self_count=3, group_self_share=.375,
@@ -377,6 +439,10 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
           sessionCharacter: document.getElementById("session-character").textContent,
           highnotes: Array.from(document.querySelectorAll(".highnote-card"))
             .filter(x => !x.hidden).map(x => x.id),
+          highlightLabels: Array.from(document.querySelectorAll(".highnote-card:not([hidden]) .highnote-badge"))
+            .map(x => x.textContent.replace(/[♪𝅝♫♬]/gu, "")),
+          highlightDetails: Array.from(document.querySelectorAll(".highnote-card:not([hidden]) .highnote-detail"))
+            .map(x => x.textContent),
           viewerVisible: !document.getElementById("session-viewer-identity").hidden,
           top: document.getElementById("session-group-top").textContent,
           injected: Boolean(window.echoInjected),
@@ -388,18 +454,36 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
           overviewVisible: getComputedStyle(document.getElementById("overview")).display !== "none",
           expressionVisible: !document.getElementById("expression").hidden
         };
+        const bounds=id=>{const r=document.getElementById(id).getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom};};
+        result.visuals={width:innerWidth,summary:!document.getElementById("session-summary").hidden,
+          beat:bounds("session-beat"),reply:bounds("session-reply"),hours:bounds("session-hours"),
+          hourCount:document.querySelectorAll(".session-hour-column").length,
+          openingWidths:["self","peer","unknown"].map(x=>{const node=document.getElementById("session-start-"+x);
+            return node.getBoundingClientRect().width/node.parentElement.getBoundingClientRect().width*100||0;}),
+          replyWidths:["self","peer"].map(x=>{const node=document.getElementById("session-reply-"+x+"-track");
+            return parseFloat(getComputedStyle(node,"::before").width)/node.getBoundingClientRect().width*100||0;}),
+          clipped:[...document.querySelectorAll("#conversation-sessions h3,#conversation-sessions .session-fields>div,.session-beat-lead,.highnote-card")]
+            .filter(x=>x.getBoundingClientRect().width&&x.scrollWidth>x.clientWidth+1).map(x=>x.id||x.className)};
+        const second=document.getElementById(window.ECHO_DATA.conversation.kind==="private"?"session-reply":"session-hours");
+        const first=document.getElementById("session-beat"), wasHidden=first.hidden;
+        result.visuals.singlePanelFills=true;
+        if(!second.hidden){first.hidden=true;
+          result.visuals.singlePanelFills=Math.abs(second.getBoundingClientRect().width-document.getElementById("session-duet").getBoundingClientRect().width)<1;
+          first.hidden=wasHidden;}
         image.src = "data:image/png;base64,broken";
         setTimeout(function () {
           result.brokenImageHidden = image.style.display === "none";
           const output = document.createElement("pre");
           output.id = "echo-browser-probe";
           output.textContent = JSON.stringify(result);
-          document.body.appendChild(output);
+          window.parent.document.body.appendChild(output);
         }, 500);
       }, 1000);
     });
     </script>"""
-    output.write_text(source.replace("</body>", probe + "</body>"), encoding="utf-8")
+    page = source.replace("</body>", probe + "</body>")
+    output.write_text(f'<body style="margin:0"><iframe style="border:0;width:{width}px;height:3000px" '
+                      f'srcdoc="{html.escape(page, quote=True)}"></iframe></body>', encoding="utf-8")
     screenshot = tmp_path / "echo-layout.png"
     result = _run_browser([
         chromium, "--headless=new", "--disable-gpu", "--no-sandbox",
@@ -414,6 +498,22 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
     match = re.search(r'<pre id="echo-browser-probe">(.*?)</pre>', dom, re.S)
     assert match is not None, dom[-1000:]
     rendered = json.loads(html.unescape(match.group(1)))
+    visuals = rendered.pop("visuals")
+    assert visuals["width"] == width and not visuals["clipped"], visuals
+    assert visuals["singlePanelFills"]
+    known = bool(count) and kind in {"private", "group"}
+    assert visuals["summary"] is known
+    assert visuals["hourCount"] == (24 if known and kind == "group" else 0)
+    if known:
+        assert visuals["openingWidths"] == pytest.approx([37.5, 62.5, 0], abs=.05)
+        other = visuals["reply"] if kind == "private" else visuals["hours"]
+        if width > 720:
+            assert visuals["beat"]["right"] <= other["left"]
+            assert visuals["beat"]["top"] == pytest.approx(other["top"])
+        else:
+            assert visuals["beat"]["bottom"] <= other["top"]
+        if kind == "private":
+            assert visuals["replyWidths"] == pytest.approx([100/3, 100], abs=.05)
     assert rendered == {
         "sessionVisible": count is not None and count > 0,
         "metricGroups": 2,
@@ -421,10 +521,13 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
         "replyVisible": count is not None and count > 0 and kind == "private",
         "median": "约 18 分钟" if count and kind in {"private", "group"} else "",
         "sessionCharacter": "Fictional character" if count and kind in {"private", "group"} else "",
-        "highnotes": (["session-loudest-messages", "session-loudest-duration",
-                       "session-loudest-participants" if kind == "group" else "session-loudest-densest",
-                       "session-loudest-densest" if kind == "group" else "session-loudest-back-and-forth"]
+        "highnotes": (["session-loudest-messages"]
                       if count and kind in {"private", "group"} else []),
+        "highlightLabels": (["话最多", "聊最久", "最热闹", "接得最紧"] if kind == "group" else
+                            ["话最多", "聊最久", "接得最紧", "最有来有回"])
+                           if count and kind in {"private", "group"} else [],
+        "highlightDetails": (["3 人参与"] if kind == "group" else ["你 12 条 · TA 8 条"])
+                            if count and kind in {"private", "group"} else [],
         "viewerVisible": bool(count) and kind == "group",
         "top": ("你开启 3 轮 · TA 开启 5 轮" if kind == "private" else
                 "最常发起聊天：" + injected_name + "（3 轮，37.5%）") if count and kind in {"private", "group"} else "",
@@ -508,7 +611,7 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
           visible: !sheet.hidden, count: document.querySelectorAll("#stickers.page").length,
           width: rect.width, height: rect.height,
           tops: sheet.querySelectorAll("#sticker-members .sticker-top-list li").length,
-          offline: Array.from(sheet.querySelectorAll("img")).every(x => x.src.startsWith("data:image/")),
+          offline: Array.from(sheet.querySelectorAll("img")).every(x => x.src.startsWith("data:image/") || x.src.startsWith(new URL("media/", document.baseURI).href)),
           loaded: image && image.complete && image.naturalWidth > 0,
           missing: sheet.querySelectorAll(".sticker-image:not(.has-image)").length,
           overflow: document.documentElement.scrollWidth > window.innerWidth,
@@ -711,13 +814,16 @@ def test_saved_qq_media_report_loads_actual_images_offline(tmp_path, kind, caplo
       const chapter = document.getElementById("stickers"); chapter.scrollIntoView();
       const images = [...chapter.querySelectorAll("img")];
       const result = {loaded: images.length > 0 && images.every(x => x.complete && x.naturalWidth > 0),
-        offline: images.every(x => x.src.startsWith("data:image/")),
+        offline: images.every(x => x.src.startsWith("data:image/") || x.src.startsWith(new URL("media/", document.baseURI).href)),
         states: Object.values(window.ECHO_DATA.stickers.assets).map(x => x.status),
         preview: chapter.textContent.includes("预览"), count: window.ECHO_DATA.stickers.total_send_count};
       const pre = document.createElement("pre"); pre.id = "saved-media-probe";
       pre.hidden = true; pre.textContent = JSON.stringify(result); document.body.appendChild(pre);
     }, 500);});</script>'''
-    page = tmp_path / "saved-media-probe.html"
+    # Open a moved package, independent of the live provider or original path.
+    moved = tmp_path / "offline-copy"
+    shutil.copytree(outcome.report_directory, moved)
+    page = moved / "echo-report.html"
     page.write_text(source.replace("</body>", probe + "</body>"), encoding="utf-8")
     browser = _run_browser([
         chromium, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
@@ -740,12 +846,13 @@ def test_saved_qq_media_report_loads_actual_images_offline(tmp_path, kind, caplo
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize("scene,leaders", [
-    ("combined", ["reunion", "style"]), ("zero", []),
-    ("one", ["relay"]), ("three", ["trend", "relay", "shared", "trend"]),
-    ("many", ["reunion", "relay", "shared"] + ["reunion"] * 5),
+@pytest.mark.parametrize("scene,leaders,width", [
+    ("combined", ["reunion", "style"], 1280), ("zero", [], 1280),
+    ("one", ["relay"], 1280), ("three", ["trend", "relay", "shared", "trend"], 1280),
+    ("many", ["reunion", "relay", "shared"] + ["reunion"] * 5, 1280),
+    ("combined", ["reunion", "style"], 390),
 ])
-def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path, scene, leaders):
+def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path, scene, leaders, width):
     import hashlib
     import math
     from sticker_feature_samples import Messages, indexed, many_sticker_stories
@@ -816,7 +923,7 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
         imageCount:images.length,loaded:images.every(x=>x.complete&&x.naturalWidth>0),
         sameResource:new Set(images.map(x=>x.currentSrc)).size===1,
         nativeSave:images.every(x=>x.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))),
-        offline:images.every(x=>x.src.startsWith("data:image/")),
+        offline:images.every(x=>x.src.startsWith("data:image/")||x.src.startsWith(new URL("media/",document.baseURI).href)),
         missing:b.querySelectorAll(".sticker-image:not(.has-image)").length,
         overflow:document.documentElement.scrollWidth>innerWidth,
         viewport:innerWidth,height:Math.ceil(bounds(a).bottom),
@@ -835,7 +942,7 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     },300);});</script>'''
     page = source.replace("</body>", probe+"</body>")
     def write_viewport(height):
-        output.write_text('<body style="margin:0"><iframe style="display:block;border:0;width:1280px;height:'
+        output.write_text(f'<body style="margin:0"><iframe style="display:block;border:0;width:{width}px;height:'
                           f'{height}px" srcdoc="{html.escape(page, quote=True)}"></iframe></body>', encoding="utf-8")
     write_viewport(1200)
     command = [chromium, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
@@ -852,7 +959,7 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     assert result["toc"] == ["#stickers"] and result["title"] == "表情包"
     assert result["memoriesHidden"] == (not leaders)
     assert len(result["stories"]) == len(leaders) and result["sharedAbsent"]
-    assert not result["overflow"] and result["fits"] and result["viewport"] == 1280
+    assert not result["overflow"] and result["fits"] and result["viewport"] == width
     assert 30 <= result["tail"] <= 115
     assert [s["compact"] for s in result["stories"]] == [m["compact"] for m in memories]
     has_relay = any(f["kind"]=="relay" for m in memories if not m["compact"] for f in m["findings"])
@@ -862,7 +969,7 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     assert len(result["stats"]) == 3 and len(set(result["stats"])) == 1
     for pair in result["habitPairs"]:
         assert abs(pair["children"][0]["left"] - pair["bounds"]["left"]) <= 1
-        assert all(child["width"] >= 250 for child in pair["children"])
+        assert all(child["width"] >= (250 if width > 720 else 120) for child in pair["children"])
     assert result["tops"][0]["bounds"]["bottom"] <= result["tops"][1]["bounds"]["top"]
     assert all(all(x["right"]<=y["left"] for x,y in zip(m["entries"],m["entries"][1:])) for m in result["tops"])
     common_keys = {item["asset_key"] for member in payload["stickers"]["members"]
@@ -880,7 +987,7 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
         ordinary_keys={i["asset_key"] for f in memory["findings"] if f["kind"]!="relay" for i in f["materials"]}
         assert {a["key"] for a in rendered["art"]} == ordinary_keys
         assert len(rendered["art"]) == len(ordinary_keys)
-        assert all(65<=a["width"]<=164 for a in rendered["art"])
+        assert all((65 if width > 720 else 60)<=a["width"]<=164 for a in rendered["art"])
         for finding in memory["findings"]:
             actual=next(x for x in rendered["findings"] if x["kind"]==finding["kind"])
             for key in ("period","note"):
@@ -925,13 +1032,91 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     assert all(secret not in result["text"] for secret in ("虚构日常","虚构回复","private-body-sentinel"))
     height=math.ceil(result["height"])
     write_viewport(height)
-    screenshot=tmp_path/f"{scene}-1280.png"
+    screenshot=tmp_path/f"{scene}-{width}.png"
     capture=_run_browser(command+[f"--window-size=1280,{height}",f"--screenshot={screenshot}",output.as_uri()])
     assert capture.returncode==0,capture.stderr
     png=screenshot.read_bytes()
     assert png.startswith(b"\x89PNG\r\n\x1a\n")
     assert int.from_bytes(png[16:20],"big")==1280
     assert int.from_bytes(png[20:24],"big")==height
+
+
+@pytest.mark.slow_integration
+@pytest.mark.parametrize("width", [1280, 390])
+@pytest.mark.parametrize("member_count", [0, 5, 30])
+def test_group_opening_ring_is_proportional_bounded_and_has_all_members(tmp_path, width, member_count):
+    from qq_chat_analyzer.presentation.models import EchoSessionInitiator
+
+    chromium = _find_chromium()
+    if chromium is None:
+        pytest.skip("no local Chromium available")
+    people = tuple(EchoSessionInitiator(
+        display_name=("</script><script>window.injected=true</script>" if i == 0 else
+                      "虚构成员" + str(i) + ("很长的名字" * 12 if i == 1 else "")),
+        count=1 if i == member_count - 1 else (member_count - i) * 100,
+        is_viewer=i == 1,
+    ) for i in range(member_count))
+    total = sum(p.count for p in people) + 1
+    view = EchoReportView(title="Fictional", has_data=True, conversation_kind="group",
+        conversation_sessions=EchoConversationSessions(
+            threshold_seconds=1800, session_count=total, average_duration_seconds=60,
+            median_duration_seconds=60, longest_duration_seconds=60, average_message_count=2,
+            group_initiators=people, group_unknown_count=1,
+        ))
+    page = export_echo_report_html(view, tmp_path / "report.html")
+    probe = r"""<script>window.addEventListener('load',()=>{
+      const root=document.getElementById('session-group-opening');
+      const details=document.getElementById('session-openers-details');
+      const rows=[...document.querySelectorAll('#session-openers-list li')];
+      const ring=root.querySelector('.session-opening-ring').getBoundingClientRect();
+      const legend=document.getElementById('session-opening-legend').getBoundingClientRect();
+      const result={hidden:root.hidden, injected:!!window.injected, viewport:innerWidth,
+        sideBySide:ring.right<=legend.left&&ring.top<legend.bottom&&legend.top<ring.bottom,
+        circles:[...root.querySelectorAll('circle[data-count]')].map(x=>({
+          count:Number(x.dataset.count), arc:Number(x.getAttribute('stroke-dasharray').split(' ')[0])})),
+        labels:[...root.querySelectorAll('.session-opener-label')].map(x=>x.textContent),
+        count:rows.length, closed:!details.open,
+        overflow:document.documentElement.scrollWidth>innerWidth,
+        fits:[...root.querySelectorAll('li')].every(x=>x.scrollWidth<=x.clientWidth+1),
+        height:root.getBoundingClientRect().height};
+      details.open=true;
+      const list=document.getElementById('session-openers-list');
+      result.listHeight=list.clientHeight;
+      const search=document.getElementById('session-openers-search');
+      search.value='虚构成员2'; search.dispatchEvent(new Event('input'));
+      result.matches=rows.filter(x=>!x.hidden).map(x=>x.textContent);
+      search.value='不存在的虚构人'; search.dispatchEvent(new Event('input'));
+      result.empty=!document.getElementById('session-openers-empty').hidden;
+      const pre=document.createElement('pre');pre.id='opening-result';
+      pre.textContent=JSON.stringify(result);parent.document.body.append(pre);
+    });</script>"""
+    source = page.read_text(encoding="utf-8").replace("</body>", probe + "</body>")
+    page.write_text(f'<body style="margin:0"><iframe style="border:0;width:{width}px;height:3000px" '
+                    f'srcdoc="{html.escape(source, quote=True)}"></iframe></body>', encoding="utf-8")
+    command = [chromium, "--headless", "--disable-gpu", "--no-first-run", "--no-default-browser-check",
+               f"--user-data-dir={tmp_path / 'browser'}", f"--window-size={max(width, 800)},1600",
+               "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND",
+               "--virtual-time-budget=2000", "--allow-file-access-from-files", "--dump-dom", page.as_uri()]
+    completed = _run_browser(command)
+    assert completed.returncode == 0, completed.stderr
+    stdout = completed.stdout.decode("utf-8")
+    match = re.search(r'<pre id="opening-result">(.*?)</pre>', stdout, re.S)
+    assert match, stdout[-2000:]
+    result = json.loads(html.unescape(match.group(1)))
+    assert result["viewport"] == width
+    assert not result["hidden"] and not result["injected"]
+    assert result["count"] == member_count
+    assert result["closed"]
+    if member_count:
+        assert result["empty"]
+        assert result["matches"] and all("虚构成员2" in text for text in result["matches"])
+    assert not result["overflow"] and result["fits"]
+    assert result["sideBySide"] and result["height"] < 240
+    assert result["listHeight"] <= 260
+    assert sum(circle["count"] for circle in result["circles"]) == total
+    assert all(0 < circle["arc"] <= circle["count"] / total * 100 for circle in result["circles"])
+    assert "未确认" in result["labels"]
+    assert any("其他" in label for label in result["labels"]) is (member_count > 6)
 
 
 def _run_browser(command: list[str]) -> subprocess.CompletedProcess:
@@ -960,8 +1145,8 @@ def _run_browser(command: list[str]) -> subprocess.CompletedProcess:
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize("scene", ["relay", "all"])
-def test_group_memories_use_the_same_offline_story_template_without_overflow(tmp_path, scene):
+@pytest.mark.parametrize("scene,width", [("relay", 1280), ("all", 1280), ("all", 390)])
+def test_group_memories_use_the_same_offline_story_template_without_overflow(tmp_path, scene, width):
     from test_group_sticker_features import relay_rows, all_group_story_rows, discover
     from qq_chat_analyzer.analysis.models import AnalysisReports
     from qq_chat_analyzer.analysis.stickers import StickerData, collect_sticker_sends, aggregate_stickers
@@ -988,25 +1173,34 @@ def test_group_memories_use_the_same_offline_story_template_without_overflow(tmp
         kinds:[...root.querySelectorAll("[data-finding]")].map(x=>x.dataset.finding),
         text:root.innerText,
         labels:[...root.querySelectorAll(".memory-turn-side")].map(x=>x.textContent),
-        overflow:document.documentElement.scrollWidth>innerWidth,
+        compactInline:[...root.querySelectorAll(".sticker-memory-story.is-compact:has(> .memory-art)")].every(x=>
+          x.querySelector(".memory-art").getBoundingClientRect().right<=
+          x.querySelector(".sticker-memory").getBoundingClientRect().left),
+        relayFullWidth:[...root.querySelectorAll(".is-relay")].every(x=>
+          x.getBoundingClientRect().width>=x.closest(".sticker-memory-story").getBoundingClientRect().width-1),
+        viewport:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth,
         fits:[...root.querySelectorAll("li,h3,.memory-art")].every(x=>x.scrollWidth<=x.clientWidth+1),
         clipped:[...root.querySelectorAll("*")].filter(x=>x.scrollWidth>x.clientWidth+1).map(x=>({
           cls:x.className,width:x.clientWidth,content:x.scrollWidth,whiteSpace:getComputedStyle(x).whiteSpace})),
         external:[...root.querySelectorAll("img")].some(x=>/^https?:/.test(x.src))};
       const pre=document.createElement("pre");pre.id="group-probe";pre.hidden=true;
-      pre.textContent=JSON.stringify(result);document.body.appendChild(pre);
+      pre.textContent=JSON.stringify(result);window.parent.document.body.appendChild(pre);
     },300);});</script>'''
-    output.write_text(output.read_text(encoding="utf-8").replace("</body>",probe+"</body>"), encoding="utf-8")
+    page = output.read_text(encoding="utf-8").replace("</body>",probe+"</body>")
+    output.write_text(f'<body style="margin:0"><iframe style="border:0;width:{width}px;height:1200px" '
+                      f'srcdoc="{html.escape(page, quote=True)}"></iframe></body>', encoding="utf-8")
     browser = _run_browser([chromium,"--headless","--disable-gpu","--no-sandbox","--disable-extensions",
-        f"--user-data-dir={tmp_path/'browser'}","--window-size=1280,1200","--virtual-time-budget=2000",
-        "--dump-dom",output.as_uri()])
+        f"--user-data-dir={tmp_path/'browser'}","--virtual-time-budget=2000",
+        "--dump-dom",f"--window-size={width},1200",output.as_uri()])
     assert browser.returncode == 0, browser.stderr
     match = re.search(r'<pre id="group-probe" hidden="">(.*?)</pre>',browser.stdout.decode("utf-8"),re.S)
     assert match is not None
     result = json.loads(html.unescape(match.group(1)))
+    assert result["viewport"] == width
     assert result["visible"] and result["stories"] == len(memories) and result["turns"] == 6
     assert len(set(result["labels"])) == 3
     assert result["fits"] and not result["overflow"] and not result["external"], result
+    assert result["compactInline"] and result["relayFullWidth"], result
     assert not re.search(r"仅比较|跨两天|抽取|不包含未知|其他成员合计|不推断|依据 QQ|每轮展示|同期发表情", result["text"])
     if scene == "all":
         # Compact stories have one panel; associated findings remain visible as summaries.

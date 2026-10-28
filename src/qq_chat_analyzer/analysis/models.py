@@ -9,6 +9,7 @@ from .conversation_sessions import ConversationSessionReport
 from .stickers import StickerConversationReport
 from .sticker_features import PrivateStickerFeatures
 from .group_stickers import GroupStickerFeatures
+from .private_nudges import PrivateNudges
 
 
 UNKNOWN_CONVERSATION_NAME = "\u672a\u77e5\u4f1a\u8bdd"
@@ -249,6 +250,7 @@ class AnalysisReports:
     # Private evidence only; Echo serializers consume the separate view model.
     private_stickers: PrivateStickerFeatures | None = field(default=None, repr=False)
     group_stickers: GroupStickerFeatures | None = field(default=None, repr=False)
+    private_nudges: PrivateNudges | None = None
 
 
 @dataclass(frozen=True, slots=True)

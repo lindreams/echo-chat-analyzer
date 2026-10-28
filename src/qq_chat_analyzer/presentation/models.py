@@ -198,6 +198,15 @@ class EchoConversationSession:
 
 
 @dataclass(frozen=True, slots=True)
+class EchoSessionInitiator:
+    """A named group opener without exposing the source identity key."""
+
+    display_name: str
+    count: int
+    is_viewer: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class EchoConversationSessions:
     """Session aggregate payload prepared for Echo."""
 
@@ -224,6 +233,8 @@ class EchoConversationSessions:
     group_top_initiator_name: str | None = None
     group_top_initiator_count: int | None = None
     group_top_initiator_share: float | None = None
+    group_initiators: tuple[EchoSessionInitiator, ...] = ()
+    group_unknown_count: int = 0
     viewer_identity_reliable: bool = False
     start_hour_distribution: tuple[ChartPoint, ...] = ()
     peak_start_hour: int | None = None
@@ -335,6 +346,21 @@ class EchoStickers:
 
 
 @dataclass(frozen=True, slots=True)
+class EchoNudgeMoment:
+    timestamp: int
+    is_self: bool
+    suffix: str = field(default="", repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class EchoPrivateNudges:
+    self_count: int
+    peer_count: int
+    recent: tuple[EchoNudgeMoment, ...]
+    source: str = "wechat"
+
+
+@dataclass(frozen=True, slots=True)
 class EchoReportView:
     """Display-only payload for Echo Report v0.1 Phase A."""
 
@@ -349,6 +375,7 @@ class EchoReportView:
     weekday_activity: tuple[ChartPoint, ...] = ()
     members: tuple[EchoMemberCard, ...] = ()
     conversation_sessions: EchoConversationSessions | None = None
+    private_nudges: EchoPrivateNudges | None = None
     language_profile: EchoLanguageProfile | None = None
     language_sources: EchoLanguageSources | None = None
     expression_culture: EchoExpressionCulture | None = None

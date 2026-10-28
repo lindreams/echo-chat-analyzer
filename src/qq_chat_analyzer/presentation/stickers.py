@@ -1,7 +1,6 @@
 """Bounded sticker views selected from complete scoped analysis results."""
 from __future__ import annotations
 
-import base64
 import logging
 from collections import Counter
 from dataclasses import replace
@@ -20,7 +19,6 @@ if TYPE_CHECKING:
 
 TOP_MATERIAL_LIMIT = 10
 REPORT_STICKER_BYTE_BUDGET = 16 * 1024 * 1024
-QQ_REPORT_INLINE_BYTES = 8 * 1024 * 1024
 SHARED_RANKING_MIN_MATERIALS = 1
 
 
@@ -58,9 +56,6 @@ def assemble_sticker_assets(chapter: EchoStickers, media: tuple[StickerMedia, ..
                   "GIF": "image/gif", "WEBP": "image/webp"}
     assets = []
     qq_stored = any(item.stored is not None or item.media_key.startswith("qq-pic:") for item in media)
-    external = qq_stored and sum((by_key[t.media_key].byte_count or 0)
-        for t in sticker_report_targets(chapter) if t.media_key in by_key
-        and by_key[t.media_key].status in {"available", "preview"}) > QQ_REPORT_INLINE_BYTES
     for target in sticker_report_targets(chapter):
         original = by_key.get(target.media_key)
         status, reason, uri = "not_requested", "no_media_requested", ""
@@ -71,17 +66,16 @@ def assemble_sticker_assets(chapter: EchoStickers, media: tuple[StickerMedia, ..
                 raw, mime = original.original_bytes, mime_types.get((original.format or "").upper())
                 if not mime or (not raw and original.stored is None):
                     status, reason = "unsupported", "report_image_unavailable"
-                elif external:
-                    suffix = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}[mime]
-                    uri = f"media/{original.sha256}.{suffix}"
-                    content = original.stored if original.stored is not None else StoredMedia(raw)
                 elif not qq_stored and len(raw) > remaining_bytes:
                     status, reason = "limited", "report_asset_budget"
                 else:
-                    if raw is None:
-                        raw = original.stored.read()
-                    remaining_bytes -= len(raw)
-                    uri = f"data:{mime};base64," + base64.b64encode(raw).decode("ascii")
+                    # Retain the existing local acquisition/report allowance;
+                    # only storage changes, never the image bytes or identity.
+                    if not qq_stored:
+                        remaining_bytes -= len(raw)
+                    suffix = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp"}[mime]
+                    uri = f"media/{original.sha256}.{suffix}"
+                    content = original.stored if original.stored is not None else StoredMedia(raw)
         assets.append(EchoStickerAsset(target.asset_key, uri, status, reason, content))
     assembled = replace(chapter, assets=tuple(assets))
     if chapter.conversation_kind == "private":

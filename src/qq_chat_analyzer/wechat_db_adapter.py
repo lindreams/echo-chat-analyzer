@@ -27,6 +27,7 @@ rich model, then projects that model for legacy analysis callers.
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -37,10 +38,12 @@ import zstandard as zstd
 
 from .legacy_projection import project_legacy_message, project_legacy_messages
 from .message import ChatMessage
+from .analysis.timestamps import to_utc_datetime
 from .rich_message import (
     EXPRESSION_KIND_PLATFORM_FACE,
     EXPRESSION_KIND_STICKER,
     ExpressionContent,
+    NudgeRelation,
     RichContent,
     RichMessage,
     SenderIdentity,
@@ -56,12 +59,12 @@ SOURCE_MARKER = "wechat-db"
 
 TEXT_LOCAL_TYPE = 1
 STICKER_LOCAL_TYPE = 47
+PAT_LOCAL_TYPE = (62 << 32) | 49
 _TEXT_TYPE = "text"
 _STICKER_TYPE = "sticker"
 
-# Type 1 carries plain text; type 47 carries sticker XML. Other local types
-# (image, voice, video, system, revoke, app message) are skipped here rather
-# than filtered later, matching wechat_parser and wechat_cli_adapter.
+# Types 1/47 carry authored text/stickers. The verified private pat subtype
+# is handled separately as a relation without text; other types stay excluded.
 _SUPPORTED_LOCAL_TYPES = {
     TEXT_LOCAL_TYPE: _TEXT_TYPE,
     STICKER_LOCAL_TYPE: _STICKER_TYPE,
@@ -72,6 +75,7 @@ _XML_UNSAFE_RE = re.compile(r"<!DOCTYPE|<!ENTITY", re.IGNORECASE)
 _XML_PARSE_MAX_LEN = 20000
 _CONTENT_TYPE_COMPRESSED = 4
 _WECHAT_EMOJI_TOKEN_RE = re.compile(r"\[([^\[\]]+)\]")
+_LOGGER = logging.getLogger(__name__)
 
 
 def is_wechat_db_export(path: str | Path) -> bool:
@@ -127,6 +131,8 @@ def parse_messages(raw_messages: Iterable[Any]) -> list[ChatMessage]:
 def parse_rich_messages(raw_messages: Iterable[Any]) -> list[RichMessage]:
     """Normalize supported database rows into source-neutral facts."""
     parsed_messages: list[RichMessage] = []
+    pat_candidates = 0
+    pat_accepted = 0
 
     try:
         iterator = iter(raw_messages)
@@ -134,9 +140,15 @@ def parse_rich_messages(raw_messages: Iterable[Any]) -> list[RichMessage]:
         return parsed_messages
 
     for raw_message in iterator:
+        if isinstance(raw_message, Mapping) and raw_message.get("local_type") == PAT_LOCAL_TYPE:
+            pat_candidates += 1
         parsed_message = parse_rich_message(raw_message)
         if parsed_message is not None:
             parsed_messages.append(parsed_message)
+            pat_accepted += parsed_message.message_type == "nudge"
+
+    _LOGGER.info("wechat.pats.parse candidates=%d accepted=%d rejected=%d",
+                 pat_candidates, pat_accepted, pat_candidates - pat_accepted)
 
     return parsed_messages
 
@@ -183,7 +195,15 @@ def parse_rich_message(raw_message: Any) -> RichMessage | None:
         or _stringify_id(raw_message.get("local_id"))
     )
     conversation_type = _conversation_type(raw_message)
-    if message_type == _TEXT_TYPE:
+    relations = ()
+    if message_type == "nudge":
+        relation = _parse_private_pat(raw_message, decoded_content, sender_id)
+        if relation is None or to_utc_datetime(timestamp) is None:
+            return None
+        message_id = str(raw_message["server_id"])
+        contents = ()
+        relations = (relation,)
+    elif message_type == _TEXT_TYPE:
         if conversation_type == "group" and is_self is not True:
             decoded_content = _strip_sender_prefix(decoded_content, sender_id)
         if decoded_content is None:
@@ -211,16 +231,63 @@ def parse_rich_message(raw_message: Any) -> RichMessage | None:
         message_type=message_type,
         contents=contents,
         source_type=local_type,
-        is_system=False,
+        relations=relations,
+        is_system=message_type == "nudge",
     )
 
 
 def _normalize_local_type(local_type: Any) -> str | None:
     if isinstance(local_type, bool) or not isinstance(local_type, int):
         return None
+    if local_type == PAT_LOCAL_TYPE:
+        return "nudge"
     # The provider selects the low 32-bit message type and exports the raw
     # value. Keep the same interpretation when high bits carry source flags.
     return _SUPPORTED_LOCAL_TYPES.get(local_type & 0xFFFFFFFF)
+
+
+def _parse_private_pat(
+    row: Mapping[str, Any], xml: str | None, sender_id: str,
+) -> NudgeRelation | None:
+    """Accept only the verified private pat shape, never infer from titles."""
+    peer = _clean_string(row.get("username"))
+    owner = _clean_string(row.get("self_username"))
+    server_id = row.get("server_id")
+    if (not peer or not owner or peer == owner or peer.endswith("@chatroom")
+            or _conversation_type(row) != "private"
+            or isinstance(server_id, bool)
+            or not isinstance(server_id, (int, str))
+            or not re.fullmatch(r"[1-9][0-9]*", str(server_id))
+            or not xml or len(xml) > _XML_PARSE_MAX_LEN or _XML_UNSAFE_RE.search(xml)):
+        return None
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError:
+        return None
+    apps = root.findall("appmsg")
+    if root.tag != "msg" or len(apps) != 1:
+        return None
+    app = apps[0]
+    if len(app.findall("type")) != 1 or app.findtext("type") != "62":
+        return None
+    pats = app.findall("patinfo")
+    if len(pats) != 1:
+        return None
+    pat = pats[0]
+    values = {}
+    for tag in ("fromusername", "pattedusername", "patsuffix"):
+        elements = pat.findall(tag)
+        if len(elements) > 1 or (tag != "patsuffix" and len(elements) != 1):
+            return None
+        if elements and len(elements[0]):
+            return None
+        values[tag] = pat.findtext(tag) or ""
+    actor = values["fromusername"].strip()
+    target = values["pattedusername"].strip()
+    if actor != sender_id or (actor, target) not in ((owner, peer), (peer, owner)):
+        return None
+    # chatusername is the sender's view of the conversation, not the local peer.
+    return NudgeRelation(target_identity_id=target, suffix=values["patsuffix"].strip())
 
 
 def _clean_string(value: Any) -> str | None:

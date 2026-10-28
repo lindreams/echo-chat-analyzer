@@ -152,6 +152,8 @@ window.addEventListener('load',()=>{
  try {
   const word=document.querySelector('.voice-entry .language-word-button');
   r.wordAvailable=!!word;
+  const hint=document.getElementById('language-original-hint');
+  r.lookupHint=!!hint&&!hint.hidden&&hint.textContent.includes('点击词语');
   if(!word)throw Error('no word lookup button');
   word.scrollIntoView({block:'center'});word.focus({preventScroll:true});
   const y=scrollY,dialog=document.getElementById('language-originals');
@@ -185,7 +187,7 @@ window.addEventListener('load',()=>{
     match = re.search(r'<pre id="language-probe" hidden="">(.*?)</pre>', completed.stdout.decode("utf-8"), re.S)
     assert match is not None
     result = json.loads(html.unescape(match.group(1)))
-    assert result == {"wordAvailable": True, "initiallyClosed": True, "hoverQuiet": True, "open": True,
+    assert result == {"wordAvailable": True, "lookupHint": True, "initiallyClosed": True, "hoverQuiet": True, "open": True,
         "initialHits": 3, "rawText": True, "inert": True, "contextRows": 3,
         "firstPage": 10, "secondPage": 20, "allHits": 55,
         "summary": "出现 55 次，分布于 55 条消息", "noInputs": True, "overflow": False,

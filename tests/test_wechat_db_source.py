@@ -150,6 +150,43 @@ def _provider(
 # ------------------------------------------------------------------ adapter
 
 
+def test_private_pat_queries_and_time_bounds_use_the_exact_supported_type(tmp_path):
+    """Execute acquisition SQL, including its date bounds, on fictional rows."""
+    def runner(command, timeout, environment):
+        database = Path(command[command.index("--db") + 1])
+        sql = command[command.index("--sql") + 1]
+        with closing(sqlite3.connect(database)) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = [dict(row) for row in connection.execute(sql)]
+        return _FakeCompleted(stdout=_helper_result(rows))
+
+    provider = _provider(tmp_path, runner)
+    database = tmp_path / "xwechat_files" / "wxid_owner" / "db_storage" / "message" / "message_0.db"
+    database.write_bytes(b"")  # Replace only this helper's fictional placeholder.
+    private, group = "wxid_fictional_peer", "fictional-room@chatroom"
+    with closing(sqlite3.connect(database)) as connection, connection:
+        connection.execute("CREATE TABLE Name2Id (user_name TEXT)")
+        connection.execute("INSERT INTO Name2Id VALUES ('wxid_owner')")
+        for session in (private, group):
+            table = message_table_name(session)
+            connection.execute(f'CREATE TABLE "{table}" (local_id INTEGER, server_id INTEGER, '
+                               'local_type INTEGER, create_time INTEGER, message_content TEXT, '
+                               'WCDB_CT_message_content INTEGER, real_sender_id INTEGER)')
+            connection.executemany(f'INSERT INTO "{table}" VALUES (?, ?, ?, ?, ?, 0, 1)', [
+                (1, 101, 266287972401, 10, "fictional-pat"),
+                (2, 102, 1, 20, "fictional-text"),
+                (3, 103, 47, 21, "fictional-sticker"),
+                (4, 104, 266287972401, 30, "fictional-pat"),
+                (5, 105, 49, 5, "unsupported-app"),
+                (6, 106, (63 << 32) | 49, 40, "unsupported-app-subtype"),
+            ])
+    assert [row["server_id"] for row in provider.read_session_rows(private)] == [101, 102, 103, 104]
+    assert [row["server_id"] for row in provider.read_session_rows(private, 15, 25)] == [102, 103]
+    assert provider.read_session_time_bounds(private) == [{"min_time": 10, "max_time": 30}]
+    assert [row["server_id"] for row in provider.read_session_rows(group)] == [102, 103]
+    assert provider.read_session_time_bounds(group) == [{"min_time": 20, "max_time": 21}]
+
+
 def _counting_session_provider(tmp_path, shards, usernames, faults=None, native_cli=None):
     """Execute provider SQL on fictional SQLite DBs at the helper boundary."""
     queries = []

@@ -10,6 +10,7 @@ import base64
 import binascii
 import hashlib
 import json
+import logging
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +21,7 @@ from .legacy_projection import project_legacy_messages
 from .identity_names import first_identity_name, resolve_member_names
 from .message import ChatMessage
 from .qq_db_identity import QQ_DB_SELF_NAMESPACE, canonical_qq_uin
+from .analysis.timestamps import to_epoch_seconds
 from .rich_message import (
     EXPRESSION_KIND_PLATFORM_FACE,
     EXPRESSION_KIND_STICKER,
@@ -27,6 +29,7 @@ from .rich_message import (
     ImageReference,
     StickerIdentity,
     MentionRelation,
+    NudgeRelation,
     NonTextContent,
     MessageRelation,
     ReplyRelation,
@@ -39,6 +42,7 @@ from .rich_message import (
 
 QQ_DB_JSON_FORMAT = "qq-db-json"
 WARNING_QQ_DB_RECORD_SKIPPED = "qq_db_record_skipped"
+_LOGGER = logging.getLogger("qq_chat_analyzer.qq.private_nudges")
 
 
 def is_qq_db_export(path: str | Path) -> bool:
@@ -80,6 +84,7 @@ def parse_qq_db_rich_messages(
         return [], (WARNING_QQ_DB_RECORD_SKIPPED,) if records else ()
     self_uin = _self_uin(payload)
     query = payload["query"]
+    nudge_context = _private_nudge_context(payload, session_context)
     reply_targets: dict[str, list[str | None]] = {}
     if session_context[0] == "group":
         for record in records:
@@ -91,11 +96,13 @@ def parse_qq_db_rich_messages(
                     _stringify_identifier(record.get("record_id"))
                 )
     for record in records:
+        in_session = _record_in_session(record, query)
         parsed_message = _parse_record(
             record,
             session_context,
             self_uin,
-            reply_targets if _record_in_session(record, query) else {},
+            reply_targets if in_session else {},
+            nudge_context if in_session else None,
         )
         if parsed_message is None:
             skipped_record = True
@@ -103,6 +110,10 @@ def parse_qq_db_rich_messages(
             parsed_messages.append(parsed_message)
 
     warnings = (WARNING_QQ_DB_RECORD_SKIPPED,) if skipped_record else ()
+    if session_context[0] == "private":
+        _LOGGER.info("QQ private_nudges records=%d accepted=%d identity_bound=%s",
+                     len(records), sum(message.message_type == "nudge" for message in parsed_messages),
+                     nudge_context is not None)
     return parsed_messages, warnings
 
 
@@ -256,6 +267,7 @@ def _parse_record(
     session_context: tuple[str, str],
     self_uin: Any,
     reply_targets: dict[str, list[str | None]],
+    nudge_context: Mapping[str, str] | None = None,
 ) -> RichMessage | None:
     if not isinstance(record, Mapping):
         return None
@@ -268,14 +280,31 @@ def _parse_record(
     sender_id = _stringify_identifier(fields.get("40033"))
     timestamp = fields.get("40050")
     if (
-        sender_id is None
-        or not isinstance(timestamp, (int, float, str))
+        not isinstance(timestamp, (int, float, str))
         or isinstance(timestamp, bool)
     ):
         return None
 
-    contents, relations, has_reply = _extract_semantics(record, reply_targets)
-    if not contents and not relations and not has_reply:
+    contents, relations, has_reply, parties = _extract_semantics(record, reply_targets, nudge_context)
+    if parties is not None:
+        message_id = _nonzero_identifier(record.get("record_id"))
+        if (message_id is None or re.fullmatch(r"-?[1-9][0-9]{0,19}", message_id) is None
+                or not -(1 << 63) <= int(message_id) <= (1 << 64) - 1
+                or message_id != _nonzero_identifier(fields.get("40001"))
+                or to_epoch_seconds(timestamp) is None):
+            return None
+        actor, target = parties
+        is_self = actor == self_uin
+        return RichMessage(
+            message_id=message_id, source="qq", source_type=QQ_DB_JSON_FORMAT,
+            conversation_id=session_context[1], conversation_type="private",
+            sender=SenderIdentity(identity_id=actor, display_name="我" if is_self else
+                                  first_identity_name(nudge_context.get("peer_name")) or "对方"),
+            timestamp=timestamp, message_type="nudge", contents=(),
+            relations=(NudgeRelation(target_identity_id=target),),
+            is_system=True, is_self=is_self,
+        )
+    if sender_id is None or (not contents and not relations and not has_reply):
         return None
 
     conversation_type, conversation_id = session_context
@@ -424,16 +453,23 @@ def _sequence_key(value: Any) -> str | None:
 def _extract_semantics(
     record: Mapping[str, Any],
     reply_targets: dict[str, list[str | None]],
-) -> tuple[tuple[RichContent, ...], tuple[MessageRelation, ...], bool]:
+    nudge_context: Mapping[str, str] | None = None,
+) -> tuple[tuple[RichContent, ...], tuple[MessageRelation, ...], bool, tuple[str, str] | None]:
     if record.get("blob_encoding") != "base64":
-        return (), (), False
+        return (), (), False, None
     blob = record.get("message_blob")
     if not isinstance(blob, str):
-        return (), (), False
+        return (), (), False, None
     try:
         decoded = base64.b64decode(blob, validate=True)
     except (binascii.Error, ValueError):
-        return (), (), False
+        return (), (), False, None
+
+    segments = [_protobuf_fields(value) for tag, wire, value in _protobuf_fields(decoded) if tag == 40800 and wire == 2]
+    if nudge_context is not None and len(segments) == 1:
+        parties = _poke_participants(segments[0], nudge_context)
+        if parties is not None:
+            return (), (), False, parties
 
     # These field numbers only describe the feasibility-supported Adapter v0
     # slice; they are not stable across QQ versions.
@@ -441,10 +477,7 @@ def _extract_semantics(
     relations: list[MessageRelation] = []
     has_reply = False
     expression_position = 0
-    for field_number, wire_type, value in _protobuf_fields(decoded):
-        if field_number != 40800 or wire_type != 2:
-            continue
-        fields = _protobuf_fields(value)
+    for fields in segments:
         values = {(tag, wire): data for tag, wire, data in fields}
         content_type = values.get((45002, 0))
         if content_type == 7:
@@ -474,7 +507,71 @@ def _extract_semantics(
             contents.append(content)
             if isinstance(content, ExpressionContent):
                 expression_position += 1
-    return tuple(contents), tuple(relations), has_reply
+    return tuple(contents), tuple(relations), has_reply, None
+
+
+def _private_nudge_context(payload: Mapping[str, Any], session: tuple[str, str]) -> Mapping[str, str] | None:
+    context = payload.get("private_nudge_context")
+    if session[0] != "private" or not isinstance(context, Mapping):
+        return None
+    if (context.get("namespace") != QQ_DB_SELF_NAMESPACE
+            or context.get("conversation_id") != session[1]
+            or not isinstance(context.get("session_key"), str)
+            or not context.get("session_key")
+            or context.get("session_key") != payload["query"].get("internal_key")
+            or context.get("owner_uin") != _self_uin(payload)):
+        return None
+    for key in ("owner_uin", "peer_uin"):
+        value = context.get(key)
+        if not isinstance(value, str) or re.fullmatch(r"[1-9][0-9]{4,19}", value) is None:
+            return None
+    for key in ("owner_uid", "peer_uid"):
+        value = context.get(key)
+        if not isinstance(value, str) or re.fullmatch(r"u_[A-Za-z0-9_-]{10,64}", value) is None:
+            return None
+    if context["owner_uin"] == context["peer_uin"] or context["owner_uid"] == context["peer_uid"]:
+        return None
+    return context
+
+
+def _poke_participants(fields: tuple, context: Mapping[str, str]) -> tuple[str, str] | None:
+    """Private gray-tip 1061: structured parties and JSON must agree in order."""
+    def values(tag, wire):
+        return [value for number, kind, value in fields if number == tag and kind == wire]
+
+    if values(45002, 0) != [8] or values(48273, 0) != [1061]:
+        return None
+    if values(48212, 0) not in ([], [1061]):
+        return None
+    encoded, structured = values(48271, 2), values(48210, 2)
+    if len(encoded) != 1 or len(encoded[0]) > 65536 or len(structured) != 2:
+        return None
+
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate key")
+            result[key] = value
+        return result
+
+    try:
+        data = json.loads(encoded[0].decode("utf-8"), object_pairs_hook=unique_object)
+        items = data.get("items") if isinstance(data, dict) else None
+        if not isinstance(items, list) or len(items) > 64 or any(not isinstance(item, dict) for item in items):
+            return None
+        parties = [item["uid"] for item in items if item.get("uid")]
+        expected = {context["owner_uid"], context["peer_uid"]}
+        if len(parties) != 2 or any(not isinstance(uid, str) for uid in parties) or set(parties) != expected:
+            return None
+        for segment, uid in zip(structured, parties):
+            encoded_uid = [value for tag, wire, value in _protobuf_fields(segment) if tag == 1005 and wire == 2]
+            if len(encoded_uid) != 1 or encoded_uid[0].decode("utf-8") != uid:
+                return None
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        return None
+    identities = {context["owner_uid"]: context["owner_uin"], context["peer_uid"]: context["peer_uin"]}
+    return identities[parties[0]], identities[parties[1]]
 
 
 def _pic_digest(fields: tuple[tuple[int, int, int | bytes], ...]) -> str | None:

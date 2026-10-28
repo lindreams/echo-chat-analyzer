@@ -421,7 +421,7 @@ def test_execute_generates_echo_report_json_artifact(tmp_path: Path) -> None:
     report_path = output_directory / "echo-report.json"
     assert report_path.is_file()
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "echo-report.v0.13"
+    assert payload["schema_version"] == "echo-report.v0.16"
 
 
 def test_report_boundary_does_not_retain_full_expression_candidates() -> None:
@@ -610,7 +610,7 @@ def test_new_report_metadata_records_corrected_expression_semantics(tmp_path):
         result=result, source="wechat", scope=AnalysisScope.all(),
         generated_at=datetime(2026, 10, 16, tzinfo=timezone.utc),
     )
-    assert metadata["analysis_revision"] == "echo-analysis.v13"
+    assert metadata["analysis_revision"] == "echo-analysis.v15"
 
 
 @pytest.mark.parametrize("source", ["wechat", "qq"])

@@ -363,10 +363,9 @@ def test_member_top_limit_uses_scoped_sticker_senders_and_bounds_media_targets(k
     ("PNG", "APNG", "image/png"),
     ("WEBP", "WebP", "image/webp"),
 ])
-def test_verified_animations_retain_original_and_preview_bytes_in_html(
+def test_verified_animations_share_original_and_preview_files_between_html_and_json(
     tmp_path, encoded_format, verified_format, mime,
 ):
-    import base64
     import hashlib
     from qq_chat_analyzer.analysis.stickers import StickerConversationReport, StickerMaterialUsage, StickerParticipant
     from qq_chat_analyzer.application.sticker_media import verify_fetched_media
@@ -389,14 +388,20 @@ def test_verified_animations_retain_original_and_preview_bytes_in_html(
     assets = echo_report_to_dict(view)["stickers"]["assets"]
     assert [item["status"] for item in assets.values()] == ["available", "preview"]
     html = export_echo_report_html(view, tmp_path / "animations.html").read_text(encoding="utf-8")
+    from qq_chat_analyzer.presentation.echo_serializer import export_echo_report_json
+    exported = export_echo_report_json(view, tmp_path / "animations.json")
+    assert json.loads(exported.read_text(encoding="utf-8"))["stickers"]["assets"] == assets
     for asset in assets.values():
-        prefix, encoded = asset["data_uri"].split(",", 1)
-        assert prefix == f"data:{mime};base64"
-        assert base64.b64decode(encoded, validate=True) == raw
+        assert asset["data_uri"].startswith("media/")
+        assert (tmp_path / asset["data_uri"]).read_bytes() == raw
         assert asset["data_uri"] in html
+    # Two independently verified identities/statuses can share identical bytes.
+    assert len({item["data_uri"] for item in assets.values()}) == 1
+    assert len(list((tmp_path / "media").iterdir())) == 1
 
 
-def test_large_qq_report_publishes_bounded_offline_files_without_dropping_assets(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stored", [False, True])
+def test_report_publishes_bounded_offline_files_without_dropping_assets(tmp_path, stored):
     from qq_chat_analyzer.presentation.echo_serializer import export_echo_report_json
     import hashlib
     from dataclasses import replace
@@ -404,13 +409,11 @@ def test_large_qq_report_publishes_bounded_offline_files_without_dropping_assets
     from qq_chat_analyzer.application.sticker_media import verify_fetched_media
     from qq_chat_analyzer.application.echo_report_export import package_echo_report
     from qq_chat_analyzer.media_content import StoredMedia
-    from qq_chat_analyzer.presentation import stickers
     from test_sticker_data import image_bytes
 
     raw = image_bytes("GIF", animated=True)
     verified = verify_fetched_media(raw, media_key="a", expected_md5=hashlib.md5(raw).hexdigest())
-    media = replace(verified, original_bytes=None, stored=StoredMedia(raw))
-    monkeypatch.setattr(stickers, "QQ_REPORT_INLINE_BYTES", 1, raising=False)
+    media = replace(verified, original_bytes=None, stored=StoredMedia(raw)) if stored else verified
     report = StickerConversationReport("qq", "fiction-room", "group", 1, 1, 0, 0,
         members=(StickerParticipant("a", True, 1, 1),),
         materials=(StickerMaterialUsage("a", "a", 1, (("a", 1),)),))
@@ -425,8 +428,27 @@ def test_large_qq_report_publishes_bounded_offline_files_without_dropping_assets
     assert (published / asset.data_uri).read_bytes() == raw
     assert asset.data_uri in (published / "echo-report.html").read_text(encoding="utf-8")
     assert len(list((published / "media").iterdir())) == 1
-    assert media.original_bytes is None and media.stored.read() == raw
-    media.stored.close()
+    if stored:
+        assert media.original_bytes is None and media.stored.read() == raw
+        media.stored.close()
+    else:
+        assert media.original_bytes == raw
+
+
+def test_report_wordmark_uses_pixel_identical_lossless_resource(tmp_path):
+    from PIL import Image
+    from qq_chat_analyzer.resources import resource_path
+
+    original = resource_path("assets/branding/echo/echo_wordmark_with_slogan.png")
+    optimized = resource_path("assets/branding/echo/echo_wordmark_report.webp")
+    assert optimized.is_file()
+    assert optimized.stat().st_size < original.stat().st_size
+    with Image.open(original) as before, Image.open(optimized) as after:
+        assert before.size == after.size
+        assert before.convert("RGBA").tobytes() == after.convert("RGBA").tobytes()
+        assert before.info.get("icc_profile") == after.info.get("icc_profile")
+    html = export_echo_report_html(EchoReportView(title="Fictional Echo"), tmp_path / "report.html").read_text(encoding="utf-8")
+    assert 'class="brand-logo" src="data:image/webp;base64,' in html
 
 
 def test_sticker_asset_budget_keeps_counts_and_explains_unavailable_images(monkeypatch):
@@ -565,7 +587,7 @@ def test_activity_analysis_preserves_report_distribution_and_density_contract(tm
         activity=ActivityAnalyzer().analyze(messages),
     ))
     payload = echo_report_to_dict(view)
-    assert payload["schema_version"] == "echo-report.v0.13"
+    assert payload["schema_version"] == "echo-report.v0.16"
     assert payload["overview"] == {
         "has_data": True, "total_message_count": 3, "participant_count": 0,
         "empty_description": "", "active_days": 1,
@@ -583,6 +605,35 @@ def test_activity_analysis_preserves_report_distribution_and_density_contract(tm
     assert match is not None
     assert json.loads(match.group(1)) == payload
 
+
+
+def test_group_openers_keep_each_identity_unknowns_and_display_names():
+    from qq_chat_analyzer.analysis.conversation_sessions import analyze_conversation_sessions
+    from qq_chat_analyzer.message import ChatMessage
+    from qq_chat_analyzer.presentation.builders import _build_echo_sessions
+
+    senders = ["a", "b", "a", "c", "", "b", "d"]
+    report = analyze_conversation_sessions(tuple(ChatMessage(
+        timestamp=1700000000 + index * 3600, sender=key, sender_id=key or None,
+        message_type="text", text="fictional", platform="wechat",
+        conversation_id="fictional", conversation_type="group", is_self=key == "c",
+    ) for index, key in enumerate(senders)))
+    members = tuple(EchoMemberCard(
+        speaker_key=key, display_name=name, is_viewer=key == "c", message_count=2,
+        message_share_percent=25, average_length=1, max_length=1, active_period="",
+    ) for key, name in (("a", "同名"), ("b", "同名"), ("c", "虚构本人")))
+    sessions = _build_echo_sessions(report, members=members)
+    payload = echo_report_to_dict(EchoReportView(
+        title="Fictional", conversation_kind="group", conversation_sessions=sessions,
+    ))["conversation_sessions"]["group_initiators"]
+    assert [(row["count"], row["is_viewer"]) for row in payload["members"]] == [
+        (2, False), (2, False), (1, True), (1, False)]
+    assert payload["unknown_count"] == 1
+    assert sum(row["count"] for row in payload["members"]) + payload["unknown_count"] == 7
+    assert len({row["display_name"] for row in payload["members"]}) == 4
+    assert payload["members"][-1]["display_name"].startswith("未命名成员")
+    assert all(set(row) == {"display_name", "count", "is_viewer"} for row in payload["members"])
+    assert "fictional" not in repr(report.group_stats)
 
 
 def _echo_view() -> EchoReportView:
