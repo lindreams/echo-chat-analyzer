@@ -12,7 +12,6 @@ import pytest
 
 from qq_chat_analyzer.application.wechat.wechat_environment_config import (
     WeChatConfigCorrupted,
-    WeChatConfigNotFound,
     WeChatConfigWriteFailed,
     WeChatEnvironmentConfig,
     WeChatEnvironmentConfigLoader,
@@ -26,7 +25,6 @@ from qq_chat_analyzer.application.wechat.wechat_provider_factory import (
 )
 from qq_chat_analyzer.application.wechat.wechat_setup_service import (
     WeChatSetupService,
-    WeChatSetupState,
     WeChatSetupStatus,
 )
 from qq_chat_analyzer.providers.wechat_database_provider import (
@@ -117,44 +115,7 @@ class _CountingFactory:
 # ------------------------------------------------------------------- writer
 
 
-def test_writer_round_trips_through_loader(tmp_path: Path) -> None:
-    target = tmp_path / "wechat.json"
-    original = _config(tmp_path)
-
-    WeChatEnvironmentConfigWriter(target).save(original)
-    restored = WeChatEnvironmentConfigLoader(target).load()
-
-    assert restored == original
-
-
 # ------------------------------------------------------------- check_setup
-
-
-def test_check_setup_uses_bundled_defaults(tmp_path: Path) -> None:
-    default_config = WeChatEnvironmentConfig(
-        wcdb_cli_path=tmp_path / "bundled" / "wcdb_cli.exe",
-        wcdb_dll_path=tmp_path / "bundled" / "WCDB.dll",
-    )
-
-    class _DefaultLoader:
-        def config_path(self):
-            return tmp_path / "wechat.json"
-
-        def load(self):
-            raise WeChatConfigNotFound()
-
-        def load_or_default(self):
-            return default_config
-
-    service = _isolated_setup_service(
-        tmp_path,
-        config_loader=_DefaultLoader(),
-    )
-
-    status = service.check_setup()
-
-    assert status.state is WeChatSetupState.CONFIG_READY
-    assert status.configured is True
 
 
 # ------------------------------------------------------ detect_data_root

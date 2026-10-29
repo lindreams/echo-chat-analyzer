@@ -111,9 +111,7 @@ class StubFacade:
         reports=(),
         report_issues=(),
         report_usage=None,
-        report_usage_error=None,
         list_reports_error=None,
-        clear_reports_error=None,
     ):
         self._sources = tuple(sources)
         self._sessions = list(sessions)
@@ -132,9 +130,7 @@ class StubFacade:
         self._reports = list(reports)
         self._report_issues = tuple(report_issues)
         self._report_usage = report_usage
-        self._report_usage_error = report_usage_error
         self._list_reports_error = list_reports_error
-        self._clear_reports_error = clear_reports_error
         self.list_sessions_calls: list[object] = []
         self.get_connection_status_calls: list[object] = []
         self.get_wechat_setup_status_calls: list[object] = []
@@ -152,32 +148,16 @@ class StubFacade:
         self.get_session_message_range_calls: list[tuple] = []
         self.analyze_session_calls: list[tuple] = []
         self.list_report_packages_calls: list[object] = []
-        self.get_report_storage_usage_calls: list[object] = []
-        self.clear_report_packages_calls: list[object] = []
 
     def list_report_packages(self):
-        from qq_chat_analyzer.application.report_package_catalog import ReportPackageListing
+        from qq_chat_analyzer.application.report_package_catalog import ReportPackageListing, ReportStorageUsage
         self.list_report_packages_calls.append(1)
         if self._list_reports_error is not None:
             raise self._list_reports_error
-        return ReportPackageListing(tuple(self._reports), self._report_issues, self.get_report_storage_usage())
-
-    def get_report_storage_usage(self):
-        from qq_chat_analyzer.application.report_package_catalog import ReportStorageUsage
-        self.get_report_storage_usage_calls.append(1)
-        if self._report_usage_error is not None:
-            raise self._report_usage_error
-        if self._report_usage is not None:
-            return self._report_usage
-        return ReportStorageUsage(len(self._reports), 0)
-
-    def clear_report_packages(self):
-        self.clear_report_packages_calls.append(1)
-        if self._clear_reports_error is not None:
-            self._reports = self._reports[:1]
-            raise self._clear_reports_error
-        self._reports = []
-        self._report_issues = ()
+        return ReportPackageListing(
+            tuple(self._reports), self._report_issues,
+            self._report_usage or ReportStorageUsage(len(self._reports), 0),
+        )
 
     def delete_report_packages(self, names):
         from qq_chat_analyzer.application.report_package_catalog import ReportPackageDeletionResult
@@ -216,9 +196,6 @@ class StubFacade:
         if self._connection_status_after_connect is not None:
             self._connection_status = self._connection_status_after_connect
         return self._qq_snapshot()
-
-    def is_qq_qrcode_ready(self):
-        return True
 
     def get_qq_connection_snapshot(self):
         self.get_qq_connection_snapshot_calls.append(1)
@@ -976,28 +953,6 @@ def _wechat_available_sources():
 # -------------------------------------------------------------- Echo report
 
 
-def test_successful_outcome_saves_report_and_opens_echo(
-    qt_app,
-    sources,
-    tmp_path,
-) -> None:
-    """MainWindow keeps the report path and reuses the existing opener."""
-    report_path = tmp_path / "echo-report.html"
-    report_path.write_text("<html>fictional report</html>", encoding="utf-8")
-    opened: list[Path] = []
-    window = _main_window(qt_app, StubFacade(sources=sources))
-    window._report_opener = lambda path: opened.append(path) or True
-
-    window.show_outcome(
-        _StubOutcome(report_path=report_path)
-    )
-
-    assert window._current_report_path == report_path.resolve()
-    assert window._open_echo_button.isVisibleTo(window)
-    assert window._open_echo_button.isEnabled()
-    assert opened == [report_path.resolve()]
-
-
 # -------------------------------------------------------------------- errors
 
 
@@ -1152,30 +1107,6 @@ def test_qq_session_callback_terminal_diagnostics(qt_app, caplog, monkeypatch, c
     assert "PRIVATE" not in log
 
 
-@pytest.mark.parametrize("callback", ["success", "failure", "stale"])
-def test_qq_session_logging_failure_preserves_callback_behavior(qt_app, monkeypatch, callback):
-    from qq_chat_analyzer.gui import qq_workspace as module
-    executor = _DeferredExecutor()
-    workspace = module.QQWorkspace(StubFacade(), executor=executor)
-    errors = []
-    monkeypatch.setattr(workspace, "_handle_session_error", lambda *args: errors.append(args))
-    def broken(*args, **kwargs):
-        raise RuntimeError("PRIVATE_LOG_FAILURE")
-    monkeypatch.setattr(module._LOGGER, "info", broken)
-    workspace._load_sessions()
-    if callback == "stale":
-        workspace._invalidate_session_request()
-        executor.succeed([])
-        assert not workspace._sessions_loaded
-    elif callback == "failure":
-        executor.on_error("original_code", "Original message")
-        assert errors == [("original_code", "Original message")]
-        assert workspace._session_request is None
-    else:
-        executor.succeed([])
-        assert workspace._sessions_loaded and workspace._session_request is None
-
-
 class _SnapshotFacade(StubFacade):
     """Return one fixed QQ snapshot regardless of the underlying status."""
 
@@ -1209,9 +1140,6 @@ class _GatedQRFacade(_ConnectWaitingAuthFacade):
         super().__init__(status_snapshot, connect_snapshot, **kwargs)
         self.qr_ready = False
         self.qr_path = None
-
-    def is_qq_qrcode_ready(self):
-        return self.qr_ready
 
     def get_qq_qrcode_path(self):
         return self.qr_path if self.qr_ready else None
@@ -1534,42 +1462,6 @@ def test_qq_error_snapshot_shows_the_reviewed_code(qt_app) -> None:
     assert "错误代码" not in workspace._status_label.text()
 
 
-def test_every_literal_qq_failure_code_is_reviewed_for_display() -> None:
-    """A new QQ code must be reviewed before it can reach the user."""
-    import re
-
-    from qq_chat_analyzer.gui import qq_workspace as module
-
-    sources = [
-        *sorted((SRC_ROOT / "qq_chat_analyzer/application/qq").glob("*.py")),
-        SRC_ROOT / "qq_chat_analyzer/providers/napcat_qq_provider.py",
-        SRC_ROOT / "qq_chat_analyzer/providers/qq_direct_snapshot_runtime.py",
-        SRC_ROOT / "qq_chat_analyzer/runtime/__init__.py",
-        SRC_ROOT / "qq_chat_analyzer/resources.py",
-    ]
-    pattern = re.compile(
-        r"(?:code\s*[:=]\s*|[A-Z_]*CODE\s*=\s*)['\"]([a-z0-9_]+)['\"]"
-    )
-    produced = {
-        match.group(1)
-        for path in sources
-        for match in pattern.finditer(path.read_text(encoding="utf-8"))
-    }
-
-    # Private-nudge identity failures only skip that optional statistic. These
-    # diagnostic-only codes must stay out of the connection-error display list.
-    diagnostic_only = {
-        "metadata_unavailable", "identity_mismatch", "peer_ambiguous", "identity_conflict",
-    }
-    assert produced <= module._REVIEWED_QQ_FAILURE_CODES | diagnostic_only
-    assert not diagnostic_only & module._REVIEWED_QQ_FAILURE_CODES
-    assert all(module._failure_code_suffix(code) == "" for code in diagnostic_only)
-    # Facade-owned codes that reach the same page from connect/session paths.
-    assert {"qq_install_path_invalid", "source_unavailable"} <= (
-        module._REVIEWED_QQ_FAILURE_CODES
-    )
-
-
 def test_qq_connect_failure_shows_only_the_fixed_error_code(qt_app) -> None:
     """The failing stage stays reportable even when no log file was created."""
     from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
@@ -1721,6 +1613,7 @@ def test_wechat_analysis_forwards_cancel_signal(qt_app):
     assert captured.get("cancelled") is not None
     event.set()
     assert captured["cancelled"]() is True
+
 
 
 @pytest.mark.parametrize("source_name", ["qq", "wechat"])

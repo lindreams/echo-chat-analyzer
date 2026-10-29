@@ -12,7 +12,7 @@ from dataclasses import dataclass
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import (
-    QBrush, QColor, QGradient, QImage, QLinearGradient, QPainter,
+    QBrush, QColor, QGradient, QLinearGradient, QPainter,
     QPainterPath, QPen, QRadialGradient,
 )
 
@@ -221,18 +221,3 @@ def paint_processing_frame(painter: QPainter, viewport: QRectF, model: Processin
             _pen(painter, pose.point, pose.angle, model.pen_alpha, model.pen_lift)
     finally:
         painter.restore()
-
-
-def render_processing_frame(model: ProcessingAnimationModel, width: int = 800,
-                            height: int = 460, *, background: QColor | None = None) -> QImage:
-    """Render to a transparent QImage by default; no QApplication is needed."""
-    if width <= 0 or height <= 0:
-        raise ValueError("Frame dimensions must be positive")
-    image = QImage(width, height, QImage.Format.Format_ARGB32_Premultiplied)
-    image.fill(Qt.GlobalColor.transparent if background is None else background)
-    painter = QPainter(image)
-    try:
-        paint_processing_frame(painter, QRectF(0, 0, width, height), model)
-    finally:
-        painter.end()
-    return image

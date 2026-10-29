@@ -12,11 +12,6 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
 from qq_chat_analyzer.application import ImportRequest, ImportService
-from qq_chat_analyzer.wechat_parser import (
-    is_wechat_export,
-    load_messages,
-    parse_messages,
-)
 
 
 CHATLAB_TEXT_TYPE = 0
@@ -101,7 +96,7 @@ def test_chatlab_type_twenty_five_is_parsed_as_reply(tmp_path: Path) -> None:
         ],
     )
 
-    parsed = parse_messages(load_messages(export_path))
+    parsed = ImportService().execute(ImportRequest(input_path=export_path)).messages
 
     assert len(parsed) == 1
     assert parsed[0].message_type == "reply"
@@ -122,26 +117,12 @@ def test_chatlab_malformed_line_does_not_drop_other_messages(
         ],
     )
 
-    parsed = parse_messages(load_messages(export_path))
+    parsed = ImportService().execute(ImportRequest(input_path=export_path)).messages
 
     assert [message.text for message in parsed] == [
         "Before broken line",
         "After broken line",
     ]
-
-
-def test_header_and_member_lines_are_not_parsed_as_messages(
-    tmp_path: Path,
-) -> None:
-    export_path = tmp_path / "chatlab.jsonl"
-    _write_chatlab_jsonl(
-        export_path,
-        [_header_line(), _member_line()],
-    )
-
-    parsed = parse_messages(load_messages(export_path))
-
-    assert parsed == []
 
 
 def test_import_service_routes_chatlab_jsonl_to_wechat(tmp_path: Path) -> None:

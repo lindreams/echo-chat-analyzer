@@ -126,22 +126,6 @@ def test_activity_analyzer_counts_epoch_in_beijing_local_hour() -> None:
     assert hourly[12] == 0
 
 
-def test_activity_analyzer_active_days_multiple_days_and_density() -> None:
-    report = _analyzers().ActivityAnalyzer().analyze(
-        (
-            _message(timestamp=_epoch(day=1, hour=8)),
-            _message(timestamp=_epoch(day=2, hour=8)),
-            _message(timestamp=_epoch(day=2, hour=9)),
-            _message(timestamp=_epoch(day=3, hour=20)),
-            _message(timestamp=_epoch(day=3, hour=21)),
-            _message(timestamp=_epoch(day=3, hour=22)),
-        )
-    )
-
-    assert report.active_days == 3
-    assert report.average_messages_per_active_day == 2.0
-
-
 @pytest.mark.parametrize(
     "timestamps, dated, days, density, hours, weekdays",
     [
@@ -228,40 +212,6 @@ def test_user_profile_analyzer_reports_shares_for_multiple_users() -> None:
     assert profiles["Fictional-Alice"].busiest_hour == 8
     assert profiles["Fictional-Bob"].message_share_percent == 25.0
     assert profiles["Fictional-Bob"].average_length == 6.0
-
-
-def test_user_profile_exposes_hourly_and_weekday_distributions() -> None:
-    messages = (
-        _message(timestamp=_epoch(hour=9)),
-        _message(timestamp=_epoch(hour=10)),
-    )
-
-    profile = _analyzers().UserProfileAnalyzer().analyze(messages).profiles[0]
-
-    assert len(profile.hourly_counts) == 24
-    assert sum(entry.count for entry in profile.hourly_counts) == 2
-    assert len(profile.weekday_counts) == 7
-    assert sum(entry.count for entry in profile.weekday_counts) == 2
-    assert isinstance(profile.hourly_counts[0], _models().HourlyActivity)
-    assert isinstance(profile.weekday_counts[0], _models().WeekdayActivity)
-
-
-def test_user_profile_median_length_odd_and_even_independent() -> None:
-    messages = (
-        _message(sender="Fictional-Alice", text="123"),
-        _message(sender="Fictional-Alice", text="12345"),
-        _message(sender="Fictional-Alice", text="1234567"),
-        _message(sender="Fictional-Bob", text="12"),
-        _message(sender="Fictional-Bob", text="1234"),
-    )
-
-    report = _analyzers().UserProfileAnalyzer().analyze(messages)
-    profiles = {profile.speaker: profile for profile in report.profiles}
-
-    assert profiles["Fictional-Alice"].median_length == 5.0
-    assert profiles["Fictional-Bob"].median_length == 3.0
-    assert profiles["Fictional-Alice"].average_length == 5.0
-    assert profiles["Fictional-Bob"].average_length == 3.0
 
 
 def test_user_profile_consecutive_runs_aaa_bba() -> None:

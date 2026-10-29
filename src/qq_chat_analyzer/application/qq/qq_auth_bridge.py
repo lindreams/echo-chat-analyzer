@@ -40,7 +40,7 @@ from .qq_process_registry import (
     default_qq_process_registry,
 )
 from .qq_process_detection import QQProcessDetectionError, find_conflicting_qq_pids
-from .qq_version import read_qq_version, read_qq_resources, QQResources, QQVersionConflict
+from .qq_version import read_qq_resources, QQResources, QQVersionConflict
 from .qq_runtime_session import default_qq_runtime_session
 
 
@@ -845,11 +845,6 @@ def _read_saved_qq_path(path: Path) -> Path | None:
         if resolved is not None:
             return resolved
     return None
-
-
-def _detect_qq_install_path() -> Path | None:
-    """Select a QQ.exe from the bounded registry/common locations."""
-    return _select_qq_install_path(_qq_install_candidates())
 
 
 def _qq_install_candidates() -> list[Path]:

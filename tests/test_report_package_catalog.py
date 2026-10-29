@@ -137,7 +137,7 @@ def test_fixed_01_metadata_survives_list_reopen_and_retention_without_rewrite(tm
     assert summary.conversation_name == "Fictional 0.1 Conversation"
     assert summary.conversation_kind == "group"
     assert catalog.resolve_html_path(old.name) == old / "echo-report.html"
-    assert catalog.storage_usage().package_count == 51
+    assert catalog.list_reports().storage_usage.package_count == 51
     assert old.name in {report.package_name for report in catalog.list_reports().reports}
     assert len(list(tmp_path.glob("Echo_Report_*"))) == 51
     assert catalog.resolve_html_path(old.name) == old / "echo-report.html"
@@ -170,23 +170,6 @@ def test_catalog_reopens_both_analysis_revisions_without_rewriting(tmp_path, rev
     } == before
 
 
-def test_clear_deletes_whole_packages_and_preserves_unknown_siblings(tmp_path):
-    package = _package(tmp_path)
-    (package / "echo-share.png").write_bytes(b"fictional")
-    (package / "future-artifact.txt").write_text("fictional", encoding="utf-8")
-    unknown = tmp_path / "Echo_Report_not_owned"
-    unknown.mkdir()
-    invalid_name = tmp_path / "Echo_Report_99999999_999999"
-    invalid_name.mkdir()
-    external = tmp_path / "manual.json"
-    external.write_text("fictional", encoding="utf-8")
-    _catalog(tmp_path).clear_all()
-    assert not package.exists()
-    assert unknown.is_dir()
-    assert invalid_name.is_dir()
-    assert external.exists()
-
-
 def test_named_regular_file_is_ignored_by_all_package_operations(tmp_path):
     package = _package(tmp_path)
     named_file = tmp_path / "Echo_Report_20261004_120000_2"
@@ -196,52 +179,20 @@ def test_named_regular_file_is_ignored_by_all_package_operations(tmp_path):
     listing = catalog.list_reports()
     assert [report.package_name for report in listing.reports] == [package.name]
     assert not listing.issues
-    usage = catalog.storage_usage()
+    usage = catalog.list_reports().storage_usage
     assert usage.package_count == 1 and usage.complete
     assert usage.measured_bytes == sum(
         (package / name).stat().st_size
         for name in ("echo-report.html", "echo-report.json", "metadata.json", "README.txt")
     )
-    catalog.clear_all()
+    assert catalog.delete_packages([package.name]).complete
     assert not package.exists()
     assert named_file.read_bytes() == b"fictional sentinel"
     assert named_file.stat().st_mtime_ns == before.st_mtime_ns
 
 
-def test_delete_package_removes_only_selected_package_and_preserves_siblings(tmp_path):
-    selected = _package(tmp_path)
-    other = _package(tmp_path, "Echo_Report_20261004_120000_2")
-    (selected / "extra.txt").write_text("fictional", encoding="utf-8")
-    unknown = tmp_path / "manual.txt"
-    unknown.write_bytes(b"fictional sibling")
-    catalog = _catalog(tmp_path)
-    catalog.delete_package(selected.name)
-    assert not selected.exists()
-    assert catalog.resolve_html_path(other.name) == other / "echo-report.html"
-    assert unknown.read_bytes() == b"fictional sibling"
-
-
-@pytest.mark.parametrize("name", ["../Echo_Report_20261004_120000", "manual"])
-def test_delete_package_rejects_invalid_identity(tmp_path, name):
-    package = _package(tmp_path)
-    with pytest.raises(ValueError):
-        _catalog(tmp_path).delete_package(name)
-    assert package.is_dir()
-
-
-@pytest.mark.parametrize("kind", ["missing", "file"])
-def test_delete_package_rejects_non_package(tmp_path, kind):
-    path = tmp_path / "Echo_Report_20261004_120000"
-    if kind == "file":
-        path.write_bytes(b"fictional sentinel")
-    with pytest.raises((ValueError, FileNotFoundError)):
-        _catalog(tmp_path).delete_package(path.name)
-    if kind == "file":
-        assert path.read_bytes() == b"fictional sentinel"
-
-
 @pytest.mark.parametrize("location", ["root", "package", "inside"])
-def test_delete_package_rejects_windows_junction_without_following(tmp_path, location):
+def test_delete_packages_rejects_windows_junction_without_following(tmp_path, location):
     from qq_chat_analyzer.application.echo_report_export import EchoReportExportError
     import subprocess
     import sys
@@ -264,77 +215,17 @@ def test_delete_package_rejects_windows_junction_without_following(tmp_path, loc
             link = package / "linked"
     subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(external)], check=True, capture_output=True)
     try:
-        with pytest.raises(EchoReportExportError):
-            _catalog(root).delete_package(name)
+        if location == "root":
+            with pytest.raises(EchoReportExportError):
+                _catalog(root).delete_packages([name])
+        else:
+            result = _catalog(root).delete_packages([name])
+            assert result.deleted == ()
+            assert _failure_pairs(result) == [(name, "unsafe_target")]
         assert sentinel.read_bytes() == b"fictional external"
         assert link.exists()
     finally:
         link.rmdir()
-
-
-def test_clear_continues_after_failure_and_reports_failure(tmp_path, monkeypatch):
-    import shutil
-    first = _package(tmp_path)
-    second = _package(tmp_path, "Echo_Report_20261004_120000_2")
-    original = shutil.rmtree
-    def fail_first(path, *args, **kwargs):
-        if Path(path) == first:
-            raise PermissionError("fictional failure")
-        return original(path, *args, **kwargs)
-    monkeypatch.setattr(shutil, "rmtree", fail_first)
-    with pytest.raises(RuntimeError):
-        _catalog(tmp_path).clear_all()
-    assert first.exists()
-    assert not second.exists()
-
-
-def test_reparse_candidate_is_an_issue_and_clear_fails_without_following(tmp_path, monkeypatch):
-    import stat
-    package = _package(tmp_path)
-    original = Path.lstat
-    class ReparseStat:
-        st_file_attributes = stat.FILE_ATTRIBUTE_REPARSE_POINT
-        st_mode = stat.S_IFDIR
-    def reparse(path, *args, **kwargs):
-        return ReparseStat() if path == package else original(path, *args, **kwargs)
-    monkeypatch.setattr(Path, "lstat", reparse)
-    catalog = _catalog(tmp_path)
-    assert len(catalog.list_reports().issues) == 1
-    with pytest.raises(RuntimeError):
-        catalog.clear_all()
-    assert (package / "metadata.json").exists()
-
-
-@pytest.mark.parametrize("location", ["root", "package", "inside"])
-def test_windows_junction_never_deletes_external_target(tmp_path, location):
-    import sys
-    import subprocess
-    if sys.platform != "win32":
-        pytest.skip("Windows junction regression")
-    root = tmp_path / "reports"
-    root.mkdir()
-    target = tmp_path / "external"
-    target.mkdir()
-    original = target / "original.json"
-    original.write_text("fictional original", encoding="utf-8")
-    if location == "root":
-        root.rmdir()
-        junction = root
-    elif location == "package":
-        junction = root / "Echo_Report_20261004_120000"
-    else:
-        junction = _package(root) / "external"
-    subprocess.run(["cmd", "/c", "mklink", "/J", str(junction), str(target)],
-                   check=True, capture_output=True)
-    try:
-        catalog = _catalog(root)
-        if location == "package":
-            assert len(catalog.list_reports().issues) == 1
-        with pytest.raises(RuntimeError):
-            catalog.clear_all()
-        assert original.read_text(encoding="utf-8") == "fictional original"
-    finally:
-        junction.rmdir()
 
 
 @pytest.mark.parametrize("suffix", ["_2"])
@@ -361,7 +252,7 @@ def _package_bytes(package):
     return sum(child.stat().st_size for child in package.iterdir() if child.is_file())
 
 
-def test_storage_usage_marks_reparse_package_unmeasured_instead_of_zero(tmp_path, monkeypatch):
+def test_listing_usage_marks_reparse_package_unmeasured_instead_of_zero(tmp_path, monkeypatch):
     import stat
     packages = _packages(tmp_path, 2)
     linked = packages[0]
@@ -372,7 +263,7 @@ def test_storage_usage_marks_reparse_package_unmeasured_instead_of_zero(tmp_path
     def reparse(path, *args, **kwargs):
         return ReparseStat() if path == linked else original(path, *args, **kwargs)
     monkeypatch.setattr(Path, "lstat", reparse)
-    usage = _catalog(tmp_path).storage_usage()
+    usage = _catalog(tmp_path).list_reports().storage_usage
     assert usage.package_count == 2
     assert usage.unmeasured_packages == (linked.name,)
     assert not usage.complete
@@ -380,7 +271,7 @@ def test_storage_usage_marks_reparse_package_unmeasured_instead_of_zero(tmp_path
     assert (linked / "metadata.json").exists()
 
 
-def test_storage_usage_windows_junction_package_unmeasured_and_external_kept(tmp_path):
+def test_listing_usage_windows_junction_package_unmeasured_and_external_kept(tmp_path):
     import subprocess
     import sys
     if sys.platform != "win32":
@@ -396,7 +287,7 @@ def test_storage_usage_windows_junction_package_unmeasured_and_external_kept(tmp
     subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(external)],
                    check=True, capture_output=True)
     try:
-        usage = _catalog(root).storage_usage()
+        usage = _catalog(root).list_reports().storage_usage
         assert usage.package_count == 2
         assert usage.unmeasured_packages == (link.name,)
         assert not usage.complete
@@ -499,7 +390,7 @@ def test_delete_packages_deletes_only_named_targets_and_keeps_the_rest(tmp_path)
     assert not first.exists() and not second.exists()
     assert {path.name: (path.read_bytes(), path.stat().st_mtime_ns) for path in kept.iterdir()} == kept_before
     assert (manual / "keep.txt").read_text(encoding="utf-8") == "fictional"
-    assert catalog.storage_usage().package_count == 1
+    assert catalog.list_reports().storage_usage.package_count == 1
 
 
 @pytest.mark.parametrize("selection", [[], None, "Echo_Report_20261004_120000", [None], ["../Echo_Report_20261004_120000"], ["Echo_Report_20261004_120000\\outside"]])

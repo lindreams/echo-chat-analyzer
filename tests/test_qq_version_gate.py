@@ -49,7 +49,6 @@ def test_build_gate_precedes_any_runtime_launch(tmp_path, monkeypatch, caplog, b
         return original_read(path)
 
     monkeypatch.setattr(module, "read_qq_resources", version)
-    monkeypatch.setattr(module, "read_qq_version", lambda _: (9, 9, 36, 53644))
     monkeypatch.setattr(*_launch_target(module), lambda *a, **k: launched.append(a) or _FakeProcess(4243))
     with caplog.at_level("DEBUG", logger="qq_chat_analyzer.desktop.qq_auth_bridge"):
         snapshot = instance.start_auth_flow()
@@ -70,23 +69,6 @@ def test_build_gate_precedes_any_runtime_launch(tmp_path, monkeypatch, caplog, b
         assert len(launched) == 1
     assert str(tmp_path) not in snapshot.message + snapshot.action_hint + caplog.text
     assert "ECHO_BRIDGE_TOKEN" not in caplog.text
-
-
-def test_version_read_exception_is_unknown_without_private_logging(tmp_path, monkeypatch, caplog):
-    module = _bridge_module()
-    instance, _ = _auth(tmp_path)
-
-    def fail(_):
-        raise OSError(f"{tmp_path} fictional-account fictional-token fictional-chat")
-
-    monkeypatch.setattr(module, "read_qq_version", fail, raising=False)
-    monkeypatch.setattr(*_launch_target(module), lambda *a, **k: _FakeProcess(4243))
-    with caplog.at_level("DEBUG"):
-        snapshot = instance.start_auth_flow()
-    assert snapshot.state is _connection_module().ConnectionState.WAITING_AUTH
-    assert str(tmp_path) not in caplog.text
-    for secret in ("fictional-account", "fictional-token", "fictional-chat"):
-        assert secret not in caplog.text + snapshot.message
 
 
 def test_gate_uses_same_resolved_install_as_launch_not_echo_version(tmp_path, monkeypatch):
@@ -145,7 +127,6 @@ def test_process_detection_failure_remains_fail_closed_not_version_failure(tmp_p
         raise OSError(f"{tmp_path} fictional-token")
 
     monkeypatch.setattr(module, "find_conflicting_qq_pids", fail)
-    monkeypatch.setattr(module, "read_qq_version", lambda _: pytest.fail("must not reach version check"), raising=False)
     monkeypatch.setattr(module, "read_qq_resources", lambda _: pytest.fail("must not reach resource check"))
     monkeypatch.setattr(*_launch_target(module), lambda *a, **k: pytest.fail("must not launch"))
     with caplog.at_level("DEBUG"):
@@ -156,16 +137,10 @@ def test_process_detection_failure_remains_fail_closed_not_version_failure(tmp_p
     assert str(tmp_path) not in caplog.text
 
 
-def test_windows_resource_rejects_old_qq_before_bootstrap_or_credential(tmp_path, monkeypatch):
-    from test_qq_version import _module, _VersionApi
-
+def test_old_package_resources_rejected_before_bootstrap_or_credential(tmp_path, monkeypatch):
     module = _bridge_module()
-    reader = _module()
     instance, config = _auth(tmp_path)
     _base_build(config, 27597)
-    monkeypatch.setattr(reader.sys, "platform", "win32")
-    monkeypatch.setattr(reader.ctypes, "WinDLL", lambda *a, **k: _VersionApi(), raising=False)
-    assert reader.read_qq_version(config.qq_install_path) == (9, 9, 15, 27597)
     monkeypatch.setattr(*_launch_target(module), lambda *a, **k: pytest.fail("old QQ must not launch"))
     monkeypatch.setattr(instance._credential_source, "begin_launch", lambda: pytest.fail("must not mint credential"))
     assert instance.start_auth_flow().code == "qq_version_too_old"

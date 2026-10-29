@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from qq_chat_analyzer.application import echo_report_export as export
-from qq_chat_analyzer.application.report_package_catalog import ReportPackageCatalog, ReportPackageClearError
+from qq_chat_analyzer.application.report_package_catalog import ReportPackageCatalog
 from test_echo_report_export import _metadata, _output_directory
 
 
@@ -33,14 +33,10 @@ def orphan(tmp_path, monkeypatch):
     return SimpleNamespace(root=root, staging=staging, output=output)
 
 
-@pytest.mark.parametrize("operation", ["list", "clear"])
-def test_owned_staging_recovers_after_publication_and_cleanup_failure(orphan, operation):
+def test_owned_staging_recovers_after_publication_and_cleanup_failure(orphan):
     catalog = ReportPackageCatalog(orphan.root)
-    if operation == "list":
-        listing = catalog.list_reports()
-        assert not listing.reports and not listing.issues
-    else:
-        catalog.clear_all()
+    listing = catalog.list_reports()
+    assert not listing.reports and not listing.issues
     assert not orphan.staging.exists()
     assert list(orphan.root.iterdir()) == []
     assert (orphan.output / "echo-report.html").is_file()
@@ -55,7 +51,6 @@ def test_prefix_and_report_shaped_unknown_entries_are_preserved(orphan):
         (forged / name).write_text("fictional user file", encoding="utf-8")
     catalog = ReportPackageCatalog(orphan.root)
     catalog.list_reports()
-    catalog.clear_all()
     assert regular.read_text(encoding="utf-8") == "fictional user file"
     assert len(list(forged.iterdir())) == 4
     assert not orphan.staging.exists()
@@ -108,14 +103,12 @@ def test_staging_cleanup_failure_is_private_and_retryable(orphan, monkeypatch, c
     catalog = ReportPackageCatalog(orphan.root)
     listing = catalog.list_reports()
     assert not listing.reports and not listing.issues
-    with pytest.raises(ReportPackageClearError):
-        catalog.clear_all()
     assert orphan.staging.exists()
     assert "recovery" in caplog.text.lower()
     assert "Fictional" not in caplog.text
     caplog.clear()
     monkeypatch.setattr(export.shutil, "rmtree", original)
-    catalog.clear_all()
+    catalog.list_reports()
     assert not orphan.staging.exists()
 
 
@@ -161,7 +154,7 @@ def test_partial_deletion_keeps_proof_for_later_recovery(orphan, monkeypatch):
     assert (orphan.staging / "echo-report.json").exists()
     assert list(orphan.root.glob("*.owner.json"))
     monkeypatch.setattr(export.shutil, "rmtree", original)
-    ReportPackageCatalog(orphan.root).clear_all()
+    ReportPackageCatalog(orphan.root).list_reports()
     assert list(orphan.root.iterdir()) == []
 
 
@@ -183,7 +176,7 @@ def test_recovery_keeps_active_publication_and_formal_package_contract(tmp_path,
     }
     catalog = ReportPackageCatalog(root)
     assert [r.package_name for r in catalog.list_reports().reports] == [published.name]
-    catalog.delete_package(published.name)
+    assert catalog.delete_packages([published.name]).complete
     assert list(root.iterdir()) == []
 
 

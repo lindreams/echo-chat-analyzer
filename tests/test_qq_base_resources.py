@@ -24,7 +24,6 @@ def _base(root, version="9.9.36-53644", build="53644"):
 ])
 def test_audit_cases_reject_before_launch_or_credential(tmp_path, monkeypatch, caplog, version, build, code):
     config, _ = _base(tmp_path, version, build)
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 36, 53644))
     monkeypatch.setattr(*_launch_target(bridge), lambda *a, **k: pytest.fail("must not launch"))
     class Credential:
         def begin_launch(self): pytest.fail("must not mint credential")
@@ -40,7 +39,6 @@ def test_audit_cases_reject_before_launch_or_credential(tmp_path, monkeypatch, c
 def test_base_version_and_wrapper_are_pinned_to_the_launch(tmp_path, monkeypatch, version, build, caplog):
     caplog.set_level('INFO')
     config, app = _base(tmp_path, version, build)
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
     # A pending tree without an active config is not this installation's target.
     pending = tmp_path / "versions/9.9.99-65535/resources/app"
     pending.mkdir(parents=True)
@@ -66,20 +64,17 @@ def test_base_version_and_wrapper_are_pinned_to_the_launch(tmp_path, monkeypatch
     {"buildVersion": "53644"},
     {"version": "9.9.36-53644", "buildVersion": True},
 ])
-def test_unidentifiable_fields_do_not_fall_back_to_new_pe(tmp_path, monkeypatch, info):
+def test_unidentifiable_fields_cannot_authorize_resources(tmp_path, monkeypatch, info):
     config, app = _base(tmp_path)
     (app / "package.json").write_text(json.dumps(info))
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 36, 53644))
     assert bridge._known_qq_version(config.qq_install_path) is None
     with pytest.raises(bridge.QQAuthWindowUnavailable) as error: bridge.default_auth_window_launcher(config)
     assert error.value.code == "qq_resources_unverified"
 
 
-@pytest.mark.parametrize("pe_build", [35469, 53644])
-def test_absent_metadata_cannot_launch_using_napcat_default_version(tmp_path, monkeypatch, pe_build):
+def test_absent_metadata_cannot_launch_using_napcat_default_version(tmp_path, monkeypatch):
     config = _runtime_config(tmp_path)
     (tmp_path / "resources/app/package.json").write_text('{"name":"QQ","main":"index.js"}')
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 36, pe_build))
     class Credential:
         def begin_launch(self): pytest.fail("must not mint credential")
     monkeypatch.setattr(*_launch_target(bridge), lambda *a, **k: pytest.fail("must not launch"))
@@ -110,7 +105,6 @@ def test_package_appearing_after_check_cannot_skip_old_version_gate(tmp_path, mo
     config = _runtime_config(tmp_path)
     app = config.qq_install_path.parent / "resources/app"
     (app / "package.json").unlink()
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 36, 53644))
     class Credential:
         def begin_launch(self): pytest.fail("must not mint credential")
     launcher = bridge.default_auth_window_launcher(config, credential=Credential())
@@ -143,7 +137,6 @@ def test_pinned_napcat_uses_validated_base_version_and_wrapper(tmp_path, monkeyp
         ("class Pae ", "var LA ="),
     ))
     config, app = _base(tmp_path)
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
     launches = []
     monkeypatch.setattr(*_launch_target(bridge), lambda *a, **k: launches.append(k["env"]) or _FakeProcess(4243))
     bridge.default_auth_window_launcher(config)()

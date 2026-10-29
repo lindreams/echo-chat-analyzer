@@ -833,15 +833,6 @@ class WeChatDatabaseProvider:
         )
         return bool(rows)
 
-    def _message_table_names(self) -> set[str]:
-        """Return every ``Msg_<md5>`` table name found in message shards."""
-        return {
-            name
-            for names in self._message_table_inventory().values()
-            if names is not None
-            for name in names
-        }
-
     def _message_table_inventory(self) -> dict[Path, set[str] | None]:
         """Discover tables once per shard; None means discovery failed."""
         root = self._resolve_data_root()

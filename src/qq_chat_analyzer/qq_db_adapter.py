@@ -17,9 +17,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from .legacy_projection import project_legacy_messages
 from .identity_names import first_identity_name, resolve_member_names
-from .message import ChatMessage
 from .qq_db_identity import QQ_DB_SELF_NAMESPACE, canonical_qq_uin
 from .analysis.timestamps import to_epoch_seconds
 from .rich_message import (
@@ -45,11 +43,6 @@ WARNING_QQ_DB_RECORD_SKIPPED = "qq_db_record_skipped"
 _LOGGER = logging.getLogger("qq_chat_analyzer.qq.private_nudges")
 
 
-def is_qq_db_export(path: str | Path) -> bool:
-    """Return whether a file is a v0 QQ DB JSON payload."""
-    return is_qq_db_payload(load_qq_db_json(path))
-
-
 def load_qq_db_json(path: str | Path) -> dict[str, Any] | None:
     """Load an already-materialized QQ DB JSON payload, if valid JSON."""
     try:
@@ -59,14 +52,6 @@ def load_qq_db_json(path: str | Path) -> dict[str, Any] | None:
     except (OSError, TypeError, UnicodeDecodeError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, dict) else None
-
-
-def parse_qq_db_messages(
-    payload: Mapping[str, Any] | None,
-) -> tuple[list[ChatMessage], tuple[str, ...]]:
-    """Project supported QQ DB records for legacy analysis consumers."""
-    rich_messages, warnings = parse_qq_db_rich_messages(payload)
-    return project_legacy_messages(rich_messages), warnings
 
 
 def parse_qq_db_rich_messages(

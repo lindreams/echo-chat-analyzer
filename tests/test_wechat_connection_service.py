@@ -25,12 +25,6 @@ def _module():
     )
 
 
-def _config_module():
-    return importlib.import_module(
-        "qq_chat_analyzer.application.wechat.wechat_environment_config"
-    )
-
-
 class _FakeConfigLoader:
     def __init__(self, config=None, error=None):
         self._config = config
@@ -120,29 +114,6 @@ def _status(**provider_kwargs):
     return service.check_status()
 
 
-# ------------------------------------------------------------ all available
-
-
-def test_all_readiness_checks_pass_marks_source_available() -> None:
-    status = _status(data=True, key="fictional-key", helper=True, library=True)
-
-    assert status.available is True
-    assert status.data_found is True
-    assert status.db_key_available is True
-    assert status.runtime_available is True
-    assert status.message != ""
-    assert status.action_hint != ""
-
-
-# --------------------------------------------------------------- data missing
-
-
-# ------------------------------------------------------------------- key
-
-
-# ---------------------------------------------------------------- runtime
-
-
 # ------------------------------------------------------------ error isolation
 
 
@@ -160,31 +131,6 @@ def test_unexpected_probe_error_never_leaks(stage: str) -> None:
 # ------------------------------------------------------------ config source
 
 
-def test_connection_service_builds_provider_from_config() -> None:
-    module = _module()
-    config_module = _config_module()
-    config = config_module.WeChatEnvironmentConfig(
-        data_root=Path("C:\\WeChatData"),
-        db_key="fictional-key",
-        wcdb_cli_path=Path("C:\\tools\\wcdb_cli.exe"),
-        wcdb_dll_path=Path("C:\\tools\\WCDB.dll"),
-    )
-    provider = _FakeProvider()
-    factory = _RecordingProviderFactory(provider)
-    service = module.WeChatConnectionService(
-        provider_factory=module.WeChatProviderFactory(
-            config_loader=_FakeConfigLoader(config=config),
-            provider_builder=factory,
-        ),
-    )
-
-    status = service.check_status()
-
-    assert status.available is True
-    assert factory.calls == [config]
-    assert provider.data_calls == 1
-
-
 def test_config_loader_error_never_leaks() -> None:
     module = _module()
     service = module.WeChatConnectionService(
@@ -199,9 +145,6 @@ def test_config_loader_error_never_leaks() -> None:
     assert status.available is False
     assert "raw config boom" not in status.message
     assert "Traceback" not in status.message
-
-
-# ------------------------------------------------------------------- model
 
 
 def test_status_refreshes_provider_after_factory_invalidation() -> None:

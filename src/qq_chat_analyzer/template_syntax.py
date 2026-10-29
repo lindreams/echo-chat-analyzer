@@ -35,11 +35,6 @@ def escape_literal(text: str) -> str:
     return text.replace("{", _LITERAL_ESCAPE)
 
 
-def restore_literal(template: str) -> str:
-    """Undo :func:`escape_literal`, for display purposes only."""
-    return template.replace(_LITERAL_ESCAPE, "{")
-
-
 def iter_tokens(template: str) -> Iterator[tuple[str, str]]:
     """Yield ``("literal", text)`` and ``("kind", kind)`` tokens in order."""
     position = 0

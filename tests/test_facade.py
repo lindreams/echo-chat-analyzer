@@ -939,7 +939,7 @@ def test_retention_after_successful_publication_uses_injected_root_and_preserves
     assert attempted == []
     assert len(list(root.iterdir())) == existing + 1
     assert all(package.exists() for package in old)
-    usage = facade.get_report_storage_usage()
+    usage = facade.list_report_packages().storage_usage
     assert usage.package_count == existing + 1 and usage.complete
     assert usage.measured_bytes > 0
 

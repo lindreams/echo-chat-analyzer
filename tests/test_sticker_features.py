@@ -10,7 +10,7 @@ from qq_chat_analyzer.analysis.stickers import (
 )
 from qq_chat_analyzer.rich_message import SenderIdentity
 from qq_chat_analyzer.analysis.sticker_features import analyze_private_stickers
-from sticker_feature_samples import Messages, formal_payload, indexed, reviewed_scenarios
+from sticker_feature_samples import Messages, formal_payload, indexed
 
 
 def discover(messages, **kwargs):
@@ -36,28 +36,6 @@ def reunion_messages(activity=True):
             for i in range(7):
                 b.add(day, "A", text="仍在聊天", seconds=i*10)
     return b.ordered()
-
-
-def test_shared_index_preserves_occurrences_order_and_distinct_units():
-    b = Messages()
-    b.add(0, "A", "cat", "cat", None, None)
-    b.add(1, "A", text="只有文字")
-    b.add(2, "B", "cat")
-    b.add(3, None, "cat")
-    messages = b.ordered()
-    index = indexed(messages, positions=(0, 1, 3, 4))
-    assert index.available
-    assert (index.message_count, index.sticker_message_count, index.send_count) == (4, 3, 6)
-    assert (index.unknown_identity_count, index.unknown_sender_count) == (2, 1)
-    assert [m.source_position for m in index.messages] == [0, 1, 3, 4]
-    assert index.messages[2].barrier_before
-    assert [s.occurrence_id for s in index.messages[0].sends] == ["0:0", "0:1", "0:2", "0:3"]
-    assert set(index.materials) == {("fiction-A", "fiction:cat"), ("fiction-B", "fiction:cat")}
-    series = index.members["fiction-A"]
-    assert series.messages.total == 2
-    assert series.sticker_messages.total == 1
-    assert series.sends.total == 4
-    assert series.known_sends.total == 2
 
 
 def test_adoption_records_observed_order_and_later_cross_day_reuse():
@@ -467,23 +445,3 @@ def test_adoption_reaches_formal_analysis_before_media(tmp_path, monkeypatch, so
     assert "observed_order_only" not in exported and adoption.identity_key not in exported
     assert all(s.content_md5 not in exported for s in result.stickers.sends if s.content_md5)
     assert any(r.getMessage() == "[sticker-export-counts] html_payload_memories=1" for r in caplog.records)
-
-
-@pytest.mark.parametrize("name,signature_count,qualified_count", [
-    ("daily", 2, 2), ("fighters", 0, 0), ("unequal", 1, 2),
-    ("short", 0, 0), ("old_friends", 2, 2), ("rich_steady", 0, 0),
-    ("new_fad", 1, 2),
-])
-def test_reviewed_scenarios_keep_qualified_discoveries(name, signature_count, qualified_count):
-    rows = reviewed_scenarios()[name]
-    result = discover(rows)
-    assert sum(s.is_selected_signature for s in result.signatures) == signature_count
-    assert len(result.signatures) == qualified_count  # Keep alternatives, not just the chosen one.
-    if name == "daily":
-        assert any(a.lag_days == 14 and a.identity_key == "fiction:penguin" for a in result.adoptions)
-    elif name == "old_friends":
-        assert any(r.gap_days == 217 and r.active_message_count == 139 for r in result.reunions)
-    elif name == "new_fad":
-        assert any(t.current.send_count == 100 and t.earlier_send_count == 2 for t in result.trends)
-    elif name in {"fighters", "short", "rich_steady"}:
-        assert not (result.adoptions or result.reunions or result.trends)

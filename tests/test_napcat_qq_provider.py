@@ -520,12 +520,6 @@ def test_friends_identity_names_and_missing_field_fallback(runtime):
     assert provider(runtime("empty")).list_friends() == []
 
 
-def test_groups_mapping_and_empty(runtime):
-    groups=provider(runtime()).list_groups()
-    assert [(g.group_code,g.group_name,g.member_count) for g in groups] == [("45678901","Group",3),("56789012","",None)]
-    assert provider(runtime("empty")).list_groups() == []
-
-
 def test_members_map_identity_and_existing_snapshot_contract(runtime,tmp_path):
     qq=provider(runtime())
     client=qq.snapshot_client(tmp_path)

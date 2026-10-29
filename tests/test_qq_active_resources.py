@@ -25,14 +25,13 @@ def _active(executable, version="9.9.36-53644", *, alternate=False):
 
 
 @pytest.mark.parametrize("alternate", [False, True])
-def test_old_executable_with_active_new_resources_launches_same_package(tmp_path, monkeypatch, alternate):
+def test_active_resources_launch_the_selected_package(tmp_path, monkeypatch, alternate):
     config = _runtime_config(tmp_path)
     version_config, package = _active(config.qq_install_path, alternate=alternate)
     # A newer pending package (and mtime) must not override curVersion.
     _, pending = _active(config.qq_install_path, "9.9.99-65535", alternate=alternate)
     version_config.write_text(json.dumps({"curVersion": "9.9.36-53644", "readyVersion": "9.9.99-65535"}))
     os.utime(pending, (2000000000, 2000000000))
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
     launches = []
     monkeypatch.setattr(*_launch_target(bridge), lambda command, **options: launches.append((command, options)) or _FakeProcess(4243))
     for key in ("NAPCAT_QQ_PACKAGE_INFO_PATH", "NAPCAT_QQ_VERSION_CONFIG_PATH", "NAPCAT_WRAPPER_PATH"):
@@ -53,7 +52,6 @@ def test_old_current_resources_are_blocked_even_with_ready_new_version(tmp_path,
     current, _ = _active(config.qq_install_path, "9.9.19-35469")
     _active(config.qq_install_path)
     current.write_text(json.dumps({"curVersion": "9.9.19-35469", "readyVersion": "9.9.36-53644"}))
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
     monkeypatch.setattr(*_launch_target(bridge), lambda *a, **k: pytest.fail("old resources must not launch"))
     with caplog.at_level("DEBUG"), pytest.raises(bridge.QQAuthWindowUnavailable) as error:
         bridge.default_auth_window_launcher(config)
@@ -77,7 +75,6 @@ def test_invalid_active_resources_never_claim_compatibility_or_launch(tmp_path, 
         outside.write_bytes(b"fictional external resource")
         original = Path.resolve
         monkeypatch.setattr(Path, "resolve", lambda p, *a, **k: outside if p == package.parent / "wrapper.node" else original(p, *a, **k))
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 36, 53644))
     monkeypatch.setattr(*_launch_target(bridge), lambda *a, **k: pytest.fail("invalid resources must not launch"))
     with caplog.at_level("DEBUG"), pytest.raises(bridge.QQAuthWindowUnavailable) as error:
         bridge.default_auth_window_launcher(config)()
@@ -91,7 +88,6 @@ def test_no_config_does_not_adopt_unselected_new_directory(tmp_path, monkeypatch
     active, _ = _active(config.qq_install_path)
     active.unlink()
     (tmp_path / "resources/app/package.json").write_text('{"version":"9.9.19-35469","buildVersion":"35469"}')
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
     with pytest.raises(bridge.QQAuthWindowUnavailable) as error:
         bridge.default_auth_window_launcher(config)
     assert error.value.code == "qq_version_too_old"
@@ -104,7 +100,6 @@ def test_multi_install_selection_uses_active_resources_and_respects_manual_choic
     new.parent.mkdir(); new.write_bytes(b"fictional")
     _active(old, "9.9.19-35469")
     _active(new)
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
     monkeypatch.setattr(bridge, "_qq_install_candidates", lambda: [old, new, new])
     assert bridge.resolve_qq_install_path(replace(config, qq_install_path_explicit=False), tmp_path) == new
     assert bridge.resolve_qq_install_path(config, tmp_path) == old
@@ -113,7 +108,6 @@ def test_multi_install_selection_uses_active_resources_and_respects_manual_choic
 def test_changed_current_version_between_check_and_launch_requires_retry(tmp_path, monkeypatch):
     config = _runtime_config(tmp_path)
     active, _ = _active(config.qq_install_path)
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
     launcher = bridge.default_auth_window_launcher(config)
     _active(config.qq_install_path, "9.9.19-35469")
     monkeypatch.setattr(*_launch_target(bridge), lambda *a, **k: pytest.fail("changed resources must not launch"))
@@ -142,7 +136,6 @@ def test_cancel_during_resource_check_and_retry_after_update(tmp_path, monkeypat
 
     monkeypatch.setattr(bridge, "find_conflicting_qq_pids", lambda _: [])
     monkeypatch.setattr(bridge, "read_qq_resources", cancel_on_first)
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
     launched = []
     monkeypatch.setattr(*_launch_target(bridge), lambda *a, **k: launched.append(True) or _FakeProcess(4243))
     assert instance.start_auth_flow(cancel_event=cancelled).code == "qq_auth_cancelled"
@@ -194,7 +187,6 @@ def test_pinned_napcat_lookup_agrees_with_checked_launch_resources(tmp_path, mon
     ))
     config = _runtime_config(tmp_path)
     _, package = _active(config.qq_install_path, alternate=alternate)
-    monkeypatch.setattr(bridge, "read_qq_version", lambda _: (9, 9, 19, 35469))
     launches = []
     monkeypatch.setattr(*_launch_target(bridge), lambda command, **options: launches.append(options) or _FakeProcess(4243))
     bridge.default_auth_window_launcher(config)()

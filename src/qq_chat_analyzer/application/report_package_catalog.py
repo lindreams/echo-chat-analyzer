@@ -113,10 +113,6 @@ class ReportPackageDeletionResult:
         return not self.failures
 
 
-class ReportPackageClearError(RuntimeError):
-    """At least one owned candidate could not be safely deleted."""
-
-
 class ReportPackageCatalog:
     def __init__(self, reports_root: Path | None = None) -> None:
         self._reports_root = reports_root
@@ -130,26 +126,6 @@ class ReportPackageCatalog:
     def reports_root(self) -> Path:
         """Expose the validated canonical root for same-root publishing."""
         return self._root()
-
-    def storage_usage(self) -> ReportStorageUsage:
-        """Count owned packages and their bytes from file metadata only.
-
-        Damaged but owned packages still count. A package that cannot be
-        measured safely is named in ``unmeasured_packages`` instead of being
-        silently reported as zero bytes.
-        """
-        root = self._root()
-        candidates = _candidates(root)
-        measured_bytes, unmeasured = 0, []
-        for package in candidates:
-            try:
-                measured_bytes += _package_bytes(root, package)
-            except Exception:
-                unmeasured.append(package.name)
-                _LOGGER.warning("Report usage unknown package=%s", package, exc_info=True)
-        _LOGGER.info("Report storage usage root=%s packages=%d measured_bytes=%d unmeasured=%d",
-                     root, len(candidates), measured_bytes, len(unmeasured))
-        return ReportStorageUsage(len(candidates), measured_bytes, tuple(unmeasured))
 
     def resolve_html_path(self, package_name: str) -> Path:
         """Locate an owned package's regular HTML file without reading it."""
@@ -206,13 +182,6 @@ class ReportPackageCatalog:
         usage = ReportStorageUsage(len(candidates), measured_bytes, tuple(unmeasured))
         return ReportPackageListing(tuple(reports), tuple(issues), usage)
 
-    def delete_package(self, package_name: str) -> None:
-        """Delete one complete owned package, without following reparse points."""
-        if not isinstance(package_name, str) or not _is_package_name(package_name):
-            raise ValueError("Invalid report package name.")
-        root = self._root()
-        _delete_package(root, root / package_name)
-
     def delete_packages(self, package_names: Iterable[str]) -> ReportPackageDeletionResult:
         """Delete exactly the named owned packages, without rescanning the root.
 
@@ -244,27 +213,6 @@ class ReportPackageCatalog:
         _LOGGER.info("Report package batch delete finished root=%s deleted=%d failed=%d",
                      root, len(deleted), len(failures))
         return ReportPackageDeletionResult(tuple(deleted), tuple(failures))
-
-    def clear_all(self) -> None:
-        root = self._root()
-        failed = not recover_report_staging(root)
-        candidates = _candidates(root)
-        deleted = 0
-        _LOGGER.info("Report package clear started root=%s candidates=%d", root, len(candidates))
-        for package in candidates:
-            try:
-                _LOGGER.info("Report package delete validating path=%s", package)
-                _LOGGER.info("Report package delete attempting path=%s", package)
-                _delete_package(root, package)
-                deleted += 1
-                _LOGGER.info("Report package delete finished path=%s", package)
-            except Exception:
-                failed = True
-                _LOGGER.exception("Report package could not be deleted: %s", package)
-        _LOGGER.info("Report package clear finished root=%s candidates=%d deleted=%d failed=%s",
-                     root, len(candidates), deleted, failed)
-        if failed:
-            raise ReportPackageClearError("Some report packages could not be deleted.")
 
 
 def _validated_selection(package_names: Iterable[str]) -> tuple[str, ...]:

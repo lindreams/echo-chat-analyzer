@@ -14,10 +14,9 @@ import sqlite3
 import sys
 import traceback
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
-from ..diagnostics import configure_diagnostics, log_path
+from ..diagnostics import configure_diagnostics
 
 
 LOGGER_NAME = "qq_chat_analyzer.desktop"
@@ -34,13 +33,6 @@ UNEXPECTED_ERROR_MESSAGE = (
     "\u7a0b\u5e8f\u51fa\u73b0\u672a\u9884\u671f\u9519\u8bef\uff0c"
     "\u8be6\u60c5\u5df2\u5199\u5165\u65e5\u5fd7\u3002"
 )
-
-
-def log_directory() -> Path:
-    """Return the user-writable logs directory, creating it."""
-    directory = log_path().parent
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory
 
 
 def configure_logging() -> logging.Logger:

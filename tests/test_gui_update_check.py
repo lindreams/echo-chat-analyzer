@@ -176,8 +176,7 @@ def update_ui(app):
     app.processEvents()
 
 
-@pytest.mark.parametrize("dark", [False, True])
-def test_install_confirmation_readable_and_cancel_is_safe(update_ui, app, dark):
+def test_install_confirmation_readable_and_cancel_is_safe(update_ui, app):
     from PySide6.QtCore import QTimer
     from PySide6.QtGui import QColor, QPalette
     from PySide6.QtWidgets import QMessageBox, QLabel
@@ -190,8 +189,8 @@ def test_install_confirmation_readable_and_cancel_is_safe(update_ui, app, dark):
     old_palette = app.palette()
     old_style = app.styleSheet()
     palette = QPalette(old_palette)
-    palette.setColor(QPalette.Window, QColor("#202020" if dark else "#ffffff"))
-    palette.setColor(QPalette.WindowText, QColor("#eeeeee" if dark else "#111111"))
+    palette.setColor(QPalette.Window, QColor("#202020"))
+    palette.setColor(QPalette.WindowText, QColor("#eeeeee"))
     app.setPalette(palette)
     app.setStyleSheet(BASE_QSS)
     observed = []

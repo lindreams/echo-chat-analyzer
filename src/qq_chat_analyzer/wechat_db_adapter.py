@@ -26,11 +26,9 @@ rich model, then projects that model for legacy analysis callers.
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Iterable, Mapping
-from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
@@ -70,25 +68,11 @@ _SUPPORTED_LOCAL_TYPES = {
     STICKER_LOCAL_TYPE: _STICKER_TYPE,
 }
 
-_JSON_SUFFIX = ".json"
 _XML_UNSAFE_RE = re.compile(r"<!DOCTYPE|<!ENTITY", re.IGNORECASE)
 _XML_PARSE_MAX_LEN = 20000
 _CONTENT_TYPE_COMPRESSED = 4
 _WECHAT_EMOJI_TOKEN_RE = re.compile(r"\[([^\[\]]+)\]")
 _LOGGER = logging.getLogger(__name__)
-
-
-def is_wechat_db_export(path: str | Path) -> bool:
-    """Return whether ``path`` is a provider-written WCDB export document."""
-    payload = _load_json_object(path)
-    if payload is None:
-        return False
-    return is_wechat_db_payload(payload)
-
-
-def load_messages(path: str | Path) -> list[Any]:
-    """Load raw database rows from a WCDB export document."""
-    return messages_from_payload(_load_json_object(path))
 
 
 def messages_from_payload(payload: Mapping[str, Any] | None) -> list[Any]:
@@ -500,24 +484,6 @@ def _normalize_conversation_type(raw_type: str) -> str:
     if normalized in {"private", "group"}:
         return normalized
     return "unknown"
-
-
-def _load_json_object(path: str | Path) -> Mapping[str, Any] | None:
-    try:
-        input_path = Path(path)
-    except TypeError:
-        return None
-
-    if input_path.suffix.lower() != _JSON_SUFFIX:
-        return None
-
-    try:
-        with input_path.open("r", encoding="utf-8") as file:
-            payload = json.load(file)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-
-    return payload if isinstance(payload, dict) else None
 
 
 def is_wechat_db_payload(payload: Mapping[str, Any]) -> bool:

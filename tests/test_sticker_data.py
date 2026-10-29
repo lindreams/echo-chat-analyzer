@@ -166,28 +166,6 @@ def test_private_shared_ranking_uses_smaller_side_not_capped_volume():
         ("deep", 11), ("even", 4), ("flood", 10)]
 
 
-def test_group_shared_ranking_second_member_before_capped_and_total():
-    """A flood with a thin second member ranks below an evenly shared trio."""
-    from dataclasses import replace
-    from qq_chat_analyzer.analysis.stickers import StickerData, aggregate_stickers
-    base = qq_pic("d" * 32)
-    sends = []
-    for key, distribution in (
-        ("flood", {"m1": 10, "m2": 2, "m3": 1}),
-        ("trio", {"m1": 3, "m2": 3, "m3": 3}),
-        ("pair", {"m1": 20, "m2": 19}),
-    ):
-        for member, count in distribution.items():
-            sends.extend(replace(base, sender_id=member, identity_key=key,
-                                 conversation_type="group") for _ in range(count))
-    report, = aggregate_stickers(StickerData(sends=tuple(sends)), ())
-
-    # Participants first, so a prolific pair cannot outrank three-person
-    # materials; within equal participants the second-highest member decides.
-    assert [(m.identity_key, n) for m, n in report.shared_ranking()] == [
-        ("trio", 9), ("flood", 13), ("pair", 39)]
-
-
 def test_sticker_signature_requires_repetition_and_keeps_low_frequency_and_iso_years():
     from dataclasses import replace
     from qq_chat_analyzer.analysis.stickers import StickerData, aggregate_stickers

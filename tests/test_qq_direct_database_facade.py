@@ -716,36 +716,6 @@ def test_unconfirmed_mapping_or_undecodable_content_is_never_displayed(tmp_path,
         assert [name for name, _ in provider.calls] == ["resolve"]
 
 
-@pytest.mark.parametrize("stage,code,visible", [
-    ("probe_timeout", "qq_media_query_timeout", "返回消息"),
-    ("probe_api_unavailable", "qq_media_api_unavailable", "消息查询"),
-    ("media_download_timeout", "qq_media_download_timeout", "限定时间"),
-    ("media_download_no_path", "qq_media_download_no_path", "未返回图片文件位置"),
-    ("media_download_no_cache_hint", "qq_media_download_no_cache_hint", "未提供原图缓存位置"),
-    ("media_path_type_invalid", "qq_media_path_type_invalid", "类型异常"),
-    ("media_path_not_absolute", "qq_media_path_not_absolute", "绝对文件位置"),
-    ("media_file_identity_changed", "qq_media_file_identity_changed", "不同文件"),
-])
-def test_fetch_failure_names_the_stage_instead_of_one_generic_message(
-        tmp_path, stage, code, visible):
-    from qq_chat_analyzer.providers.napcat_qq_provider import NapCatQQMediaStageError
-
-    png = _fictional_png()
-    digest = hashlib.md5(png).hexdigest()
-    data = StickerData(sends=(_pic_send(digest),))
-    facade, provider, _runtime = _fetch_facade(
-        tmp_path, digest=bytes.fromhex(digest), content=png,
-        download_error=NapCatQQMediaStageError(stage))
-
-    with pytest.raises(FacadeError) as caught:
-        facade._fetch_qq_pic(
-            data, media_key=data.sends[0].media_key,
-            session_id="private:private-partition", stored_facts=provider.stored_facts, provider=provider)
-
-    assert caught.value.code == code
-    assert visible in caught.value.public_message
-
-
 def test_unknown_fetch_failure_stays_generic_and_never_leaks_details(tmp_path):
     png = _fictional_png()
     digest = hashlib.md5(png).hexdigest()

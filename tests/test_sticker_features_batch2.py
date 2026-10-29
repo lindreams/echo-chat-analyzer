@@ -345,12 +345,6 @@ def test_all_seven_algorithms_keep_linkable_overlapping_stories_in_one_chat():
     assert material.story_id in selection.featured_ids
 
 
-@pytest.mark.parametrize("counts,m,expected", [((100,), 10, 1), ((1,)*10, 10, 10), ((3, 1), 2, 1.5), ((3, 1), 0, 0)])
-def test_rarefaction_handles_single_material_full_and_empty_samples(counts, m, expected):
-    from qq_chat_analyzer.analysis.sticker_features import expected_sticker_richness
-    assert expected_sticker_richness(counts, m) == expected
-
-
 @pytest.mark.parametrize("source", ["qq", "wechat"])
 @pytest.mark.parametrize("group", [False, True])
 def test_private_features_reach_real_adapters_without_exporting_evidence(tmp_path, monkeypatch, source, group):

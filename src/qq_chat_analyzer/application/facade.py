@@ -63,7 +63,6 @@ from .report_package_catalog import (
     ReportPackageCatalog,
     ReportPackageDeletionResult,
     ReportPackageListing,
-    ReportStorageUsage,
 )
 from .report_package_metadata import build_report_metadata
 from .update_check_service import UpdateChecker, UpdateCheckResult, UpdateCheckService
@@ -304,12 +303,6 @@ _SOURCE_UNAVAILABLE_MESSAGES = {
         "\u5fae\u4fe1\u6570\u636e\u6e90\u5c1a\u672a\u914d\u7f6e\u3002"
     ),
 }
-
-_SOURCE_DISPLAY_NAMES = {
-    ChatSource.QQ: "QQ",
-    ChatSource.WECHAT: "\u5fae\u4fe1",
-}
-
 
 @dataclass(frozen=True, slots=True)
 class AnalysisOutcome:
@@ -1117,22 +1110,6 @@ class ChatAnalyzerFacade:
 
     # ------------------------------------------------------------- discovery
 
-    def list_sources(self) -> tuple[SourceInfo, ...]:
-        """Describe every source, flagging which ones are wired up."""
-        return tuple(
-            SourceInfo(
-                source=source,
-                display_name=_SOURCE_DISPLAY_NAMES[source],
-                available=self._is_available(source),
-                description=(
-                    ""
-                    if self._is_available(source)
-                    else _SOURCE_UNAVAILABLE_MESSAGES[source]
-                ),
-            )
-            for source in ChatSource
-        )
-
     def list_sessions(self, source: ChatSource) -> list[SessionInfo]:
         """Return the conversations one source offers, normalised."""
         chat_source = _coerce_source(source)
@@ -1227,26 +1204,9 @@ class ChatAnalyzerFacade:
         """Clean the cancelled QQ attempt off the GUI thread, without touching a newer one."""
         self._require_qq_auth_bridge().cancel_auth_flow(cancel_event)
 
-    def is_qq_qrcode_ready(self) -> bool:
-        """Return whether the QQ login QR belongs to the current session."""
-        return self._require_qq_auth_bridge().is_qrcode_ready()
-
     def get_qq_qrcode_path(self) -> Path | None:
         """Return the auth bridge's fresh QR path without deriving GUI paths."""
         return self._require_qq_auth_bridge().get_qrcode_path()
-
-    def shutdown_qq_runtime(self) -> None:
-        """Stop only QQ processes LCA started.
-
-        This is the application exit hook: the registry records the
-        NapCat launcher PIDs LCA created, so a user's own QQ client is never touched.
-        Cleanup is best-effort and never raises.
-        """
-        registry = self._require_qq_process_registry()
-        try:
-            registry.terminate_all()
-        except Exception:
-            pass
 
     def disconnect_qq(self) -> ConnectionSnapshot:
         """Log out the current QQ account and stop LCA-owned runtime sessions.
@@ -1406,17 +1366,6 @@ class ChatAnalyzerFacade:
                 public_message="无法读取 Echo 本地报告，请稍后重试。",
             ) from exc
 
-    def get_report_storage_usage(self) -> ReportStorageUsage:
-        """Report owned package count and recorded size for later display."""
-        try:
-            return self._report_package_catalog.storage_usage()
-        except Exception as exc:
-            _LOGGER.exception("Report package storage usage could not be read.")
-            raise FacadeError(
-                code="report_usage_failed",
-                public_message="无法统计 Echo 本地报告占用空间，请稍后重试。",
-            ) from exc
-
     def get_report_package_html_path(self, package_name: str) -> Path:
         """Return a safely located historical report for the GUI opener."""
         try:
@@ -1426,17 +1375,6 @@ class ChatAnalyzerFacade:
             raise FacadeError(
                 code="report_open_failed",
                 public_message="这份 Echo 报告已损坏或缺少报告文件。",
-            ) from exc
-
-    def delete_report_package(self, package_name: str) -> None:
-        """Delete a single complete package through the ownership boundary."""
-        try:
-            self._report_package_catalog.delete_package(package_name)
-        except Exception as exc:
-            _LOGGER.exception("Report package could not be deleted.")
-            raise FacadeError(
-                code="report_delete_failed",
-                public_message="这份 Echo 报告未能删除，请稍后重试。",
             ) from exc
 
     def delete_report_packages(self, package_names: Iterable[str]) -> ReportPackageDeletionResult:
@@ -1454,17 +1392,6 @@ class ChatAnalyzerFacade:
             raise FacadeError(
                 code="report_delete_failed",
                 public_message="所选 Echo 报告未能删除，请稍后重试。",
-            ) from exc
-
-    def clear_report_packages(self) -> None:
-        """Delete complete owned packages; surface any partial failure."""
-        try:
-            self._report_package_catalog.clear_all()
-        except Exception as exc:
-            _LOGGER.exception("Report packages could not all be deleted.")
-            raise FacadeError(
-                code="report_clear_failed",
-                public_message="部分 Echo 报告未能删除，请稍后重试。",
             ) from exc
 
     # -------------------------------------------------------------- analysis
@@ -2195,12 +2122,6 @@ class ChatAnalyzerFacade:
             _PROFILE_STOPWORD_FILES[DEFAULT_PROFILE],
         )
         return self._stopwords_directory / filename
-
-    def _is_available(self, source: ChatSource) -> bool:
-        return (
-            self._services.get(source) is not None
-            or source in self._source_builders
-        )
 
     def _require_service(self, source: ChatSource) -> Any:
         service = self._services.get(source)

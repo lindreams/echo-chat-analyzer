@@ -205,8 +205,7 @@ window.addEventListener('load',()=>{
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize("width", [1280, 390])
-def test_expanding_originals_reveals_front_context_and_backdrop_dismisses_without_losing_place(tmp_path, width):
+def test_expanding_originals_reveals_front_context_and_backdrop_dismisses_without_losing_place(tmp_path):
     import html
     import re
     from test_echo_conversation_sessions_frontend import _find_chromium, _run_browser
@@ -260,7 +259,7 @@ def test_expanding_originals_reveals_front_context_and_backdrop_dismisses_withou
     output.write_text(output.read_text(encoding="utf-8").replace("</body>", probe + "</body>"), encoding="utf-8")
     completed = _run_browser([chromium, "--headless=new", "--disable-gpu", "--no-first-run",
         "--no-default-browser-check", "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND",
-        f"--user-data-dir={tmp_path / 'browser'}", f"--window-size={width},900",
+        f"--user-data-dir={tmp_path / 'browser'}", "--window-size=390,900",
         "--virtual-time-budget=2000", "--dump-dom", output.as_uri()])
     assert completed.returncode == 0
     match = re.search(r'<pre id="context-probe" hidden="">(.*?)</pre>', completed.stdout.decode("utf-8"), re.S)

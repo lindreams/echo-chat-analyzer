@@ -626,10 +626,6 @@ class SessionAnalysisPanel(QWidget):
         self._reset_time_range()
         self._show_unconnected_session_placeholder()
 
-    def set_session_count(self, count: int) -> None:
-        """Update the session count in the group box title."""
-        self._session_box.setTitle(f"聊天会话（{count}）")
-
     def selected_session_id(self) -> str | None:
         """Return the selected session ID or None."""
         item = self._session_list.currentItem()
@@ -1082,9 +1078,6 @@ class SessionAnalysisPanel(QWidget):
         )
         self._session_list.addItem(item)
         self._update_analyze_enabled()
-
-    def _show_disconnected_session_placeholder(self) -> None:
-        self._show_unconnected_session_placeholder()
 
     def _show_unconnected_session_placeholder(self) -> None:
         self._show_session_placeholder(

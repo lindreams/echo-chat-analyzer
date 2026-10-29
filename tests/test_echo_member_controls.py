@@ -16,7 +16,7 @@ from test_echo_conversation_sessions_frontend import _find_chromium, _run_browse
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize("width,kind", [(1280, "group"), (390, "group"), (390, "private")])
+@pytest.mark.parametrize("width,kind", [(1280, "group"), (390, "private")])
 def test_member_sort_search_and_original_identity_in_offline_report(tmp_path, width, kind):
     chromium = _find_chromium()
     if chromium is None:

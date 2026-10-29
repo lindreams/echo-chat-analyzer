@@ -781,10 +781,3 @@ def _build_echo_member(
             if entry.average_per_day is not None
         ),
     )
-
-
-def _first_non_empty(*values: str | None) -> str | None:
-    for value in values:
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return None

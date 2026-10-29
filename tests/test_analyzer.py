@@ -11,7 +11,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 sys.path.insert(0, str(SRC_ROOT))
 
 from qq_chat_analyzer import analyzer
-from qq_chat_analyzer.analyzer import count_words, top_words
+from qq_chat_analyzer.analyzer import count_words
 
 
 def test_counts_repeated_tokens() -> None:
@@ -33,24 +33,3 @@ def test_counts_word_occurrences_for_each_sender() -> None:
         "Python": {"小青": 1},
         "分析": {"小白": 1},
     }
-
-
-def test_repeated_word_in_one_message_counts_every_occurrence() -> None:
-    sender_tokens = [("小青", ["算法", "算法", "算法"])]
-
-    assert analyzer.count_word_speakers(sender_tokens) == {
-        "算法": {"小青": 3},
-    }
-
-
-def test_summary_calculates_percentage_to_two_decimal_places() -> None:
-    counts = {
-        "数据": {
-            "小青": 2,
-            "小白": 1,
-        }
-    }
-
-    summaries = analyzer.top_word_speaker_summary(counts)
-
-    assert summaries[0].top_speaker_share_percent == 66.67

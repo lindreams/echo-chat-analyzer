@@ -72,9 +72,6 @@ def test_desktop_checked_delete_changes_disk_and_preserves_unlisted_packages(
     app = QApplication.instance() or QApplication([])
     facade = build_facade()
     assert facade._report_package_catalog._root() == root.resolve()
-    def separate_usage_scan():
-        pytest.fail("Archive refresh must reuse the listing's storage observation")
-    monkeypatch.setattr(facade._report_package_catalog, "storage_usage", separate_usage_scan)
     pending = set()
     def submit(operation, *, on_success, on_error):
         # Track this page's real workers, independently of relay objects left
@@ -155,10 +152,6 @@ def test_disk_batch_keeps_hidden_selection_and_newly_published_report(tmp_path, 
         calls.append(names)
         return original_batch(names)
     monkeypatch.setattr(facade, "delete_report_packages", batch)
-    def forbidden(*args):
-        pytest.fail("GUI must use only the frozen batch API")
-    monkeypatch.setattr(facade, "delete_report_package", forbidden)
-    monkeypatch.setattr(facade, "clear_report_packages", forbidden)
     app = QApplication.instance() or QApplication([])
     def confirm(names, kept):
         assert set(names) == {packages[name].name for name in targets}

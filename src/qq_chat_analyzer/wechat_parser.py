@@ -33,46 +33,6 @@ _NORMALIZED_CHATLAB_TYPES = {
     CHATLAB_REPLY_TYPE: "reply",
 }
 
-ParsedMessage = ChatMessage
-
-
-def is_wechat_export(path: str | Path) -> bool:
-    """Return whether the file is a supported WeChat export."""
-    if _is_jsonl_path(path):
-        return _looks_like_chatlab_export(path)
-
-    payload = _load_json_payload(path)
-    if payload is None:
-        return False
-    return is_detailed_payload(payload)
-
-
-def load_messages(path: str | Path) -> list[Any]:
-    """Load raw messages from a WeChat detailed JSON or chatlab JSONL export."""
-    if _is_jsonl_path(path):
-        return _load_chatlab_messages(path)
-
-    payload = _load_json_payload(path)
-    if payload is None or not is_detailed_payload(payload):
-        return []
-
-    messages = payload.get("messages")
-    return messages if isinstance(messages, list) else []
-
-
-def load_conversation_context(
-    path: str | Path,
-) -> tuple[str | None, str]:
-    """Return reliable (conversation_id, conversation_type) from a file."""
-    if _is_jsonl_path(path):
-        return chatlab_conversation_context(load_chatlab_records(path))
-
-    payload = _load_json_payload(path)
-    if payload is None:
-        return None, "unknown"
-    return detailed_conversation_context(payload)
-
-
 def parse_messages(
     raw_messages: Iterable[Any],
     conversation_id: str | None = None,
@@ -96,13 +56,6 @@ def parse_messages(
             parsed_messages.append(parsed_message)
 
     return parsed_messages
-
-
-def _is_jsonl_path(path: str | Path) -> bool:
-    try:
-        return Path(path).suffix.lower() == CHATLAB_JSONL_SUFFIX
-    except TypeError:
-        return False
 
 
 def load_chatlab_records(path: str | Path) -> list[Mapping[str, Any]]:
@@ -129,10 +82,6 @@ def load_chatlab_records(path: str | Path) -> list[Mapping[str, Any]]:
     return records
 
 
-def _looks_like_chatlab_export(path: str | Path) -> bool:
-    return is_chatlab_records(load_chatlab_records(path))
-
-
 def is_chatlab_records(records: Iterable[Mapping[str, Any]]) -> bool:
     """Recognize loaded chatlab records without reopening the file."""
     for record in records:
@@ -147,36 +96,6 @@ def is_chatlab_records(records: Iterable[Mapping[str, Any]]) -> bool:
         if line_type == _CHATLAB_MESSAGE_LINE:
             return True
     return False
-
-
-def _load_chatlab_messages(path: str | Path) -> list[Any]:
-    records = load_chatlab_records(path)
-    if not is_chatlab_records(records):
-        return []
-
-    return [
-        record
-        for record in records
-        if record.get("_type") == _CHATLAB_MESSAGE_LINE
-    ]
-
-
-def _load_json_payload(path: str | Path) -> Mapping[str, Any] | None:
-    try:
-        input_path = Path(path)
-    except TypeError:
-        return None
-
-    if input_path.suffix.lower() != ".json":
-        return None
-
-    try:
-        with input_path.open("r", encoding="utf-8") as file:
-            payload = json.load(file)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-
-    return payload if isinstance(payload, Mapping) else None
 
 
 def is_detailed_payload(payload: Mapping[str, Any]) -> bool:

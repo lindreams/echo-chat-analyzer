@@ -61,7 +61,7 @@ def test_io(tmp_path, monkeypatch, fallback):
     assert package.parent == root / "reports"
     facade = build_facade()
     assert len(facade.list_report_packages().reports) == 1
-    facade.clear_report_packages()
+    assert facade.delete_report_packages([package.name]).complete
     assert not package.exists()
 ''')
     result = pytester.runpytest_subprocess("-q", timeout=60)

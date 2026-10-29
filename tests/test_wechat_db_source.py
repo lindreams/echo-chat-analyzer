@@ -341,7 +341,7 @@ def test_text_row_becomes_rich_message_then_projects_to_legacy(
     _write_db_export(export, [row])
 
     rich_messages = wechat_db_adapter.parse_rich_messages(
-        wechat_db_adapter.load_messages(export)
+        wechat_db_adapter.messages_from_payload(json.loads(export.read_text(encoding="utf-8")))
     )
 
     assert len(rich_messages) == 1
@@ -416,7 +416,7 @@ def test_sticker_row_becomes_rich_expression_and_legacy_message(
     _write_db_export(export, [row])
 
     rich_messages = wechat_db_adapter.parse_rich_messages(
-        wechat_db_adapter.load_messages(export)
+        wechat_db_adapter.messages_from_payload(json.loads(export.read_text(encoding="utf-8")))
     )
 
     assert len(rich_messages) == 1
@@ -485,7 +485,7 @@ def test_group_sticker_strips_only_confirmed_sender_prefix(
     _write_db_export(export, [row])
 
     rich_messages = wechat_db_adapter.parse_rich_messages(
-        wechat_db_adapter.load_messages(export)
+        wechat_db_adapter.messages_from_payload(json.loads(export.read_text(encoding="utf-8")))
     )
 
     assert len(rich_messages) == 1
@@ -515,7 +515,7 @@ def test_group_sticker_prefix_of_another_sender_stays_unresolved(
     )
 
     rich_messages = wechat_db_adapter.parse_rich_messages(
-        wechat_db_adapter.load_messages(export)
+        wechat_db_adapter.messages_from_payload(json.loads(export.read_text(encoding="utf-8")))
     )
 
     sticker = rich_messages[0].contents[0]
@@ -546,7 +546,7 @@ def test_group_sticker_prefix_does_not_relax_single_emoji_rule(
     )
 
     rich_messages = wechat_db_adapter.parse_rich_messages(
-        wechat_db_adapter.load_messages(export)
+        wechat_db_adapter.messages_from_payload(json.loads(export.read_text(encoding="utf-8")))
     )
 
     sticker = rich_messages[0].contents[0]
@@ -559,7 +559,7 @@ def test_malformed_rows_do_not_drop_valid_neighbours(tmp_path: Path) -> None:
     _write_db_export(export, [_db_row(create_time=None), _db_row(), "junk"])
 
     messages = wechat_db_adapter.parse_messages(
-        wechat_db_adapter.load_messages(export)
+        wechat_db_adapter.messages_from_payload(json.loads(export.read_text(encoding="utf-8")))
     )
 
     assert len(messages) == 1
@@ -572,7 +572,7 @@ def test_row_username_takes_precedence_over_conversation(tmp_path: Path) -> None
     _write_db_export(export, [row])
 
     messages = wechat_db_adapter.parse_messages(
-        wechat_db_adapter.load_messages(export)
+        wechat_db_adapter.messages_from_payload(json.loads(export.read_text(encoding="utf-8")))
     )
 
     assert messages[0].conversation_id == "wxid_explicit_conversation"

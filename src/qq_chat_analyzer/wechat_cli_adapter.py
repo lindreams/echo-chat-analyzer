@@ -17,9 +17,7 @@ A CLI row looks like::
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Mapping
-from pathlib import Path
 from typing import Any
 
 from .message import ChatMessage
@@ -54,22 +52,6 @@ _DIRECTION_OUT = "out"
 _DIRECTION_IN = "in"
 
 _DETECTION_SAMPLE_SIZE = 50
-
-
-def is_cli_export(path: str | Path) -> bool:
-    """Return whether ``path`` is a CipherTalk CLI JSON export."""
-    payload = _load_json_array(path)
-    if payload is None:
-        return False
-    return is_cli_payload(payload)
-
-
-def load_messages(path: str | Path) -> list[Any]:
-    """Load raw CLI rows from a ``miyu export`` JSON file."""
-    payload = _load_json_array(path)
-    if payload is None or not is_cli_payload(payload):
-        return []
-    return payload
 
 
 def parse_messages(
@@ -208,24 +190,6 @@ def _stringify_message_id(value: Any) -> str | None:
         text = str(value).strip()
         return text or None
     return None
-
-
-def _load_json_array(path: str | Path) -> list[Any] | None:
-    try:
-        input_path = Path(path)
-    except TypeError:
-        return None
-
-    if input_path.suffix.lower() != ".json":
-        return None
-
-    try:
-        with input_path.open("r", encoding="utf-8") as file:
-            payload = json.load(file)
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-
-    return payload if isinstance(payload, list) else None
 
 
 def is_cli_payload(payload: list[Any]) -> bool:
