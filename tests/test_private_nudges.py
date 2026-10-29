@@ -104,9 +104,33 @@ def test_nudge_aggregation_deduplicates_and_keeps_three_latest():
     assert analyze_private_nudges([facts[0], replace(facts[1], conversation_id="fiction-other")]) is None
 
 
+def test_custom_pat_labels_use_latest_retained_direction_even_outside_recent_three():
+    from qq_chat_analyzer.analysis.private_nudges import analyze_private_nudges
+
+    rows = [pat_row(i, incoming=i == 2, timestamp=STAMP + i,
+                    suffix='并说“虚构的晚安”' if i == 2 else "的纸飞机") for i in range(1, 7)]
+    # The latest raw row has conflicting evidence and must not supply a label.
+    facts = [adapter.parse_rich_message(row) for row in rows]
+    facts.append(replace(facts[-1], relations=(replace(facts[-1].relations[0], suffix="不可信后缀"),)))
+    result = analyze_private_nudges(facts)
+    assert (result.self_count, result.peer_count) == (4, 1)
+    assert all(moment.is_self for moment in result.recent)
+    assert (result.self_suffix, result.peer_suffix) == ("的纸飞机", '并说“虚构的晚安”')
+    assert "纸飞机" not in repr(result) and "晚安" not in repr(result)
+
+    # An explicitly empty newer suffix must not resurrect an older setting.
+    facts.append(adapter.parse_rich_message(pat_row(7, incoming=True, timestamp=STAMP + 7, suffix="")))
+    assert analyze_private_nudges(facts).peer_suffix == ""
+    # Different texts at the same latest time do not establish one reliable label.
+    facts.append(adapter.parse_rich_message(pat_row(8, timestamp=STAMP + 8, suffix="的云朵")))
+    facts.append(adapter.parse_rich_message(pat_row(9, timestamp=STAMP + 8, suffix="的风筝")))
+    assert analyze_private_nudges(facts).self_suffix == ""
+    assert analyze_private_nudges(reversed(facts)).self_suffix == ""
+
+
 def test_application_counts_pats_separately_and_serializes_no_account_ids(tmp_path, monkeypatch, caplog):
     caplog.set_level("INFO")
-    rows = [pat_row(1), pat_row(2, incoming=True, timestamp=STAMP + 1800),
+    rows = [pat_row(1), pat_row(2, incoming=True, timestamp=STAMP + 1800, suffix='并说“虚构的晚安”'),
             pat_row(3, timestamp=STAMP + 3600)]
     rows.extend([
         dict(server_id=4, local_type=1, create_time=STAMP, user_name=OWNER,
@@ -123,13 +147,14 @@ def test_application_counts_pats_separately_and_serializes_no_account_ids(tmp_pa
     assert (nudges.self_count, nudges.peer_count) == (2, 1)
     data = echo_report_to_dict(result.echo_report_view)["private_nudges"]
     assert (data["self_count"], data["peer_count"]) == (2, 1)
+    assert (data["self_suffix"], data["peer_suffix"]) == ("肩膀", '并说“虚构的晚安”')
     assert OWNER not in json.dumps(data) and PEER not in json.dumps(data)
     assert "untrusted template" not in json.dumps(data)
     pat_logs = "\n".join(record.getMessage() for record in caplog.records
                          if "wechat.pats" in record.getMessage() or "private_nudges" in record.getMessage())
     assert "candidates=3 accepted=3 rejected=0" in pat_logs
     assert "self=2 peer=1" in pat_logs
-    assert OWNER not in pat_logs and PEER not in pat_logs and "肩膀" not in pat_logs
+    assert OWNER not in pat_logs and PEER not in pat_logs and "肩膀" not in pat_logs and "晚安" not in pat_logs
 
 
 def test_pat_only_and_scope_use_the_same_retained_time_range(tmp_path, monkeypatch):
@@ -141,6 +166,8 @@ def test_pat_only_and_scope_use_the_same_retained_time_range(tmp_path, monkeypat
     assert result.echo_report_view.conversation_kind == "private"
     assert result.reports.activity.total_message_count == 0
     assert (result.reports.private_nudges.self_count, result.reports.private_nudges.peer_count) == (0, 1)
+    assert (result.echo_report_view.private_nudges.self_suffix,
+            result.echo_report_view.private_nudges.peer_suffix) == ("", "肩膀")
     assert result.echo_report_view.private_nudges is not None
 
 
@@ -185,6 +212,7 @@ def test_sender_exclusion_covers_actor_and_target(tmp_path, monkeypatch, ignored
     ("private", 1280, True, True, "wechat"),
     ("private", 1280, False, True, "wechat"), ("group", 390, True, True, "wechat"),
     ("private", 390, True, True, "qq"),
+    ("private", 1280, True, True, "qq"),
 ])
 def test_pat_report_is_readonly_offline_and_hides_unavailable_actions(
     tmp_path, kind, width, has_actions, has_sessions, source,
@@ -199,6 +227,7 @@ def test_pat_report_is_readonly_offline_and_hides_unavailable_actions(
     if chromium is None:
         pytest.skip("no local Chromium available")
     suffix = '</script><img id="fictional-attack" onerror="window.fictionalAttack=true">' + '虚构' * 80
+    peer_suffix = '并说“虚构的周末见”'
     highlights = [EchoConversationSession(
         start_timestamp=STAMP + index * 7200, end_timestamp=STAMP + index * 7200 + 120,
         duration_seconds=120, message_count=20 + index, participant_count=2, initiator="self",
@@ -216,7 +245,9 @@ def test_pat_report_is_readonly_offline_and_hides_unavailable_actions(
         private_nudges=EchoPrivateNudges(2, 1, (
             EchoNudgeMoment(STAMP + 2, True, suffix),
             EchoNudgeMoment(STAMP + 1, False, "肩膀"), EchoNudgeMoment(STAMP, True),
-        ), source=source) if has_actions else None,
+        ), source=source, self_suffix=suffix if has_sessions else "",
+            peer_suffix=peer_suffix, self_action="摸了摸" if source == "qq" else "",
+            peer_action="拍了拍" if source == "qq" else "") if has_actions else None,
     )
     output = export_echo_report_html(view, tmp_path / "pats.html")
     probe = r"""<script>
@@ -229,9 +260,9 @@ window.addEventListener('load',()=>{
   chapter:!document.getElementById('conversation-sessions').hidden,
   toc:!document.getElementById('session-toc').hidden,
   counts:[document.getElementById('nudge-self-count').textContent,document.getElementById('nudge-peer-count').textContent],
+  titles:[document.getElementById('nudge-self-label').title,document.getElementById('nudge-peer-label').title],
   labels:[document.getElementById('nudge-self-label').textContent,document.getElementById('nudge-peer-label').textContent],
-  recentAction:block.querySelector('li span')?.textContent||'',
-  recentLabel:block.querySelector('.nudge-recent-label').textContent,
+  recentLabel:!!block.querySelector('.nudge-recent-label'),
   rows:block.querySelectorAll('li').length,
   rawSuffix:block.textContent.includes('<img id="fictional-attack"'),
   inert:!window.fictionalAttack&&!document.getElementById('fictional-attack'),
@@ -250,8 +281,9 @@ window.addEventListener('load',()=>{
    highlightsFit:[...highnotes.querySelectorAll('.highnote-card')].every(x=>x.scrollWidth<=x.clientWidth+1),
    nested:document.getElementById('session-duet').contains(block),
    duetVisible:!document.getElementById('session-duet').hidden,
-   listHeight:block.querySelector('.nudge-memories').clientHeight,
-   fits:[...block.querySelectorAll('li,dt,dd')].every(x=>x.scrollWidth<=x.clientWidth+1)};
+   countTops:[...block.querySelectorAll('dd')].map(x=>x.getBoundingClientRect().top),
+   labelLines:[...block.querySelectorAll('dt')].map(x=>x.clientHeight/parseFloat(getComputedStyle(x).lineHeight)),
+   fits:[...block.querySelectorAll('dt,dd')].every(x=>x.scrollWidth<=x.clientWidth+1)};
  const pre=document.createElement('pre');pre.id='nudge-probe';pre.hidden=true;
  pre.textContent=JSON.stringify(r);document.body.appendChild(pre);
 });</script>"""
@@ -286,7 +318,9 @@ window.addEventListener('load',()=>{
         elif has_actions:
             assert layout["nudges"]["bottom"] <= layout["highlights"]["top"]
     if visible:
-        assert layout["duetVisible"] and layout["fits"] and layout["listHeight"] <= 180
+        assert layout["duetVisible"] and layout["fits"]
+        assert layout["countTops"][0] == pytest.approx(layout["countTops"][1])
+        assert layout["labelLines"] == pytest.approx([2, 2], abs=0.03)
         if has_sessions:
             assert layout["reply"]["bottom"] <= layout["nudges"]["top"]
             if width > 720:
@@ -294,12 +328,14 @@ window.addEventListener('load',()=>{
                 assert layout["beat"]["left"] == pytest.approx(layout["nudges"]["left"])
             else:
                 assert layout["beat"]["bottom"] <= layout["reply"]["top"]
-    labels = ["你戳了戳 TA", "TA 戳了戳你"] if source == "qq" else ["你拍了拍 TA", "TA 拍了拍你"]
+    labels = ["你摸了摸 TA", "TA 拍了拍你"] if source == "qq" else ["你拍了拍 TA", "TA 拍了拍你"]
+    labels[0] += suffix if has_sessions else ""
+    labels[1] += peer_suffix
     assert rendered == dict(
         visible=visible, chapter=has_sessions or visible, toc=has_sessions or visible,
-        counts=["2 次", "1 次"] if visible else ["", ""], rows=3 if visible else 0,
-        labels=labels if visible else ["", ""], recentAction=labels[0] + " · " + suffix if visible else "",
-        recentLabel=("最近的几次戳一戳" if source == "qq" else "最近的几次拍一拍") if visible else "",
-        rawSuffix=visible, inert=True, readonly=True, overflow=False,
-        time="2026/01/02 12:00:02" if visible else "",
+        counts=["2 次", "1 次"] if visible else ["", ""], rows=0,
+        titles=labels if visible else ["", ""],
+        labels=labels if visible else ["", ""], recentLabel=False,
+        rawSuffix=visible and has_sessions,
+        inert=True, readonly=True, overflow=False, time="",
     )

@@ -198,8 +198,6 @@ ECHO_REPORT_HTML_SKELETON = r"""
             <div><dt id="nudge-self-label"></dt><dd id="nudge-self-count"></dd></div>
             <div><dt id="nudge-peer-label"></dt><dd id="nudge-peer-count"></dd></div>
           </dl>
-          <p class="nudge-recent-label" id="nudge-recent-label"></p>
-          <ul class="nudge-memories" id="nudge-memories"></ul>
         </div>
       </div>
 
@@ -1040,13 +1038,8 @@ h1, h2, h3, p { margin-top: 0; }
 .nudge-counts > div { padding: 8px 12px; }
 .nudge-counts > div:first-child { padding-left: 0; }
 .nudge-counts > div + div { border-left: 1px solid var(--rule); }
-.nudge-counts dt, .nudge-recent-label { color: var(--muted); font: 12px/1.8 var(--sans); }
+.nudge-counts dt { color: var(--muted); font: 12px/1.8 var(--sans); height: 3.6em; overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .nudge-counts dd { margin: 10px 0 0; font: 24px/1.4 var(--serif); }
-.nudge-recent-label { margin: 14px 0 6px; }
-.nudge-memories { max-height: 180px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; margin: 0; padding: 0; list-style: none; }
-.nudge-memories li { display: grid; gap: 2px; padding: 6px 0; font: 12px/1.7 var(--sans); }
-.nudge-memories time { color: var(--faint); }
-.nudge-memories span { overflow-wrap: anywhere; white-space: pre-wrap; }
 
 .movement-heading {
   display: flex;
@@ -1412,29 +1405,15 @@ document.documentElement.classList.add("js-ready");
   setHidden("private-nudges", !hasNudges);
   if (hasNudges) {
     setHidden("session-duet", false);
-    var selfNudgeLabel = nudges.source === "qq" ? "你戳了戳 TA" : "你拍了拍 TA";
-    var peerNudgeLabel = nudges.source === "qq" ? "TA 戳了戳你" : "TA 拍了拍你";
+    var nudgeAction = nudges.source === "qq" ? "戳了戳" : "拍了拍";
+    var selfNudgeLabel = "你" + (nudges.self_action || nudgeAction) + " TA" + (nudges.self_suffix || "");
+    var peerNudgeLabel = "TA " + (nudges.peer_action || nudgeAction) + "你" + (nudges.peer_suffix || "");
     setText("nudge-self-label", selfNudgeLabel);
     setText("nudge-peer-label", peerNudgeLabel);
-    setText("nudge-recent-label", nudges.source === "qq" ? "最近的几次戳一戳" : "最近的几次拍一拍");
+    document.getElementById("nudge-self-label").setAttribute("title", selfNudgeLabel);
+    document.getElementById("nudge-peer-label").setAttribute("title", peerNudgeLabel);
     setText("nudge-self-count", formatCount(nudges.self_count) + " 次");
     setText("nudge-peer-count", formatCount(nudges.peer_count) + " 次");
-    var nudgeList = document.getElementById("nudge-memories");
-    (nudges.recent || []).slice(0, 3).forEach(function (moment) {
-      if (!nudgeList) return;
-      var item = document.createElement("li");
-      var time = document.createElement("time");
-      time.textContent = new Intl.DateTimeFormat("zh-CN", {
-        timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit",
-        hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23"
-      }).format(new Date(moment.timestamp * 1000));
-      var action = document.createElement("span");
-      action.textContent = (moment.is_self ? selfNudgeLabel : peerNudgeLabel) +
-        (moment.suffix ? " · " + moment.suffix : "");
-      item.appendChild(time);
-      item.appendChild(action);
-      nudgeList.appendChild(item);
-    });
   }
   if (hasSessions) {
     var conversationKind = conversation && conversation.kind;

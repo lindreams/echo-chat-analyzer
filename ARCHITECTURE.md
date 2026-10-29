@@ -75,8 +75,9 @@ QQ 媒体可暂存于进程拥有、关闭即删除的临时文件，正式导�
 QQ Direct DB 使用同一快照客户端绑定的认证与运行代际读取本人／好友元数据，
 将两份一致的灰条 UID 关系转换到现役 UIN 身份；不按昵称或未知发送者猜测方向。
 应用层复用日期范围和发送者排除，在普通消息分析前分流；核心 `analysis/private_nudges.py`
-只聚合已确认的动作，不读取来源。Presentation 仅接收平台、双方次数和最近三次的时间、方向、后缀，
-在聊天轮次章末展示；来源账号、消息 ID、UID、XML 和灰条 JSON 不进入该展示载荷。此能力不扩展到群聊。
+只聚合已确认的动作，不读取来源。Presentation 接收平台、双方次数和已确认动作的时间、方向、后缀，
+在聊天轮次章末只展示次数，标签带各方向最新保留动作的自定义文案，不再展示最近动作列表；
+来源账号、消息 ID、UID、XML 和灰条 JSON 不进入该展示载荷。此能力不扩展到群聊。
 
 [legacy_projection.py](src/qq_chat_analyzer/legacy_projection.py) 单向投影 RichMessage：只拼接 TextContent 到正文，同时保留身份、会话、时间与消息属性。表达与非文本段不会伪造为正文，也不能由 ChatMessage 反推完整 RichMessage。部分本地文件导入路径只有 ChatMessage。
 

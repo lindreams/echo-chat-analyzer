@@ -695,6 +695,10 @@ def build_echo_report_view(
                 self_count=reports.private_nudges.self_count,
                 peer_count=reports.private_nudges.peer_count,
                 source=reports.private_nudges.source,
+                self_suffix=reports.private_nudges.self_suffix,
+                peer_suffix=reports.private_nudges.peer_suffix,
+                self_action=reports.private_nudges.self_action,
+                peer_action=reports.private_nudges.peer_action,
                 recent=tuple(EchoNudgeMoment(item.timestamp, item.is_self, item.suffix)
                              for item in reports.private_nudges.recent),
             ) if conversation_kind == "private" and reports.private_nudges is not None else None

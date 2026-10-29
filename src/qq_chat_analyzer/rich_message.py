@@ -91,6 +91,7 @@ class NudgeRelation:
 
     target_identity_id: str = field(repr=False)
     suffix: str = field(default="", repr=False)
+    action: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True, slots=True)

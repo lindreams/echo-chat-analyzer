@@ -33,7 +33,7 @@ from .expression_assets import (
 )
 
 
-ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.18"
+ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.19"
 
 
 def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:

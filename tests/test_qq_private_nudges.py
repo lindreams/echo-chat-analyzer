@@ -23,10 +23,12 @@ OWNER_UID, PEER_UID = "u_fictional_owner", "u_fictional_peer"
 STAMP = 1760000000
 
 
-def poke_segment(*, incoming=False, json_value=None, uid_order=None, business=1061):
+def poke_segment(*, incoming=False, json_value=None, uid_order=None, business=1061,
+                 action="戳了戳", suffix=""):
     parties = [PEER_UID, OWNER_UID] if incoming else [OWNER_UID, PEER_UID]
     encoded_json = json_value if json_value is not None else json.dumps({
-        "items": [{"uid": parties[0]}, {"txt": "fictional action"}, {"uid": parties[1]}],
+        "items": [{"type": "qq", "uid": parties[0]}, {"type": "nor", "txt": action},
+                  {"type": "qq", "uid": parties[1]}, {"type": "nor", "txt": suffix}],
     }).encode()
     return (scalar_field(45002, 8) + scalar_field(48212, 1061)
             + b"".join(field(48210, field(1005, uid.encode())) for uid in (uid_order or parties))
@@ -66,6 +68,37 @@ def test_poke_adapter_uses_confirmed_uid_pair_not_system_sender(incoming, messag
     assert message.sender.identity_id == (PEER if incoming else OWNER)
     assert message.relations[0].target_identity_id == (OWNER if incoming else PEER)
     assert message.contents == ()
+    assert (message.relations[0].action, message.relations[0].suffix) == ("戳了戳", "")
+
+
+def test_custom_poke_style_keeps_only_text_around_confirmed_roles():
+    items = [
+        {"type": "qq", "uid": PEER_UID, "nm": "untrusted display name"},
+        {"type": "img", "src": "https://fiction.invalid/action.png", "jp": "https://fiction.invalid/"},
+        {"type": "nor", "txt": "摸了摸"},
+        {"type": "qq", "uid": OWNER_UID, "nm": "another untrusted display name"},
+        {"type": "nor", "txt": "的虚构纸飞机"},
+    ]
+    row = poke_row(incoming=True, segment=poke_segment(incoming=True, json_value=json.dumps({"items": items}).encode()))
+    messages, _ = parse_qq_db_rich_messages(payload([row]))
+    action = messages[0].relations[0]
+    assert messages[0].is_self is False
+    assert (action.action, action.suffix) == ("摸了摸", "的虚构纸飞机")
+    assert "摸了摸" not in repr(action) and "纸飞机" not in repr(action)
+
+
+@pytest.mark.parametrize("change", ["unknown_item", "nontext_action", "source_identity", "prefix"])
+def test_unreliable_poke_style_does_not_drop_confirmed_count_or_expose_raw_data(change):
+    items = [{"type": "qq", "uid": OWNER_UID}, {"type": "nor", "txt": "摸了摸"},
+             {"type": "qq", "uid": PEER_UID}, {"type": "nor", "txt": "的虚构纸飞机"}]
+    if change == "unknown_item": items.append({"type": "unknown", "txt": "untrusted"})
+    elif change == "nontext_action": items[1]["txt"] = ["not text"]
+    elif change == "source_identity": items[-1]["txt"] = OWNER_UID
+    elif change == "prefix": items.insert(0, {"type": "nor", "txt": "untrusted prefix"})
+    row = poke_row(segment=poke_segment(json_value=json.dumps({"items": items}).encode()))
+    messages, _ = parse_qq_db_rich_messages(payload([row]))
+    assert len(messages) == 1 and messages[0].message_type == "nudge"
+    assert (messages[0].relations[0].action, messages[0].relations[0].suffix) == ("", "")
 
 
 @pytest.mark.parametrize("change", [
@@ -108,7 +141,10 @@ def test_poke_adapter_rejects_unconfirmed_or_ambiguous_actions(change):
 
 def test_qq_pokes_do_not_inflate_messages_or_bridge_conversation_rounds(tmp_path, monkeypatch, caplog):
     caplog.set_level("INFO")
-    rows = [poke_row(101), poke_row(102, incoming=True, timestamp=STAMP + 1800), poke_row(103, timestamp=STAMP + 3600)]
+    rows = [poke_row(101),
+            poke_row(102, incoming=True, timestamp=STAMP + 1800,
+                     segment=poke_segment(incoming=True, action="摸了摸", suffix="的虚构纸飞机")),
+            poke_row(103, timestamp=STAMP + 3600, segment=poke_segment(action="拍了拍", suffix="的虚构风筝"))]
     rows += [qq_db_record("虚构的午后一起散步", sender_id=OWNER, timestamp=STAMP),
              qq_db_record("虚构的傍晚一起吃饭", sender_id=PEER, timestamp=STAMP + 3600)]
     result, (kept, _) = analyze(tmp_path, monkeypatch, [payload(rows)])
@@ -116,8 +152,13 @@ def test_qq_pokes_do_not_inflate_messages_or_bridge_conversation_rounds(tmp_path
     assert result.reports.conversation_sessions.session_count == 2
     nudges = result.reports.private_nudges
     assert (nudges.self_count, nudges.peer_count, nudges.source) == (2, 1, "qq")
+    assert (nudges.self_suffix, nudges.peer_suffix) == ("的虚构风筝", "的虚构纸飞机")
+    assert (nudges.self_action, nudges.peer_action) == ("拍了拍", "摸了摸")
     assert result.echo_report_view.private_nudges.source == "qq"
     serialized = json.dumps(echo_report_to_dict(result.echo_report_view)["private_nudges"])
+    data = echo_report_to_dict(result.echo_report_view)["private_nudges"]
+    assert (data["self_action"], data["self_suffix"]) == ("拍了拍", "的虚构风筝")
+    assert (data["peer_action"], data["peer_suffix"]) == ("摸了摸", "的虚构纸飞机")
     assert all(identity not in serialized for identity in (OWNER, PEER, OWNER_UID, PEER_UID))
     diagnostics = "\n".join(record.getMessage() for record in caplog.records
                             if record.name == "qq_chat_analyzer.qq.private_nudges")
@@ -142,6 +183,10 @@ def test_qq_duplicate_conflicts_and_mixed_sources_do_not_produce_false_counts():
     assert (counts.self_count, counts.peer_count) == (1, 1)
     counts = analyze_private_nudges([*messages, replace(messages[0], timestamp=STAMP + 1)])
     assert (counts.self_count, counts.peer_count) == (0, 1)
+    conflicting = replace(messages[0], relations=(replace(messages[0].relations[0], action="摸了摸"),))
+    counts = analyze_private_nudges([*messages, conflicting])
+    assert (counts.self_count, counts.peer_count) == (0, 1)
+    assert (counts.self_action, counts.peer_action) == ("", "戳了戳")
     assert analyze_private_nudges([*messages, replace(messages[0], source="wechat", conversation_id=PEER)]) is None
 
 
@@ -206,7 +251,7 @@ def test_private_acquisition_attaches_bound_context_after_releasing_snapshot(tmp
                             field(40800, scalar_field(45002, 1) + field(45101, b"fictional"))))
         connection.execute('INSERT INTO c2c_msg_table VALUES (?, ?, ?, ?, ?, ?)',
                            (101, "fiction-partition", "fiction-session", "0", STAMP + 1,
-                            field(40800, poke_segment())))
+                            field(40800, poke_segment(action="拍了拍", suffix="的虚构风筝"))))
     runtime = FakeSnapshotRuntime(tmp_path, snapshot_path=database, identity_value=OWNER)
 
     def metadata(**kwargs):
@@ -221,6 +266,8 @@ def test_private_acquisition_attaches_bound_context_after_releasing_snapshot(tmp
         assert data["private_nudge_context"] == payload([])["private_nudge_context"]
         messages, _ = parse_qq_db_rich_messages(data)
         assert [message.is_self for message in messages if message.message_type == "nudge"] == [True]
+        action = next(message.relations[0] for message in messages if message.message_type == "nudge")
+        assert (action.action, action.suffix) == ("拍了拍", "的虚构风筝")
         scratch = acquired.payload_path
     assert not scratch.exists()
     assert len(runtime.acquired) == 1 and runtime.acquired == runtime.cleaned

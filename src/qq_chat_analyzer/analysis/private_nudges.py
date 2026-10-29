@@ -12,6 +12,7 @@ class NudgeMoment:
     timestamp: int
     is_self: bool
     suffix: str = field(default="", repr=False)
+    action: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +21,10 @@ class PrivateNudges:
     peer_count: int
     recent: tuple[NudgeMoment, ...]
     source: str = "wechat"
+    self_suffix: str = field(default="", repr=False)
+    peer_suffix: str = field(default="", repr=False)
+    self_action: str = field(default="", repr=False)
+    peer_action: str = field(default="", repr=False)
 
 
 def analyze_private_nudges(messages: Iterable[RichMessage]) -> PrivateNudges | None:
@@ -45,7 +50,7 @@ def analyze_private_nudges(messages: Iterable[RichMessage]) -> PrivateNudges | N
                 or (context is not None and candidate != context)):
             return None
         context = candidate
-        event = NudgeMoment(timestamp, message.is_self, relation.suffix)
+        event = NudgeMoment(timestamp, message.is_self, relation.suffix, relation.action)
         if message.message_id in events and events[message.message_id] != event:
             conflicts.add(message.message_id)
         events[message.message_id] = event
@@ -53,8 +58,20 @@ def analyze_private_nudges(messages: Iterable[RichMessage]) -> PrivateNudges | N
     if not retained:
         return None
     self_count = sum(event.is_self for event in retained)
+    self_action, self_suffix = _latest_style(retained, is_self=True)
+    peer_action, peer_suffix = _latest_style(retained, is_self=False)
     return PrivateNudges(
         self_count=self_count, peer_count=len(retained) - self_count,
         recent=tuple(sorted(retained, key=lambda event: event.timestamp, reverse=True)[:3]),
         source=context[0],
+        self_suffix=self_suffix, peer_suffix=peer_suffix,
+        self_action=self_action, peer_action=peer_action,
     )
+
+
+def _latest_style(events: list[NudgeMoment], *, is_self: bool) -> tuple[str, str]:
+    """Use the latest retained direction, leaving simultaneous disagreement unknown."""
+    direction = [event for event in events if event.is_self == is_self]
+    latest = max((event.timestamp for event in direction), default=None)
+    styles = {(event.action, event.suffix) for event in direction if event.timestamp == latest}
+    return next(iter(styles)) if len(styles) == 1 else ("", "")

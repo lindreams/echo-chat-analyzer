@@ -278,7 +278,7 @@ def _parse_record(
                 or message_id != _nonzero_identifier(fields.get("40001"))
                 or to_epoch_seconds(timestamp) is None):
             return None
-        actor, target = parties
+        actor, _ = parties
         is_self = actor == self_uin
         return RichMessage(
             message_id=message_id, source="qq", source_type=QQ_DB_JSON_FORMAT,
@@ -286,7 +286,7 @@ def _parse_record(
             sender=SenderIdentity(identity_id=actor, display_name="我" if is_self else
                                   first_identity_name(nudge_context.get("peer_name")) or "对方"),
             timestamp=timestamp, message_type="nudge", contents=(),
-            relations=(NudgeRelation(target_identity_id=target),),
+            relations=relations,
             is_system=True, is_self=is_self,
         )
     if sender_id is None or (not contents and not relations and not has_reply):
@@ -452,9 +452,10 @@ def _extract_semantics(
 
     segments = [_protobuf_fields(value) for tag, wire, value in _protobuf_fields(decoded) if tag == 40800 and wire == 2]
     if nudge_context is not None and len(segments) == 1:
-        parties = _poke_participants(segments[0], nudge_context)
-        if parties is not None:
-            return (), (), False, parties
+        poke = _parse_private_poke(segments[0], nudge_context)
+        if poke is not None:
+            actor, target, action, suffix = poke
+            return (), (NudgeRelation(target_identity_id=target, action=action, suffix=suffix),), False, (actor, target)
 
     # These field numbers only describe the feasibility-supported Adapter v0
     # slice; they are not stable across QQ versions.
@@ -519,7 +520,7 @@ def _private_nudge_context(payload: Mapping[str, Any], session: tuple[str, str])
     return context
 
 
-def _poke_participants(fields: tuple, context: Mapping[str, str]) -> tuple[str, str] | None:
+def _parse_private_poke(fields: tuple, context: Mapping[str, str]) -> tuple[str, str, str, str] | None:
     """Private gray-tip 1061: structured parties and JSON must agree in order."""
     def values(tag, wire):
         return [value for number, kind, value in fields if number == tag and kind == wire]
@@ -556,7 +557,34 @@ def _poke_participants(fields: tuple, context: Mapping[str, str]) -> tuple[str, 
     except (ValueError, UnicodeDecodeError, RecursionError):
         return None
     identities = {context["owner_uid"]: context["owner_uin"], context["peer_uid"]: context["peer_uin"]}
-    return identities[parties[0]], identities[parties[1]]
+    action, suffix = _poke_style(items, context)
+    return identities[parties[0]], identities[parties[1]], action, suffix
+
+
+def _poke_style(items: list[dict[str, Any]], context: Mapping[str, str]) -> tuple[str, str]:
+    """Read only text around the two confirmed roles; never names, links or images."""
+    positions = [index for index, item in enumerate(items) if item.get("uid")]
+    actor, target = positions
+    if actor != 0 or any(items[index].get("type") != "qq" for index in positions):
+        return "", ""
+
+    def text(parts):
+        chunks = []
+        for item in parts:
+            if item.get("type") == "img" and "txt" not in item:
+                continue
+            if item.get("type") != "nor" or not isinstance(item.get("txt"), str):
+                return None
+            chunks.append(item["txt"])
+        return "".join(chunks)
+
+    action, suffix = text(items[actor + 1:target]), text(items[target + 1:])
+    if not action or not action.strip() or suffix is None:
+        return "", ""
+    # A malformed display fragment must not expose the bound source identities.
+    if any(context[key] in action + suffix for key in ("owner_uid", "peer_uid", "owner_uin", "peer_uin")):
+        return "", ""
+    return action, suffix
 
 
 def _pic_digest(fields: tuple[tuple[int, int, int | bytes], ...]) -> str | None:

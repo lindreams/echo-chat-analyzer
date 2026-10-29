@@ -344,6 +344,10 @@ class EchoPrivateNudges:
     peer_count: int
     recent: tuple[EchoNudgeMoment, ...]
     source: str = "wechat"
+    self_suffix: str = field(default="", repr=False)
+    peer_suffix: str = field(default="", repr=False)
+    self_action: str = field(default="", repr=False)
+    peer_action: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True, slots=True)

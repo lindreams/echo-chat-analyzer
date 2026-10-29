@@ -38,4 +38,6 @@
 # they never contribute to ordinary message, session or lexical statistics.
 # v15: QQ private pokes share the independent interaction channel after
 # authenticated UID/UIN binding and agreement of both gray-tip representations.
-ANALYSIS_REVISION = "echo-analysis.v15"
+# v16: verified QQ private poke text is retained as action/suffix facts;
+# conflicting duplicate action styles cannot supply counts or display labels.
+ANALYSIS_REVISION = "echo-analysis.v16"
