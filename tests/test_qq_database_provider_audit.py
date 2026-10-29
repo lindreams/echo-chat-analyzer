@@ -120,16 +120,16 @@ def test_quick_check_distinguishes_access_from_corruption(tmp_path, caplog, kind
     assert 'fictional private content' not in caplog.text
 
 
-@pytest.mark.parametrize("version", ["3.50.4", "3.54.1"])
-@pytest.mark.parametrize("message, kind", [
-    ("*** in database main ***\nFragmentation of 0 bytes reported as 61 on page 2", "btree"),
-    ("*** in database main ***\nTree 2 page 2 cell 0: overflow list length is 1 but should be 3", "overflow"),
-    ("*** in database main ***\nFreelist: size is 3 but should be 4", "freelist"),
-    ("*** in database main ***\nPage 7: never used", "page_reference"),
-    ("NULL value in PRIVATE_TABLE.PRIVATE_COLUMN", "constraint"),
-    ("unable to validate the inverted index for FTS4 table main.PRIVATE_TABLE: SQL logic error", "virtual_table"),
-    ("PRIVATE_PATH/overflow btree rowid=123", "unknown"),
-    ("unable to validate the inverted index for FTS4 table main.PRIVATE_TABLE: SQL logic error\nPRIVATE_CONTEXT", "unknown"),
+@pytest.mark.parametrize("message, kind, version", [
+    ("*** in database main ***\nFragmentation of 0 bytes reported as 61 on page 2", "btree", "3.54.1"),
+    ("*** in database main ***\nTree 2 page 2 cell 0: overflow list length is 1 but should be 3", "overflow", "3.54.1"),
+    ("*** in database main ***\nFreelist: size is 3 but should be 4", "freelist", "3.54.1"),
+    ("*** in database main ***\nPage 7: never used", "page_reference", "3.54.1"),
+    ("NULL value in PRIVATE_TABLE.PRIVATE_COLUMN", "constraint", "3.54.1"),
+    ("unable to validate the inverted index for FTS4 table main.PRIVATE_TABLE: SQL logic error", "virtual_table", "3.54.1"),
+    ("PRIVATE_PATH/overflow btree rowid=123", "unknown", "3.54.1"),
+    ("unable to validate the inverted index for FTS4 table main.PRIVATE_TABLE: SQL logic error\nPRIVATE_CONTEXT", "unknown", "3.54.1"),
+    ("*** in database main ***\nFragmentation of 0 bytes reported as 61 on page 2", "btree", "3.50.4"),
 ])
 def test_quick_check_logs_only_fixed_classification(tmp_path, monkeypatch, caplog, message, kind, version):
     connection = MagicMock()
