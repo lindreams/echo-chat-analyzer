@@ -55,6 +55,27 @@ def _frozen_modules() -> dict:
     return reader.open_embedded_archive("PYZ.pyz").toc
 
 
+def test_frozen_release_excludes_deferred_reply_relations() -> None:
+    modules = _frozen_modules()
+    deferred = {
+        "qq_chat_analyzer.analysis.group_replies",
+        "qq_chat_analyzer.presentation.group_replies",
+        "qq_chat_analyzer.presentation.echo_replies",
+    }
+    assert not deferred.intersection(modules), "reply relations are deferred to 0.4"
+
+    from PyInstaller.archive.readers import CArchiveReader
+
+    template = CArchiveReader(str(EXECUTABLE)).open_embedded_archive("PYZ.pyz").extract(
+        "qq_chat_analyzer.presentation.echo_report_template"
+    )
+    assert not any(
+        marker in value
+        for value in template.co_consts if isinstance(value, str)
+        for marker in ("回复关系", 'id="replies"', 'href="#replies"')
+    ), "the deferred reply chapter must not appear in the release template"
+
+
 @pytest.mark.parametrize("filename", [
     "windows_runtime_manifest.json",
     "qq_napcat_runtime_pins.json",

@@ -539,9 +539,10 @@ def test_activity_analysis_preserves_report_distribution_and_density_contract(tm
     ]
     view = build_echo_report_view(analysis_models.AnalysisReports(
         activity=ActivityAnalyzer().analyze(messages),
-    ))
+    ), conversation_kind="group")
     payload = echo_report_to_dict(view)
     assert payload["schema_version"] == "echo-report.v0.19"
+    assert "group_replies" not in payload  # Deferred to 0.4, including group reports.
     assert payload["overview"] == {
         "has_data": True, "total_message_count": 3, "participant_count": 0,
         "empty_description": "", "active_days": 1,
@@ -555,7 +556,9 @@ def test_activity_analysis_preserves_report_distribution_and_density_contract(tm
     assert payload["activity"]["hourly"][8] == {"label": "08:00-08:59", "value": 2.0}
     assert payload["activity"]["weekday"][0] == {"label": "周一", "value": 2.0}
     output = export_echo_report_html(view, tmp_path / "echo-report.html")
-    match = re.search(r"window\.ECHO_DATA = (\{.*?\});", output.read_text(encoding="utf-8"), re.S)
+    source = output.read_text(encoding="utf-8")
+    assert all(marker not in source for marker in ("回复关系", 'id="replies"', 'href="#replies"'))
+    match = re.search(r"window\.ECHO_DATA = (\{.*?\});", source, re.S)
     assert match is not None
     assert json.loads(match.group(1)) == payload
 
