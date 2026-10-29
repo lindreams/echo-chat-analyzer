@@ -14,6 +14,10 @@
 源码、安装元数据及本地候选版本均为 `0.3.0`，报告为 `echo-report.v0.19`／`echo-analysis.v16`。
 README 已准备 0.3.0 下载与版本说明；现网仍为 0.2.6，发布成功前不提前切换更新源。
 
+发行源码已推送，GitHub `v0.3.0` 指向 `eed9be0`。CNB 创建 Release 时返回 HTTP 403，
+尚未上传任何 0.3.0 资产或切换更新源；须核对访问令牌的仓库范围、`repo-release:rw`
+以及所属账号的仓库写权限后继续。现有 0.2.6 发行及更新通道保持原样。
+
 当前源码 clean Frozen／Setup 构建通过，合计 262.011 秒；Setup 为 128,019,031 bytes，
 安装身份／通道仍为 `Lindreams.Echo`／`win-x64-stable`，本地 feed、包大小及哈希校验通过。
 Frozen 中 147 个 Echo 模块与当前源码编译结果一致；隔离空用户目录中的 Frozen 副本正常启动，
