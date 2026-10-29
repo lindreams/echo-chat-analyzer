@@ -313,8 +313,11 @@ IDs containing a numeric version-like pair (such as `Echo.Lab.20261013.7abc`)
 are rejected before vpk:
 its legacy RELEASES filename parser mistakes that pair for the package version.
 Ordinary dotted IDs remain supported.
-The desktop consumes the same identity constants and official GitHub repository
-feed. Signing and publication remain separate release decisions.
+The desktop consumes the same identity constants and fixed official CNB feed
+defined in `application/update_channel.py`. Release-page checks use the public
+`echo-update.json` asset; the pinned SDK consumes `releases.win-x64-stable.json`
+and full nupkgs from the persistent `updates` release. No CNB token is shipped.
+Signing and publication remain separate release decisions.
 
 The Setup creates a desktop shortcut and a Start Menu shortcut
 (`--shortcuts Desktop,StartMenuRoot`), and it reuses `branding/Echo.ico` for the
@@ -379,6 +382,39 @@ it is **not release acceptance**. Building it does not run Full, prove real QQ
 connectivity, or replace the Frozen/Setup lifecycle, update and privacy acceptance
 in section 4.2. Formal releases still require the selected regression and complete
 release safety checks. Do not publish a local candidate without that review.
+
+------------------------------------------------------------------------
+
+### 4.4 Prepare a CNB publication
+
+After the release gates in section 4.2, prepare only public artifacts:
+
+```powershell
+& $EchoPython scripts/prepare_cnb_release.py --source <validated-setup-directory> --output <new-public-directory>
+```
+
+This checks the production identity, tool versions, full-package feed and hashes,
+then creates six allowlisted files: named Setup, Setup SHA256, full nupkg,
+channel JSON, `echo-update.json`, and `SHA256SUMS.txt`. It does not publish.
+Never upload `setup-build.json`, local paths, logs or acceptance user directories.
+
+Publish all six files under the immutable `v<version>` release and verify anonymous
+complete downloads. For the persistent `updates` release, publish the immutable
+nupkg first, channel JSON second, and `echo-update.json` last. Retain previous
+nupkgs so a client already downloading an earlier version can finish. Do not
+replace an existing version's binaries or move the channel backwards. Promote
+the human-facing version release only after verification; `updates` is a service
+release and must not become the human-facing latest version.
+
+CNB write credentials belong only in the publishing process, never in the
+application, public files, source, environment files or command-line arguments.
+Old clients that still hardcode GitHub require one manual Setup installation;
+publishing a CNB feed cannot rewrite their embedded address.
+
+For a local update acceptance bridge, use a lower RC version such as
+`0.2.6-rc.1`; Python metadata normalizes it to `0.2.6rc1`, and `version.py`
+exposes the installer spelling. Refresh metadata and rebuild for each version.
+Keep RC installers local; this publication preparer only permits stable versions.
 
 ------------------------------------------------------------------------
 

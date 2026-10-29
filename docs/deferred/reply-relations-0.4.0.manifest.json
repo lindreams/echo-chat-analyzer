@@ -1,0 +1,94 @@
+{
+  "base_head": "eed832020f0b9ce74d5a4451bc0e0dce2fa0e0ff",
+  "patch_sha256": "063ef4d5ed971eb7d225642b7ef33a366263073184dbfeeee886c178c566596c",
+  "files": [
+    {
+      "path": "ARCHITECTURE.md",
+      "prototype_sha256_lf": "378a4ea489341efac06648c9aa21e9306bcc6c75a4cda5f7b9683e9a6e536b92"
+    },
+    {
+      "path": "DATA_SEMANTICS.md",
+      "prototype_sha256_lf": "447b39e4ef4267478aa56e4cce13681b6933e3b8ebb0562cba48ece116a5875b"
+    },
+    {
+      "path": "src/qq_chat_analyzer/analysis/models.py",
+      "prototype_sha256_lf": "5ab97b90100bd0e3ebc82c7622e0fc2ae10e3e6bc5227bb30441178e647dffeb"
+    },
+    {
+      "path": "src/qq_chat_analyzer/analysis/revision.py",
+      "prototype_sha256_lf": "69725ba19ab48697104430142d65f316c082e8867305b363bd80cb9732644524"
+    },
+    {
+      "path": "src/qq_chat_analyzer/application/analysis_service.py",
+      "prototype_sha256_lf": "da8ff041220e97124e5d258725ea53ee6a89681a40486bbe04cb80d3330f294b"
+    },
+    {
+      "path": "src/qq_chat_analyzer/presentation/echo_language.py",
+      "prototype_sha256_lf": "8a35402793fdfc3dbba8c0facdee1dac5c27ae58a5c4ac8dcea2e232c829f2ef"
+    },
+    {
+      "path": "src/qq_chat_analyzer/presentation/echo_report_template.py",
+      "prototype_sha256_lf": "7732d24612c4d7483f21e4ad8e6b3843a251de853a0cb8afbd608f06077349a8"
+    },
+    {
+      "path": "src/qq_chat_analyzer/presentation/echo_serializer.py",
+      "prototype_sha256_lf": "97f27f265a6c1723dd3cfeb55a9edb417dbb4180af7e5c35b19f766f08bd23bd"
+    },
+    {
+      "path": "src/qq_chat_analyzer/presentation/language_sources.py",
+      "prototype_sha256_lf": "e5ec5da43d47127cac46ab53eb3801c673f5a8022de625ef04a54129924c7573"
+    },
+    {
+      "path": "src/qq_chat_analyzer/presentation/models.py",
+      "prototype_sha256_lf": "55ed82718f81db1465d7ee3f172f3edec95acdf411f0c161e8da7e47b23cb0b6"
+    },
+    {
+      "path": "src/qq_chat_analyzer/providers/wechat_database_provider.py",
+      "prototype_sha256_lf": "5296f60d4ce855d6104a7befbc4cc1843431fbee0e49b55d8011796f47275e51"
+    },
+    {
+      "path": "src/qq_chat_analyzer/rich_message.py",
+      "prototype_sha256_lf": "e4d805df60d97448114be78e845bcb6bd503b5fe1a65d2e2c4cc685e803a67e8"
+    },
+    {
+      "path": "src/qq_chat_analyzer/wechat_db_adapter.py",
+      "prototype_sha256_lf": "42403a80bf595b6f7fcee88d2329485541683de5abe9cb872ddd54295da55e56"
+    },
+    {
+      "path": "tests/test_analysis_reports_service.py",
+      "prototype_sha256_lf": "83892b0a0825414e6d47852693b8ae34dcc6f21aa8f317e732ccf74d4f540fa9"
+    },
+    {
+      "path": "tests/test_echo_report_serializer.py",
+      "prototype_sha256_lf": "c4647e161feef4fa3d8210620bcca8459dec23aaeda4a3c9a053b4edbab8a769"
+    },
+    {
+      "path": "tests/test_wechat_db_source.py",
+      "prototype_sha256_lf": "a71ee1150d6168906aac43f5a27c5cdc67fca2f9315655faa466b2fbacd1775f"
+    },
+    {
+      "path": "tests/conftest.py",
+      "prototype_sha256_lf": "6c195421c2e32bb776c45de558db2e5c308f92490dee8a9a7ded9cde47dcd59c"
+    },
+    {
+      "path": "src/qq_chat_analyzer/analysis/group_replies.py",
+      "prototype_sha256_lf": "7668e91358f52fc918187db772fbd8b49b6b6a9d3be15515c5fa865850cecd12"
+    },
+    {
+      "path": "src/qq_chat_analyzer/presentation/group_replies.py",
+      "prototype_sha256_lf": "8cddf287d325bffdffb0a95f65c0d47aebfa31fb9c992194f19213518c477b88"
+    },
+    {
+      "path": "src/qq_chat_analyzer/presentation/echo_replies.py",
+      "prototype_sha256_lf": "dc57e1b1f8743469a65403384339948ba0fa1ff637d4cc2a699bd8906bf211ee"
+    },
+    {
+      "path": "tests/test_group_replies.py",
+      "prototype_sha256_lf": "f6632d611bfa312f6a415df606756f52c35a5fb0e1f7b466e6eef74c04993223"
+    },
+    {
+      "path": "tests/test_wechat_group_replies.py",
+      "prototype_sha256_lf": "4627ce02e61755607282608d13bd180c55053ea08cb4357f4fada586730e5046"
+    }
+  ]
+}

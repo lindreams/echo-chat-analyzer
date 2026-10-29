@@ -21,7 +21,8 @@ sqlite_dll = sqlite_build["verify_dll"](project_root / "runtime/sqlite/sqlite3.d
 release_version = tomllib.loads(
     (project_root / "pyproject.toml").read_text(encoding="utf-8")
 )["project"]["version"]
-if version("qq-chat-analyzer") != release_version:
+version_module = runpy.run_path(str(project_root / "src/qq_chat_analyzer/version.py"))
+if version_module["APP_VERSION"] != release_version:
     raise RuntimeError(
         "Installed Echo version differs from pyproject.toml; "
         "refresh the project installation before building."

@@ -25,6 +25,7 @@ import zipfile
 
 import package_windows_portable as portable
 from qq_chat_analyzer.application.update_channel import PRODUCTION_PACKAGE_ID, PRODUCTION_CHANNEL
+from qq_chat_analyzer.version import normalize_release_version
 
 PackageError = portable.PackageError
 VELOPACK_VERSION = "1.2.161"
@@ -91,6 +92,8 @@ def package_setup(source_dir: str | Path, output_dir: str | Path, *, vpk_path: P
     distributions = list(importlib.metadata.distributions(path=[str(root / "_internal")]))
     for name, expected in [("qq-chat-analyzer", release_version), ("velopack", VELOPACK_VERSION)]:
         versions = [d.version for d in distributions if d.metadata["Name"].replace("_", "-").lower() == name]
+        if name == "qq-chat-analyzer":
+            versions = [normalize_release_version(value) for value in versions]
         if versions != [expected]:
             raise PackageError(f"Frozen {name} metadata must be exactly {expected}")
     vpk_command = [str(vpk_path)] if dotnet_path is None else [str(dotnet_path), str(vpk_path)]

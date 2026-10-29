@@ -20,8 +20,7 @@ def _view():
         language_profile=EchoLanguageProfile(mode="private_common", available=True,
             members=(EchoLanguageMember("fictional-self", "同名成员", "你常说", ("苹果", "apple"), ("散步",)),
                      EchoLanguageMember("fictional-peer", "同名成员", "TA 常说", ("苹果",))),
-            shared_words=(EchoSharedWord("苹果", 2, 1, "equal"),),
-            side_preference_words=(EchoSharedWord("apple", 1, 0, "self"),)))
+            shared_words=(EchoSharedWord("苹果", 2, 1, "equal"),)))
 
 
 def _message(text, *, index=0, sender="fictional-self", **changes):
@@ -61,6 +60,17 @@ def test_duplicate_and_missing_source_ids_never_collapse_distinct_occurrences():
     assert term.occurrence_count == 4
     assert term.message_refs == (0, 1, 2, 3)
     assert len(sources.messages) == 4
+
+
+def test_report_originals_include_only_visible_member_and_common_words():
+    view = _view()
+    profile = replace(view.language_profile, members=tuple(
+        replace(member, primary_words=(), context_words=()) for member in view.language_profile.members))
+    sources = _build([_message("苹果"), _message("不再展示的词", index=1)],
+                     [["苹果"], ["不再展示的词"]], positions=[0, 2],
+                     view=replace(view, language_profile=profile))
+    assert [(term.member_index, term.word) for term in sources.terms] == [(None, "苹果")]
+    assert [message.ref for message in sources.messages] == [0]
 
 
 @pytest.mark.parametrize("boundary,expected_before,expected_after", [
@@ -141,7 +151,7 @@ def test_offline_word_lookup_paginates_keeps_text_inert_and_restores_reading_pos
     view = _view()
     if kind == "group":
         view = replace(view, conversation_kind="group", language_profile=replace(
-            view.language_profile, mode="group_distinctive", shared_words=(), side_preference_words=()))
+            view.language_profile, mode="group_distinctive", shared_words=()))
     dangerous = '</script><img id="fictional-attack" src="x" onerror="window.fictionalAttack=true"> 苹果\n保留换行'
     messages = [_message(dangerous if i == 0 else f"苹果 原话 {i}", index=i) for i in range(55)]
     view = replace(view, language_sources=_build(messages, [["苹果"]] * 55, view=view))

@@ -18,15 +18,16 @@ from threading import Lock
 from time import time
 from typing import Literal, Protocol
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from ..resources import user_data_dir
 from ..version import APP_VERSION
+from .update_channel import (
+    PRODUCTION_METADATA, PRODUCTION_PACKAGE_ID, PRODUCTION_CHANNEL,
+    PRODUCTION_REPOSITORY, official_release_url,
+)
 
 
-_REPOSITORY = "lindreams/echo-chat-analyzer"
-_LATEST_URL = f"https://api.github.com/repos/{_REPOSITORY}/releases/latest"
 _CHECK_INTERVAL = 24 * 60 * 60
 _MAX_RESPONSE_BYTES = 256 * 1024
 _SEMVER = re.compile(
@@ -82,10 +83,9 @@ def _parse_version(value: object) -> tuple[tuple[int, int, int, bool], str]:
 
 
 def _fetch_latest_release() -> object:
-    request = Request(_LATEST_URL, headers={
-        "Accept": "application/vnd.github+json",
+    request = Request(PRODUCTION_METADATA, headers={
+        "Accept": "application/json",
         "User-Agent": f"Echo/{APP_VERSION}",
-        "X-GitHub-Api-Version": "2022-11-28",
     })
     # No retries: offline startup must not accumulate retry delays. This is
     # a socket timeout, not a total deadline; callers must use a worker.
@@ -185,19 +185,16 @@ class UpdateCheckService:
             payload = self._fetch_release()
             if (not isinstance(payload, dict)
                     or payload.get("draft") is not False
-                    or payload.get("prerelease") is not False):
+                    or payload.get("prerelease") is not False
+                    or payload.get("package_id") != PRODUCTION_PACKAGE_ID
+                    or payload.get("channel") != PRODUCTION_CHANNEL):
                 raise ValueError("Not a formal release")
             latest, normalized = _parse_version(payload.get("tag_name"))
             if not latest[3]:
                 raise ValueError("Prerelease tag")
             url = payload.get("html_url")
-            if not isinstance(url, str):
-                raise ValueError("Missing release page")
-            parsed = urlsplit(url)
-            if (parsed.scheme != "https" or parsed.netloc != "github.com"
-                    or not parsed.path.startswith(f"/{_REPOSITORY}/releases/tag/")
-                    or not parsed.path.removeprefix(f"/{_REPOSITORY}/releases/tag/")
-                    or parsed.query or parsed.fragment):
+            if (not official_release_url(url)
+                    or url != f"{PRODUCTION_REPOSITORY}/-/releases/tag/v{normalized}"):
                 raise ValueError("Invalid release page")
             return UpdateCheckResult(
                 "update_available" if latest > current else "up_to_date",

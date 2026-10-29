@@ -4,9 +4,9 @@
 
 Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连接聊天来源，选择一段会话，把聊天节奏、表达习惯和常用表情包整理成可以慢慢回看的 **Echo Report**。
 
-**[下载 Windows x64 安装版](https://github.com/lindreams/echo-chat-analyzer/releases/download/v0.2.5/Echo-0.2.5-windows-x64-Setup.exe)** · [查看版本说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.5) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
+**[下载 Windows x64 安装版](https://cnb.cool/echo_mly/echo_releases/-/releases/download/v0.2.6/Echo-0.2.6-windows-x64-Setup.exe)** · [查看版本说明](https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v0.2.6) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
 
-当前版本为 **v0.2.5 · 0.3 功能预览**，包含部分 0.3 规划功能，尚非完整的 0.3.0。无需安装 Python。
+当前版本为 **v0.2.6 · 0.3 功能预览**，包含部分 0.3 规划功能，尚非完整的 0.3.0。无需安装 Python。
 
 ![Echo Report：交流的节奏](docs/screenshots/echo-report.png)
 
@@ -15,7 +15,7 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 ## 在报告里看见什么
 
 - **交流的节奏**：消息数量、活跃情况，以及一天和一周里的聊天分布。
-- **聊天轮次**：谁更常开启聊天，一次通常聊多久。
+- **聊天轮次**：谁更常开启聊天、下一段从几点开始，以及群聊的热闹集中在哪里；私聊还可回看微信拍一拍和 QQ 戳一戳。
 - **语言画像**：群聊成员的特色词，以及私聊双方的常用表达；点词查看原话，按需展开前后几句。
 - **表达习惯**：Emoji 和已支持的 QQ / 微信表情使用情况。
 - **表情包里的回音**：常用与共同常用的表情包，以及有记录支撑的招牌、接力、先后采用和流行变化。
@@ -31,7 +31,7 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 
 **连接 QQ / 微信 → 选择会话与时间范围 → 生成报告 → 阅读或分享**
 
-1. 下载并运行 `Echo-0.2.5-windows-x64-Setup.exe`，完成安装。
+1. 下载并运行 `Echo-0.2.6-windows-x64-Setup.exe`，完成安装。
 2. 在 Echo 中选择 QQ 或微信，按提示完成连接与授权。
 3. 选择会话和时间范围，生成回顾报告。
 
@@ -60,26 +60,28 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 
 - **QQ 表情包素材**：生成报告时，Echo 可能通过已登录的 QQ 客户端自动获取本次报告所需的少量素材，无需另行确认；不进行无关会话的后台批量获取。
 - **微信表情包素材**：可能向微信官方素材域名请求报告选定的少量素材，仅使用经过地址校验、并重新校验内容摘要的素材；不获取整段会话的全部图片。不需要联网补取素材时，可断网生成微信报告。
-- **软件更新**：检查和下载更新需要联网。
+- **软件更新**：检查和下载更新需要联网，新版使用官方 CNB 分发仓库，无需登录 CNB。
 
 素材获取失败时仍保留统计和排名。本地报告可随时重新打开或删除。
 
 ## 版本、更新与反馈
 
-v0.2.5 带来了语言画像原话查看、群聊成员排序和查找、语言画像与表达文化的紧凑排版，修复微信群文本头部残留和整句重复刷屏漏滤，并补充 QQ 快照页数及密钥变化的匿名诊断。诊断增强不代表所有 QQ 读取故障均已修复。第二章原文回忆卡和群聊引用回复分析仍待完成。旧报告需要重新生成，才能显示新版内容。
+v0.2.6 将更新分发迁移到 CNB，加入私聊拍一拍／戳一戳、群聊热闹集中度，调整聊天轮次与表情包章节排版，并优化 QQ 素材队列与报告素材的无损去重。此前的语言画像原话查看、点击指引、成员排序与查找、清洗修复及 QQ 匿名诊断均保留。诊断增强不代表所有 QQ 读取故障均已修复。群聊回复／互动独立模块及完整聊天复现仍待完成。旧报告需要重新生成，才能显示新版内容。
 
 不同电脑与 QQ / 微信版本的兼容性仍在收集反馈。
 
-[查看发布说明与所有下载文件](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.2.5) · [查看所有版本](https://github.com/lindreams/echo-chat-analyzer/releases) · [后续开发计划](docs/ROADMAP.md)
+[查看发布说明与所有下载文件](https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v0.2.6) · [查看所有版本](https://cnb.cool/echo_mly/echo_releases/-/releases) · [后续开发计划](docs/ROADMAP.md)
 
 <details>
 <summary>已安装用户如何更新？</summary>
 
-已安装 Setup 版可在软件内检查和下载更新。请重新启动 Echo，在本次启动尚未连接 QQ / 微信、且没有分析任务时安装更新。经用户确认、更新包校验与安全清理通过后，软件才会安装并重启；若更新被拒绝，可重新启动后再试，或手动下载安装包。
+**0.2.5 及更早版本请先手动下载新版 Setup，关闭 Echo 后运行一次。** 旧客户端固定使用 GitHub，无法通过 CNB 自动改写更新地址。
+
+安装新版后，后续 Setup 版可在软件内检查和下载更新。请重新启动 Echo，在本次启动尚未连接 QQ / 微信、且没有分析任务时安装更新。经用户确认、更新包校验与安全清理通过后，软件才会安装并重启；若更新被拒绝，可重新启动后再试，或手动下载安装包。
 
 v0.1.0 的 Portable ZIP 无法通过软件内更新升级，请手动安装 Setup。历史 ZIP 仍保留。本地报告与配置独立于程序目录保存，安装和卸载不自动删除这些数据；旧配置和运行路径的自动迁移尚未全面验证。
 
-普通用户只需下载 `Setup.exe`。Release 中的 `.nupkg` 和更新索引供软件更新使用；SHA256 文件用于核对下载，Source code 供开发者获取源码。
+普通用户只需下载 `Setup.exe`。Release 中的 `.nupkg` 和更新索引供软件更新使用，SHA256 文件用于核对下载。CNB 仓库仅负责分发；[项目源码](https://github.com/lindreams/echo-chat-analyzer) 继续维护在 GitHub。
 
 </details>
 

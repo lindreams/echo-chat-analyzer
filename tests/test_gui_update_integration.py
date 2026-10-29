@@ -32,7 +32,8 @@ def integrated(tmp_path, app):
     def fetch():
         releases.append(True)
         return dict(tag_name='v7.3.0', draft=False, prerelease=False,
-                    html_url='https://github.com/lindreams/echo-chat-analyzer/releases/tag/v7.3.0')
+                    package_id='Lindreams.Echo', channel='win-x64-stable',
+                    html_url='https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v7.3.0')
     facade = ChatAnalyzerFacade(installable_update_service=core,
         update_check_service=UpdateCheckService(state_path=tmp_path / 'attempt.json', fetch_release=fetch))
     executor = Executor()

@@ -65,7 +65,7 @@ const ids = JSON.parse(process.env.ECHO_NODE_IDS);
 const nodes = {};
 ids.forEach(function (id) { nodes[id] = new FakeNode(id); });
 
-global.window = { ECHO_DATA: JSON.parse(process.env.ECHO_PAYLOAD) };
+global.window = { ECHO_DATA: JSON.parse(process.env.ECHO_PAYLOAD), addEventListener() {} };
 global.document = {
   title: "",
   documentElement: new FakeNode("html"),
@@ -321,7 +321,7 @@ def test_private_sticker_comparison_uses_only_available_full_counts(
 
 
 @pytest.mark.parametrize("known_sender", [True, False])
-def test_expression_chapter_uses_display_count_and_member_availability(tmp_path, known_sender):
+def test_expression_chapter_keeps_message_counts_and_member_availability(tmp_path, known_sender):
     from qq_chat_analyzer.message import ChatMessage
     from qq_chat_analyzer.application.analysis_service import _build_reports
     from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
@@ -341,7 +341,7 @@ def test_expression_chapter_uses_display_count_and_member_availability(tmp_path,
     assert rendered["expression-toc"]["hidden"] is (not known_sender)
     if known_sender:
         assert rendered["expression-message-count"]["text"] == "3 条"
-        assert rendered["expression-unique-count"]["text"] == "1 种"
+        assert "expression-unique-count" not in rendered
 
 
 def test_session_chapter_never_displays_stable_ids_or_technical_ratio(tmp_path) -> None:
@@ -383,6 +383,7 @@ def test_session_chapter_never_displays_stable_ids_or_technical_ratio(tmp_path) 
 ])
 def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, width: int, kind: str, count: int | None) -> None:
     from qq_chat_analyzer.presentation import ChartPoint, EchoExpressionCulture, EchoExpressionItem
+    from qq_chat_analyzer.presentation.models import EchoLanguageMember, EchoLanguageProfile, EchoSharedWord
     chromium = _find_chromium()
     if chromium is None:
         pytest.skip("no local Chromium available")
@@ -411,6 +412,10 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
             loudest_most_back_and_forth=loudest,
         ),
         time_span=injected_name, total_message_count=4, participant_count=2,
+        language_profile=EchoLanguageProfile(mode="private_common", available=True,
+            members=(EchoLanguageMember("fictional-a", "Fictional A", "你常说", ("周末",)),
+                     EchoLanguageMember("fictional-b", "Fictional B", "TA 常说", ("散步",))),
+            shared_words=(EchoSharedWord("公园", 4, 3, "shared"),)) if kind == "private" else None,
         expression_culture=EchoExpressionCulture(
             available=True, expression_message_count=4,
             top_expressions=(
@@ -422,12 +427,17 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
     output = export_echo_report_html(view, tmp_path / "echo-report.html")
     source = output.read_text(encoding="utf-8")
     assert 'src="app.js"' not in source and 'href="style.css"' not in source
+    assert all(text not in source for text in ("中位等待", "每轮时长 · 中位数", "每轮消息 · 平均数",
+        "谁更常这样说", "一次连发", 'id="expression-unique-count"', 'id="private-side-words"'))
     probe = r"""<script>
     window.addEventListener("load", function () {
       const image = document.querySelector("#expression-top-list img");
       image.loading = "eager";
       setTimeout(function () {
         const result = {
+          chapterNames: ["overview", "sessions", "voices", "expression", "sticker"].map(
+            id => document.getElementById(id + "-title").textContent),
+          directoryNames: [...document.querySelectorAll(".toc-row .toc-copy strong")].slice(0, 5).map(x => x.textContent),
           sessionVisible: !document.getElementById("conversation-sessions").hidden,
           movementVisible: !document.getElementById("session-movement").hidden,
           replyVisible: !document.getElementById("session-reply").hidden,
@@ -464,6 +474,16 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
             return parseFloat(getComputedStyle(node,"::before").width)/node.getBoundingClientRect().width*100||0;}),
           clipped:[...document.querySelectorAll("#conversation-sessions h3,#conversation-sessions .session-fields>div,.session-beat-lead,.highnote-card")]
             .filter(x=>x.getBoundingClientRect().width&&x.scrollWidth>x.clientWidth+1).map(x=>x.id||x.className)};
+        result.visuals.expressionFields=[...document.querySelectorAll(".expression-fields > div")].map(x=>{
+          const r=x.getBoundingClientRect();return {top:r.top,width:r.width};});
+        if(window.ECHO_DATA.conversation.kind==="private"){
+          const legend=document.querySelector(".session-start-legend").getBoundingClientRect();
+          const own=bounds("session-start-self-label"),peer=bounds("session-start-peer-label");
+          result.visuals.legendEnds=Math.abs(own.left-legend.left)<1&&Math.abs(peer.right-legend.right)<1;
+          result.visuals.privatePortrait=[...document.querySelectorAll(".mode-private .voice-entry")].every(x=>
+            getComputedStyle(x).borderBottomWidth==="0px"&&!x.querySelector(".voice-context"));
+          result.visuals.sharedHeading=document.querySelector("#private-shared-words h3").textContent;
+        }
         const highlights=[...document.querySelectorAll('.highnote-card:not([hidden])')];
         result.visuals.singleHighlightFills=highlights.length!==1||Math.abs(highlights[0].getBoundingClientRect().width-highlights[0].parentElement.getBoundingClientRect().width)<1;
         const second=document.getElementById(window.ECHO_DATA.conversation.kind==="private"?"session-reply":"session-hours");
@@ -504,6 +524,14 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
     assert visuals["width"] == width and not visuals["clipped"], visuals
     assert visuals["singlePanelFills"]
     assert visuals["singleHighlightFills"]
+    assert len(visuals["expressionFields"]) == 2
+    if width > 720:
+        assert visuals["expressionFields"][0]["top"] == visuals["expressionFields"][1]["top"]
+        assert abs(visuals["expressionFields"][0]["width"] - visuals["expressionFields"][1]["width"]) < 1
+    if kind == "private":
+        assert visuals["privatePortrait"] and visuals["sharedHeading"] == "你们都常说"
+        if count:
+            assert visuals["legendEnds"]
     known = bool(count) and kind in {"private", "group"}
     assert visuals["summary"] is known
     assert visuals["hourCount"] == (24 if known and kind == "group" else 0)
@@ -517,7 +545,10 @@ def test_production_report_offline_browser_behavior_and_layout(tmp_path: Path, w
             assert visuals["beat"]["bottom"] <= other["top"]
         if kind == "private":
             assert visuals["replyWidths"] == pytest.approx([100/3, 100], abs=.05)
+    expected_names = ["交流的节奏", "每次聊起", "语言画像", "表情习惯", "表情包里的故事"]
     assert rendered == {
+        "chapterNames": expected_names,
+        "directoryNames": expected_names,
         "sessionVisible": count is not None and count > 0,
         "movementVisible": count is not None and count > 0 and kind in {"private", "group"},
         "replyVisible": count is not None and count > 0 and kind == "private",
@@ -919,9 +950,12 @@ def test_saved_qq_media_report_loads_actual_images_offline(tmp_path, kind, caplo
     ("combined", ["reunion", "style"], 1280), ("zero", [], 1280),
     ("one", ["relay"], 1280), ("three", ["trend", "relay", "shared", "trend"], 1280),
     ("many", ["reunion", "relay", "shared"] + ["reunion"] * 5, 1280),
+    ("compact", ["reunion", "style"], 1280),
+    ("combined", ["reunion", "style"], 1024),
     ("combined", ["reunion", "style"], 390),
 ])
 def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path, scene, leaders, width):
+    from dataclasses import replace
     import hashlib
     from sticker_feature_samples import Messages, indexed, many_sticker_stories
     from test_sticker_features_batch2 import combined_scene, short_relay
@@ -948,7 +982,7 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     else:
         sample.add(0, "A", "plain", text="private-body-sentinel")
         sample.add(1, "B", "other")
-    rows = (combined_scene() if scene == "combined" else short_relay() if scene == "one"
+    rows = (combined_scene() if scene in {"combined", "compact"} else short_relay() if scene == "one"
             else many_sticker_stories() if scene == "many" else sample.ordered())
     index = indexed(rows, positions=range(len(rows)))
     features = analyze_private_stickers(index)
@@ -959,6 +993,9 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
                                      expected_md5=hashlib.md5(raw).hexdigest()),)
     view = build_echo_report_view(AnalysisReports(stickers=(index.report,), private_stickers=features),
         conversation_kind="private", sticker_media=media)
+    if scene == "compact":
+        view = replace(view, stickers=replace(view.stickers, memories=tuple(
+            replace(memory, compact=True) for memory in view.stickers.memories)))
     payload = echo_report_to_dict(view)
     memories = payload["sticker_memories"]
     assert [m["findings"][0]["kind"] for m in memories] == leaders
@@ -968,8 +1005,24 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     <script>window.addEventListener("load", () => {setTimeout(() => {
       const a=document.getElementById("stickers"), b=document.getElementById("sticker-memories");
       const bounds=x=>{const r=x.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};
+      const visible=x=>!!x.getBoundingClientRect().height&&x.checkVisibility();
+      const initial={height:bounds(b).height,
+        stories:[...b.querySelectorAll("article")].filter(visible).length,
+        findings:[...b.querySelectorAll("article:not(.is-compact)")].map(x=>
+          [...x.querySelectorAll("[data-finding]")].filter(visible).length),
+        closed:[...b.querySelectorAll("details")].every(x=>!x.open)};
+      const disclosures=[...b.querySelectorAll("details")];
+      if(disclosures.length) disclosures[0].querySelector("summary").click();
+      initial.opensByClick=!disclosures.length||disclosures[0].open;
+      const choices=disclosures.map(x=>x.open);
+      window.dispatchEvent(new Event("beforeprint"));
+      initial.printComplete=disclosures.every(x=>x.open);
+      window.dispatchEvent(new Event("afterprint"));
+      initial.printRestores=disclosures.every((x,i)=>x.open===choices[i]);
+      // Inspect every detail after checking the compact first reading.
+      b.querySelectorAll("details").forEach(x=>{x.open=true;});
       const stories=[...b.querySelectorAll("article")], images=[...b.querySelectorAll("img")];
-      const result={inside:a.contains(b),visible:!a.hidden,memoriesHidden:b.hidden,
+      const result={initial,expandedHeight:bounds(b).height,inside:a.contains(b),visible:!a.hidden,memoriesHidden:b.hidden,
         pages:a.querySelectorAll(".page").length,
         toc:[...document.querySelectorAll('a[href="#stickers"],a[href="#sticker-memories"]')].filter(x=>!x.hidden).map(x=>x.getAttribute("href")),
         title:document.getElementById("sticker-title").textContent,
@@ -977,6 +1030,7 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
         habitPairs:[...b.querySelectorAll(".memory-habit-pair")].map(x=>({bounds:bounds(x),children:[...x.children].map(bounds)})),
         staffs:[...a.querySelectorAll(".sticker-staff")].map(x=>({favorites:!!x.closest("#sticker-rankings"),relay:!!x.closest(".is-relay")})),
         stories:stories.map(story=>({compact:story.classList.contains("is-compact"),
+          previewText:story.querySelector(":scope > .sticker-memory")?.innerText || "",
           findings:[...story.querySelectorAll("[data-finding]")].map(x=>({kind:x.dataset.finding,text:x.innerText,
             windows:[...x.querySelectorAll(".memory-trend-row")].map(bounds)})),
           art:[...story.querySelectorAll(".memory-art")].filter(x=>!x.closest(".memory-relay")).map(x=>({key:x.dataset.assetKey,...bounds(x)})),
@@ -1022,13 +1076,18 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     result = json.loads(html.unescape(match.group(1)))
     (tmp_path/"layout.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
     assert result["inside"] and result["visible"] and result["pages"] == 0
-    assert result["toc"] == ["#stickers"] and result["title"] == "表情包"
+    assert result["toc"] == ["#stickers"] and result["title"] == "表情包里的故事"
     assert result["memoriesHidden"] == (not leaders)
     assert len(result["stories"]) == len(leaders) and result["sharedAbsent"]
+    assert result["initial"]["stories"] <= 3 and result["initial"]["closed"]
+    assert result["initial"]["opensByClick"] and result["initial"]["printComplete"] and result["initial"]["printRestores"]
+    assert all(count == 1 for count in result["initial"]["findings"])
+    if scene in {"combined", "many"}:
+        assert result["initial"]["height"] < result["expandedHeight"] * .8
     assert not result["overflow"] and result["fits"] and result["viewport"] == width
     assert 30 <= result["tail"] <= 115
     assert [s["compact"] for s in result["stories"]] == [m["compact"] for m in memories]
-    has_relay = any(f["kind"]=="relay" for m in memories if not m["compact"] for f in m["findings"])
+    has_relay = any(f["kind"]=="relay" for m in memories for f in m["findings"])
     assert len(result["staffs"]) == (2 if has_relay else 1)
     assert all(s["favorites"] or s["relay"] for s in result["staffs"])
     assert sum(s["favorites"] for s in result["staffs"]) == 1
@@ -1047,13 +1106,13 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
         assert result["longTitleFits"]
     for rendered,memory in zip(result["stories"],memories):
         if memory["compact"]:
-            assert len(rendered["art"]) <= 1 and not rendered["turns"]
-            assert memory["findings"][0]["title"] in rendered["findings"][0]["text"]
-            continue
-        ordinary_keys={i["asset_key"] for f in memory["findings"] if f["kind"]!="relay" for i in f["materials"]}
-        assert {a["key"] for a in rendered["art"]} == ordinary_keys
-        assert len(rendered["art"]) == len(ordinary_keys)
-        assert all((65 if width > 720 else 60)<=a["width"]<=164 for a in rendered["art"])
+            assert len(rendered["art"]) <= 1
+            assert memory["findings"][0]["title"] in rendered["previewText"]
+        else:
+            ordinary_keys={i["asset_key"] for f in memory["findings"] if f["kind"]!="relay" for i in f["materials"]}
+            assert {a["key"] for a in rendered["art"]} == ordinary_keys
+            assert len(rendered["art"]) == len(ordinary_keys)
+            assert all((65 if width > 720 else 60)<=a["width"]<=164 for a in rendered["art"])
         for finding in memory["findings"]:
             actual=next(x for x in rendered["findings"] if x["kind"]==finding["kind"])
             for key in ("period","note"):
@@ -1073,6 +1132,8 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
                 windows=actual["windows"]
                 assert len({round(x["top"]) for x in windows})==1
                 assert all(x["right"]<=y["left"] for x,y in zip(windows,windows[1:]))
+            if finding["kind"] == "style":
+                assert all(f'约 {point["value"]:.1f} 种' in actual["text"] for point in finding["points"])
             if finding["kind"]=="relay":
                 turns=rendered["turns"]
                 assert len(turns)==len(finding["points"])==8
@@ -1202,7 +1263,7 @@ def _run_browser(command: list[str]) -> subprocess.CompletedProcess:
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize("scene,width", [("relay", 1280), ("all", 1280), ("all", 390)])
+@pytest.mark.parametrize("scene,width", [("relay", 1280), ("all", 1280), ("compact", 1280), ("all", 1024), ("all", 390)])
 def test_group_memories_use_the_same_offline_story_template_without_overflow(tmp_path, scene, width):
     from test_group_sticker_features import relay_rows, all_group_story_rows, discover
     from qq_chat_analyzer.analysis.models import AnalysisReports
@@ -1218,14 +1279,21 @@ def test_group_memories_use_the_same_offline_story_template_without_overflow(tmp
     # Long friendly labels must remain readable without exposing internal IDs.
     from dataclasses import replace
     chapter = view.stickers
-    memories = tuple(replace(memory, findings=tuple(replace(finding,
+    memories = tuple(replace(memory, compact=True if scene == "compact" else memory.compact, findings=tuple(replace(finding,
         points=tuple(replace(p, label=p.label+"虚构的较长群昵称"*3) for p in finding.points))
         for finding in memory.findings)) for memory in chapter.memories)
     view = replace(view, stickers=replace(chapter, memories=memories))
     output = export_echo_report_html(view, tmp_path/"group.html")
     probe = '''<script>addEventListener("load",()=>{setTimeout(()=>{
       const root=document.getElementById("sticker-memories");
-      const result={visible:!root.hidden,stories:root.querySelectorAll(".sticker-memory-story").length,
+      const visible=x=>!!x.getBoundingClientRect().height&&x.checkVisibility();
+      const initial={height:root.getBoundingClientRect().height,
+        stories:[...root.querySelectorAll("article")].filter(visible).length,
+        findings:[...root.querySelectorAll("article:not(.is-compact)")].map(x=>
+          [...x.querySelectorAll("[data-finding]")].filter(visible).length),
+        closed:[...root.querySelectorAll("details")].every(x=>!x.open)};
+      root.querySelectorAll("details").forEach(x=>{x.open=true;});
+      const result={initial,expandedHeight:root.getBoundingClientRect().height,visible:!root.hidden,stories:root.querySelectorAll(".sticker-memory-story").length,
         turns:root.querySelectorAll(".memory-relay li").length,
         kinds:[...root.querySelectorAll("[data-finding]")].map(x=>x.dataset.finding),
         text:root.innerText,
@@ -1255,12 +1323,16 @@ def test_group_memories_use_the_same_offline_story_template_without_overflow(tmp
     result = json.loads(html.unescape(match.group(1)))
     assert result["viewport"] == width
     assert result["visible"] and result["stories"] == len(memories) and result["turns"] == 6
+    assert result["initial"]["stories"] <= 3 and result["initial"]["closed"]
+    assert all(count == 1 for count in result["initial"]["findings"])
+    if scene == "all":
+        assert result["initial"]["height"] < result["expandedHeight"] * .8
     assert len(set(result["labels"])) == 3
     assert result["fits"] and not result["overflow"] and not result["external"], result
     assert result["compactInline"] and result["relayFullWidth"], result
     assert not re.search(r"仅比较|跨两天|抽取|不包含未知|其他成员合计|不推断|依据 QQ|每轮展示|同期发表情", result["text"])
-    if scene == "all":
-        # Compact stories have one panel; associated findings remain visible as summaries.
+    if scene in {"all", "compact"}:
+        # Expanded compact stories retain the same facts as featured stories.
         assert all(finding.title in result["text"] for memory in memories for finding in memory.findings)
         for finding in (f for m in memories for f in m.findings if f.kind == "style"):
             assert all(f"约 {point.value:.1f} 种" in result["text"] for point in finding.points)

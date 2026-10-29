@@ -51,21 +51,6 @@ class EchoLanguageMember:
     heading: str
     primary_words: tuple[str, ...] = ()
     context_words: tuple[str, ...] = ()
-    expression_habits: EchoExpressionHabits | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class EchoExpressionHabits:
-    """Per-speaker expression statistics prepared for Echo display."""
-
-    median_length: float
-    average_length: float
-    max_length: int
-    run_count: int
-    average_run_length: float
-    median_run_length: float
-    single_message_run_count: int
-    multi_message_run_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -148,7 +133,6 @@ class EchoLanguageProfile:
     members: tuple[EchoLanguageMember, ...] = ()
     unavailable_reason: str = ""
     shared_words: tuple[EchoSharedWord, ...] = ()
-    side_preference_words: tuple[EchoSharedWord, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

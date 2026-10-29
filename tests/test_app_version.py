@@ -70,7 +70,14 @@ def test_desktop_spec_ships_release_metadata_for_runtime_version():
     ]
     assert len(distributions) == 1
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert distributions[0].version == project["project"]["version"]
+    from qq_chat_analyzer.version import normalize_release_version
+    assert normalize_release_version(distributions[0].version) == project["project"]["version"]
+
+
+@pytest.mark.parametrize("metadata,semver", [("0.2.6rc1", "0.2.6-rc.1"), ("0.2.6", "0.2.6")])
+def test_release_candidate_metadata_keeps_installer_version_spelling(metadata, semver):
+    from qq_chat_analyzer.version import normalize_release_version
+    assert normalize_release_version(metadata) == semver
 
 
 @pytest.mark.slow_integration

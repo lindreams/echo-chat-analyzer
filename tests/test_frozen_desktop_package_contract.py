@@ -101,7 +101,8 @@ def test_frozen_release_version_is_available_without_source_checkout() -> None:
         if distribution.metadata["Name"] == "qq-chat-analyzer"
     ]
     assert len(distributions) == 1
-    assert distributions[0].version == project["project"]["version"]
+    from qq_chat_analyzer.version import normalize_release_version
+    assert normalize_release_version(distributions[0].version) == project["project"]["version"]
     assert not list(INTERNAL.glob("*.dist-info/direct_url.json"))
 
 

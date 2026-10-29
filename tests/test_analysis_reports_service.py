@@ -328,7 +328,7 @@ def test_execute_attaches_every_report_to_the_result(tmp_path: Path) -> None:
         (artifact.kind, artifact.filename) for artifact in result.artifacts
     }
     payload = json.loads((output_directory / "echo-report.json").read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "echo-report.v0.16"
+    assert payload["schema_version"] == "echo-report.v0.17"
 
 
 def test_distinctive_report_reuses_pipeline_tokens_and_stable_sender_keys(
@@ -615,7 +615,7 @@ def test_private_expression_tokens_do_not_reenter_language_profile(tmp_path: Pat
     profile = result.echo_report_view.language_profile
     assert profile.available
     assert all(not word.startswith("expression:") for member in profile.members for word in member.primary_words)
-    assert all(not word.word.startswith("expression:") for word in (*profile.shared_words, *profile.side_preference_words))
+    assert all(not word.word.startswith("expression:") for word in profile.shared_words)
     payload = json.loads((tmp_path / "private-output" / "echo-report.json").read_text(encoding="utf-8"))
     assert payload["expression_culture"] is not None
     assert '"表情"' not in json.dumps(payload["language_profile"], ensure_ascii=False)
@@ -654,7 +654,8 @@ def test_wechat_mentions_do_not_enter_exported_language_profile(tmp_path, conver
     if conversation_kind == "private":
         assert profile["available"]
         assert "公园" in json.dumps(profile, ensure_ascii=False)
-        assert [member["expression_habits"]["median_length"] for member in profile["members"]] == [10, 10]
+        assert "side_preference_words" not in profile
+        assert all("expression_habits" not in member for member in profile["members"])
     assert all(name not in json.dumps(profile, ensure_ascii=False) for name in ("银河", "宇宙"))
 
 

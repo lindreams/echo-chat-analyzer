@@ -41,7 +41,7 @@ def build_language_sources(
             if word and not word.startswith("expression:"):
                 requests[index, word] = frozenset((member.speaker_key,))
     member_keys = frozenset(member.speaker_key for member in profile.members)
-    for word in (*profile.shared_words, *profile.side_preference_words):
+    for word in profile.shared_words:
         if word.word and not word.word.startswith("expression:"):
             requests[None, word.word] = member_keys
     by_word: dict[str, list[tuple[int | None, str]]] = {}

@@ -33,7 +33,7 @@ from .expression_assets import (
 )
 
 
-ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.16"
+ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.17"
 
 
 def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
@@ -231,10 +231,6 @@ def _language_profile_to_dict(
             _shared_word_to_dict(word, expression_source)
             for word in profile.shared_words
         ],
-        "side_preference_words": [
-            _shared_word_to_dict(word, expression_source)
-            for word in profile.side_preference_words
-        ],
         "members": [
             {
                 "speaker_key": member.speaker_key,
@@ -248,9 +244,6 @@ def _language_profile_to_dict(
                     _word_to_display(word, expression_source)
                     for word in member.context_words
                 ],
-                "expression_habits": _expression_habits_to_dict(
-                    member.expression_habits
-                ),
             }
             for member in profile.members
         ],
@@ -290,23 +283,6 @@ def _word_to_display(
 
 def _is_emoji_expression(expression_key: str) -> bool:
     return tuple(iter_emoji_clusters(expression_key)) == (expression_key,)
-
-
-def _expression_habits_to_dict(
-    habits: object | None,
-) -> dict[str, object] | None:
-    if habits is None:
-        return None
-    return {
-        "median_length": habits.median_length,
-        "average_length": habits.average_length,
-        "max_length": habits.max_length,
-        "run_count": habits.run_count,
-        "average_run_length": habits.average_run_length,
-        "median_run_length": habits.median_run_length,
-        "single_message_run_count": habits.single_message_run_count,
-        "multi_message_run_count": habits.multi_message_run_count,
-    }
 
 
 def _conversation_sessions_to_dict(

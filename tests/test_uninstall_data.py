@@ -51,6 +51,109 @@ def test_both_choices_clear_sensitive_data_and_protect_external_files(data, purg
     cleanup_local_data(data, purge=purge)  # Retry after completion is inert.
 
 
+def legacy_snapshot(root, source='qq'):
+    identifier = '12345678-1234-4234-8234-123456789abc'
+    directory = root / 'data/snapshots' / source / identifier
+    payload = put(directory, 'export.json', 'fictional old export')
+    manifest = put(directory, 'manifest.json', {
+        'id': identifier, 'source': source, 'session_id': 'fictional-session',
+        'session_name': 'Fictional', 'session_type': 'private',
+        'acquired_at': '2026-08-12T00:00:00+00:00', 'capture_scope': 'all_available',
+        'coverage_start': None, 'coverage_end': None, 'message_count': 1,
+        'data_size_bytes': payload.stat().st_size, 'storage_format': 'qce_json',
+        'storage_path': payload.relative_to(root).as_posix(), 'payload_state': 'available',
+    })
+    return directory, manifest
+
+
+@pytest.mark.parametrize('purge', [False, True])
+def test_old_version_data_uses_the_same_explicit_uninstall_choice(data, purge):
+    from qq_chat_analyzer.application.qq.qq_auth_bridge import SNAPSHOT_DIAGNOSTIC_FILENAME
+    legacy_snapshot(data)
+    legacy_snapshot(data, 'wechat')
+    backup = put(data, 'config/qq.json.bak', {
+        'runtime_directory': str(data.parent / 'custom-qq'), 'qce_path': 'old-helper',
+        'security_path': 'old-secret-path', 'base_url': 'old-credential-url',
+    })
+    put(data, 'config/wechat.json.test-backup', {'data_root': 'external', 'db_key': 'fictional-key'})
+    put(data, 'runtime/qq/.qce-config/security.json', {'accessToken': 'fictional-token'})
+    put(data, 'logs/desktop.log.1', 'fictional old desktop log')
+    put(data, 'logs/' + SNAPSHOT_DIAGNOSTIC_FILENAME, 'fictional snapshot diagnostic')
+    history = put(data, 'history/analysis_history.jsonl', {'analysis_id': 'fictional-history'})
+    put(data, 'diagnostics/qq-snapshot-20261009-104309.log', 'fictional diagnostic')
+    put(data, 'diagnostics/release-logs-20261008-223112/echo.log', 'fictional archived log')
+    (data / 'validation').mkdir()
+    outside = put(data.parent, 'LocalChatAnalyzer_backup/config/wechat.json', {'db_key': 'manual-copy'})
+
+    cleanup_local_data(data, purge=purge)
+
+    assert not (data / 'data').exists() and not (data / 'diagnostics').exists()
+    assert not (data / 'validation').exists()
+    assert not (data / 'runtime/qq/.qce-config').exists()
+    assert not list((data / 'logs').glob('*'))
+    assert outside.exists()  # A sibling/manual copy is not an application-owned root.
+    if purge:
+        assert not history.exists() and not backup.exists()
+    else:
+        assert history.exists()
+        assert json.loads(backup.read_text()) == {'runtime_directory': str(data.parent / 'custom-qq')}
+        assert json.loads((data / 'config/wechat.json.test-backup').read_text()) == {'data_root': 'external'}
+    cleanup_local_data(data, purge=purge)
+
+
+@pytest.mark.parametrize('damage', ['escape', 'unknown_snapshot', 'unknown_legacy', 'backup_link'])
+def test_old_version_cleanup_refuses_unproven_assets(data, damage):
+    directory, manifest = legacy_snapshot(data)
+    outside = put(data.parent, 'unrelated/original.json', {'private': 'keep'})
+    if damage == 'escape':
+        proof = json.loads(manifest.read_text())
+        proof['storage_path'] = '../unrelated/original.json'
+        manifest.write_text(json.dumps(proof))
+    elif damage == 'unknown_snapshot':
+        put(directory, 'unrelated.txt', 'keep')
+    elif damage == 'unknown_legacy':
+        put(data, 'validation/unrecognized.json', {'private': 'keep'})
+    else:
+        os.link(outside, data / 'config/qq.json.bak')
+    with pytest.raises(CleanupIncomplete):
+        cleanup_local_data(data, purge=True)
+    assert outside.read_text() == '{"private": "keep"}'
+    assert manifest.exists()
+
+
+def test_interrupted_legacy_snapshot_cleanup_keeps_its_recovery_proof(data, monkeypatch):
+    from qq_chat_analyzer.application import uninstall_data as module
+    directory, manifest = legacy_snapshot(data)
+    original = module._Object.remove
+    def fail_payload(item):
+        if item.path == directory / 'export.json':
+            raise OSError('fictional sharing violation')
+        original(item)
+    monkeypatch.setattr(module._Object, 'remove', fail_payload)
+    with pytest.raises(CleanupIncomplete):
+        cleanup_local_data(data, purge=False)
+    assert manifest.exists()
+    monkeypatch.setattr(module._Object, 'remove', original)
+    cleanup_local_data(data, purge=False)
+    assert not directory.exists()
+
+
+def test_staged_old_snapshot_is_cleaned_without_reading_its_chat_payload(data):
+    directory, _ = legacy_snapshot(data)
+    staging = data / 'data/snapshots/.staging' / directory.name
+    staging.parent.mkdir()
+    directory.rename(staging)
+    cleanup_local_data(data, purge=False)
+    assert not staging.exists()
+
+
+def test_log_filename_does_not_authorize_deleting_a_directory(data):
+    outside = put(data, 'logs/desktop.log/unrecognized.txt', 'keep')
+    with pytest.raises(CleanupIncomplete):
+        cleanup_local_data(data, purge=True)
+    assert outside.exists()
+
+
 def test_owned_runtime_and_crash_snapshot_are_cleaned_without_connecting(data):
     from qq_chat_analyzer.application.qq.qq_runtime_workspace import _proof
     root = data / 'runtime/qq'

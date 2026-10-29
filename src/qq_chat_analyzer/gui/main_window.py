@@ -51,7 +51,7 @@ def _confirm_setup_uninstall(parent) -> str | None:
     dialog.setIcon(QMessageBox.Warning)
     dialog.setText('移除 Echo 程序和快捷方式，并选择如何处理本地数据。')
     dialog.setInformativeText(
-        '两种选择都会清除已保存的数据库密钥、连接凭据、受管理的 QQ 工作副本、临时数据、日志和更新记录。\n'
+        '两种选择都会清除已保存的数据库密钥、连接凭据、受管理的 QQ 工作副本、临时数据、日志和更新记录，包括已识别的旧版本残留。\n'
         '“清除”还会永久删除 Echo 内的报告和配置，无法撤销；另存文件和自定义 QQ／微信目录不受影响。\n'
         '本次打开后若已连接过 QQ／微信，请先关闭并重新打开 Echo，不连接来源再卸载。')
     keep = dialog.addButton('卸载，保留报告和普通设置', QMessageBox.AcceptRole)

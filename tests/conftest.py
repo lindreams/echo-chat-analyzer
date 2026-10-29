@@ -255,6 +255,7 @@ DOMAIN_MODULES = {
         "test_installable_update_service",
         "test_package_windows_portable",
         "test_package_windows_setup",
+        "test_prepare_cnb_release",
         "test_portable_runtime_copy",
         "test_setup_uninstall",
         "test_setup_uninstall_broker",

@@ -42,37 +42,37 @@ ECHO_REPORT_HTML_SKELETON = r"""
       <header class="page-header">
         <p class="folio">CONTENTS</p>
         <h2 id="contents-title">目录</h2>
-        <p>沿着时间与成员，重新看见这段交流。</p>
+        <p>从时间到表达，重新看看这段聊天。</p>
       </header>
 
       <nav class="toc" aria-label="报告目录">
         <a class="toc-row" href="#overview">
           <span class="toc-number">01</span>
-          <span class="toc-copy"><strong>交流的节奏</strong><small>消息总量与日常的时间纹理</small></span>
+          <span class="toc-copy"><strong>交流的节奏</strong><small>消息的多少，和日常里最热闹的时刻</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">03</span>
         </a>
         <a class="toc-row" id="session-toc" href="#conversation-sessions" hidden>
           <span class="toc-number">02</span>
-          <span class="toc-copy"><strong>聊天轮次</strong><small>谁先开口，一次聊多久</small></span>
+          <span class="toc-copy"><strong>每次聊起</strong><small>谁先开口，一次聊多久</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">04</span>
         </a>
         <a class="toc-row" href="#voices">
           <span class="toc-number">03</span>
-          <span class="toc-copy"><strong>个人语言画像</strong><small>群聊特色词与私聊中的两种声音</small></span>
+          <span class="toc-copy"><strong>语言画像</strong><small>那些常说的词，和各自说话的小习惯</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">05</span>
         </a>
         <a class="toc-row" id="expression-toc" href="#expression" hidden>
           <span class="toc-number">04</span>
-          <span class="toc-copy"><strong>表达文化</strong><small>表情与回应留下的共同语言</small></span>
+          <span class="toc-copy"><strong>表情习惯</strong><small>文字之外，还有那些常用的小表情</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">06</span>
         </a>
         <a class="toc-row" id="sticker-toc" href="#stickers" hidden>
           <span class="toc-number">05</span>
-          <span class="toc-copy"><strong id="sticker-toc-title">表情包</strong><small>平时怎样使用表情包</small></span>
+          <span class="toc-copy"><strong id="sticker-toc-title">表情包里的故事</strong><small>有些图反复出现，有些曾在某段日子格外流行</small></span>
           <span class="toc-leader" aria-hidden="true"></span>
           <span class="toc-page">07</span>
         </a>
@@ -131,15 +131,15 @@ ECHO_REPORT_HTML_SKELETON = r"""
     <section class="page chapter session-chapter" id="conversation-sessions" aria-labelledby="sessions-title" hidden>
       <header class="chapter-header">
         <span class="chapter-number">02</span>
-        <div><p class="folio">SESSIONS</p><h2 id="sessions-title">聊天轮次</h2></div>
+        <div><p class="folio">SESSIONS</p><h2 id="sessions-title">每次聊起</h2></div>
       </header>
       <p class="chapter-intro" id="session-lead"></p>
       <div class="session-summary" id="session-summary" hidden>
         <div class="session-total"><span>这段时间，一共聊起</span><p><strong id="session-round-count"></strong><span>轮</span></p></div>
         <div id="session-movement" hidden>
           <dl class="session-fields">
-            <div><dt>通常会聊多久</dt><dd id="session-median-duration"></dd><small>每轮时长 · 中位数</small></div>
-            <div><dt>平均每轮消息</dt><dd id="session-average-messages"></dd><small>每轮消息 · 平均数</small></div>
+            <div><dt>通常会聊多久</dt><dd id="session-median-duration"></dd></div>
+            <div><dt>平均每轮消息</dt><dd id="session-average-messages"></dd></div>
           </dl>
         </div>
       </div>
@@ -170,8 +170,8 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <div class="session-movement" id="session-reply" hidden>
           <h3 class="movement-heading"><span class="movement-icon" aria-hidden="true"></span><span id="session-reply-title">接住第一句话</span></h3>
           <dl class="session-fields">
-            <div><dt>你 <span aria-hidden="true">→</span> TA</dt><dd id="session-reply-self-to-peer"></dd><span class="session-reply-track" id="session-reply-self-track" aria-hidden="true" hidden></span><small>TA 通常接住第一句 · 中位等待</small></div>
-            <div><dt>TA <span aria-hidden="true">→</span> 你</dt><dd id="session-reply-peer-to-self"></dd><span class="session-reply-track" id="session-reply-peer-track" aria-hidden="true" hidden></span><small>你通常接住第一句 · 中位等待</small></div>
+            <div><dt>你 <span aria-hidden="true">→</span> TA</dt><dd id="session-reply-self-to-peer"></dd><span class="session-reply-track" id="session-reply-self-track" aria-hidden="true" hidden></span></div>
+            <div><dt>TA <span aria-hidden="true">→</span> 你</dt><dd id="session-reply-peer-to-self"></dd><span class="session-reply-track" id="session-reply-peer-track" aria-hidden="true" hidden></span></div>
           </dl>
         </div>
 
@@ -253,14 +253,9 @@ ECHO_REPORT_HTML_SKELETON = r"""
       <p id="voices-member-empty" class="member-search-empty" role="status" hidden>没有匹配的成员</p>
       <div class="member-list" id="member-list"></div>
       <div class="private-language-blocks" id="private-shared-words" hidden>
-        <h3>同频</h3>
+        <h3>你们都常说</h3>
         <p>两个人都相对常说的词。</p>
         <ul class="language-word-list" id="private-shared-words-list"></ul>
-      </div>
-      <div class="private-language-blocks" id="private-side-words" hidden>
-        <h3>谁更常这样说</h3>
-        <p>同一份习惯里，更常开口的一方。</p>
-        <ul class="language-word-list" id="private-side-words-list"></ul>
       </div>
       <span class="page-number">05</span>
     </section>
@@ -281,14 +276,13 @@ ECHO_REPORT_HTML_SKELETON = r"""
     <section class="page chapter expression-chapter" id="expression" aria-labelledby="expression-title" hidden>
       <header class="chapter-header">
         <span class="chapter-number">04</span>
-        <div><p class="folio">EXPRESSIONS</p><h2 id="expression-title">表达文化</h2></div>
+        <div><p class="folio">EXPRESSIONS</p><h2 id="expression-title">表情习惯</h2></div>
       </header>
       <p class="chapter-intro" id="expression-intro"></p>
 
       <dl class="expression-fields">
         <div><dt>带表达的消息</dt><dd id="expression-message-count"></dd><small>包含表达的消息数</small></div>
         <div><dt>只用表达回应</dt><dd id="expression-only-count"></dd><small>只用表达、没有文字</small></div>
-        <div><dt>常用表达</dt><dd id="expression-unique-count"></dd><small>当前展示的常用表达数量</small></div>
       </dl>
 
       <div class="expression-top">
@@ -308,7 +302,7 @@ ECHO_REPORT_HTML_SKELETON = r"""
     <section class="page chapter sticker-chapter" id="stickers" aria-labelledby="sticker-title" hidden>
       <header class="chapter-header">
         <span class="chapter-number">05</span>
-        <div><p class="folio">STICKERS</p><h2 id="sticker-title">表情包</h2></div>
+        <div><p class="folio">STICKERS</p><h2 id="sticker-title">表情包里的故事</h2></div>
       </header>
       <p class="chapter-intro">有些回应，交给一张图。</p>
       <dl class="sticker-fields" id="sticker-fields">
@@ -470,7 +464,7 @@ h1, h2, h3, p { margin-top: 0; }
 }
 .member-list.mode-group::-webkit-scrollbar-thumb:hover { background: var(--accent); }
 .voice-entry { position: relative; min-width: 0; padding: 24px 0 26px; border-bottom: 1px solid var(--rule); }
-.mode-private .voice-entry { min-height: 0; padding-right: 34px; }
+.mode-private .voice-entry { min-height: 0; padding-right: 34px; border-bottom: 0; }
 .mode-private .voice-entry + .voice-entry { padding-right: 0; padding-left: 34px; border-left: 1px solid var(--rule); }
 .voice-entry header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 18px; }
 .voice-entry h3 { min-width: 0; margin: 0; overflow-wrap: anywhere; font: 500 25px/1.3 var(--sans); }
@@ -563,10 +557,10 @@ h1, h2, h3, p { margin-top: 0; }
 #sticker-member-options label { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; overflow-wrap: anywhere; }
 #sticker-member-options input { accent-color: var(--accent); }
 .sticker-expand { background: none; border: 0; border-bottom: 1px solid var(--rule); color: var(--accent); font: 12px var(--sans); padding: 4px 0; margin-top: 8px; cursor: pointer; }
-.sticker-fields { display: grid; grid-template-columns: 1fr 1fr; margin: 0 0 18px; border-bottom: 1px solid var(--rule); }
-.sticker-fields > div { padding: 0 0 14px; }
+.sticker-fields { display: grid; grid-template-columns: 1fr 1fr; column-gap: 40px; margin: 0 0 24px; padding: 28px 0; border-bottom: 1px solid var(--rule); }
+.sticker-fields > div { min-width: 0; padding: 0; }
 .sticker-fields dt { color: var(--muted); font-size: 13px; }
-.sticker-fields dd { margin: 6px 0 0; font-size: 28px; line-height: 1.2; }
+.sticker-fields dd { margin: 14px 0 0; font-size: 28px; line-height: 1.25; }
 .sticker-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
 .sticker-section-heading h3 { margin: 0; font-size: 20px; font-weight: 500; }
 .sticker-section-heading small { color: var(--muted); font-size: 12px; }
@@ -604,7 +598,7 @@ h1, h2, h3, p { margin-top: 0; }
   .sticker-chapter .chapter-header { padding-bottom: 16px; }
   .sticker-chapter .chapter-header h2 { font-size: 52px; }
   .sticker-chapter .chapter-intro { margin: 6px 0 10px; }
-  .sticker-fields { margin-bottom: 12px; }
+  .sticker-fields { margin-bottom: 24px; }
   .sticker-top-list { grid-template-columns: repeat(3, minmax(0, 120px)); }
   .sticker-chapter:not(.sticker-group) .sticker-top-list { grid-template-columns: repeat(5, minmax(0, 1fr)); }
   .sticker-group-rankings:has(> .is-expanded) { grid-template-columns: 1fr; }
@@ -622,16 +616,17 @@ h1, h2, h3, p { margin-top: 0; }
 .sticker-chapter:not(.sticker-group) .chapter-header { padding-bottom: 24px; }
 .sticker-chapter:not(.sticker-group) .chapter-header h2 { font-size: 60px; }
 .sticker-chapter:not(.sticker-group) .chapter-intro { margin: 20px 0 23px; font-size: 16px; }
-.sticker-chapter:not(.sticker-group) .sticker-fields { grid-template-columns: 1fr 1fr; margin: 0; padding: 18px 0; border-top: 1px solid var(--ink); }
+.sticker-chapter:not(.sticker-group) .sticker-fields { grid-template-columns: 1fr 1fr; column-gap: 0; margin: 0; padding: 32px 0; border-top: 1px solid var(--ink); }
 .sticker-chapter.has-sticker-comparison .sticker-fields { grid-template-columns: 1.2fr 1fr 1fr; }
-.sticker-chapter:not(.sticker-group) .sticker-fields > div { padding: 0 0 0 28px; border-left: 1px solid var(--rule); min-width: 0; }
+.sticker-chapter:not(.sticker-group) .sticker-fields > div { padding: 0 24px 0 36px; border-left: 1px solid var(--rule); min-width: 0; }
+.sticker-chapter:not(.sticker-group) .sticker-fields > div:last-child { padding-right: 0; }
 .sticker-chapter:not(.sticker-group) .sticker-fields > div:first-child { padding-left: 0; border-left: 0; }
 .sticker-chapter:not(.sticker-group) .sticker-fields dt { font-size: 12px; }
-.sticker-chapter:not(.sticker-group) .sticker-fields dd { margin: 10px 0 0; font: 400 37px/1 var(--serif); }
+.sticker-chapter:not(.sticker-group) .sticker-fields dd { margin: 16px 0 0; font: 400 37px/44px var(--serif); }
 .sticker-chapter:not(.sticker-group) #sticker-total::after { content: " 次"; font: 12px var(--sans); color: var(--muted); }
 .sticker-chapter:not(.sticker-group) #sticker-unique::after,
 .sticker-chapter:not(.sticker-group) #sticker-comparison::after { content: " 种"; font: 12px var(--sans); color: var(--muted); }
-.sticker-stat-detail { margin: 10px 0 0; color: var(--muted); font: 12px/1.6 var(--sans); }
+.sticker-stat-detail { margin: 14px 0 0; color: var(--muted); font: 12px/1.8 var(--sans); }
 .sticker-chapter:not(.sticker-group) #sticker-rankings { position: relative; margin: 22px 0 20px; }
 .sticker-chapter:not(.sticker-group) #sticker-rankings > .sticker-staff { left: 109px; right: 0; top: 74px; height: 94px; }
 .sticker-chapter:not(.sticker-group) .sticker-members { position: relative; z-index: 1; grid-template-columns: 1fr; gap: 10px; }
@@ -742,6 +737,21 @@ h1, h2, h3, p { margin-top: 0; }
 .is-compact .memory-kicker { margin-bottom: 6px; }
 .is-compact .memory-note { margin-top: 7px; }
 .sticker-memory-story.is-compact:last-child { padding-bottom: 0; }
+.memory-details { min-width: 0; grid-column: 1 / -1; margin-top: 14px; }
+.memory-details > summary { width: fit-content; max-width: 100%; cursor: pointer; color: var(--accent); font: 11px/1.8 var(--sans); overflow-wrap: anywhere; }
+.memory-details > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 4px; }
+.memory-details > summary small { margin-left: 10px; color: var(--muted); font: inherit; }
+.memory-related-findings { padding-top: 14px; }
+.memory-related-findings > .sticker-memory:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.memory-related-findings .memory-habit-pair { margin-left: 0; }
+.memory-related-findings .sticker-memory.is-related { margin-left: 0; }
+.memory-more-stories { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--rule); }
+.memory-more-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; padding-top: 16px; }
+.memory-more-grid .sticker-memory-story:first-child { padding-top: 22px; border-top: 1px solid var(--rule); }
+.memory-more-grid .sticker-memory-story { align-items: start; }
+.memory-more-grid .sticker-memory-story:has(> details[open]) { grid-column: 1 / -1; }
+.memory-more-grid .is-compact .sticker-memory.is-related { margin-left: 0; }
+.is-compact .memory-details { margin-top: 8px; }
 
 /* Related group discoveries share a row; the main memory and relay keep their width. */
 @media (min-width: 721px) {
@@ -752,13 +762,15 @@ h1, h2, h3, p { margin-top: 0; }
   .sticker-group .memory-habit-pair { margin-left: 0; }
   .sticker-group .memory-habit-pair:has(> :only-child) { grid-column: auto; }
   .sticker-group .memory-shared { grid-template-columns: repeat(auto-fit, minmax(95px, 1fr)); gap: 14px; }
+  .sticker-group .memory-related-findings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; align-items: start; }
+  .sticker-group .memory-related-findings > .is-relay { grid-column: 1 / -1; }
 }
 
 
 .expression-chapter .chapter-intro { margin: 18px 0 26px; }
 .expression-fields {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   margin: 0;
   border-top: 1px solid var(--ink);
   border-bottom: 1px solid var(--ink);
@@ -994,6 +1006,10 @@ h1, h2, h3, p { margin-top: 0; }
 .session-chapter.is-group #session-start-peer { background: #d7cfc1; }
 #session-start-unknown { background: #c7beaf; }
 .session-start-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 9px; color: var(--muted); font: 11px/1.6 var(--sans); }
+.session-chapter:not(.is-group) .session-start-legend { display: grid; grid-template-columns: 1fr auto 1fr; }
+.session-chapter:not(.is-group) #session-start-self-label { grid-column: 1; grid-row: 1; justify-self: start; }
+.session-chapter:not(.is-group) #session-start-peer-label { grid-column: 3; grid-row: 1; justify-self: end; }
+.session-chapter:not(.is-group) #session-start-unknown-label { grid-column: 2; grid-row: 1; }
 .session-start-legend > span::before { content: ""; display: inline-block; width: 6px; height: 6px; margin-right: 6px; background: var(--viewer); }
 #session-start-peer-label::before { background: var(--accent); }
 .session-chapter.is-group #session-start-peer-label::before { background: #d7cfc1; }
@@ -1214,6 +1230,7 @@ h1, h2, h3, p { margin-top: 0; }
   .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-hours,
   .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-concentration { grid-column: auto; grid-row: auto; }
   #sticker-memory-stories { grid-template-columns: 1fr; }
+  .memory-more-grid { grid-template-columns: 1fr; }
   .sticker-memory.has-art { grid-template-columns: 64px minmax(0, 1fr); gap: 16px; }
   .sticker-memory.is-reunion.has-art { grid-template-columns: 80px minmax(0, 1fr); gap: 16px; min-height: 0; }
   .sticker-memory.is-related, .sticker-memory-story.has-reunion .sticker-memory.is-related,
@@ -1952,30 +1969,15 @@ document.documentElement.classList.add("js-ready");
           });
           article.appendChild(context);
         }
-        if (languageMode === "private_common" && member.expression_habits) {
-          var habits = member.expression_habits;
-          var habitLine = document.createElement("p");
-          habitLine.className = "voice-context";
-          habitLine.textContent =
-            "平均 " + formatSessionMessages(habits.average_length) + " 字 · " +
-            "中位 " + formatSessionMessages(habits.median_length) + " 字 · " +
-            "最长 " + formatCount(habits.max_length) + " 字 · " +
-            "一次连发 " + formatSessionMessages(habits.average_run_length) + " 条";
-          article.appendChild(habitLine);
-        }
         memberList.appendChild(article);
       });
     }
   }
 
   var sharedWordsBlock = document.getElementById("private-shared-words");
-  var sideWordsBlock = document.getElementById("private-side-words");
   var sharedWordsList = document.getElementById("private-shared-words-list");
-  var sideWordsList = document.getElementById("private-side-words-list");
   if (sharedWordsBlock) sharedWordsBlock.hidden = true;
-  if (sideWordsBlock) sideWordsBlock.hidden = true;
   if (sharedWordsList) sharedWordsList.textContent = "";
-  if (sideWordsList) sideWordsList.textContent = "";
   if (
     languageMode === "private_common" &&
     languageProfile &&
@@ -1998,25 +2000,6 @@ document.documentElement.classList.add("js-ready");
           )
         );
         sharedWordsList.appendChild(entry);
-      });
-    }
-  }
-  if (
-    languageMode === "private_common" &&
-    languageProfile &&
-    languageProfile.available &&
-    sideWordsBlock &&
-    sideWordsList
-  ) {
-    var sideWords = languageProfile.side_preference_words || [];
-    if (sideWords.length) {
-      sideWordsBlock.hidden = false;
-      sideWords.forEach(function (item) {
-        var entry = document.createElement("li");
-        var sideLabel = item.emphasis === "self" ? "你更常说" : "TA 更常说";
-        appendLanguageWord(entry, item.word, null);
-        entry.appendChild(document.createTextNode(" · " + sideLabel));
-        sideWordsList.appendChild(entry);
       });
     }
   }
@@ -2373,39 +2356,36 @@ document.documentElement.classList.add("js-ready");
     }
     var memoryLabels = {reunion: "久别重逢", signature: "长久的习惯", shared: "共同习惯",
       relay: "你来我往", trend: "使用变化", adoption: "先后使用", style: "使用风格", reply: "明确引用"};
+    function memoryDetails(label, kinds) {
+      var details = memoryElement("details", "memory-details");
+      var summary = memoryElement("summary", "", label);
+      var labels = Array.from(new Set(kinds.map(function (kind) { return memoryLabels[kind]; })));
+      if (labels.length) summary.appendChild(memoryElement("small", "", labels.join(" · ")));
+      details.appendChild(summary);
+      return details;
+    }
+    var extraMemories = memories.filter(function (memory) { return memory.compact; });
+    var extraDetails = memoryDetails("还有 " + extraMemories.length + " 段回忆", []);
+    var extraGrid = memoryElement("div", "memory-more-grid");
+    extraDetails.classList.add("memory-more-stories");
+    extraDetails.appendChild(extraGrid);
     var relayStaffUsed = false;
     memories.forEach(function (memory) {
       var story = memoryElement("article", "sticker-memory-story");
       story.classList.toggle("is-compact", Boolean(memory.compact));
+      var compactBody = null;
       if (memory.compact) {
         var lead = memory.findings[0];
         if (memory.materials.length) story.appendChild(memoryImage(memory.materials));
         var compactPanel = memoryElement("section", "sticker-memory");
-        compactPanel.dataset.finding = lead.kind;
         compactPanel.appendChild(memoryElement("p", "memory-kicker", memoryLabels[lead.kind]));
         compactPanel.appendChild(memoryElement("h3", "", lead.title));
         if (lead.period) compactPanel.appendChild(memoryElement("p", "memory-note", lead.period));
-        var summaries = [];
-        memory.findings.forEach(function (finding) {
-          if (finding !== lead) summaries.push(finding.title);
-          finding.points.forEach(function (point) {
-            if (stickerGroup && finding.kind === "style") {
-              summaries.push(point.label + " · 约 " + point.value.toFixed(1) + " 种");
-              return;
-            }
-            if (!point.start_date) return;
-            var text = point.label + " " + point.start_date;
-            if (point.end_date) text += " — " + point.end_date;
-            if (point.date_count !== null && point.date_count !== undefined) text += " · " + point.date_count + " 天";
-            if (point.value !== null && point.value !== undefined) text += " · " + point.value + " 次";
-            if (summaries.indexOf(text) < 0) summaries.push(text);
-          });
-          if (finding.note && summaries.indexOf(finding.note) < 0) summaries.push(finding.note);
-        });
-        summaries.forEach(function (text) { compactPanel.appendChild(memoryElement("p", "memory-note", text)); });
         story.appendChild(compactPanel);
-        stories.appendChild(story);
-        return;
+        var compactDetails = memoryDetails("日期与细节", memory.findings.map(function (finding) { return finding.kind; }));
+        compactBody = memoryElement("div", "memory-related-findings");
+        compactDetails.appendChild(compactBody);
+        story.appendChild(compactDetails);
       }
       var groups = visualFindings(memory.findings);
       var ordinary = [], reunionKeys = new Set();
@@ -2418,14 +2398,20 @@ document.documentElement.classList.add("js-ready");
       });
       story.classList.toggle("has-reunion", reunionKeys.size > 0);
       var painted = new Set();
-      // The main event leads. Related facts share its picture; relay stays full width.
+      if (memory.compact && memory.materials.length) painted.add(memory.materials[0].asset_key);
+      // Keep the selected lead visible; associated observations open on demand.
       groups.sort(function (a, b) {
-        if (a[0].kind === "relay" && ordinary.length) return 1;
-        if (b[0].kind === "relay" && ordinary.length) return -1;
+        if (a.indexOf(memory.findings[0]) >= 0) return -1;
+        if (b.indexOf(memory.findings[0]) >= 0) return 1;
         return 0;
       });
+      var related = memoryDetails("同一段回忆，还有 " + (groups.length - 1) + " 项发现",
+        groups.slice(1).map(function (group) { return group[0].kind; }));
+      var relatedBody = memoryElement("div", "memory-related-findings");
+      related.appendChild(relatedBody);
       var habitPair = null;
-      groups.forEach(function (group) {
+      groups.forEach(function (group, groupIndex) {
+        var container = compactBody || (groupIndex ? relatedBody : story);
         var finding = group[0], kind = finding.kind, points = finding.points;
         if (!memoryLabels[kind]) return;
         var panel = memoryElement("section", "sticker-memory is-" + kind);
@@ -2457,7 +2443,7 @@ document.documentElement.classList.add("js-ready");
           heading.appendChild(index % 2 ? memoryElement("em", "", part) : document.createTextNode(part));
         });
         copy.appendChild(heading);
-        body.appendChild(copy);
+        if (!memory.compact || groupIndex) body.appendChild(copy);
         if (kind === "reunion" || kind === "adoption") body.appendChild(memoryDates(points));
         if (kind === "signature") {
           var count = memoryElement("p", "memory-habit-count");
@@ -2526,14 +2512,28 @@ document.documentElement.classList.add("js-ready");
         if ((kind === "signature" || kind === "shared") && panel.classList.contains("is-related")) {
           if (!habitPair) {
             habitPair = memoryElement("div", "memory-habit-pair");
-            story.appendChild(habitPair);
+            container.appendChild(habitPair);
           }
           habitPair.appendChild(panel);
         } else {
-          story.appendChild(panel);
+          container.appendChild(panel);
         }
       });
-      stories.appendChild(story);
+      if (!memory.compact && groups.length > 1) story.appendChild(related);
+      (memory.compact ? extraGrid : stories).appendChild(story);
+    });
+    if (extraMemories.length) stories.appendChild(extraDetails);
+    // Paper contains all selected observations; returning to the screen restores
+    // the reader's own open/closed choices, including nested details.
+    var closedMemoryDetails = null;
+    window.addEventListener("beforeprint", function () {
+      if (closedMemoryDetails !== null) return;
+      closedMemoryDetails = Array.from(stories.querySelectorAll("details:not([open])"));
+      closedMemoryDetails.forEach(function (details) { details.open = true; });
+    });
+    window.addEventListener("afterprint", function () {
+      (closedMemoryDetails || []).forEach(function (details) { details.open = false; });
+      closedMemoryDetails = null;
     });
 
   }
@@ -2561,10 +2561,6 @@ document.documentElement.classList.add("js-ready");
     setText(
       "expression-only-count",
       formatCount(expressionCulture.expression_only_message_count) + " 条"
-    );
-    setText(
-      "expression-unique-count",
-      formatCount((expressionCulture.top_expressions || []).length) + " 种"
     );
     if (expressionTopList) {
       expressionTopList.textContent = "";

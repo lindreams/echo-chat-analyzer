@@ -302,6 +302,9 @@ def test_spec_excludes_unused_jieba_data_and_local_install_provenance(tmp_path):
     )]
     # The metadata-only Analysis seam still receives a validated SQLite input.
     (tmp_path / "pyproject.toml").write_bytes((PROJECT_ROOT / "pyproject.toml").read_bytes())
+    version_source = tmp_path / "src/qq_chat_analyzer/version.py"
+    version_source.parent.mkdir(parents=True)
+    version_source.write_bytes((PROJECT_ROOT / "src/qq_chat_analyzer/version.py").read_bytes())
     dll = prepare_sqlite_build_input(tmp_path)
     analysis = SimpleNamespace(datas=collected, pure=[], scripts=[],
                                binaries=[("sqlite3.dll", str(dll), "BINARY")])

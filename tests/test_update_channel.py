@@ -24,7 +24,7 @@ def test_production_composition_is_inert_and_uses_trusted_identity(monkeypatch):
     feed = mod.production_feed()
     assert (feed.package_id, feed.channel, feed.source) == (
         'Lindreams.Echo', 'win-x64-stable',
-        'https://github.com/lindreams/echo-chat-analyzer')
+        'https://cnb.cool/echo_mly/echo_releases/-/releases/download/updates')
     # The normal A3 preparation still requires a supported Setup and verified
     # package; wiring the feed must not authorize installation in a source run.
     assert facade.prepare_update_install().status == 'denied'

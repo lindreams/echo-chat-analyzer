@@ -1,0 +1,1095 @@
+diff --git a/ARCHITECTURE.md b/ARCHITECTURE.md
+--- a/ARCHITECTURE.md
++++ b/ARCHITECTURE.md
+@@ -84,6 +84,11 @@
+ 
+ ### 单次分析
+ 
++群聊明确引用由 `analysis/group_replies.py` 在同次保留的 Rich／投影配对上聚合。
++QQ 使用原有群序号关联，微信只接入核实的群聊 appmsg/57；引用目标及作者由来源适配提供，
++核心再次校验唯一 ID、会话、身份与顺序。Presentation 仅输出显示名、次数及保留原话的报告内序号，
++与语言画像共用只读原话面板；不新增来源读取、缓存或 GUI 业务入口。
++
+ 1. 来源服务产生 payload，ImportService 选择 Adapter / Parser。
+ 2. 最终 Analysis Scope Filter 按统一时间语义过滤；来源 SQL 时间条件仅用于减少获取量，不能替代最终过滤。
+ 3. 智能过滤分发送者、整条消息模板、停用词三个层次；质量过滤后再进行分析。停用词只作用于词法，不应代替整条模板过滤。
+diff --git a/DATA_SEMANTICS.md b/DATA_SEMANTICS.md
+--- a/DATA_SEMANTICS.md
++++ b/DATA_SEMANTICS.md
+@@ -76,6 +76,27 @@
+ 会话划分、时长、发起者及聚合统计由核心计算；AnalysisApplicationService 调用核心，Presentation / Echo Report 消费结果，不重新计算另一套 session statistics。
+ 
+ 依据：[conversation_sessions.py](src/qq_chat_analyzer/analysis/conversation_sessions.py)、[timestamps.py](src/qq_chat_analyzer/analysis/timestamps.py)；边界与三态守护见 [test_conversation_sessions.py](tests/test_conversation_sessions.py)。
++
++### 群聊明确引用
++
++QQ／微信数据库群聊共用同一统计。只连接当前过滤后范围内、同平台与会话、消息 ID 唯一、
++双方稳定身份明确且目标严格早于引用方的消息；同秒、未知时间、逆序、多个引用目标、
++重复 ID 或目标被过滤时不连边。普通相邻发言和文字 `@名字` 不构成回复关系。
++有向组合从引用者指向原话作者；每条合格引用计一次，连续引用只计其直接目标，不展开传递关系。
++引用自己与无法定位的引用分别计数，不进入成员间组合；未验证的来源保持不可用。
++
++微信只接入已核实的群聊完整 `local_type=244813135921`、XML appmsg/type=57。
++`title` 是当前作者文字；`refermsg` 的 content／displayname 不并入正文、词频或原话。
++`svrid` 对应原消息 server_id，`fromusr` 须等于当前群，`chatusr` 须与目标发送者相同。
++引用方须有合法 server_id；群聊无合法 server_id 的记录，其 local_id 使用独立 `local:` 标识，
++不能冒充全局引用目标或把跨 shard 本地编号碰巧相同的记录连起来。
++其他应用类型与私聊引用不因本功能而开放；群聊消息及时间边界 SQL 使用同一类型白名单。
++
++报告展示全部有向组合和可定位的两条原话，按引用次数排序，同次数保持首次观察顺序。
++只读面板先显示三组，完整列表每批十组；分页不减少报告收录数量。
++非文字目标仅按已知消息类型标注，不重建引用快照或未读取的图片。
++只统计明确引用的保留子集，不将其称为全部回复、回复率、忽略率或关系亲疏。
++私聊即使误带群聊字段也不序列化；新报告使用 `echo-report.v0.17`／`echo-analysis.v16`，旧报告不回填。
+ 
+ ### 私聊拍一拍／戳一戳（独立互动事实）
+ 
+diff --git a/src/qq_chat_analyzer/analysis/models.py b/src/qq_chat_analyzer/analysis/models.py
+--- a/src/qq_chat_analyzer/analysis/models.py
++++ b/src/qq_chat_analyzer/analysis/models.py
+@@ -10,6 +10,7 @@
+ from .sticker_features import PrivateStickerFeatures
+ from .group_stickers import GroupStickerFeatures
+ from .private_nudges import PrivateNudges
++from .group_replies import GroupReplies
+ 
+ 
+ UNKNOWN_CONVERSATION_NAME = "\u672a\u77e5\u4f1a\u8bdd"
+@@ -251,6 +252,7 @@
+     private_stickers: PrivateStickerFeatures | None = field(default=None, repr=False)
+     group_stickers: GroupStickerFeatures | None = field(default=None, repr=False)
+     private_nudges: PrivateNudges | None = None
++    group_replies: GroupReplies | None = field(default=None, repr=False)
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+diff --git a/src/qq_chat_analyzer/analysis/revision.py b/src/qq_chat_analyzer/analysis/revision.py
+--- a/src/qq_chat_analyzer/analysis/revision.py
++++ b/src/qq_chat_analyzer/analysis/revision.py
+@@ -38,4 +38,7 @@
+ # they never contribute to ordinary message, session or lexical statistics.
+ # v15: QQ private pokes share the independent interaction channel after
+ # authenticated UID/UIN binding and agreement of both gray-tip representations.
+-ANALYSIS_REVISION = "echo-analysis.v15"
++# v16: explicit QQ/WeChat group citations share retained-scope analysis;
++# WeChat appmsg/57 contributes only its authored title, with server-ID targets
++# and shard-local fallback IDs kept separate.
++ANALYSIS_REVISION = "echo-analysis.v16"
+diff --git a/src/qq_chat_analyzer/application/analysis_service.py b/src/qq_chat_analyzer/application/analysis_service.py
+--- a/src/qq_chat_analyzer/application/analysis_service.py
++++ b/src/qq_chat_analyzer/application/analysis_service.py
+@@ -23,6 +23,7 @@
+ from ..analysis.analyzers.expression_analyzer import iter_emoji_clusters
+ from ..analysis.models import AnalysisReports, ExpressionReport
+ from ..analysis.private_nudges import PrivateNudges, analyze_private_nudges
++from ..analysis.group_replies import analyze_group_replies
+ from ..analysis.sticker_features import (
+     PrivateStickerFeatures, analyze_private_stickers,
+ )
+@@ -37,6 +38,7 @@
+ )
+ from ..presentation.builders import prepare_expression_report
+ from ..presentation.language_sources import build_language_sources
++from ..presentation.group_replies import build_group_reply_view
+ from ..presentation.stickers import assemble_sticker_assets, build_echo_stickers, sticker_report_targets
+ from ..analysis.group_stickers import GroupStickerFeatures, analyze_group_stickers
+ from ..analyzer import (
+@@ -584,6 +586,15 @@
+     if sticker_reports is None:
+         with timed_stage("sticker_aggregation"):
+             sticker_reports = aggregate_stickers(stickers or StickerData(), (rich_by_instance or {}).values())
++    group_replies = None
++    if conversation_type == 'group' and rich_by_instance is not None:
++        # The same retained projection instances determine both the evidence
++        # and original-message references. Never recover a filtered target.
++        reply_scope = tuple(rich_by_instance[id(message)] for message in messages
++                            if id(message) in rich_by_instance)
++        if len(reply_scope) == len(messages):
++            with timed_stage('group_replies'):
++                group_replies = analyze_group_replies(reply_scope)
+     return AnalysisReports(
+         activity=activity,
+         user_profiles=user_profiles,
+@@ -595,6 +606,7 @@
+         private_stickers=private_stickers,
+         group_stickers=group_stickers,
+         private_nudges=private_nudges,
++        group_replies=group_replies,
+         expression=prepare_expression_report(
+             expression,
+             expression_source=(
+@@ -816,7 +828,7 @@
+         )
+         view = replace(view, language_sources=build_language_sources(
+             view, messages, message_tokens, source_positions=source_positions,
+-        ))
++        ), group_replies=build_group_reply_view(view, reports.group_replies, messages))
+     if write:
+         _write_echo_view(view, output_directory)
+     return view
+diff --git a/src/qq_chat_analyzer/presentation/echo_language.py b/src/qq_chat_analyzer/presentation/echo_language.py
+--- a/src/qq_chat_analyzer/presentation/echo_language.py
++++ b/src/qq_chat_analyzer/presentation/echo_language.py
+@@ -58,12 +58,15 @@
+   "use strict";
+   var data = window.ECHO_DATA;
+   var sources = data && data.language_sources;
++  var replies = data && data.conversation && data.conversation.kind === "group" && data.group_replies;
+   var chapter = document.getElementById("voices");
+   var dialog = document.getElementById("language-originals");
+-  if (!sources || !chapter || !dialog) return;
++  if ((!sources && !replies) || !chapter || !dialog) return;
++  sources = sources || {messages: [], terms: []};
+   var hint = document.getElementById("language-original-hint");
+   if (hint) hint.hidden = !chapter.querySelector(".language-word-button");
+   var originals = new Map((sources.messages || []).map(function (message) { return [message.ref, message]; }));
++  (replies && replies.messages || []).forEach(function (message) { originals.set(message.ref, message); });
+   var terms = new Map((sources.terms || []).map(function (term) {
+     return [JSON.stringify([term.member_index, term.word]), term];
+   }));
+@@ -89,7 +92,8 @@
+     meta.appendChild(element("span", "", message.speaker_label));
+     meta.appendChild(element("time", "", message.timestamp || "时间未知"));
+     row.appendChild(meta);
+-    row.appendChild(element("p", "language-original-text", message.text || "［非文字消息］"));
++    var nonText = {sticker: "［表情包］", image: "［图片］"}[message.message_type] || "［非文字消息］";
++    row.appendChild(element("p", "language-original-text", message.text || nonText));
+     return row;
+   }
+   function hitCard(message) {
+@@ -130,11 +134,21 @@
+     var refs = current.message_refs || [];
+     var end = Math.min(limit, refs.length);
+     for (; rendered < end; rendered++) {
+-      var message = originals.get(refs[rendered]);
+-      if (message) results.appendChild(hitCard(message));
++      if (current.citations) {
++        var article = element("article", "language-original-hit");
++        [refs[rendered][1], refs[rendered][0]].forEach(function (ref, index) {
++          article.appendChild(element("p", "reply-citation-label", index ? "本次回复" : "引用的原话"));
++          var message = originals.get(ref);
++          if (message) article.appendChild(messageRow(message, index === 1));
++        });
++        results.appendChild(article);
++      } else {
++        var message = originals.get(refs[rendered]);
++        if (message) results.appendChild(hitCard(message));
++      }
+     }
+     if (!refs.length) results.appendChild(element("p", "language-original-empty", "这份报告暂未收录这个词的原话。"));
+-    progress.textContent = "已显示 " + rendered + " / " + refs.length + " 条";
++    progress.textContent = "已显示 " + rendered + " / " + refs.length + (current.citations ? " 组引用" : " 条");
+     allButton.hidden = !preview || rendered >= refs.length;
+     moreButton.hidden = preview || rendered >= refs.length;
+   }
+@@ -151,11 +165,23 @@
+     results.textContent = "";
+     var member = memberIndex === null ? null : data.language_profile.members[memberIndex];
+     title.textContent = term.word + " · " + (member ? member.display_name + "的原话" : "双方的原话");
++    dialog.querySelector(".folio").textContent = "VOICES / 原话";
+     summary.textContent = "出现 " + term.occurrence_count + " 次，分布于 " + term.message_refs.length + " 条消息";
+     appendUntil(3);
+     results.scrollTop = 0;
+     dialog.showModal();
+     closeButton.focus({preventScroll: true});
++  });
++  dialog.addEventListener("echo:replies", function (event) {
++    var pair = event.detail.pair;
++    current = {message_refs: pair.message_refs, citations: true};
++    trigger = event.detail.trigger;
++    rendered = 0; preview = true; results.textContent = "";
++    title.textContent = pair.sender_label + " → " + pair.target_label;
++    dialog.querySelector(".folio").textContent = "REPLIES / 引用";
++    summary.textContent = "明确引用 " + pair.count + " 次 · 先看原话，再看本次回复";
++    appendUntil(3); results.scrollTop = 0;
++    dialog.showModal(); closeButton.focus({preventScroll: true});
+   });
+   allButton.addEventListener("click", function () {
+     preview = false;
+diff --git a/src/qq_chat_analyzer/presentation/echo_report_template.py b/src/qq_chat_analyzer/presentation/echo_report_template.py
+--- a/src/qq_chat_analyzer/presentation/echo_report_template.py
++++ b/src/qq_chat_analyzer/presentation/echo_report_template.py
+@@ -76,12 +76,12 @@
+           <span class="toc-leader" aria-hidden="true"></span>
+           <span class="toc-page">07</span>
+         </a>
+-        <div class="toc-row is-future">
++        <a class="toc-row" id="replies-toc" href="#replies" hidden>
+           <span class="toc-number">06</span>
+-          <span class="toc-copy"><strong>互动关系</strong><small>未来章节</small></span>
++          <span class="toc-copy"><strong>回复关系</strong><small>谁引用了谁，又接下哪句话</small></span>
+           <span class="toc-leader" aria-hidden="true"></span>
+-          <span class="toc-page">—</span>
+-        </div>
++          <span class="toc-page">08</span>
++        </a>
+         <div class="toc-row is-future">
+           <span class="toc-number">07</span>
+           <span class="toc-copy"><strong>余音</strong><small>让那些反复出现的词，成为最后的回响。</small></span>
+@@ -334,14 +334,28 @@
+       <span class="page-number">07</span>
+     </section>
+ 
++    <section class="page chapter replies-chapter" id="replies" aria-labelledby="replies-title" hidden>
++      <header class="chapter-header">
++        <span class="chapter-number">06</span>
++        <div><p class="folio">REPLIES</p><h2 id="replies-title">回复关系</h2></div>
++      </header>
++      <p class="chapter-intro">有些话，被另一个人接了下去。</p>
++      <div class="reply-overview" id="reply-overview"></div>
++      <h3>谁常引用谁</h3>
++      <p class="reply-hint">箭头从引用者指向原话作者。点击查看原话与本次回复。</p>
++      <div id="reply-pairs"></div>
++      <button type="button" class="reply-more" id="reply-more" hidden>继续查看</button>
++      <p class="reply-hint" id="reply-note"></p>
++      <span class="page-number">08</span>
++    </section>
++
+     <section class="page future" id="future" aria-labelledby="future-title">
+       <header class="page-header"><p class="folio">UNWRITTEN</p><h2 id="future-title">尚未展开的部分</h2><p>有些痕迹，将在之后的章节中继续被看见。</p></header>
+       <div class="future-list">
+-        <div><span>06</span><h3>互动关系</h3><p>交流方向与回应方式。</p></div>
+         <div><span>07</span><h3>余音</h3><p>未来将以聊天词云，为 Echo Report 留下最后的回响。</p></div>
+       </div>
+       <footer class="end-mark"><a href="#cover">回到封面 ↑</a><span>余音 Echo · <b data-current-year>2026</b></span></footer>
+-      <span class="page-number">08</span>
++      <span class="page-number" id="future-page-number">08</span>
+     </section>
+   </main>
+ 
+diff --git a/src/qq_chat_analyzer/presentation/echo_serializer.py b/src/qq_chat_analyzer/presentation/echo_serializer.py
+--- a/src/qq_chat_analyzer/presentation/echo_serializer.py
++++ b/src/qq_chat_analyzer/presentation/echo_serializer.py
+@@ -17,6 +17,7 @@
+ )
+ from .echo_rhythm import ECHO_RHYTHM_APP_JS, ECHO_RHYTHM_CSS
+ from .echo_language import ECHO_LANGUAGE_APP_JS, ECHO_LANGUAGE_CSS
++from .echo_replies import ECHO_REPLIES_APP_JS, ECHO_REPLIES_CSS
+ from .echo_member_controls import ECHO_MEMBER_CONTROLS_CSS, ECHO_MEMBER_CONTROLS_JS
+ from .models import (
+     ChartPoint,
+@@ -33,7 +34,7 @@
+ )
+ 
+ 
+-ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.16"
++ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.17"
+ 
+ 
+ def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
+@@ -74,6 +75,8 @@
+             view.expression_source,
+         ),
+         "language_sources": asdict(view.language_sources) if view.language_sources is not None else None,
++        "group_replies": (asdict(view.group_replies)
++                          if view.conversation_kind == 'group' and view.group_replies is not None else None),
+         "expression_culture": _expression_culture_to_dict(
+             view.expression_culture
+         ),
+@@ -502,9 +505,9 @@
+     return (
+         ECHO_REPORT_HTML_SKELETON.replace("__ECHO_FAVICON_TAG__", favicon_tag)
+         .replace("__ECHO_LOGO_TAG__", logo_tag)
+-        .replace("__ECHO_CSS__", ECHO_REPORT_CSS + ECHO_RHYTHM_CSS + ECHO_LANGUAGE_CSS + ECHO_MEMBER_CONTROLS_CSS)
++        .replace("__ECHO_CSS__", ECHO_REPORT_CSS + ECHO_RHYTHM_CSS + ECHO_LANGUAGE_CSS + ECHO_MEMBER_CONTROLS_CSS + ECHO_REPLIES_CSS)
+         .replace("__ECHO_ASSETS__", _encode_echo_assets(view))
+-        .replace("__ECHO_APP_JS__", ECHO_REPORT_APP_JS + ECHO_RHYTHM_APP_JS + ECHO_LANGUAGE_APP_JS + ECHO_MEMBER_CONTROLS_JS)
++        .replace("__ECHO_APP_JS__", ECHO_REPORT_APP_JS + ECHO_RHYTHM_APP_JS + ECHO_LANGUAGE_APP_JS + ECHO_MEMBER_CONTROLS_JS + ECHO_REPLIES_APP_JS)
+         # Authored text may contain any template marker. Insert it last so it
+         # can never be interpreted as another template substitution.
+         .replace("__ECHO_DATA__", _encode_echo_data(view))
+diff --git a/src/qq_chat_analyzer/presentation/language_sources.py b/src/qq_chat_analyzer/presentation/language_sources.py
+--- a/src/qq_chat_analyzer/presentation/language_sources.py
++++ b/src/qq_chat_analyzer/presentation/language_sources.py
+@@ -64,26 +64,35 @@
+         _context_refs(messages, source_positions, ref, 1),
+     ) for ref in hits}
+     needed = hits | {ref for before, after in contexts.values() for ref in (*before, *after)}
+-    name_counts = Counter(member.display_name for member in view.members)
+-    names = {member.speaker_key: (
+-        f"{member.display_name} · {index + 1:02d}"
+-        if name_counts[member.display_name] > 1 else member.display_name
+-    ) for index, member in enumerate(view.members)}
++    names = original_speaker_labels(view)
+     originals = []
+     for ref in sorted(needed):
+         message = messages[ref]
+-        moment = to_chat_datetime(message.timestamp)
+         before, after = contexts.get(ref, ((), ()))
+-        originals.append(EchoLanguageMessage(
+-            ref=ref, speaker_label=names.get(stable_sender_key(message), "未知成员"),
+-            timestamp=moment.strftime("%Y-%m-%d %H:%M:%S") if moment else "",
+-            text=message.text, message_type=message.message_type,
+-            before_refs=before, after_refs=after,
+-        ))
++        originals.append(build_original_message(message, ref, names, before=before, after=after))
+     return EchoLanguageSources(messages=tuple(originals), terms=tuple(
+         EchoLanguageTerm(word, member_index, counts[member_index, word], tuple(matches[member_index, word]))
+         for member_index, word in requests
+     ))
++
++
++def original_speaker_labels(view: EchoReportView) -> dict[str, str]:
++    """Use the same disambiguated names in every original-message entrypoint."""
++    counts = Counter(member.display_name for member in view.members)
++    return {member.speaker_key: (
++        f"{member.display_name} · {index + 1:02d}"
++        if counts[member.display_name] > 1 else member.display_name
++    ) for index, member in enumerate(view.members)}
++
++
++def build_original_message(message, ref, names, *, before=(), after=()) -> EchoLanguageMessage:
++    moment = to_chat_datetime(message.timestamp)
++    return EchoLanguageMessage(
++        ref=ref, speaker_label=names.get(stable_sender_key(message), "未知成员"),
++        timestamp=moment.strftime("%Y-%m-%d %H:%M:%S") if moment else "",
++        text=message.text, message_type=message.message_type,
++        before_refs=before, after_refs=after,
++    )
+ 
+ 
+ def _context_refs(messages, positions, hit: int, direction: int) -> tuple[int, ...]:
+diff --git a/src/qq_chat_analyzer/presentation/models.py b/src/qq_chat_analyzer/presentation/models.py
+--- a/src/qq_chat_analyzer/presentation/models.py
++++ b/src/qq_chat_analyzer/presentation/models.py
+@@ -361,6 +361,24 @@
+ 
+ 
+ @dataclass(frozen=True, slots=True)
++class EchoGroupReplyPair:
++    sender_label: str
++    target_label: str
++    count: int
++    message_refs: tuple[tuple[int, int], ...]
++
++
++@dataclass(frozen=True, slots=True)
++class EchoGroupReplies:
++    observed_count: int
++    linked_count: int
++    self_count: int
++    unresolved_count: int
++    pairs: tuple[EchoGroupReplyPair, ...]
++    messages: tuple[EchoLanguageMessage, ...]
++
++
++@dataclass(frozen=True, slots=True)
+ class EchoReportView:
+     """Display-only payload for Echo Report v0.1 Phase A."""
+ 
+@@ -378,6 +396,7 @@
+     private_nudges: EchoPrivateNudges | None = None
+     language_profile: EchoLanguageProfile | None = None
+     language_sources: EchoLanguageSources | None = None
++    group_replies: EchoGroupReplies | None = None
+     expression_culture: EchoExpressionCulture | None = None
+     expression_source: str | None = None
+     stickers: EchoStickers | None = None
+diff --git a/src/qq_chat_analyzer/providers/wechat_database_provider.py b/src/qq_chat_analyzer/providers/wechat_database_provider.py
+--- a/src/qq_chat_analyzer/providers/wechat_database_provider.py
++++ b/src/qq_chat_analyzer/providers/wechat_database_provider.py
+@@ -1003,6 +1003,9 @@
+     if _session_type(username) == "private":
+         # Exact verified appmsg subtype 62; other app/system types stay excluded.
+         return f"({supported} OR {prefix}local_type = 266287972401)"
++    if _session_type(username) == 'group':
++        # Verified group appmsg/57. Do not admit unrelated app/system types.
++        return f"({supported} OR {prefix}local_type = 244813135921)"
+     return supported
+ 
+ 
+diff --git a/src/qq_chat_analyzer/rich_message.py b/src/qq_chat_analyzer/rich_message.py
+--- a/src/qq_chat_analyzer/rich_message.py
++++ b/src/qq_chat_analyzer/rich_message.py
+@@ -75,6 +75,7 @@
+     """Relation from the current message to the replied-to message."""
+ 
+     target_message_id: str
++    target_sender_id: str | None = field(default=None, repr=False)
+ 
+ 
+ @dataclass(frozen=True, slots=True)
+diff --git a/src/qq_chat_analyzer/wechat_db_adapter.py b/src/qq_chat_analyzer/wechat_db_adapter.py
+--- a/src/qq_chat_analyzer/wechat_db_adapter.py
++++ b/src/qq_chat_analyzer/wechat_db_adapter.py
+@@ -44,6 +44,7 @@
+     EXPRESSION_KIND_STICKER,
+     ExpressionContent,
+     NudgeRelation,
++    ReplyRelation,
+     RichContent,
+     RichMessage,
+     SenderIdentity,
+@@ -60,6 +61,7 @@
+ TEXT_LOCAL_TYPE = 1
+ STICKER_LOCAL_TYPE = 47
+ PAT_LOCAL_TYPE = (62 << 32) | 49
++GROUP_QUOTE_LOCAL_TYPE = (57 << 32) | 49
+ _TEXT_TYPE = "text"
+ _STICKER_TYPE = "sticker"
+ 
+@@ -195,8 +197,23 @@
+         or _stringify_id(raw_message.get("local_id"))
+     )
+     conversation_type = _conversation_type(raw_message)
++    if conversation_type == 'group':
++        # local_id is shard-local and can collide with a quote's server ID.
++        # Keep its provenance explicit; never expose it as a server target.
++        message_id = _server_message_id(raw_message.get('server_id'))
++        if message_id is None:
++            local_id = _stringify_id(raw_message.get('local_id'))
++            message_id = f'local:{local_id}' if local_id else None
+     relations = ()
+-    if message_type == "nudge":
++    if message_type == 'reply':
++        parsed = _parse_group_quote(raw_message, decoded_content, sender_id)
++        if parsed is None:
++            return None
++        authored, relation = parsed
++        contents = _text_expression_contents(authored)
++        relations = ((relation,) if relation is not None
++                     and _server_message_id(raw_message.get('server_id')) is not None else ())
++    elif message_type == "nudge":
+         relation = _parse_private_pat(raw_message, decoded_content, sender_id)
+         if relation is None or to_utc_datetime(timestamp) is None:
+             return None
+@@ -241,9 +258,56 @@
+         return None
+     if local_type == PAT_LOCAL_TYPE:
+         return "nudge"
++    if local_type == GROUP_QUOTE_LOCAL_TYPE:
++        return 'reply'
+     # The provider selects the low 32-bit message type and exports the raw
+     # value. Keep the same interpretation when high bits carry source flags.
+     return _SUPPORTED_LOCAL_TYPES.get(local_type & 0xFFFFFFFF)
++
++
++def _server_message_id(value) -> str | None:
++    if isinstance(value, bool) or not isinstance(value, (str, int)):
++        return None
++    text = str(value)
++    if not re.fullmatch(r'[1-9][0-9]{0,19}', text) or int(text) >= 2**64:
++        return None
++    return text
++
++
++def _parse_group_quote(row, xml, sender_id):
++    """Verified group appmsg/57: title is current text; refermsg is metadata."""
++    conversation = _clean_string(row.get('username'))
++    if (_conversation_type(row) != 'group' or not conversation or not conversation.endswith('@chatroom')
++            or not xml or len(xml) > _XML_PARSE_MAX_LEN or _XML_UNSAFE_RE.search(xml)):
++        return None
++    xml = _strip_sender_prefix(xml, sender_id)
++    try:
++        root = ElementTree.fromstring(xml)
++    except ElementTree.ParseError:
++        return None
++    apps = root.findall('appmsg')
++    if root.tag != 'msg' or len(apps) != 1:
++        return None
++    app = apps[0]
++    types, titles = app.findall('type'), app.findall('title')
++    if (len(types) != 1 or len(types[0]) or types[0].text != '57'
++            or len(titles) != 1 or len(titles[0])):
++        return None
++    authored = titles[0].text or ''
++    references = app.findall('refermsg')
++    if len(references) != 1:
++        return authored, None
++    values = {}
++    for name in ('svrid', 'fromusr', 'chatusr'):
++        nodes = references[0].findall(name)
++        if len(nodes) != 1 or len(nodes[0]):
++            return authored, None
++        values[name] = nodes[0].text or ''
++    target = _server_message_id(values['svrid'])
++    author = _clean_string(values['chatusr'])
++    if target is None or values['fromusr'] != conversation or not author or author == conversation:
++        return authored, None
++    return authored, ReplyRelation(target, target_sender_id=author)
+ 
+ 
+ def _parse_private_pat(
+diff --git a/tests/test_analysis_reports_service.py b/tests/test_analysis_reports_service.py
+--- a/tests/test_analysis_reports_service.py
++++ b/tests/test_analysis_reports_service.py
+@@ -328,7 +328,7 @@
+         (artifact.kind, artifact.filename) for artifact in result.artifacts
+     }
+     payload = json.loads((output_directory / "echo-report.json").read_text(encoding="utf-8"))
+-    assert payload["schema_version"] == "echo-report.v0.16"
++    assert payload["schema_version"] == "echo-report.v0.17"
+ 
+ 
+ def test_distinctive_report_reuses_pipeline_tokens_and_stable_sender_keys(
+@@ -579,7 +579,7 @@
+         result=result, source="wechat", scope=AnalysisScope.all(),
+         generated_at=datetime(2026, 10, 16, tzinfo=timezone.utc),
+     )
+-    assert metadata["analysis_revision"] == "echo-analysis.v15"
++    assert metadata["analysis_revision"] == "echo-analysis.v16"
+ 
+ 
+ @pytest.mark.parametrize("source", ["wechat", "qq"])
+diff --git a/tests/test_echo_report_serializer.py b/tests/test_echo_report_serializer.py
+--- a/tests/test_echo_report_serializer.py
++++ b/tests/test_echo_report_serializer.py
+@@ -537,7 +537,7 @@
+         activity=ActivityAnalyzer().analyze(messages),
+     ))
+     payload = echo_report_to_dict(view)
+-    assert payload["schema_version"] == "echo-report.v0.16"
++    assert payload["schema_version"] == "echo-report.v0.17"
+     assert payload["overview"] == {
+         "has_data": True, "total_message_count": 3, "participant_count": 0,
+         "empty_description": "", "active_days": 1,
+diff --git a/tests/test_wechat_db_source.py b/tests/test_wechat_db_source.py
+--- a/tests/test_wechat_db_source.py
++++ b/tests/test_wechat_db_source.py
+@@ -150,7 +150,7 @@
+ # ------------------------------------------------------------------ adapter
+ 
+ 
+-def test_private_pat_queries_and_time_bounds_use_the_exact_supported_type(tmp_path):
++def test_interaction_queries_and_time_bounds_use_exact_conversation_specific_types(tmp_path):
+     """Execute acquisition SQL, including its date bounds, on fictional rows."""
+     def runner(command, timeout, environment):
+         database = Path(command[command.index("--db") + 1])
+@@ -179,12 +179,15 @@
+                 (4, 104, 266287972401, 30, "fictional-pat"),
+                 (5, 105, 49, 5, "unsupported-app"),
+                 (6, 106, (63 << 32) | 49, 40, "unsupported-app-subtype"),
++                (7, 107, 244813135921, 8, "fictional-group-quote"),
++                (8, 108, 244813135921, 35, "fictional-group-quote"),
+             ])
+     assert [row["server_id"] for row in provider.read_session_rows(private)] == [101, 102, 103, 104]
+     assert [row["server_id"] for row in provider.read_session_rows(private, 15, 25)] == [102, 103]
+     assert provider.read_session_time_bounds(private) == [{"min_time": 10, "max_time": 30}]
+-    assert [row["server_id"] for row in provider.read_session_rows(group)] == [102, 103]
+-    assert provider.read_session_time_bounds(group) == [{"min_time": 20, "max_time": 21}]
++    assert [row["server_id"] for row in provider.read_session_rows(group)] == [107, 102, 103, 108]
++    assert [row["server_id"] for row in provider.read_session_rows(group, 15, 25)] == [102, 103]
++    assert provider.read_session_time_bounds(group) == [{"min_time": 8, "max_time": 35}]
+ 
+ 
+ def _counting_session_provider(tmp_path, shards, usernames, faults=None, native_cli=None):
+diff --git a/tests/conftest.py b/tests/conftest.py
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -138,6 +138,7 @@
+         "test_message_quality_filter",
+         "test_private_language_analyzer",
+         "test_private_nudges",
++        "test_group_replies",
+         "test_rich_filtering_association",
+         "test_scope_filter",
+         "test_sender_identity_filtering",
+@@ -205,6 +206,7 @@
+         "test_wechat_database_probe",
+         "test_wechat_database_recovery",
+         "test_wechat_db_source",
++        "test_wechat_group_replies",
+         "test_wechat_environment_config",
+         "test_wechat_export_import_service",
+         "test_wechat_key_helper_resources",
+diff --git a/src/qq_chat_analyzer/analysis/group_replies.py b/src/qq_chat_analyzer/analysis/group_replies.py
+new file mode 100644
+--- /dev/null
++++ b/src/qq_chat_analyzer/analysis/group_replies.py
+@@ -0,0 +1,84 @@
++"""Explicit citations inside one retained group conversation.
++
++References are positions in the supplied retained Rich messages. They are not
++source IDs and grant no access to filtered or out-of-window messages. Unknown
++sources stay unavailable, rather than being reported as having zero citations.
++"""
++from collections import defaultdict
++from dataclasses import dataclass, field
++
++from ..rich_message import ReplyRelation, RichMessage
++from .timestamps import to_epoch_seconds
++
++
++@dataclass(frozen=True, slots=True)
++class GroupReplyPair:
++    sender_id: str = field(repr=False)
++    target_sender_id: str = field(repr=False)
++    count: int
++    message_refs: tuple[tuple[int, int], ...] = field(repr=False)
++
++
++@dataclass(frozen=True, slots=True)
++class GroupReplies:
++    available: bool
++    observed_count: int = 0
++    linked_count: int = 0
++    self_count: int = 0
++    unresolved_count: int = 0
++    pairs: tuple[GroupReplyPair, ...] = field(default=(), repr=False)
++
++
++def analyze_group_replies(messages: tuple[RichMessage, ...]) -> GroupReplies:
++    """Resolve only unique IDs, explicit identities and strictly earlier targets."""
++    messages = tuple(messages)
++    scopes = {(m.source, m.conversation_type, m.conversation_id) for m in messages}
++    if (len(scopes) != 1 or not messages or messages[0].conversation_type != 'group'
++            or not messages[0].conversation_id):
++        return GroupReplies(False)
++    source = messages[0].source
++    if not ((source == 'qq' and all(m.source_type == 'qq-db-json' for m in messages))
++            or (source == 'wechat' and all(type(m.source_type) is int for m in messages))):
++        return GroupReplies(False)
++
++    ids = defaultdict(list)
++    for ref, message in enumerate(messages):
++        if message.message_id:
++            ids[message.message_id].append(ref)
++    pairs = defaultdict(list)
++    observed = linked = own = unresolved = 0
++    for ref, message in enumerate(messages):
++        relations = [relation for relation in message.relations if isinstance(relation, ReplyRelation)]
++        if message.is_system or (message.message_type != 'reply' and not relations):
++            continue
++        observed += 1
++        sender = message.sender.identity_id
++        candidates = ids.get(relations[0].target_message_id, ()) if len(relations) == 1 else ()
++        moment = to_epoch_seconds(message.timestamp)
++        if (not sender or not sender.strip() or not message.message_id
++                or len(ids[message.message_id]) != 1 or len(candidates) != 1 or moment is None):
++            unresolved += 1
++            continue
++        target_ref = candidates[0]
++        target = messages[target_ref]
++        target_sender = target.sender.identity_id
++        target_moment = to_epoch_seconds(target.timestamp)
++        if (not target_sender or not target_sender.strip() or target.is_system
++                or target_ref >= ref or target_moment is None or target_moment >= moment
++                or (relations[0].target_sender_id is not None and relations[0].target_sender_id != target_sender)
++                or (source == 'wechat' and relations[0].target_sender_id is None)):
++            unresolved += 1
++            continue
++        if sender == target_sender:
++            own += 1
++            continue
++        linked += 1
++        pairs[sender, target_sender].append((ref, target_ref))
++
++    # Equal counts retain first-observed order; account IDs never determine a
++    # visible ranking. Each quote contributes one edge, including quote chains.
++    ordered = sorted(pairs.items(), key=lambda item: -len(item[1]))
++    return GroupReplies(True, observed, linked, own, unresolved, tuple(
++        GroupReplyPair(sender, target, len(refs), tuple(refs))
++        for (sender, target), refs in ordered
++    ))
+diff --git a/src/qq_chat_analyzer/presentation/group_replies.py b/src/qq_chat_analyzer/presentation/group_replies.py
+new file mode 100644
+--- /dev/null
++++ b/src/qq_chat_analyzer/presentation/group_replies.py
+@@ -0,0 +1,22 @@
++"""Explicit group citation display projection, without source IDs or snapshots."""
++from ..analysis.group_replies import GroupReplies
++from .language_sources import build_original_message, original_speaker_labels
++from .models import EchoGroupReplies, EchoGroupReplyPair
++
++
++def build_group_reply_view(view, report: GroupReplies | None, messages) -> EchoGroupReplies | None:
++    if view.conversation_kind != 'group' or report is None or not report.available:
++        return None
++    labels = original_speaker_labels(view)
++    needed = {ref for pair in report.pairs for refs in pair.message_refs for ref in refs}
++    # A stale/misaligned result must never show a different original at a ref.
++    if any(not 0 <= ref < len(messages) for ref in needed):
++        raise ValueError('group_reply_alignment')
++    pairs = tuple(EchoGroupReplyPair(
++        labels.get(pair.sender_id, '未知成员'), labels.get(pair.target_sender_id, '未知成员'),
++        pair.count, pair.message_refs,
++    ) for pair in report.pairs)
++    return EchoGroupReplies(
++        report.observed_count, report.linked_count, report.self_count, report.unresolved_count,
++        pairs, tuple(build_original_message(messages[ref], ref, labels) for ref in sorted(needed)),
++    )
+diff --git a/src/qq_chat_analyzer/presentation/echo_replies.py b/src/qq_chat_analyzer/presentation/echo_replies.py
+new file mode 100644
+--- /dev/null
++++ b/src/qq_chat_analyzer/presentation/echo_replies.py
+@@ -0,0 +1,61 @@
++"""Offline group citation chapter; originals use the existing read-only dialog."""
++
++ECHO_REPLIES_CSS = r"""
++.replies-chapter { min-height: 0; }
++.reply-overview { display: flex; flex-wrap: wrap; gap: 24px 48px; margin: 28px 0; padding: 20px 0; border-block: 1px solid var(--rule); }
++.reply-stat { display: grid; gap: 8px; }
++.reply-stat span, .reply-hint { color: var(--muted); font: 12px/1.8 var(--sans); }
++.reply-stat strong { font: 30px/1.3 var(--serif); font-weight: 400; }
++.reply-pair { width: 100%; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; padding: 16px 0; border: 0; border-bottom: 1px solid var(--rule); background: transparent; color: var(--ink); text-align: left; font: 17px/1.8 var(--serif); cursor: pointer; }
++.reply-pair span { overflow-wrap: anywhere; }
++.reply-pair:hover { color: var(--accent); }
++.reply-pair:focus-visible, .reply-more:focus-visible { outline: 1px solid var(--viewer); outline-offset: 3px; }
++.reply-more { border: 0; background: none; color: var(--accent); padding: 14px 0; cursor: pointer; font: 12px/1.8 var(--sans); }
++.reply-citation-label { margin: 0; color: var(--muted); font: 11px/1.8 var(--sans); }
++@media print { .reply-more { display: none; } .reply-pair { break-inside: avoid; } }
++"""
++
++ECHO_REPLIES_APP_JS = r"""
++(function () {
++  "use strict";
++  var data = window.ECHO_DATA, report = data && data.group_replies;
++  var chapter = document.getElementById("replies"), toc = document.getElementById("replies-toc");
++  if (!chapter || !toc) return;
++  var available = !!(data.conversation && data.conversation.kind === "group" && report);
++  chapter.hidden = toc.hidden = !available;
++  var futurePage = document.getElementById("future-page-number");
++  if (futurePage) futurePage.textContent = available ? "09" : "08";
++  if (!available) return;
++  function element(tag, cls, text) {
++    var node = document.createElement(tag); node.className = cls; node.textContent = text; return node;
++  }
++  var pairs = report.pairs || [], overview = document.getElementById("reply-overview");
++  [["可定位的成员间引用", report.linked_count], ["有向引用组合", pairs.length]].forEach(function (item) {
++    var stat = element("div", "reply-stat", "");
++    stat.appendChild(element("span", "", item[0])); stat.appendChild(element("strong", "", item[1])); overview.appendChild(stat);
++  });
++  var note = "仅统计当前保留范围内的明确引用，不代表全部接话或关系亲疏。";
++  if (report.unresolved_count) note += " 另有 " + report.unresolved_count + " 条引用因目标缺失、身份或顺序不明，未计入组合。";
++  if (report.self_count) note += " 引用自己 " + report.self_count + " 次，单独排除。";
++  if (!report.observed_count) note += " 当前范围未识别到明确引用。";
++  document.getElementById("reply-note").textContent = note;
++  var list = document.getElementById("reply-pairs"), more = document.getElementById("reply-more"), rendered = 0;
++  function appendUntil(limit) {
++    for (; rendered < Math.min(limit, pairs.length); rendered++) {
++      (function (pair) {
++        var button = element("button", "reply-pair", ""); button.type = "button";
++        button.appendChild(element("span", "", pair.sender_label + " → " + pair.target_label));
++        button.appendChild(element("span", "", pair.count + " 次"));
++        button.addEventListener("click", function () {
++          document.getElementById("language-originals").dispatchEvent(new CustomEvent("echo:replies", {detail: {pair: pair, trigger: button}}));
++        });
++        list.appendChild(button);
++      })(pairs[rendered]);
++    }
++    more.hidden = rendered >= pairs.length;
++  }
++  more.addEventListener("click", function () { appendUntil(rendered + 10); });
++  window.addEventListener("beforeprint", function () { appendUntil(pairs.length); });
++  appendUntil(10);
++})();
++"""
+diff --git a/tests/test_group_replies.py b/tests/test_group_replies.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_group_replies.py
+@@ -0,0 +1,217 @@
++"""Explicit group citations use retained facts, never guessed adjacency."""
++from dataclasses import replace
++
++import pytest
++
++from qq_chat_analyzer.rich_message import ReplyRelation, RichMessage, SenderIdentity, TextContent
++
++
++def message(identifier, sender, timestamp, *, target=None, kind='group', source='qq'):
++    return RichMessage(
++        message_id=identifier, source=source, source_type='qq-db-json',
++        conversation_id='fictional-room', conversation_type=kind,
++        sender=SenderIdentity(sender, '同名成员'), timestamp=timestamp,
++        message_type='reply' if target is not None else 'text',
++        contents=(TextContent('虚构原话'),),
++        relations=(ReplyRelation(target),) if target is not None else (),
++    )
++
++
++def test_directed_citations_and_unresolved_quotes_have_separate_counts():
++    from qq_chat_analyzer.analysis.group_replies import analyze_group_replies
++
++    messages = (
++        message('original', 'alice', 100),
++        message('answer', 'bob', 110, target='original'),
++        message('another', 'bob', 120, target='original'),
++        message('self', 'alice', 130, target='original'),
++        message('outside', 'carol', 140, target='filtered-out'),
++        message('ordinary', 'carol', 150),
++    )
++    report = analyze_group_replies(messages)
++    assert report.available
++    assert (report.observed_count, report.linked_count, report.self_count, report.unresolved_count) == (4, 2, 1, 1)
++    assert len(report.pairs) == 1
++    pair = report.pairs[0]
++    assert (pair.sender_id, pair.target_sender_id, pair.count) == ('bob', 'alice', 2)
++    assert pair.message_refs == ((1, 0), (2, 0))
++
++
++@pytest.mark.parametrize('damage', ['duplicate_target', 'duplicate_reply', 'missing_sender',
++                                   'same_second', 'reversed_time', 'unknown_time', 'multiple_targets'])
++def test_ambiguous_identity_target_or_order_does_not_create_a_pair(damage):
++    from qq_chat_analyzer.analysis.group_replies import analyze_group_replies
++
++    original = message('original', 'alice', 100)
++    answer = message('answer', 'bob', 110, target='original')
++    extra = []
++    if damage == 'duplicate_target':
++        extra = [replace(original, sender=SenderIdentity('carol', '同名成员'))]
++    elif damage == 'duplicate_reply':
++        extra = [replace(answer, message_type='text', relations=())]
++    elif damage == 'missing_sender':
++        original = replace(original, sender=SenderIdentity(None, '同名成员'))
++    elif damage == 'same_second':
++        answer = replace(answer, timestamp=100)
++    elif damage == 'reversed_time':
++        answer = replace(answer, timestamp=90)
++    elif damage == 'unknown_time':
++        original = replace(original, timestamp='unknown')
++    else:
++        answer = replace(answer, relations=(ReplyRelation('original'), ReplyRelation('other')))
++    report = analyze_group_replies((original, *extra, answer))
++    assert report.available
++    assert report.linked_count == 0 and report.unresolved_count == 1
++    assert report.pairs == ()
++
++
++@pytest.mark.parametrize('kind,source', [('private', 'qq'), ('unknown', 'qq'), ('group', 'wechat')])
++def test_unverified_sources_and_private_chats_are_unavailable(kind, source):
++    from qq_chat_analyzer.analysis.group_replies import analyze_group_replies
++
++    report = analyze_group_replies((message('original', 'alice', 100, kind=kind, source=source),))
++    assert not report.available
++    assert report.pairs == ()
++
++
++def test_mixed_conversations_fail_closed_instead_of_joining_equal_message_ids():
++    from qq_chat_analyzer.analysis.group_replies import analyze_group_replies
++
++    original = message('original', 'alice', 100)
++    foreign = replace(message('answer', 'bob', 110, target='original'), conversation_id='other-room')
++    assert not analyze_group_replies((original, foreign)).available
++
++
++def test_view_uses_retained_originals_and_display_labels_without_source_identifiers():
++    import json
++    from dataclasses import asdict
++    from qq_chat_analyzer.analysis.group_replies import analyze_group_replies
++    from qq_chat_analyzer.legacy_projection import project_legacy_messages
++    from qq_chat_analyzer.presentation.group_replies import build_group_reply_view
++    from qq_chat_analyzer.presentation.models import EchoMemberCard, EchoReportView
++
++    rich = (message('original', 'alice', 100), message('answer', 'bob', 110, target='original'))
++    members = tuple(EchoMemberCard(
++        speaker_key=key, display_name='同名成员', is_viewer=False, message_count=1,
++        message_share_percent=50, average_length=4, max_length=4, active_period='晚上',
++    ) for key in ('alice', 'bob'))
++    view = EchoReportView(title='虚构群', conversation_kind='group', members=members)
++    result = build_group_reply_view(view, analyze_group_replies(rich), project_legacy_messages(rich))
++    pair = result.pairs[0]
++    assert pair.sender_label != pair.target_label
++    assert pair.message_refs == ((1, 0),)
++    assert [m.ref for m in result.messages] == [0, 1]
++    assert all(m.text == '虚构原话' for m in result.messages)
++    payload = json.dumps(asdict(result))
++    assert 'alice' not in payload and 'bob' not in payload and 'message_id' not in payload
++    assert build_group_reply_view(replace(view, conversation_kind='private'), analyze_group_replies(rich),
++                                 project_legacy_messages(rich)) is None
++    from qq_chat_analyzer.presentation.echo_serializer import echo_report_to_dict
++    assert echo_report_to_dict(replace(view, conversation_kind='private', group_replies=result))['group_replies'] is None
++
++
++def test_report_construction_joins_only_surviving_rich_projection_pairs():
++    from qq_chat_analyzer.application.analysis_service import _build_reports
++    from qq_chat_analyzer.legacy_projection import project_legacy_messages
++
++    rich = (message('original', 'alice', 100), message('answer', 'bob', 110, target='original'))
++    legacy = project_legacy_messages(rich)
++    mapping = {id(plain): fact for plain, fact in zip(legacy, rich, strict=True)}
++    complete = _build_reports(legacy, [], conversation_type='group', rich_by_instance=mapping)
++    assert complete.group_replies.linked_count == 1
++    filtered = _build_reports(legacy[1:], [], conversation_type='group', rich_by_instance=mapping)
++    assert filtered.group_replies.linked_count == 0
++    assert filtered.group_replies.unresolved_count == 1
++
++
++@pytest.mark.parametrize('platform',['qq','wechat'])
++@pytest.mark.parametrize('exclude_target',[False,True])
++def test_native_import_analysis_and_export_keep_the_same_citation_scope(tmp_path,platform,exclude_target):
++    import json
++    from datetime import date
++    from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
++    from qq_chat_analyzer.application.dto import AnalysisRequestDTO
++    from qq_chat_analyzer.application.scope_filter import AnalysisScope
++    original_text='虚构原话：周末一起去参观画展。'
++    answer_text='虚构回应：好的，我们在门口集合。'
++    if platform=='qq':
++        from test_qq_db_reply_mentions import _payload,_record,_reply,_text
++        records=[_record('original',42,_text(original_text)),_record('answer',43,_reply(42),_text(answer_text))]
++        for record,sender,when in zip(records,('10000001','10000002'),(1767240000,1767326400),strict=True):
++            record['fields'].update({'40033':sender,'40050':when})
++        payload=_payload(*records)
++    else:
++        from test_wechat_group_replies import ROOM,QUOTE,quote,row
++        payload={'source':'wechat-db','conversation':{'username':ROOM,'session_type':'group'},'messages':[
++            row(91001,'wxid_fictional_alpha',original_text,when=1767240000),
++            row(91002,'wxid_fictional_beta',quote(answer_text),kind=QUOTE,when=1767326400)]}
++    source=tmp_path/'fictional.json'
++    source.write_text(json.dumps(payload),encoding='utf-8')
++    stopwords=tmp_path/'stopwords.txt'; stopwords.write_text('',encoding='utf-8')
++    output=tmp_path/'report'
++    request=AnalysisRequestDTO(source,output,stopwords,conversation_kind='group',scope=(
++        AnalysisScope.custom(date(2026,1,2),date(2026,1,2)) if exclude_target else AnalysisScope.all()))
++    AnalysisApplicationService().execute(request)
++    exported=json.loads((output/'echo-report.json').read_text(encoding='utf-8'))
++    report=exported['group_replies']
++    assert report['linked_count']==(0 if exclude_target else 1)
++    assert report['unresolved_count']==(1 if exclude_target else 0)
++    assert '不要计入词频的引用快照' not in json.dumps(exported,ensure_ascii=False)
++    assert answer_text in (output/'echo-report.html').read_text(encoding='utf-8') or exclude_target
++    if exclude_target:
++        assert original_text not in json.dumps(exported,ensure_ascii=False)
++    else:
++        assert {m['text'] for m in report['messages']}=={original_text,answer_text}
++
++
++@pytest.mark.slow_integration
++@pytest.mark.parametrize('width', [1280, 390])
++def test_offline_group_citations_show_both_originals_with_bounded_pagination(tmp_path, width):
++    import html
++    import json
++    import re
++    from qq_chat_analyzer.analysis.group_replies import analyze_group_replies
++    from qq_chat_analyzer.legacy_projection import project_legacy_messages
++    from qq_chat_analyzer.presentation import export_echo_report_html
++    from qq_chat_analyzer.presentation.group_replies import build_group_reply_view
++    from qq_chat_analyzer.presentation.models import EchoReportView
++    from test_echo_conversation_sessions_frontend import _find_chromium, _run_browser
++
++    chromium = _find_chromium()
++    if not chromium:
++        pytest.skip('no local Chromium available')
++    original = replace(message('original', 'alice', 100), contents=(TextContent(
++        '</script><img id="reply-attack" src=x onerror="window.replyAttack=true">\n虚构原话'),))
++    rich = (original, *(message(str(i), 'bob', 200+i, target='original') for i in range(53)))
++    view = EchoReportView(title='虚构测试群', has_data=True, conversation_kind='group')
++    view = replace(view, group_replies=build_group_reply_view(view, analyze_group_replies(rich),
++                                                           project_legacy_messages(rich)))
++    output = export_echo_report_html(view, tmp_path / 'replies.html')
++    probe = r'''<script>window.addEventListener('load',()=>{
++      const r={};try{
++        const section=document.getElementById('replies'),button=section.querySelector('.reply-pair');
++        r.visible=!section.hidden&&!document.getElementById('replies-toc').hidden;
++        button.scrollIntoView({block:'center'});button.focus({preventScroll:true});const y=scrollY;
++        button.click();const d=document.getElementById('language-originals');r.open=d.open;
++        r.first=d.querySelectorAll('.language-original-hit').length;
++        r.rows=d.querySelector('.language-original-hit').querySelectorAll('.language-original-row').length;
++        r.original=d.querySelector('.language-original-text').textContent.includes('虚构原话');
++        r.safe=!window.replyAttack&&!document.getElementById('reply-attack');
++        d.querySelector('.language-all').click();r.page=d.querySelectorAll('.language-original-hit').length;
++        while(!d.querySelector('.language-more').hidden)d.querySelector('.language-more').click();
++        r.total=d.querySelectorAll('.language-original-hit').length;
++        r.noInputs=!d.querySelector('input,textarea,[contenteditable=true]');
++        r.fits=document.documentElement.scrollWidth<=innerWidth&&d.scrollWidth<=d.clientWidth+1;
++        d.querySelector('.language-original-close').click();r.restored=!d.open&&document.activeElement===button&&Math.abs(scrollY-y)<2;
++      }catch(e){r.error=String(e)}const pre=document.createElement('pre');pre.id='reply-probe';pre.hidden=true;pre.textContent=JSON.stringify(r);document.body.append(pre);
++    });</script>'''
++    output.write_text(output.read_text(encoding='utf-8').replace('</body>', probe+'</body>'), encoding='utf-8')
++    completed = _run_browser([chromium, '--headless=new', '--disable-gpu', '--no-first-run',
++        '--no-default-browser-check', '--disable-background-networking', '--host-resolver-rules=MAP * ~NOTFOUND',
++        f'--user-data-dir={tmp_path / "browser"}', f'--window-size={width},1000',
++        '--virtual-time-budget=2000', '--dump-dom', output.as_uri()])
++    assert completed.returncode == 0
++    match = re.search(r'<pre id="reply-probe" hidden="">(.*?)</pre>', completed.stdout.decode('utf-8'), re.S)
++    result = json.loads(html.unescape(match.group(1)))
++    assert result == {'visible':True,'open':True,'first':3,'rows':2,'original':True,'safe':True,
++                      'page':10,'total':53,'noInputs':True,'fits':True,'restored':True}
+diff --git a/tests/test_wechat_group_replies.py b/tests/test_wechat_group_replies.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_wechat_group_replies.py
+@@ -0,0 +1,92 @@
++"""Fictional WeChat group citations, reconstructed from structural evidence."""
++from xml.sax.saxutils import escape
++
++import pytest
++import zstandard
++
++from qq_chat_analyzer.analysis.group_replies import analyze_group_replies
++from qq_chat_analyzer.legacy_projection import project_legacy_messages
++from qq_chat_analyzer.wechat_db_adapter import messages_from_payload, parse_rich_messages
++
++
++ROOM = 'wxid_fictional_reply_room@chatroom'
++QUOTE = (57 << 32) | 49
++
++
++def quote(text='明天一起去看展。', target=91001, author='wxid_fictional_alpha', *, room=ROOM):
++    return ('<msg><appmsg><title>'+escape(text)+'</title><type>57</type><refermsg>'
++            f'<type>1</type><svrid>{target}</svrid><fromusr>{room}</fromusr><chatusr>{author}</chatusr>'
++            '<displayname>虚构成员</displayname><content>不要计入词频的引用快照</content>'
++            '</refermsg></appmsg></msg>')
++
++
++def row(identifier, sender, text, *, kind=1, when=1760000000, local=71):
++    return {'server_id':identifier,'local_id':local,'local_type':kind,'create_time':when,
++            'message_content':text,'user_name':sender}
++
++
++def parse(rows, *, room=ROOM):
++    return parse_rich_messages(messages_from_payload({'source':'wechat-db',
++        'conversation':{'username':room,'session_type':'group' if room.endswith('@chatroom') else 'private'},
++        'messages':rows}))
++
++
++@pytest.mark.parametrize('compressed',[False,True])
++def test_group_quote_keeps_authored_title_and_structured_target_separate(compressed):
++    raw = row(91002,'wxid_fictional_beta','wxid_fictional_beta:\n'+quote(),kind=QUOTE,when=1760000010)
++    if compressed:
++        raw['message_content']=zstandard.ZstdCompressor().compress(raw['message_content'].encode()).hex()
++        raw['WCDB_CT_message_content']=4
++    messages = parse([row(91001,'wxid_fictional_alpha','去看新的画展。'),raw])
++    assert len(messages)==2
++    answer = messages[1]
++    assert project_legacy_messages(messages)[1].text=='明天一起去看展。'
++    assert answer.message_type=='reply'
++    assert answer.relations[0].target_message_id=='91001'
++    assert answer.relations[0].target_sender_id=='wxid_fictional_alpha'
++    result = analyze_group_replies(messages)
++    assert result.available and result.linked_count==1
++
++
++def test_chains_repeated_targets_and_sticker_quotes_use_the_same_group_analysis():
++    alpha,beta='wxid_fictional_alpha','wxid_fictional_beta'
++    rows=[row(91001,alpha,'一起去看画展吧。'),
++          row(91002,beta,quote(target=91001,author=alpha),kind=QUOTE,when=1760000010),
++          row(91003,alpha,quote('我来订票。',target=91002,author=beta),kind=QUOTE,when=1760000020),
++          row(91004,beta,quote('再叫一位朋友。',target=91001,author=alpha),kind=QUOTE,when=1760000030),
++          row(91005,alpha,'<msg><emoji type="2" md5="'+'a'*32+'"/></msg>',kind=47,when=1760000040),
++          row(91006,beta,quote('好可爱的表情。',target=91005,author=alpha),kind=QUOTE,when=1760000050)]
++    result=analyze_group_replies(parse(rows))
++    assert result.linked_count==4 and result.observed_count==4
++    assert [(pair.count,pair.sender_id) for pair in result.pairs]==[(3,beta),(1,alpha)]
++
++
++@pytest.mark.parametrize('damage',['foreign_room','wrong_author','invalid_server_id','local_id_collision',
++                                   'duplicate_field','duplicate_target','missing_reply_server_id'])
++def test_target_namespace_scope_and_author_are_required(damage):
++    alpha,beta='wxid_fictional_alpha','wxid_fictional_beta'
++    original=row(91001,alpha,'一起去看画展吧。',local=91001)
++    xml=quote(target=91001,author=alpha)
++    extras=[]
++    if damage=='foreign_room': xml=quote(room='another_fictional_room@chatroom')
++    elif damage=='wrong_author': xml=quote(author='wxid_fictional_other')
++    elif damage=='invalid_server_id': xml=quote(target=0)
++    elif damage=='local_id_collision': original['server_id']=0
++    elif damage=='duplicate_field': xml=xml.replace('</svrid>','</svrid><svrid>91001</svrid>')
++    elif damage=='duplicate_target': extras=[row(91001,'wxid_fictional_other','同 ID 的不同虚构消息。')]
++    answer=row(0 if damage=='missing_reply_server_id' else 91002,beta,xml,kind=QUOTE,when=1760000010)
++    messages=parse([original,*extras,answer])
++    result=analyze_group_replies(messages)
++    assert result.linked_count==0 and result.unresolved_count==1
++    assert project_legacy_messages(messages)[-1].text=='明天一起去看展。'
++
++
++@pytest.mark.parametrize('xml',[quote().replace('<type>57</type>','<type>62</type>'),
++                              quote().replace('<title>','<title><b>').replace('</title>','</b></title>'),
++                              '<!DOCTYPE msg [<!ENTITY x "secret">]>'+quote()])
++def test_unverified_or_ambiguous_xml_is_not_interpreted_as_a_reply(xml):
++    assert parse([row(91002,'wxid_fictional_beta',xml,kind=QUOTE)])==[]
++
++
++def test_private_quotes_are_not_enabled_by_the_group_feature():
++    assert parse([row(91002,'wxid_fictional_beta',quote(),kind=QUOTE)],room='wxid_fictional_peer')==[]

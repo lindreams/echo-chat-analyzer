@@ -12,11 +12,12 @@ from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
 from qq_chat_analyzer.version import APP_VERSION
 
 
-URL = "https://github.com/lindreams/echo-chat-analyzer/releases/tag/v1.10.0"
+URL = "https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v1.10.0"
 
 
 def release(tag="v1.10.0", **changes):
-    return dict(tag_name=tag, draft=False, prerelease=False, html_url=URL, **changes)
+    return dict(tag_name=tag, draft=False, prerelease=False, html_url=URL,
+                package_id="Lindreams.Echo", channel="win-x64-stable", **changes)
 
 
 def service(tmp_path, monkeypatch, payload=None, current="1.9.0", clock=None):
@@ -39,7 +40,12 @@ def test_semver_precedence(tmp_path, monkeypatch, current, tag, status):
     assert result.release_url == URL
 
 
-@pytest.mark.parametrize("payload", [[], release("v2.0.0-beta"), {**release(), "html_url": "https://evil.example/releases/tag/v1.10.0"}])
+@pytest.mark.parametrize("payload", [[], release("v2.0.0-beta"),
+    {**release(), "html_url": "https://evil.example/releases/tag/v1.10.0"},
+    {**release(), "package_id": "OtherApp"}, {**release(), "channel": "other"},
+    {**release(), "html_url": "https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v1.11.0"},
+    {**release(), "html_url": "https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v1.10.0/../v1.11.0"},
+])
 def test_invalid_or_nonformal_release_is_safe(tmp_path, monkeypatch, payload):
     result = service(tmp_path, monkeypatch, payload).check()
     assert result.status == "unavailable"
@@ -111,13 +117,14 @@ def test_overlapping_check_returns_without_waiting(tmp_path, monkeypatch):
     (b"not json", "unavailable"),
     (b"x" * 262145, "unavailable"),
 ], ids=["valid", "malformed-json", "oversized"])
-def test_github_request_contract_and_bounded_response(tmp_path, monkeypatch, body, expected):
+def test_cnb_request_contract_and_bounded_response(tmp_path, monkeypatch, body, expected):
     from qq_chat_analyzer.application import update_check_service as module
 
     def open_response(request, *, timeout):
-        assert request.full_url == "https://api.github.com/repos/lindreams/echo-chat-analyzer/releases/latest"
+        assert request.full_url == "https://cnb.cool/echo_mly/echo_releases/-/releases/download/updates/echo-update.json"
         assert 0 < timeout <= 5
-        assert request.get_header("Accept") == "application/vnd.github+json"
+        assert request.get_header("Accept") == "application/json"
+        assert not request.has_header("Authorization")
         assert request.get_header("User-agent")
         return io.BytesIO(body)
 

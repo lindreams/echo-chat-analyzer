@@ -313,6 +313,117 @@ def _snapshot_directory(directory, kind, owner):
         item.remove()
 
 
+def _is_log_name(name):
+    from .qq.qq_auth_bridge import SNAPSHOT_DIAGNOSTIC_FILENAME
+    # desktop.log was written by the pre-0.1 desktop entrypoint.
+    return bool(re.fullmatch(
+        rf'(?:echo\.log|desktop\.log|{re.escape(SNAPSHOT_DIAGNOSTIC_FILENAME)})(?:\.[0-9]+)?|wcdb-diagnostic\.txt',
+        name))
+
+
+def _legacy_member(path, actions, *, directory=False, remove=True):
+    with _pinned(path) as item:
+        if item.directory != directory:
+            raise CleanupIncomplete()
+        if remove:
+            actions.append((path, _identity(path)))
+
+
+def _legacy_snapshot(directory, source, actions):
+    # Retired ChatDataSnapshotManager (79a0d31): offline metadata only. Never
+    # import its parser, inspect messages, or follow its storage_path.
+    with _pinned(directory):
+        proof = _json(directory / 'manifest.json')
+        if (not isinstance(proof, dict) or proof.get('id') != directory.name
+                or proof.get('source') not in ('qq', 'wechat')
+                or (source is not None and proof['source'] != source)
+                or proof.get('capture_scope') != 'all_available'
+                or proof.get('payload_state') not in ('available', 'removed')):
+            raise CleanupIncomplete()
+        expected = f"data/snapshots/{proof['source']}/{directory.name}/"
+        storage = proof.get('storage_path')
+        if storage not in {expected + name for name in ('export.json', 'export.jsonl', 'export.data')}:
+            raise CleanupIncomplete()
+        members = list(directory.iterdir())
+        for child in sorted(members, key=lambda p: p.name == 'manifest.json'):
+            if child.name not in {'manifest.json', 'manifest.json.tmp', storage.rsplit('/', 1)[1]}:
+                raise CleanupIncomplete()
+            _legacy_member(child, actions)
+        _legacy_member(directory, actions, directory=True)
+
+
+def _legacy_plan(root, *, purge):
+    """Recognize fixed old layouts before mutating any of their contents.
+
+    Keep only explicit, identity-bound deletion targets, in child-first order.
+    A new/unrecognized member makes directory removal fail rather than being
+    recursively swept. Sibling backup/test roots are never discovered here.
+    """
+    actions = []
+    data = root / 'data'
+    if os.path.lexists(data):
+        with _pinned(data):
+            for snapshots in data.iterdir():
+                if snapshots.name != 'snapshots':
+                    raise CleanupIncomplete()
+                with _pinned(snapshots):
+                    for source in snapshots.iterdir():
+                        if source.name not in ('qq', 'wechat', '.staging'):
+                            raise CleanupIncomplete()
+                        with _pinned(source):
+                            for directory in source.iterdir():
+                                if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', directory.name):
+                                    raise CleanupIncomplete()
+                                _legacy_snapshot(directory,
+                                    None if source.name == '.staging' else source.name, actions)
+                            _legacy_member(source, actions, directory=True)
+                    _legacy_member(snapshots, actions, directory=True)
+            _legacy_member(data, actions, directory=True)
+    history = root / 'history'
+    if os.path.lexists(history):
+        with _pinned(history):
+            children = list(history.iterdir())
+            for child in children:
+                if child.name != 'analysis_history.jsonl':
+                    raise CleanupIncomplete()
+                _legacy_member(child, actions, remove=purge)
+            if purge or not children:
+                _legacy_member(history, actions, directory=True)
+    validation = root / 'validation'
+    if os.path.lexists(validation):
+        with _pinned(validation):
+            if any(validation.iterdir()):
+                raise CleanupIncomplete()
+            _legacy_member(validation, actions, directory=True)
+    diagnostics = root / 'diagnostics'
+    if os.path.lexists(diagnostics):
+        with _pinned(diagnostics):
+            for child in diagnostics.iterdir():
+                if re.fullmatch(r'qq-snapshot-[0-9]{8}-[0-9]{6}\.log', child.name):
+                    _legacy_member(child, actions)
+                elif re.fullmatch(r'release-logs-[0-9]{8}-[0-9]{6}', child.name):
+                    with _pinned(child):
+                        for log in child.iterdir():
+                            if not _is_log_name(log.name):
+                                raise CleanupIncomplete()
+                            _legacy_member(log, actions)
+                        _legacy_member(child, actions, directory=True)
+                else:
+                    raise CleanupIncomplete()
+            _legacy_member(diagnostics, actions, directory=True)
+    credentials = root / 'runtime/qq/.qce-config'
+    if os.path.lexists(credentials):
+        # Echo's old default config root, not the independent QCE installation
+        # or a path supplied by an old configuration file.
+        with _pinned(credentials):
+            for child in credentials.iterdir():
+                if child.name not in ('security.json', 'user-config.json', 'config.json'):
+                    raise CleanupIncomplete()
+                _legacy_member(child, actions)
+            _legacy_member(credentials, actions, directory=True)
+    return actions
+
+
 def cleanup_local_data(root: Path, *, purge: bool) -> None:
     """Return only if all selected owned data was cleared; never log contents."""
     if type(purge) is not bool:
@@ -323,29 +434,42 @@ def cleanup_local_data(root: Path, *, purge: bool) -> None:
     try:
         with _pinned(root):
             if any(child.name not in {'config', 'runtime', 'transient', 'logs', 'reports',
-                                       'update-check.json'} for child in root.iterdir()):
+                                       'update-check.json', 'data', 'history', 'diagnostics',
+                                       'validation'} for child in root.iterdir()):
                 raise CleanupIncomplete()
             config = root / 'config'
+            config_files = []
+            config_name = re.compile(r'(qq|wechat)\.json(?:\.(?:bak|backup|old|test|test-backup))?')
             if os.path.lexists(config):
                 with _pinned(config) as settings:
-                    if not settings.directory or any(child.name not in {'qq.json', 'wechat.json'}
-                                                      for child in config.iterdir()):
+                    if not settings.directory:
                         raise CleanupIncomplete()
-            for name, fields in (
-                ('wechat.json', ('data_root', 'wcdb_cli_path', 'wcdb_dll_path', 'sticker_media_roots')),
-                ('qq.json', ('qq_install_path', 'runtime_directory', 'runtime_mode', 'version',
-                             'qq_install_path_explicit')),
-            ):
-                path = root / 'config' / name
-                if os.path.lexists(path):
-                    if purge:
-                        _delete(path)
-                    else:
-                        with _pinned(path, write=True) as item:
-                            saved = item.read_json()
-                            if not isinstance(saved, dict):
+                    for child in config.iterdir():
+                        if not config_name.fullmatch(child.name):
+                            raise CleanupIncomplete()
+                        with _pinned(child) as entry:
+                            if entry.directory:
                                 raise CleanupIncomplete()
-                            item.write_json({key: saved[key] for key in fields if key in saved})
+                        config_files.append(child)
+            for path, identity in _legacy_plan(root, purge=purge):
+                with _pinned(path, delete=True) as item:
+                    if _identity(path) != identity or (item.directory and any(path.iterdir())):
+                        raise CleanupIncomplete()
+                    item.remove()
+            for path in config_files:
+                if purge:
+                    _delete(path)
+                else:
+                    fields = {
+                        'wechat': ('data_root', 'wcdb_cli_path', 'wcdb_dll_path', 'sticker_media_roots'),
+                        'qq': ('qq_install_path', 'runtime_directory', 'runtime_mode', 'version',
+                               'qq_install_path_explicit'),
+                    }[config_name.fullmatch(path.name)[1]]
+                    with _pinned(path, write=True) as item:
+                        saved = item.read_json()
+                        if not isinstance(saved, dict):
+                            raise CleanupIncomplete()
+                        item.write_json({key: saved[key] for key in fields if key in saved})
             _runtime(root / 'runtime' / 'qq')
             transient = root / 'transient'
             if os.path.lexists(transient):
@@ -362,9 +486,12 @@ def cleanup_local_data(root: Path, *, purge: bool) -> None:
             if os.path.lexists(logs):
                 with _pinned(logs):
                     for child in logs.iterdir():
-                        if not re.fullmatch(r'echo\.log(?:\.[0-9]+)?|wcdb-diagnostic\.txt', child.name):
+                        if not _is_log_name(child.name):
                             raise CleanupIncomplete()
-                        _delete(child)
+                        with _pinned(child, delete=True) as log:
+                            if log.directory:
+                                raise CleanupIncomplete()
+                            log.remove()
             if os.path.lexists(root / 'update-check.json'):
                 _delete(root / 'update-check.json')
             reports = root / 'reports'

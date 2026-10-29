@@ -5,6 +5,16 @@ There is deliberately no hard-coded fallback for a missing installation.
 """
 
 from importlib.metadata import version
+import re
 
 
-APP_VERSION = version("qq-chat-analyzer")
+def normalize_release_version(value: str) -> str:
+    """Expose the same SemVer RC spelling used by our installer and feed.
+
+    Python distribution metadata canonicalizes ``0.2.6-rc.1`` to ``0.2.6rc1``.
+    Stable versions and unsupported version forms remain unchanged.
+    """
+    return re.sub(r"^(\d+\.\d+\.\d+)rc(\d+)$", r"\1-rc.\2", value)
+
+
+APP_VERSION = normalize_release_version(version("qq-chat-analyzer"))

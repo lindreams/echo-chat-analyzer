@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
-from urllib.parse import urlsplit
 
 from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
@@ -32,6 +31,7 @@ from ..application.facade import (
     FacadeError, InstallableUpdateResult, InstallHandoffResult, UpdateCheckResult,
 )
 from ..resources import user_data_root
+from ..application.update_channel import official_release_url
 from .theme import (
     HOME_COLOR_PAPER, HOME_COLOR_TEXT, HOME_COLOR_LEAF, HOME_COLOR_MUTED, HOME_COLOR_ACCENT, HOME_QSS,
     COLOR_BORDER, COLOR_ERROR, REFRESH_SANS_FAMILY,
@@ -231,7 +231,7 @@ def update_presentation(
     download entry point instead of pretending one exists.
     """
     text = {
-        UpdatePhase.IDLE: "点击检查更新，查询 GitHub 上的正式发布。",
+        UpdatePhase.IDLE: "点击检查更新，查询 Echo 官方更新。",
         UpdatePhase.CHECKING: "正在查询正式发布…",
         UpdatePhase.UP_TO_DATE: "当前已是最新版本。",
         UpdatePhase.NO_RELEASE: "暂无正式发布，请稍后再检查。",
@@ -918,13 +918,4 @@ class UpdatePage(QWidget):
 
 def _safe_release_url(url: object) -> bool:
     """Defend the browser boundary; never construct a URL from a version tag."""
-    if not isinstance(url, str) or any(c.isspace() or ord(c) < 32 for c in url):
-        return False
-    try:
-        parsed = urlsplit(url)
-    except ValueError:
-        return False
-    prefix = "/lindreams/echo-chat-analyzer/releases/tag/"
-    return (parsed.scheme == "https" and parsed.netloc == "github.com"
-            and parsed.path.startswith(prefix) and bool(parsed.path[len(prefix):])
-            and not parsed.query and not parsed.fragment)
+    return official_release_url(url)

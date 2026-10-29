@@ -50,7 +50,8 @@ def preflight(config: dict) -> tuple[Path, Path, Path]:
         name, required = pin.split("==")
         if version(name) != required:
             raise ValueError("Build dependency differs from project pin: " + name)
-    if version("qq-chat-analyzer") != project["version"]:
+    from qq_chat_analyzer.version import APP_VERSION
+    if APP_VERSION != project["version"]:
         raise ValueError("Refresh project metadata before building")
     dotnet, vpk, archive = (Path(config[key]).resolve() for key in ("dotnet", "vpk", "napcat_archive"))
     if not all(path.is_file() for path in (dotnet, vpk, archive)):

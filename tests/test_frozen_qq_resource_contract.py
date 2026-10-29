@@ -55,6 +55,9 @@ def frozen_qq(tmp_path, monkeypatch):
     metadata = project / "scripts"
     prepare_sqlite_build_input(project)
     shutil.copyfile(ROOT / "pyproject.toml", project / "pyproject.toml")
+    version_source = project / "src/qq_chat_analyzer/version.py"
+    version_source.parent.mkdir(parents=True)
+    shutil.copyfile(ROOT / "src/qq_chat_analyzer/version.py", version_source)
     install = tmp_path / "安装 空间" / "Echo"
     internal = install / "_internal"
     internal.mkdir(parents=True)
