@@ -946,6 +946,79 @@ def test_saved_qq_media_report_loads_actual_images_offline(tmp_path, kind, caplo
 
 
 @pytest.mark.slow_integration
+@pytest.mark.parametrize("kind", ["private", "group"])
+def test_sticker_personal_findings_and_repeated_events_have_their_own_place(tmp_path, kind):
+    from qq_chat_analyzer.presentation.models import (
+        EchoStickers, EchoStickerMember, EchoStickerMemory, EchoStickerFinding,
+        EchoStickerMemoryPoint,
+    )
+
+    chromium = _find_chromium()
+    if chromium is None:
+        pytest.skip("no local Chromium available")
+    labels = ("我", "TA") if kind == "private" else ("小林（1）", "小林（2）")
+    personal = tuple(EchoStickerFinding("signature", f"{label}的长期偏爱", owner_label=label,
+        points=(EchoStickerMemoryPoint(label, value=12, date_count=8,
+            start_date="2025-01-01", end_date="2025-03-01"),)) for label in labels)
+    relays = tuple(EchoStickerFinding("relay", f"你来我往，一连 {day + 3} 轮。",
+        period=f"2025-04-0{day} 12:00:00 — 2025-04-0{day} 12:01:00",
+        points=tuple(EchoStickerMemoryPoint(label, value=1) for label in labels)) for day in (3, 1, 2))
+    chapter = EchoStickers(available=True, conversation_kind=kind, total_send_count=24,
+        members=tuple(EchoStickerMember(label, send_count=12) for label in labels),
+        memories=(EchoStickerMemory((personal[0], relays[0])),
+                  EchoStickerMemory((relays[1], personal[1])),
+                  EchoStickerMemory((relays[2],), compact=True)))
+    view = EchoReportView(title="Fictional sticker memories", conversation_kind=kind, stickers=chapter)
+    output = export_echo_report_html(view, tmp_path / "ownership.html")
+    probe = r'''<style>.page:not(#stickers){display:none!important}</style><script>
+    addEventListener("load",()=>{setTimeout(()=>{
+      const root=document.getElementById("stickers"), shared=document.getElementById("sticker-memories");
+      const visible=x=>x.checkVisibility()&&x.getBoundingClientRect().height>0;
+      const gallery=shared.querySelector('.memory-gallery[data-kind="relay"]');
+      const result={hasGallery:!!gallery,sharedPersonal:shared.querySelectorAll('[data-finding="signature"]').length};
+      if(gallery){
+        const cards=[...gallery.querySelectorAll("article")], nav=gallery.querySelector(".memory-gallery-nav");
+        const buttons=nav.querySelectorAll("button"), status=nav.querySelector('[role="status"]');
+        const current=()=>cards.filter(visible).map(x=>x.innerText);
+        result.initial=current();result.firstDisabled=buttons[0].disabled;result.firstCount=status.textContent;
+        result.allCardsHaveStaff=cards.every(x=>x.querySelectorAll(".memory-relay-stage > .sticker-staff").length===1);
+        buttons[1].click();result.second=current();result.secondCount=status.textContent;
+        buttons[1].click();result.third=current();result.lastDisabled=buttons[1].disabled;
+        buttons[0].click();result.back=current();
+        window.dispatchEvent(new Event("beforeprint"));result.printCount=cards.filter(visible).length;
+        window.dispatchEvent(new Event("afterprint"));result.restored=current();
+      }
+      if(window.ECHO_DATA.conversation.kind==="group"){
+        root.querySelectorAll('#sticker-member-options input').forEach(x=>{if(!x.checked)x.click();});
+      }
+      result.personal=[...root.querySelectorAll("#sticker-members > article")].map(x=>({
+        label:x.querySelector("h4").textContent,
+        titles:[...x.querySelectorAll('[data-finding="signature"] h3')].map(x=>x.textContent)}));
+      result.overflow=document.documentElement.scrollWidth>innerWidth;
+      const pre=document.createElement("pre");pre.id="ownership-probe";pre.hidden=true;
+      pre.textContent=JSON.stringify(result);document.body.appendChild(pre);
+    },300);});</script>'''
+    output.write_text(output.read_text(encoding="utf-8").replace("</body>", probe + "</body>"), encoding="utf-8")
+    browser = _run_browser([chromium, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+        "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND",
+        f"--user-data-dir={tmp_path / 'browser'}", "--virtual-time-budget=2000",
+        "--window-size=1280,1100", "--dump-dom", output.as_uri()])
+    assert browser.returncode == 0, browser.stderr
+    match = re.search(r'<pre id="ownership-probe" hidden="">(.*?)</pre>', browser.stdout.decode("utf-8"), re.S)
+    assert match is not None
+    result = json.loads(html.unescape(match.group(1)))
+    assert result["hasGallery"] and result["sharedPersonal"] == 0
+    for key, day in (("initial", 1), ("second", 2), ("third", 3), ("back", 2), ("restored", 2)):
+        assert len(result[key]) == 1 and f"2025-04-0{day}" in result[key][0]
+    assert result["firstDisabled"] and result["lastDisabled"]
+    assert result["firstCount"] == "1 / 3" and result["secondCount"] == "2 / 3"
+    assert result["printCount"] == 3 and not result["overflow"] and result["allCardsHaveStaff"]
+    assert len(result["personal"]) == 2
+    for member, label in zip(result["personal"], labels):
+        assert label in member["label"] and member["titles"] == [f"{label}的长期偏爱"]
+
+
+@pytest.mark.slow_integration
 @pytest.mark.parametrize("scene,leaders,width", [
     ("combined", ["reunion", "style"], 1280), ("zero", [], 1280),
     ("one", ["relay"], 1280), ("three", ["trend", "relay", "shared", "trend"], 1280),
@@ -1005,55 +1078,46 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     <script>window.addEventListener("load", () => {setTimeout(() => {
       const a=document.getElementById("stickers"), b=document.getElementById("sticker-memories");
       const bounds=x=>{const r=x.getBoundingClientRect();return {top:r.top,bottom:r.bottom,left:r.left,right:r.right,width:r.width,height:r.height};};
-      const visible=x=>!!x.getBoundingClientRect().height&&x.checkVisibility();
-      const initial={height:bounds(b).height,
-        stories:[...b.querySelectorAll("article")].filter(visible).length,
-        findings:[...b.querySelectorAll("article:not(.is-compact)")].map(x=>
-          [...x.querySelectorAll("[data-finding]")].filter(visible).length),
-        closed:[...b.querySelectorAll("details")].every(x=>!x.open)};
-      const disclosures=[...b.querySelectorAll("details")];
-      if(disclosures.length) disclosures[0].querySelector("summary").click();
-      initial.opensByClick=!disclosures.length||disclosures[0].open;
-      const choices=disclosures.map(x=>x.open);
+      const visible=x=>x.checkVisibility()&&bounds(x).height>0;
+      const galleries=[...a.querySelectorAll(".memory-gallery")];
+      const initial=galleries.map(x=>({kind:x.dataset.kind,
+        visible:[...x.querySelectorAll("article")].filter(visible).length,
+        total:x.querySelectorAll("article").length}));
+      const cards=[...a.querySelectorAll(".memory-gallery > article")];
+      const choices=cards.map(x=>x.hidden);
       window.dispatchEvent(new Event("beforeprint"));
-      initial.printComplete=disclosures.every(x=>x.open);
+      const printComplete=cards.every(x=>!x.hidden);
       window.dispatchEvent(new Event("afterprint"));
-      initial.printRestores=disclosures.every((x,i)=>x.open===choices[i]);
-      // Inspect every detail after checking the compact first reading.
-      b.querySelectorAll("details").forEach(x=>{x.open=true;});
-      const stories=[...b.querySelectorAll("article")], images=[...b.querySelectorAll("img")];
-      const result={initial,expandedHeight:bounds(b).height,inside:a.contains(b),visible:!a.hidden,memoriesHidden:b.hidden,
+      const printRestores=cards.every((x,i)=>x.hidden===choices[i]);
+      window.dispatchEvent(new Event("beforeprint"));
+      const images=[...a.querySelectorAll(".memory-gallery img")];
+      const result={initial,printComplete,printRestores,inside:a.contains(b),visible:!a.hidden,memoriesHidden:b.hidden,
         pages:a.querySelectorAll(".page").length,
         toc:[...document.querySelectorAll('a[href="#stickers"],a[href="#sticker-memories"]')].filter(x=>!x.hidden).map(x=>x.getAttribute("href")),
         title:document.getElementById("sticker-title").textContent,
         stats:[...a.querySelectorAll(".sticker-fields dd")].filter(x=>x.offsetParent).map(x=>getComputedStyle(x).fontSize),
-        habitPairs:[...b.querySelectorAll(".memory-habit-pair")].map(x=>({bounds:bounds(x),children:[...x.children].map(bounds)})),
-        staffs:[...a.querySelectorAll(".sticker-staff")].map(x=>({favorites:!!x.closest("#sticker-rankings"),relay:!!x.closest(".is-relay")})),
-        stories:stories.map(story=>({compact:story.classList.contains("is-compact"),
-          previewText:story.querySelector(":scope > .sticker-memory")?.innerText || "",
-          findings:[...story.querySelectorAll("[data-finding]")].map(x=>({kind:x.dataset.finding,text:x.innerText,
-            windows:[...x.querySelectorAll(".memory-trend-row")].map(bounds)})),
-          art:[...story.querySelectorAll(".memory-art")].filter(x=>!x.closest(".memory-relay")).map(x=>({key:x.dataset.assetKey,...bounds(x)})),
-          turns:[...story.querySelectorAll(".memory-relay li")].map(x=>({text:x.innerText,...bounds(x),
+        findings:[...a.querySelectorAll("[data-finding]")].map(x=>({kind:x.dataset.finding,text:x.innerText,
+          owner:x.closest(".sticker-member")?.querySelector("h4").textContent||"",
+          windows:[...x.querySelectorAll(".memory-trend-row")].map(bounds),
+          turns:[...x.querySelectorAll(".memory-relay li")].map(x=>({text:x.innerText,...bounds(x),
             key:x.querySelector(".memory-art").dataset.assetKey,
-            side:bounds(x.querySelector(".memory-turn-side")),image:bounds(x.querySelector(".sticker-image"))}))
-        })),
-        tops:[...a.querySelectorAll("#sticker-members .sticker-member")].map(x=>({bounds:bounds(x),
-          entries:[...x.querySelectorAll("li")].map(bounds)})),
+            side:bounds(x.querySelector(".memory-turn-side")),image:bounds(x.querySelector(".sticker-image"))}))})),
+        art:[...a.querySelectorAll(".memory-gallery .memory-art")].filter(x=>!x.closest(".memory-relay")).map(x=>({key:x.dataset.assetKey,...bounds(x)})),
+        tops:[...a.querySelectorAll("#sticker-members > .sticker-member")].map(x=>({bounds:bounds(x),
+          entries:[...x.querySelectorAll(".sticker-top-list li")].map(bounds)})),
         common:[...a.querySelectorAll(".sticker-common")].map(x=>x.closest("li").dataset.assetKey),
         sharedAbsent:!document.querySelector("#sticker-shared-list"),
-        imageCount:images.length,loaded:images.every(x=>x.complete&&x.naturalWidth>0),
+        loaded:images.every(x=>x.complete&&x.naturalWidth>0),
         sameResource:new Set(images.map(x=>x.currentSrc)).size===1,
         nativeSave:images.every(x=>x.dispatchEvent(new MouseEvent("contextmenu",{bubbles:true,cancelable:true}))),
         offline:images.every(x=>x.src.startsWith("data:image/")||x.src.startsWith(new URL("media/",document.baseURI).href)),
-        missing:b.querySelectorAll(".sticker-image:not(.has-image)").length,
-        overflow:document.documentElement.scrollWidth>innerWidth,
-        viewport:innerWidth,
-        tail:bounds(a).bottom-bounds(b.hidden?document.getElementById("sticker-rankings"):stories[stories.length-1]).bottom,
+        missing:a.querySelectorAll(".memory-gallery .sticker-image:not(.has-image)").length,
+        overflow:document.documentElement.scrollWidth>innerWidth,viewport:innerWidth,
+        tail:bounds(a).bottom-bounds(b.hidden?document.getElementById("sticker-rankings"):b).bottom,
         chapterHeight:bounds(a).height,
-        fits:[...b.querySelectorAll("li,h3,.memory-art,.memory-date,.memory-trend-row")].every(x=>bounds(x).right<=bounds(a).right&&x.scrollWidth<=x.clientWidth+1),
-        text:b.innerText};
-      const heading=b.querySelector("h3");
+        fits:[...a.querySelectorAll(".memory-gallery li,.memory-gallery h3,.memory-art,.memory-date,.memory-trend-row")].every(x=>bounds(x).right<=bounds(a).right&&x.scrollWidth<=x.clientWidth+1),
+        text:a.innerText};
+      const heading=a.querySelector(".memory-gallery h3");
       if(heading){
         const original=[...heading.childNodes];heading.textContent=heading.textContent.repeat(4);
         result.longTitleFits=heading.scrollWidth<=heading.clientWidth+1&&bounds(heading).right<=bounds(a).right&&bounds(heading).height>=parseFloat(getComputedStyle(heading).lineHeight)*2-1;
@@ -1065,96 +1129,76 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     page = source.replace("</body>", probe+"</body>")
     output.write_text(f'<body style="margin:0"><iframe style="display:block;border:0;width:{width}px;height:'
                       f'1200px" srcdoc="{html.escape(page, quote=True)}"></iframe></body>', encoding="utf-8")
-    command = [chromium, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+    browser = _run_browser([chromium, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
         "--no-default-browser-check", "--disable-background-networking", "--hide-scrollbars",
         "--host-resolver-rules=MAP * ~NOTFOUND", f"--user-data-dir={tmp_path / 'b'}",
-        "--virtual-time-budget=2000"]
-    browser = _run_browser(command + ["--window-size=1280,1200", "--dump-dom", output.as_uri()])
+        "--virtual-time-budget=2000", "--window-size=1280,1200", "--dump-dom", output.as_uri()])
     assert browser.returncode == 0, browser.stderr
     match = re.search(r'<pre id="memories-probe" hidden="">(.*?)</pre>', browser.stdout.decode("utf-8"), re.S)
     assert match is not None
     result = json.loads(html.unescape(match.group(1)))
     (tmp_path/"layout.json").write_text(json.dumps(result,ensure_ascii=False,indent=2),encoding="utf-8")
+    findings = [finding for memory in memories for finding in memory["findings"]]
+    shared = [finding for finding in findings if not finding["owner_label"]]
     assert result["inside"] and result["visible"] and result["pages"] == 0
     assert result["toc"] == ["#stickers"] and result["title"] == "表情包里的故事"
-    assert result["memoriesHidden"] == (not leaders)
-    assert len(result["stories"]) == len(leaders) and result["sharedAbsent"]
-    assert result["initial"]["stories"] <= 3 and result["initial"]["closed"]
-    assert result["initial"]["opensByClick"] and result["initial"]["printComplete"] and result["initial"]["printRestores"]
-    assert all(count == 1 for count in result["initial"]["findings"])
-    if scene in {"combined", "many"}:
-        assert result["initial"]["height"] < result["expandedHeight"] * .8
+    assert result["memoriesHidden"] == (not shared) and result["sharedAbsent"]
+    assert all(gallery["visible"] == 1 for gallery in result["initial"])
+    assert result["printComplete"] and result["printRestores"]
     assert not result["overflow"] and result["fits"] and result["viewport"] == width
     assert 30 <= result["tail"] <= 115
-    assert [s["compact"] for s in result["stories"]] == [m["compact"] for m in memories]
-    has_relay = any(f["kind"]=="relay" for m in memories for f in m["findings"])
-    assert len(result["staffs"]) == (2 if has_relay else 1)
-    assert all(s["favorites"] or s["relay"] for s in result["staffs"])
-    assert sum(s["favorites"] for s in result["staffs"]) == 1
     assert len(result["stats"]) == 3 and len(set(result["stats"])) == 1
-    for pair in result["habitPairs"]:
-        assert abs(pair["children"][0]["left"] - pair["bounds"]["left"]) <= 1
-        assert all(child["width"] >= (250 if width > 720 else 120) for child in pair["children"])
     assert result["tops"][0]["bounds"]["bottom"] <= result["tops"][1]["bounds"]["top"]
     assert all(all(x["right"]<=y["left"] for x,y in zip(m["entries"],m["entries"][1:])) for m in result["tops"])
     common_keys = {item["asset_key"] for member in payload["stickers"]["members"]
                    for item in member["top_materials"] if len(item["side_counts"])==2 and all(item["side_counts"])}
     assert set(result["common"]) == common_keys
+    expected_art = {item["asset_key"] for finding in findings if finding["kind"] != "relay" for item in finding["materials"]}
+    assert {item["key"] for item in result["art"]} == expected_art
+    assert all((65 if width > 720 else 60)<=item["width"]<=164 for item in result["art"])
+    assert len(result["findings"]) <= len(findings)  # Adjacent trend windows may share one chart.
     if scene == "zero":
         assert result["chapterHeight"] < 800
-    if leaders:
+    if findings:
         assert result["longTitleFits"]
-    for rendered,memory in zip(result["stories"],memories):
-        if memory["compact"]:
-            assert len(rendered["art"]) <= 1
-            assert memory["findings"][0]["title"] in rendered["previewText"]
-        else:
-            ordinary_keys={i["asset_key"] for f in memory["findings"] if f["kind"]!="relay" for i in f["materials"]}
-            assert {a["key"] for a in rendered["art"]} == ordinary_keys
-            assert len(rendered["art"]) == len(ordinary_keys)
-            assert all((65 if width > 720 else 60)<=a["width"]<=164 for a in rendered["art"])
-        for finding in memory["findings"]:
-            actual=next(x for x in rendered["findings"] if x["kind"]==finding["kind"])
-            for key in ("period","note"):
-                if finding[key]:
-                    assert finding[key] in actual["text"]
-            for point in finding["points"]:
-                for key in ("start_date","end_date"):
-                    if point[key]:
-                        assert point[key] in actual["text"]
-                if finding["kind"]=="trend":
-                    assert f'{point["value"]} / {point["total"]} 次' in actual["text"]
-                    assert f'{round(point["value"]/point["total"]*100)}%' in actual["text"]
-                if finding["kind"] in ("signature","shared"):
-                    assert f'{point["value"]} 次' in actual["text"]
-                    assert f'{point["date_count"]} 天' in actual["text"]
-            if finding["kind"]=="trend":
-                windows=actual["windows"]
-                assert len({round(x["top"]) for x in windows})==1
-                assert all(x["right"]<=y["left"] for x,y in zip(windows,windows[1:]))
+    for finding in findings:
+        candidates = [actual for actual in result["findings"] if actual["kind"] == finding["kind"]
+                      and ((finding["owner_label"] in actual["owner"]) if finding["owner_label"] else not actual["owner"])]
+        expected = [finding[key] for key in ("period", "note") if finding[key]]
+        for point in finding["points"]:
+            expected.extend(point[key] for key in ("start_date", "end_date") if point[key])
+            if finding["kind"] == "trend":
+                expected += [f'{point["value"]} / {point["total"]} 次', f'{round(point["value"]/point["total"]*100)}%']
+            if finding["kind"] in ("signature", "shared"):
+                expected += [f'{point["value"]} 次', f'{point["date_count"]} 天']
             if finding["kind"] == "style":
-                assert all(f'约 {point["value"]:.1f} 种' in actual["text"] for point in finding["points"])
-            if finding["kind"]=="relay":
-                turns=rendered["turns"]
-                assert len(turns)==len(finding["points"])==8
-                assert all(x["right"]<=y["left"] for x,y in zip(turns,turns[1:]))
-                assert len({round(t["top"]) for t in turns[::2]})>1
-                assert min(t["top"] for t in turns[1::2])>max(t["top"] for t in turns[::2])
-                for turn,point in zip(turns,finding["points"]):
-                    assert point["label"] in turn["text"]
-                    assert turn["key"]==(point["materials"][0]["asset_key"] if point["materials"] else "")
-                    assert turn["side"]["bottom"]<=turn["image"]["top"]
-                    assert turn["image"]["width"]<=65
+                expected += [f'约 {point["value"]:.1f} 种']
+        actual = next((actual for actual in candidates if all(value in actual["text"] for value in expected)), None)
+        assert actual is not None, finding
+        if finding["kind"] == "trend":
+            windows=actual["windows"]
+            assert len({round(x["top"]) for x in windows}) == 1
+            assert all(x["right"]<=y["left"] for x,y in zip(windows,windows[1:]))
+        if finding["kind"] == "relay":
+            turns=actual["turns"]
+            assert len(turns)==len(finding["points"])==8
+            assert all(x["right"]<=y["left"] for x,y in zip(turns,turns[1:]))
+            assert len({round(t["top"]) for t in turns[::2]})>1
+            assert min(t["top"] for t in turns[1::2])>max(t["top"] for t in turns[::2])
+            for turn,point in zip(turns,finding["points"]):
+                assert point["label"] in turn["text"]
+                assert turn["key"]==(point["materials"][0]["asset_key"] if point["materials"] else "")
+                assert turn["side"]["bottom"]<=turn["image"]["top"] and turn["image"]["width"]<=65
     if scene == "three":
-        first=result["stories"][0]["findings"]
-        assert len(first)==1 and len(first[0]["windows"])==3
+        assert any(len(finding["windows"]) == 3 for finding in result["findings"] if finding["kind"] == "trend")
+    if scene == "many":
+        assert any(gallery["kind"] == "reunion" and gallery["total"] == 6 for gallery in result["initial"])
     if scene == "combined":
         assert sum(len(m["entries"]) for m in result["tops"])==6
-        assert result["imageCount"]==9
         assert result["sameResource"] and result["loaded"] and result["nativeSave"] and result["offline"]
         assert all(word in result["text"] for word in ("70 天","49 天","8 轮","回音","约 9.7 种","约 1.0 种","10 次"))
         assert all(word not in result["text"] for word in ("不代表谁带动了谁", "按已有记录估算", "各随机取", "部分发送时间不明"))
-    elif leaders:
+    elif findings:
         assert result["missing"]>0
     assert all(secret not in result["text"] for secret in ("虚构日常","虚构回复","private-body-sentinel"))
 
@@ -1285,29 +1329,25 @@ def test_group_memories_use_the_same_offline_story_template_without_overflow(tmp
     view = replace(view, stickers=replace(chapter, memories=memories))
     output = export_echo_report_html(view, tmp_path/"group.html")
     probe = '''<script>addEventListener("load",()=>{setTimeout(()=>{
-      const root=document.getElementById("sticker-memories");
-      const visible=x=>!!x.getBoundingClientRect().height&&x.checkVisibility();
-      const initial={height:root.getBoundingClientRect().height,
-        stories:[...root.querySelectorAll("article")].filter(visible).length,
-        findings:[...root.querySelectorAll("article:not(.is-compact)")].map(x=>
-          [...x.querySelectorAll("[data-finding]")].filter(visible).length),
-        closed:[...root.querySelectorAll("details")].every(x=>!x.open)};
-      root.querySelectorAll("details").forEach(x=>{x.open=true;});
-      const result={initial,expandedHeight:root.getBoundingClientRect().height,visible:!root.hidden,stories:root.querySelectorAll(".sticker-memory-story").length,
+      const chapter=document.getElementById("stickers"),root=document.getElementById("sticker-memories");
+      chapter.querySelectorAll('#sticker-member-options input').forEach(x=>{if(!x.checked)x.click();});
+      const visible=x=>x.checkVisibility()&&x.getBoundingClientRect().height>0;
+      const initial=[...chapter.querySelectorAll(".memory-gallery")].map(x=>({
+        kind:x.dataset.kind,visible:[...x.querySelectorAll("article")].filter(visible).length}));
+      window.dispatchEvent(new Event("beforeprint"));
+      const result={initial,visible:!root.hidden,
+        kinds:[...chapter.querySelectorAll("[data-finding]")].map(x=>x.dataset.finding),
+        text:chapter.innerText,
+        owners:[...chapter.querySelectorAll('[data-finding="signature"]')].map(x=>({
+          text:x.innerText,label:x.closest(".sticker-member")?.querySelector("h4").textContent||""})),
+        sharedPersonal:root.querySelectorAll('[data-finding="signature"]').length,
         turns:root.querySelectorAll(".memory-relay li").length,
-        kinds:[...root.querySelectorAll("[data-finding]")].map(x=>x.dataset.finding),
-        text:root.innerText,
         labels:[...root.querySelectorAll(".memory-turn-side")].map(x=>x.textContent),
-        compactInline:[...root.querySelectorAll(".sticker-memory-story.is-compact:has(> .memory-art)")].every(x=>
-          x.querySelector(".memory-art").getBoundingClientRect().right<=
-          x.querySelector(".sticker-memory").getBoundingClientRect().left),
         relayFullWidth:[...root.querySelectorAll(".is-relay")].every(x=>
           x.getBoundingClientRect().width>=x.closest(".sticker-memory-story").getBoundingClientRect().width-1),
         viewport:innerWidth,overflow:document.documentElement.scrollWidth>innerWidth,
-        fits:[...root.querySelectorAll("li,h3,.memory-art")].every(x=>x.scrollWidth<=x.clientWidth+1),
-        clipped:[...root.querySelectorAll("*")].filter(x=>x.scrollWidth>x.clientWidth+1).map(x=>({
-          cls:x.className,width:x.clientWidth,content:x.scrollWidth,whiteSpace:getComputedStyle(x).whiteSpace})),
-        external:[...root.querySelectorAll("img")].some(x=>/^https?:/.test(x.src))};
+        fits:[...chapter.querySelectorAll(".memory-gallery li,.memory-gallery h3,.memory-gallery .memory-art")].every(x=>x.scrollWidth<=x.clientWidth+1),
+        external:[...chapter.querySelectorAll("img")].some(x=>/^https?:/.test(x.src))};
       const pre=document.createElement("pre");pre.id="group-probe";pre.hidden=true;
       pre.textContent=JSON.stringify(result);window.parent.document.body.appendChild(pre);
     },300);});</script>'''
@@ -1322,17 +1362,17 @@ def test_group_memories_use_the_same_offline_story_template_without_overflow(tmp
     assert match is not None
     result = json.loads(html.unescape(match.group(1)))
     assert result["viewport"] == width
-    assert result["visible"] and result["stories"] == len(memories) and result["turns"] == 6
-    assert result["initial"]["stories"] <= 3 and result["initial"]["closed"]
-    assert all(count == 1 for count in result["initial"]["findings"])
-    if scene == "all":
-        assert result["initial"]["height"] < result["expandedHeight"] * .8
+    assert result["visible"] and result["turns"] == 6
+    assert set(result["kinds"]) == {finding.kind for memory in memories for finding in memory.findings}
+    assert all(gallery["visible"] == 1 for gallery in result["initial"])
+    assert result["sharedPersonal"] == 0
+    for owner in result["owners"]:
+        assert owner["label"] and owner["label"] in owner["text"]
     assert len(set(result["labels"])) == 3
     assert result["fits"] and not result["overflow"] and not result["external"], result
-    assert result["compactInline"] and result["relayFullWidth"], result
+    assert result["relayFullWidth"], result
     assert not re.search(r"仅比较|跨两天|抽取|不包含未知|其他成员合计|不推断|依据 QQ|每轮展示|同期发表情", result["text"])
     if scene in {"all", "compact"}:
-        # Expanded compact stories retain the same facts as featured stories.
         assert all(finding.title in result["text"] for memory in memories for finding in memory.findings)
         for finding in (f for m in memories for f in m.findings if f.kind == "style"):
             assert all(f"约 {point.value:.1f} 种" in result["text"] for point in finding.points)

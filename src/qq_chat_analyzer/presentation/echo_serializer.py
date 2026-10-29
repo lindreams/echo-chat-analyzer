@@ -33,7 +33,7 @@ from .expression_assets import (
 )
 
 
-ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.17"
+ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.18"
 
 
 def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
@@ -82,7 +82,7 @@ def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
             "compact": memory.compact,
             "findings": [{
                 "kind": finding.kind, "title": finding.title, "period": finding.period,
-                "note": finding.note,
+                "note": finding.note, "owner_label": finding.owner_label,
                 "materials": [{"asset_key": item.asset_key} for item in finding.materials],
                 "points": [{
                     "label": point.label, "value": point.value, "total": point.total,

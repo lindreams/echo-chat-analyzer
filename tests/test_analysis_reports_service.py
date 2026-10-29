@@ -328,7 +328,7 @@ def test_execute_attaches_every_report_to_the_result(tmp_path: Path) -> None:
         (artifact.kind, artifact.filename) for artifact in result.artifacts
     }
     payload = json.loads((output_directory / "echo-report.json").read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "echo-report.v0.17"
+    assert payload["schema_version"] == "echo-report.v0.18"
 
 
 def test_distinctive_report_reuses_pipeline_tokens_and_stable_sender_keys(

@@ -297,6 +297,8 @@ class EchoStickerFinding:
     points: tuple[EchoStickerMemoryPoint, ...] = ()
     materials: tuple[EchoStickerItem, ...] = ()
     note: str = ""
+    # The existing unique display label, never a source account/sender ID.
+    owner_label: str = ""
 
 
 @dataclass(frozen=True, slots=True)

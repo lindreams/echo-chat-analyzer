@@ -63,6 +63,10 @@ def test_featured_stories_export_only_summaries_and_share_the_media_target_union
     assert findings["style"]["points"][0]["value"] == pytest.approx(9.67, abs=.01)
     assert findings["adoption"]["note"] == "同一张图，在你们之间留下了回音。"
     assert findings["style"]["note"] == ""
+    assert {kind: finding["owner_label"] for kind, finding in findings.items()} == {
+        "reunion": "我", "signature": "我", "trend": "我",
+        "shared": "", "relay": "", "adoption": "", "style": "",
+    }
     habit = features.shared_habits[0]
     undated = replace(features, shared_habits=(replace(habit, members=(
         replace(habit.members[0], has_unknown_time=True), habit.members[1])),))
@@ -537,7 +541,7 @@ def test_activity_analysis_preserves_report_distribution_and_density_contract(tm
         activity=ActivityAnalyzer().analyze(messages),
     ))
     payload = echo_report_to_dict(view)
-    assert payload["schema_version"] == "echo-report.v0.17"
+    assert payload["schema_version"] == "echo-report.v0.18"
     assert payload["overview"] == {
         "has_data": True, "total_message_count": 3, "participant_count": 0,
         "empty_description": "", "active_days": 1,

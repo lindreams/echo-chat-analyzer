@@ -58,14 +58,14 @@ def build_sticker_memories(
             visuals.append(EchoStickerFinding("reunion", f"隔了 {f.gap_days} 天，{side}又发了这张图。",
                 points=(EchoStickerMemoryPoint(f"{side} · 上次记录", start_date=f.previous_date),
                         EchoStickerMemoryPoint(f"{side} · 再次使用", start_date=f.return_date)),
-                materials=picture(f.media_key)))
+                materials=picture(f.media_key), owner_label=side))
 
         for f in findings.get("signatures", ()):
             h = f.habit
             visuals.append(EchoStickerFinding("signature", f"这张图，{labels[h.sender_id]}跨越 {h.span_days} 天在用。",
                 points=(EchoStickerMemoryPoint(labels[h.sender_id], value=h.send_count,
                     date_count=h.date_count, start_date=h.first_date, end_date=h.last_date),),
-                materials=picture(f.media_key)))
+                materials=picture(f.media_key), owner_label=labels[h.sender_id]))
 
         for f in findings.get("shared_habits", ()):
             visuals.append(EchoStickerFinding("shared", "这张图，我们都反复用过。",
@@ -102,7 +102,8 @@ def build_sticker_memories(
                 f"{labels[f.sender_id]}用这张图的占比，从 {f.previous.share:.0%} 到 {f.current.share:.0%}。",
                 points=tuple(EchoStickerMemoryPoint(labels[f.sender_id], value=w.send_count,
                     total=w.known_send_count, start_date=w.start_date, end_date=_last_day(w.end_date))
-                    for w in (f.previous, f.current)), materials=picture(f.media_key)))
+                    for w in (f.previous, f.current)), materials=picture(f.media_key),
+                owner_label=labels[f.sender_id]))
 
         for f in findings.get("adoptions", ()):
             visuals.append(EchoStickerFinding("adoption", f"{labels[f.later_sender_id]}的首次可见使用，晚了 {f.lag_days} 天。",
@@ -165,7 +166,8 @@ def build_group_sticker_memories(features, materials, labels) -> tuple[EchoStick
                 h = f.habit
                 visuals.append(EchoStickerFinding("signature", f"{labels[h.sender_id]}的长期偏爱：这张图更常出现在自己的发送里。",
                     points=(EchoStickerMemoryPoint(labels[h.sender_id], value=h.send_count, date_count=h.date_count,
-                        start_date=h.first_date, end_date=h.last_date),), materials=picture(f.media_key)))
+                        start_date=h.first_date, end_date=h.last_date),), materials=picture(f.media_key),
+                    owner_label=labels[h.sender_id]))
             elif name == "shared_habits":
                 visuals.append(EchoStickerFinding("shared", f"这张图，{len(f.members)} 位成员都用成了长期习惯。",
                     points=tuple(EchoStickerMemoryPoint(labels[u.sender_id], value=u.send_count,

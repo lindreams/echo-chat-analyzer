@@ -654,15 +654,12 @@ h1, h2, h3, p { margin-top: 0; }
 .sticker-memory + .sticker-memory { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--rule); }
 .sticker-memory.has-art { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 25px; align-items: center; }
 .sticker-memory.is-reunion.has-art { grid-template-columns: 154px minmax(0, 1fr); gap: 30px; min-height: 165px; }
-.sticker-memory.is-related { margin-left: 121px; }
-.sticker-memory-story.has-reunion .sticker-memory.is-related { margin-left: 184px; }
 .memory-body, .memory-copy { min-width: 0; }
 .memory-copy { margin-bottom: 10px; }
 .memory-kicker { margin: 0 0 9px; color: var(--accent); font: 11px/1.5 var(--sans); letter-spacing: .1em; }
 .sticker-memory h3 { min-width: 0; margin: 0; font: 500 25px/1.5 var(--serif); overflow-wrap: anywhere; }
 .sticker-memory h3 em { color: var(--accent); font-style: normal; font-weight: 400; }
 .is-reunion h3 em { font-size: 48px; line-height: 1; }
-.sticker-memory.is-related h3 { font-size: 18px; }
 .memory-art { width: 96px; min-width: 0; max-width: 100%; margin: 0; }
 .memory-art.is-reunion-art { width: 148px; }
 .memory-art .sticker-image { background: var(--paper-light); }
@@ -682,12 +679,6 @@ h1, h2, h3, p { margin-top: 0; }
 .memory-note { margin: 10px 0 0; color: var(--muted); font: 10px/1.8 var(--sans); overflow-wrap: anywhere; }
 .memory-habit-count { margin: 0; color: var(--muted); font: 12px/1.7 var(--sans); }
 .memory-habit-count strong { color: var(--ink); font: 28px/1.2 var(--serif); }
-.memory-habit-pair { margin: 12px 0 0 121px; padding-top: 12px; border-top: 1px solid var(--rule); display: grid; grid-template-columns: 1fr 1.15fr; gap: 26px; }
-.has-reunion .memory-habit-pair { margin-left: 184px; }
-.sticker-memory-story .memory-habit-pair .sticker-memory.is-related { margin: 0; padding: 0; border: 0; }
-.memory-habit-pair .memory-kicker { color: var(--muted); }
-.memory-habit-pair:has(> :only-child) { grid-template-columns: 1fr; }
-.sticker-memory-story.is-compact:not(:has(> .memory-art)) { grid-template-columns: 1fr; }
 .memory-shared { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .memory-person { min-width: 0; color: var(--muted); font: 11px/1.8 var(--sans); }
 .memory-person b { color: var(--viewer); font-weight: 500; }
@@ -731,39 +722,19 @@ h1, h2, h3, p { margin-top: 0; }
 .is-peer .memory-turn-side { color: var(--accent); }
 .memory-turn-number { color: var(--muted); font: 10px/1.4 var(--serif); }
 .is-relay .memory-note { grid-column: 1 / -1; }
-.sticker-memory-story.is-compact { grid-column: auto; display: grid; grid-template-columns: 65px minmax(0, 1fr); gap: 16px; align-items: center; padding: 22px 0; }
-.is-compact > .memory-art { width: 62px; }
-.is-compact h3 { font-size: 18px; }
-.is-compact .memory-kicker { margin-bottom: 6px; }
-.is-compact .memory-note { margin-top: 7px; }
-.sticker-memory-story.is-compact:last-child { padding-bottom: 0; }
-.memory-details { min-width: 0; grid-column: 1 / -1; margin-top: 14px; }
-.memory-details > summary { width: fit-content; max-width: 100%; cursor: pointer; color: var(--accent); font: 11px/1.8 var(--sans); overflow-wrap: anywhere; }
-.memory-details > summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 4px; }
-.memory-details > summary small { margin-left: 10px; color: var(--muted); font: inherit; }
-.memory-related-findings { padding-top: 14px; }
-.memory-related-findings > .sticker-memory:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
-.memory-related-findings .memory-habit-pair { margin-left: 0; }
-.memory-related-findings .sticker-memory.is-related { margin-left: 0; }
-.memory-more-stories { margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--rule); }
-.memory-more-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; padding-top: 16px; }
-.memory-more-grid .sticker-memory-story:first-child { padding-top: 22px; border-top: 1px solid var(--rule); }
-.memory-more-grid .sticker-memory-story { align-items: start; }
-.memory-more-grid .sticker-memory-story:has(> details[open]) { grid-column: 1 / -1; }
-.memory-more-grid .is-compact .sticker-memory.is-related { margin-left: 0; }
-.is-compact .memory-details { margin-top: 8px; }
-
-/* Related group discoveries share a row; the main memory and relay keep their width. */
-@media (min-width: 721px) {
-  .sticker-group .sticker-memory-story:not(.is-compact) { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; align-items: start; }
-  .sticker-group .sticker-memory-story:not(.is-compact) > .sticker-memory:not(.is-related),
-  .sticker-group .memory-habit-pair { grid-column: 1 / -1; }
-  .sticker-group .sticker-memory-story > .sticker-memory.is-related { margin-left: 0; }
-  .sticker-group .memory-habit-pair { margin-left: 0; }
-  .sticker-group .memory-habit-pair:has(> :only-child) { grid-column: auto; }
-  .sticker-group .memory-shared { grid-template-columns: repeat(auto-fit, minmax(95px, 1fr)); gap: 14px; }
-  .sticker-group .memory-related-findings { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 28px; align-items: start; }
-  .sticker-group .memory-related-findings > .is-relay { grid-column: 1 / -1; }
+.memory-gallery { min-width: 0; grid-column: 1 / -1; }
+.memory-gallery + .memory-gallery { margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--rule); }
+.memory-gallery-nav { display: flex; justify-content: flex-end; align-items: center; gap: 18px; margin-top: 16px; color: var(--muted); font: 12px/1.6 var(--sans); }
+.memory-gallery-nav button { border: 0; border-bottom: 1px solid var(--rule); padding: 4px 0; background: transparent; color: var(--accent); font: inherit; cursor: pointer; }
+.memory-gallery-nav button:disabled { color: var(--faint); cursor: default; }
+.memory-gallery-nav button:focus-visible { outline: 1px solid var(--accent); outline-offset: 4px; }
+.memory-gallery-nav [role="status"] { min-width: 44px; text-align: center; font-variant-numeric: tabular-nums; }
+.sticker-personal-memories { grid-column: 1 / -1; min-width: 0; margin-top: 18px; padding-top: 20px; border-top: 1px solid var(--rule); }
+.sticker-chapter:not(.sticker-group) .sticker-member > .sticker-top-list { grid-column: 2; grid-row: 1; }
+.sticker-chapter:not(.sticker-group) .sticker-member > h4 { grid-row: 1; }
+.sticker-group .memory-shared { grid-template-columns: repeat(auto-fit, minmax(95px, 1fr)); gap: 14px; }
+@media print {
+  .memory-gallery-nav { display: none; }
 }
 
 
@@ -1230,12 +1201,8 @@ h1, h2, h3, p { margin-top: 0; }
   .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-hours,
   .session-chapter.is-group .session-duet:has(#session-concentration:not([hidden])) #session-concentration { grid-column: auto; grid-row: auto; }
   #sticker-memory-stories { grid-template-columns: 1fr; }
-  .memory-more-grid { grid-template-columns: 1fr; }
   .sticker-memory.has-art { grid-template-columns: 64px minmax(0, 1fr); gap: 16px; }
   .sticker-memory.is-reunion.has-art { grid-template-columns: 80px minmax(0, 1fr); gap: 16px; min-height: 0; }
-  .sticker-memory.is-related, .sticker-memory-story.has-reunion .sticker-memory.is-related,
-  .memory-habit-pair, .has-reunion .memory-habit-pair { margin-left: 0; }
-  .memory-habit-pair { gap: 16px; }
   .sticker-memory h3 { font-size: 21px; }
   .is-reunion h3 em { font-size: 36px; }
   .is-relay .memory-body { grid-template-columns: minmax(0, 1fr); }
@@ -2237,14 +2204,24 @@ document.documentElement.classList.add("js-ready");
             article.appendChild(rate);
           }
         }
-        var signature = stickerGroup ? stickerSignature(member) : null;
+        var personal = personalMemories.get(member.label) || new Map();
+        var signatureAlreadyShown = (personal.get("signature") || []).some(function (memory) {
+          return member.signature && memory.findings.some(function (finding) {
+            return finding.materials.some(function (item) { return item.asset_key === member.signature.asset_key; });
+          });
+        });
+        var signature = stickerGroup && !signatureAlreadyShown ? stickerSignature(member) : null;
         if (signature) { article.appendChild(signature); }
         stickerRanking(article, member.top_materials || []);
+        if (personal.size) {
+          var personalSection = memoryElement("div", "sticker-personal-memories");
+          renderMemoryGalleries(personalSection, personal);
+          article.appendChild(personalSection);
+        }
         stickerMembers.appendChild(article);
       });
       setText("sticker-member-summary", "选择成员 · 已选 " + selectedMembers.size + " 人");
     }
-    renderStickerMembers();
     setHidden("sticker-member-picker", !stickerGroup || !allStickerMembers.length || noSends);
     var memberSearch = document.getElementById("sticker-member-search");
     var memberOptions = document.getElementById("sticker-member-options");
@@ -2287,7 +2264,6 @@ document.documentElement.classList.add("js-ready");
     }
 
     var memories = data.sticker_memories || [];
-    setHidden("sticker-memories", !memories.length);
     var stories = document.getElementById("sticker-memory-stories");
     function memoryElement(tag, className, text) {
       var node = document.createElement(tag);
@@ -2338,7 +2314,7 @@ document.documentElement.classList.add("js-ready");
       return JSON.stringify([point.label, point.start_date, point.end_date, point.value, point.total]);
     }
     function sameTrendMaterial(a, b) {
-      return a.kind === "trend" && b.kind === "trend" && a.materials.length === 1 && b.materials.length === 1 &&
+      return a.kind === "trend" && b.kind === "trend" && a.owner_label === b.owner_label && a.materials.length === 1 && b.materials.length === 1 &&
         a.materials[0].asset_key === b.materials[0].asset_key && a.points[0].label === b.points[0].label &&
         a.points.some(function (left) { return b.points.some(function (right) { return windowKey(left) === windowKey(right); }); });
     }
@@ -2356,184 +2332,176 @@ document.documentElement.classList.add("js-ready");
     }
     var memoryLabels = {reunion: "久别重逢", signature: "长久的习惯", shared: "共同习惯",
       relay: "你来我往", trend: "使用变化", adoption: "先后使用", style: "使用风格", reply: "明确引用"};
-    function memoryDetails(label, kinds) {
-      var details = memoryElement("details", "memory-details");
-      var summary = memoryElement("summary", "", label);
-      var labels = Array.from(new Set(kinds.map(function (kind) { return memoryLabels[kind]; })));
-      if (labels.length) summary.appendChild(memoryElement("small", "", labels.join(" · ")));
-      details.appendChild(summary);
-      return details;
-    }
-    var extraMemories = memories.filter(function (memory) { return memory.compact; });
-    var extraDetails = memoryDetails("还有 " + extraMemories.length + " 段回忆", []);
-    var extraGrid = memoryElement("div", "memory-more-grid");
-    extraDetails.classList.add("memory-more-stories");
-    extraDetails.appendChild(extraGrid);
-    var relayStaffUsed = false;
+    var personalMemories = new Map();
+    allStickerMembers.forEach(function (member) { personalMemories.set(member.label, new Map()); });
+    var sharedMemories = new Map();
     memories.forEach(function (memory) {
-      var story = memoryElement("article", "sticker-memory-story");
-      story.classList.toggle("is-compact", Boolean(memory.compact));
-      var compactBody = null;
-      if (memory.compact) {
-        var lead = memory.findings[0];
-        if (memory.materials.length) story.appendChild(memoryImage(memory.materials));
-        var compactPanel = memoryElement("section", "sticker-memory");
-        compactPanel.appendChild(memoryElement("p", "memory-kicker", memoryLabels[lead.kind]));
-        compactPanel.appendChild(memoryElement("h3", "", lead.title));
-        if (lead.period) compactPanel.appendChild(memoryElement("p", "memory-note", lead.period));
-        story.appendChild(compactPanel);
-        var compactDetails = memoryDetails("日期与细节", memory.findings.map(function (finding) { return finding.kind; }));
-        compactBody = memoryElement("div", "memory-related-findings");
-        compactDetails.appendChild(compactBody);
-        story.appendChild(compactDetails);
-      }
-      var groups = visualFindings(memory.findings);
-      var ordinary = [], reunionKeys = new Set();
-      memory.findings.forEach(function (finding) {
-        if (finding.kind === "relay") return;
-        finding.materials.forEach(function (item) {
-          if (!ordinary.some(function (other) { return other.asset_key === item.asset_key; })) ordinary.push(item);
-          if (finding.kind === "reunion") reunionKeys.add(item.asset_key);
-        });
+      visualFindings(memory.findings).forEach(function (findings) {
+        var finding = findings[0];
+        if (!memoryLabels[finding.kind]) return;
+        // Ownership comes from the projection, never from parsing the title.
+        var target = finding.owner_label ? personalMemories.get(finding.owner_label) : sharedMemories;
+        if (!target) return;
+        if (!target.has(finding.kind)) target.set(finding.kind, []);
+        target.get(finding.kind).push({findings: findings});
       });
-      story.classList.toggle("has-reunion", reunionKeys.size > 0);
-      var painted = new Set();
-      if (memory.compact && memory.materials.length) painted.add(memory.materials[0].asset_key);
-      // Keep the selected lead visible; associated observations open on demand.
-      groups.sort(function (a, b) {
-        if (a.indexOf(memory.findings[0]) >= 0) return -1;
-        if (b.indexOf(memory.findings[0]) >= 0) return 1;
-        return 0;
-      });
-      var related = memoryDetails("同一段回忆，还有 " + (groups.length - 1) + " 项发现",
-        groups.slice(1).map(function (group) { return group[0].kind; }));
-      var relatedBody = memoryElement("div", "memory-related-findings");
-      related.appendChild(relatedBody);
-      var habitPair = null;
-      groups.forEach(function (group, groupIndex) {
-        var container = compactBody || (groupIndex ? relatedBody : story);
-        var finding = group[0], kind = finding.kind, points = finding.points;
-        if (!memoryLabels[kind]) return;
-        var panel = memoryElement("section", "sticker-memory is-" + kind);
-        panel.dataset.finding = kind;
-        if (group.length > 1) {
-          var windows = new Map();
-          group.forEach(function (item) { item.points.forEach(function (p) { windows.set(windowKey(p), p); }); });
-          points = Array.from(windows.values()).sort(function (a, b) { return a.start_date.localeCompare(b.start_date); });
-        }
-        var picture = finding.materials.filter(function (item) { return !painted.has(item.asset_key); });
-        if (picture.length && kind !== "relay") {
-          panel.classList.add("has-art");
-          var art = memoryElement("div", "memory-story-art");
-          picture.forEach(function (item) {
-            var image = memoryImage([item]);
-            if (reunionKeys.has(item.asset_key)) image.classList.add("is-reunion-art");
-            art.appendChild(image); painted.add(item.asset_key);
-          });
-          panel.appendChild(art);
-        } else if (ordinary.length && kind !== "relay") {
-          panel.classList.add("is-related");
-        }
-        var body = memoryElement("div", "memory-body");
-        var copy = memoryElement("div", "memory-copy");
-        copy.appendChild(memoryElement("p", "memory-kicker", memoryLabels[kind]));
-        var heading = memoryElement("h3", "");
-        var title = group.length > 1 ? points[0].label + "用这张图的比例，在这些时段发生了变化。" : finding.title;
-        title.split(/(\d+(?:\.\d+)?%?)/).forEach(function (part, index) {
-          heading.appendChild(index % 2 ? memoryElement("em", "", part) : document.createTextNode(part));
-        });
-        copy.appendChild(heading);
-        if (!memory.compact || groupIndex) body.appendChild(copy);
-        if (kind === "reunion" || kind === "adoption") body.appendChild(memoryDates(points));
-        if (kind === "signature") {
-          var count = memoryElement("p", "memory-habit-count");
-          count.appendChild(memoryElement("strong", "", formatCount(points[0].value) + " 次"));
-          count.appendChild(document.createTextNode(" · 分布在 "));
-          count.appendChild(memoryElement("strong", "", formatCount(points[0].date_count) + " 天"));
-          body.appendChild(count);
-          body.appendChild(memoryElement("p", "memory-note", (points[0].start_date || "日期不明") + " — " + (points[0].end_date || "日期不明")));
-        }
-        if (kind === "shared") {
-          var shared = memoryElement("div", "memory-shared");
-          points.forEach(function (point) {
-            var person = memoryElement("div", "memory-person");
-            person.appendChild(memoryElement("b", "", point.label));
-            person.appendChild(memoryElement("strong", "", point.value + " 次"));
-            person.appendChild(memoryElement("span", "", "分布在 " + point.date_count + " 天"));
-            person.appendChild(memoryElement("small", "", (point.start_date || "日期不明") + " — " + (point.end_date || "日期不明")));
-            shared.appendChild(person);
-          });
-          body.appendChild(shared);
-        }
-        if (kind === "trend") {
-          var comparisons = memoryElement("div", "memory-trend-windows");
-          comparisons.style.setProperty("--windows", String(points.length));
-          points.forEach(function (point) {
-            var row = memoryElement("div", "memory-trend-row");
-            row.appendChild(memoryElement("div", "memory-trend-dates", point.start_date + " — " + point.end_date));
-            var value = memoryElement("div", "memory-bar-value", point.total > 0 ? Math.round(point.value / point.total * 100) + "%" : "无可比发送");
-            value.appendChild(memoryElement("small", "", point.value + " / " + point.total + " 次"));
-            row.appendChild(value);
-            row.appendChild(memoryTrack(point.value, point.total));
-            comparisons.appendChild(row);
-          });
-          body.appendChild(comparisons);
-        }
-        if (kind === "style") {
-          var chart = memoryElement("div", "memory-style-chart");
-          points.forEach(function (point) {
-            var row = memoryElement("div", "memory-style-row");
-            row.appendChild(memoryElement("span", "memory-style-label", point.label));
-            row.appendChild(memoryTrack(point.value, point.total));
-            row.appendChild(memoryElement("strong", "", "约 " + point.value.toFixed(1) + " 种"));
-            chart.appendChild(row);
-          });
-          body.appendChild(chart);
-        }
-        if (kind === "relay") {
-          body.appendChild(memoryElement("p", "sticker-memory-period", finding.period));
-          var stage = memoryElement("div", "memory-relay-stage");
-          if (!relayStaffUsed) { stage.appendChild(stickerStaff()); relayStaffUsed = true; }
-          var turns = memoryElement("ol", "memory-relay");
-          turns.style.setProperty("--turns", String(points.length));
-          points.forEach(function (point, index) {
-            var turn = memoryElement("li", (stickerGroup ? index % 2 === 1 : point.label === "TA") ? "is-peer" : "");
-            turn.appendChild(memoryElement("span", "memory-turn-side", point.label + (point.value > 1 ? " · " + point.value + " 次" : "")));
-            turn.appendChild(memoryImage(point.materials));
-            turn.appendChild(memoryElement("span", "memory-turn-number", String(index + 1).padStart(2, "0")));
-            turns.appendChild(turn);
-          });
-          stage.appendChild(turns); body.appendChild(stage);
-        }
-        group.forEach(function (item) {
-          if (item.note) body.appendChild(memoryElement("p", "memory-note", item.note));
-        });
-        panel.appendChild(body);
-        if ((kind === "signature" || kind === "shared") && panel.classList.contains("is-related")) {
-          if (!habitPair) {
-            habitPair = memoryElement("div", "memory-habit-pair");
-            container.appendChild(habitPair);
-          }
-          habitPair.appendChild(panel);
-        } else {
-          container.appendChild(panel);
-        }
-      });
-      if (!memory.compact && groups.length > 1) story.appendChild(related);
-      (memory.compact ? extraGrid : stories).appendChild(story);
     });
-    if (extraMemories.length) stories.appendChild(extraDetails);
-    // Paper contains all selected observations; returning to the screen restores
-    // the reader's own open/closed choices, including nested details.
-    var closedMemoryDetails = null;
+    function renderMemoryCard(memory) {
+      var story = memoryElement("article", "sticker-memory-story");
+      var group = memory.findings;
+      var finding = group[0], kind = finding.kind, points = finding.points;
+      var panel = memoryElement("section", "sticker-memory is-" + kind);
+      panel.dataset.finding = kind;
+      if (group.length > 1) {
+        var windows = new Map();
+        group.forEach(function (item) { item.points.forEach(function (p) { windows.set(windowKey(p), p); }); });
+        points = Array.from(windows.values()).sort(function (a, b) { return a.start_date.localeCompare(b.start_date); });
+      }
+      var picture = finding.materials;
+      if (picture.length && kind !== "relay") {
+        panel.classList.add("has-art");
+        var art = memoryElement("div", "memory-story-art");
+        picture.forEach(function (item) {
+          var image = memoryImage([item]);
+          if (kind === "reunion") image.classList.add("is-reunion-art");
+          art.appendChild(image);
+        });
+        panel.appendChild(art);
+      }
+      var body = memoryElement("div", "memory-body");
+      var copy = memoryElement("div", "memory-copy");
+      copy.appendChild(memoryElement("p", "memory-kicker", memoryLabels[kind]));
+      var heading = memoryElement("h3", "");
+      var title = group.length > 1 ? points[0].label + "用这张图的比例，在这些时段发生了变化。" : finding.title;
+      title.split(/(\d+(?:\.\d+)?%?)/).forEach(function (part, index) {
+        heading.appendChild(index % 2 ? memoryElement("em", "", part) : document.createTextNode(part));
+      });
+      copy.appendChild(heading);
+      body.appendChild(copy);
+      if (kind === "reunion" || kind === "adoption") body.appendChild(memoryDates(points));
+      if (kind === "signature") {
+        var count = memoryElement("p", "memory-habit-count");
+        count.appendChild(memoryElement("strong", "", formatCount(points[0].value) + " 次"));
+        count.appendChild(document.createTextNode(" · 分布在 "));
+        count.appendChild(memoryElement("strong", "", formatCount(points[0].date_count) + " 天"));
+        body.appendChild(count);
+        body.appendChild(memoryElement("p", "memory-note", (points[0].start_date || "日期不明") + " — " + (points[0].end_date || "日期不明")));
+      }
+      if (kind === "shared") {
+        var shared = memoryElement("div", "memory-shared");
+        points.forEach(function (point) {
+          var person = memoryElement("div", "memory-person");
+          person.appendChild(memoryElement("b", "", point.label));
+          person.appendChild(memoryElement("strong", "", point.value + " 次"));
+          person.appendChild(memoryElement("span", "", "分布在 " + point.date_count + " 天"));
+          person.appendChild(memoryElement("small", "", (point.start_date || "日期不明") + " — " + (point.end_date || "日期不明")));
+          shared.appendChild(person);
+        });
+        body.appendChild(shared);
+      }
+      if (kind === "trend") {
+        var comparisons = memoryElement("div", "memory-trend-windows");
+        comparisons.style.setProperty("--windows", String(points.length));
+        points.forEach(function (point) {
+          var row = memoryElement("div", "memory-trend-row");
+          row.appendChild(memoryElement("div", "memory-trend-dates", point.start_date + " — " + point.end_date));
+          var value = memoryElement("div", "memory-bar-value", point.total > 0 ? Math.round(point.value / point.total * 100) + "%" : "无可比发送");
+          value.appendChild(memoryElement("small", "", point.value + " / " + point.total + " 次"));
+          row.appendChild(value);
+          row.appendChild(memoryTrack(point.value, point.total));
+          comparisons.appendChild(row);
+        });
+        body.appendChild(comparisons);
+      }
+      if (kind === "style") {
+        var chart = memoryElement("div", "memory-style-chart");
+        points.forEach(function (point) {
+          var row = memoryElement("div", "memory-style-row");
+          row.appendChild(memoryElement("span", "memory-style-label", point.label));
+          row.appendChild(memoryTrack(point.value, point.total));
+          row.appendChild(memoryElement("strong", "", "约 " + point.value.toFixed(1) + " 种"));
+          chart.appendChild(row);
+        });
+        body.appendChild(chart);
+      }
+      if (kind === "relay") {
+        body.appendChild(memoryElement("p", "sticker-memory-period", finding.period));
+        var stage = memoryElement("div", "memory-relay-stage");
+        stage.appendChild(stickerStaff());
+        var turns = memoryElement("ol", "memory-relay");
+        turns.style.setProperty("--turns", String(points.length));
+        points.forEach(function (point, index) {
+          var turn = memoryElement("li", (stickerGroup ? index % 2 === 1 : point.label === "TA") ? "is-peer" : "");
+          turn.appendChild(memoryElement("span", "memory-turn-side", point.label + (point.value > 1 ? " · " + point.value + " 次" : "")));
+          turn.appendChild(memoryImage(point.materials));
+          turn.appendChild(memoryElement("span", "memory-turn-number", String(index + 1).padStart(2, "0")));
+          turns.appendChild(turn);
+        });
+        stage.appendChild(turns); body.appendChild(stage);
+      }
+      group.forEach(function (item) {
+        if (item.note) body.appendChild(memoryElement("p", "memory-note", item.note));
+      });
+      panel.appendChild(body);
+      story.appendChild(panel);
+      return story;
+    }
+    function renderMemoryGalleries(target, categories) {
+      categories.forEach(function (entries, kind) {
+        // A sequence occupies one place, regardless of how many stories supplied it.
+        entries.sort(function (a, b) {
+          function date(memory) {
+            var finding = memory.findings[0];
+            return finding.period || finding.points.map(function (point) { return point.start_date; })
+              .filter(Boolean).sort()[0] || "\uffff";
+          }
+          return date(a).localeCompare(date(b));
+        });
+        var gallery = memoryElement("section", "memory-gallery");
+        gallery.dataset.kind = kind;
+        gallery.setAttribute("aria-label", memoryLabels[kind]);
+        var cards = entries.map(renderMemoryCard), current = 0;
+        cards.forEach(function (card, index) { card.hidden = index !== 0; gallery.appendChild(card); });
+        if (cards.length > 1) {
+          var nav = memoryElement("div", "memory-gallery-nav");
+          var previous = memoryElement("button", "", "上一段");
+          var next = memoryElement("button", "", "下一段");
+          previous.type = next.type = "button";
+          previous.setAttribute("aria-label", "上一段" + memoryLabels[kind]);
+          next.setAttribute("aria-label", "下一段" + memoryLabels[kind]);
+          var status = memoryElement("span", "");
+          status.setAttribute("role", "status");
+          status.setAttribute("aria-live", "polite");
+          function show(index) {
+            current = index;
+            cards.forEach(function (card, i) { card.hidden = i !== current; });
+            previous.disabled = current === 0;
+            next.disabled = current === cards.length - 1;
+            status.textContent = (current + 1) + " / " + cards.length;
+          }
+          previous.addEventListener("click", function () { show(current - 1); });
+          next.addEventListener("click", function () { show(current + 1); });
+          nav.appendChild(previous); nav.appendChild(status); nav.appendChild(next);
+          gallery.appendChild(nav);
+          show(0);
+        }
+        target.appendChild(gallery);
+      });
+    }
+    renderMemoryGalleries(stories, sharedMemories);
+    setHidden("sticker-memories", !sharedMemories.size);
+    renderStickerMembers();
+    // Print all selected observations, then restore the reader's current pages.
+    var hiddenMemoryCards = null;
     window.addEventListener("beforeprint", function () {
-      if (closedMemoryDetails !== null) return;
-      closedMemoryDetails = Array.from(stories.querySelectorAll("details:not([open])"));
-      closedMemoryDetails.forEach(function (details) { details.open = true; });
+      if (hiddenMemoryCards !== null) return;
+      hiddenMemoryCards = Array.from(document.getElementById("stickers")
+        .querySelectorAll(".memory-gallery > article[hidden]"));
+      hiddenMemoryCards.forEach(function (card) { card.hidden = false; });
     });
     window.addEventListener("afterprint", function () {
-      (closedMemoryDetails || []).forEach(function (details) { details.open = false; });
-      closedMemoryDetails = null;
+      (hiddenMemoryCards || []).forEach(function (card) { card.hidden = true; });
+      hiddenMemoryCards = null;
     });
 
   }
