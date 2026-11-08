@@ -9,6 +9,7 @@ from pathlib import Path
 from ..legacy_projection import project_legacy_messages
 from ..message import ChatMessage
 from ..rich_message import RichMessage
+from ..analysis_diagnostics import timed_stage
 from ..qq_db_adapter import (
     QQ_DB_JSON_FORMAT,
     is_qq_db_payload,
@@ -181,19 +182,24 @@ def _import_file(
     # Retain only this file's decoded payload; no cross-import cache or copies
     # of the source text are needed for detection and parsing.
     is_jsonl = input_file.suffix.lower() == ".jsonl"
-    records = load_chatlab_records(input_file) if is_jsonl else []
+    records = []
+    if is_jsonl:
+        with timed_stage("payload_read"):
+            records = load_chatlab_records(input_file)
     if is_jsonl:
         payload = records[0] if len(records) == 1 else None
         chatlab = is_chatlab_records(records)
         if is_qq_db_payload(payload) or not chatlab:
             # QQ DB documents historically also accepted a .jsonl suffix,
             # including pretty-printed JSON. Keep that uncommon path.
-            payload = load_qq_db_json(input_file)
+            with timed_stage("payload_read"):
+                payload = load_qq_db_json(input_file)
     else:
         chatlab = False
         try:
-            with input_file.open("r", encoding="utf-8") as file:
-                payload = json.load(file)
+            with timed_stage("payload_read"):
+                with input_file.open("r", encoding="utf-8") as file:
+                    payload = json.load(file)
         except (OSError, UnicodeDecodeError, json.JSONDecodeError):
             payload = None
 
@@ -258,6 +264,7 @@ def _unsupported_file(warning: str) -> _ImportedFile:
     )
 
 
+@timed_stage("message_parse")
 def _import_qq_db_payload(payload: dict) -> _ImportedFile:
     raw_records = payload["records"]
     rich_messages, parse_warnings = parse_qq_db_rich_messages(payload)
@@ -288,6 +295,7 @@ def _import_wechat_cli_rows(raw_messages: list) -> _ImportedFile:
     )
 
 
+@timed_stage("message_parse")
 def _import_wechat_db_rows(raw_messages: list) -> _ImportedFile:
     rich_messages = tuple(parse_wechat_db_rich_messages(raw_messages))
     parsed_messages = tuple(project_legacy_messages(rich_messages))

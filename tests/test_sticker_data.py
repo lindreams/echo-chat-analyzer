@@ -286,14 +286,16 @@ def test_qq_path_candidates_never_replace_content_or_read_authority(tmp_path, mo
 def test_qq_repeated_material_keeps_earlier_authorized_path_candidate(tmp_path):
     from dataclasses import replace
     from qq_chat_analyzer.analysis.stickers import StickerData
-    from qq_chat_analyzer.application.sticker_media import associate_sticker_media
+    from qq_chat_analyzer.application.sticker_media import _QQMediaSendIndex, associate_sticker_media
     raw = image_bytes("PNG")
     path = tmp_path / "opaque-original"
     path.write_bytes(raw)
     first = replace(qq_pic(hashlib.md5(raw).hexdigest()), local_paths=(str(path),))
     later = replace(first, local_paths=(), is_self=False)
-    result = associate_sticker_media(StickerData(sends=(first, later)),
-        media_keys=(first.media_key,), roots=(tmp_path,), source="qq")
+    data = StickerData(sends=(first, later))
+    result = associate_sticker_media(data,
+        media_keys=(first.media_key,), roots=(tmp_path,), source="qq",
+        send_index=_QQMediaSendIndex.build(data.sends))
     assert result.media[0].original_bytes == raw
 
 
@@ -827,6 +829,7 @@ def test_filtered_official_analysis_chain_returns_only_kept_sticker_sends(tmp_pa
 @pytest.mark.parametrize("kind,fmt", [("private", "GIF"), ("group", "WEBP")])
 def test_wechat_type47_reaches_formal_report_through_provider_and_facade(tmp_path, monkeypatch, kind, fmt):
     from qq_chat_analyzer.application.facade import AnalysisConfig, ChatAnalyzerFacade, ChatSource
+    from qq_chat_analyzer.rich_message import SenderIdentity
     from qq_chat_analyzer.application.wechat.wechat_environment_config import (
         WeChatEnvironmentConfig, WeChatEnvironmentConfigLoader, WeChatEnvironmentConfigWriter,
     )
@@ -855,8 +858,9 @@ def test_wechat_type47_reaches_formal_report_through_provider_and_facade(tmp_pat
     # Only database reads/identity lookup return fictional source facts.
     monkeypatch.setattr(provider, "list_sessions", lambda: [WeChatSession(
         session_id=session_id, display_name="Fictional chat", session_type=kind)])
-    monkeypatch.setattr(provider, "_contact_display_names", lambda: {
-        "wxid_fiction_self": "Fictional Me", "wxid_fiction_peer": "Fictional Peer"})
+    monkeypatch.setattr(provider, "_contact_identities", lambda: {
+        "wxid_fiction_self": SenderIdentity("wxid_fiction_self", "Fictional Me"),
+        "wxid_fiction_peer": SenderIdentity("wxid_fiction_peer", "Fictional Peer")})
     monkeypatch.setattr(provider, "_resolve_self_username", lambda: "wxid_fiction_self")
     xml = f'<msg><emoji md5="{digest.upper()}" cdnurl="https://fictional.invalid/never-fetch"/></msg>'
     compressed = zstandard.ZstdCompressor().compress(xml.encode()).hex()
@@ -945,7 +949,7 @@ def test_wechat_media_failure_keeps_local_report_but_cancel_does_not(
            'cdnurl="https://fictional-vweixinf.tc.qq.com/fictional"/></msg>')
     monkeypatch.setattr(provider, "list_sessions", lambda: [WeChatSession(
         session_id=session_id, display_name="Fictional chat", session_type="group")])
-    monkeypatch.setattr(provider, "_contact_display_names", lambda: {})
+    monkeypatch.setattr(provider, "_contact_identities", lambda: {})
     monkeypatch.setattr(provider, "_resolve_self_username", lambda: "wxid_fiction_self")
     monkeypatch.setattr(provider, "read_session_rows", lambda *args, **kwargs: [dict(
         local_type=47, server_id="fictional-sticker", create_time=1760000001,
@@ -1230,6 +1234,7 @@ def test_batch_association_reuses_one_scan_and_preserves_send_facts(tmp_path, mo
     for digest, raw in zip(digests, raws):
         (tmp_path / f"{digest}.bin").write_bytes(raw)
     data = StickerData(sends=sends, message_counts=StickerMessageCounts(self_messages=8))
+    send_index = sticker_media._QQMediaSendIndex.build(sends)
     scans, decodes = [], []
     real_scan, real_inspect = sticker_media.os.scandir, sticker_media._inspect
 
@@ -1246,7 +1251,7 @@ def test_batch_association_reuses_one_scan_and_preserves_send_facts(tmp_path, mo
     caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
     result = ChatAnalyzerFacade.associate_sticker_media(
         data, media_keys=tuple(dict.fromkeys(s.media_key for s in sends)),
-        roots=(tmp_path,), source="qq")
+        roots=(tmp_path,), source="qq", send_index=send_index)
     assert result.sends is data.sends and result.message_counts is data.message_counts
     assert {m.original_bytes for m in result.media} == set(raws)
     assert scans == [tmp_path] and len(decodes) == 2
@@ -1257,7 +1262,7 @@ def test_batch_association_reuses_one_scan_and_preserves_send_facts(tmp_path, mo
     with caplog.at_level("WARNING", logger="qq_chat_analyzer.desktop.analysis_diagnostics"):
         again = ChatAnalyzerFacade.associate_sticker_media(
             result, media_keys=tuple(m.media_key for m in result.media),
-            roots=(tmp_path,), source="qq")
+            roots=(tmp_path,), source="qq", send_index=send_index)
     assert again == result and scans == [tmp_path] and len(decodes) == 2
     assert not [r for r in caplog.records if r.getMessage().startswith("[analysis-timing]")]
 
@@ -1281,10 +1286,11 @@ def test_batch_memory_ceiling_applies_across_pages(tmp_path, monkeypatch):
     for send, raw in zip(sends, raws):
         (tmp_path / f"{send.content_md5}.dat").write_bytes(raw)
     monkeypatch.setattr(sticker_media, "MAX_RETAINED_MEDIA_BYTES", len(raws[0]))
+    send_index = sticker_media._QQMediaSendIndex.build(sends)
     first = sticker_media.associate_sticker_media(StickerData(sends=sends),
-        media_keys=(sends[0].media_key,), roots=(tmp_path,), source="qq")
+        media_keys=(sends[0].media_key,), roots=(tmp_path,), source="qq", send_index=send_index)
     second = sticker_media.associate_sticker_media(first,
-        media_keys=(sends[1].media_key,), roots=(tmp_path,), source="qq")
+        media_keys=(sends[1].media_key,), roots=(tmp_path,), source="qq", send_index=send_index)
     by_key = {item.media_key: item for item in second.media}
     assert by_key[sends[0].media_key].original_bytes == raws[0]
     assert (by_key[sends[1].media_key].status, by_key[sends[1].media_key].reason) == (

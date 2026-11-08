@@ -12,6 +12,42 @@ If QQ acquisition still fails after that update, deliver the resulting verified
 fix in a separate small version; do not defer it until another large feature release.
 This change does not claim to fix the affected machine's connection failure.
 
+## 0.3.1 pipeline timing
+
+Timing uses the existing local logs: `echo.log` and
+`qq-snapshot-diagnostics.log` in the same application log directory
+(normally `%LOCALAPPDATA%/LocalChatAnalyzer/logs`). Provide both existing logs
+when investigating QQ acquisition. No chat content, credentials, account IDs,
+database paths or additional diagnostic export is needed.
+
+Python records `[analysis-stage]` start and final outcome lines with `elapsed_ms`.
+The existing `[analysis-timing]` records remain available. Direct DB stages use
+the existing `[qq sessions]` format; runtime attempts and login waiting retain
+their own existing logger. The snapshot helper appends elapsed milliseconds to
+its existing trace stages. Python uses a monotonic performance clock; Node uses
+`process.hrtime.bigint()`. Log timestamps keep their existing formats.
+
+| Boundary | What the duration includes |
+|---|---|
+| `desktop_environment`, `desktop_startup` | GUI dependency import, then window/facade construction through first show; excludes earlier process bootstrap and the event loop. |
+| `qq_connection_request`, `login_wait` | Connection request and the separate asynchronous authentication wait. Request completion alone does not mean connected; inspect connection state/outcome. |
+| `session_list_total`, `database_startup` | Session listing and the Direct DB admission/start/recovery boundary; an already-ready runtime can finish immediately. |
+| `snapshot_acquire`, runtime acquire attempts | Snapshot RPC including queueing, retry and returned manifest; each attempt is separately identified. |
+| `acquire_queued` → `acquire_entered` | Node snapshot lock queue wait. `acquire_finished` includes this wait and acquisition work. |
+| `database_ready_wait`, `source_location`, `main_wal_capture`, `decrypt` | Database readiness, source discovery, consistent capture and native decryption. Capture includes source discovery; decrypt success is distinct from later validation. |
+| Existing manifest/SQLite validation stages | Preserve the existing validation boundaries and checks. |
+| `session_lookup`, `message_materialization`, `payload_read`, `message_parse` | Target session lookup, payload creation, payload file reading and conversion into the analysis model. |
+| Existing analysis/export stages, media preparation | Statistics and core report generation, with QQ/WeChat media preparation measured separately. |
+| `cleanup_rpc`, existing cleanup stages | RPC and owned plaintext cleanup; inspect their outcome independently of analysis success. |
+| `task_total` | One selected-session analysis through report/media preparation and task cleanup. Excludes earlier login/session listing, browser rendering and later user interaction. |
+
+Nested intervals overlap: do not sum parent and child durations. The existing
+core-analysis total covers a smaller boundary than facade `task_total`. A start
+without an end is incomplete evidence, for example after process termination.
+Failures, cancellation and timeouts retain elapsed time and a fixed outcome;
+they must not be interpreted as successful completion. Native decryption time
+does not separately measure every internal read or cipher operation.
+
 ## Fields and interpretation
 
 All fields go through the existing diagnostic allowlist. There are no database

@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from qq_chat_analyzer.application.errors import ApplicationServiceError
+from qq_chat_analyzer.application.shutdown_models import ShutdownStatus
 from qq_chat_analyzer.application.qq.qq_connection_service import QQConnectionService
 from qq_chat_analyzer.application.qq.qq_direct_database_import_service import (
     QQDirectDatabaseImportService, QQDirectDatabaseState,
@@ -415,8 +416,9 @@ def test_shutdown_during_slow_startup_is_bounded_and_late_result_cannot_reactiva
     try:
         assert entered.wait(5)
         stopping.start()
-        assert stopped.wait(1)
-        assert service.state is QQDirectDatabaseState.CLOSED
+        assert stopped.wait(3)  # Includes the bounded second drain from PR #53.
+        assert service.state is QQDirectDatabaseState.SHUTTING_DOWN
+        assert not service.runtime_stop_safe
         with pytest.raises(ApplicationServiceError):
             service.prepare_reconnect()
     finally:
@@ -425,7 +427,8 @@ def test_shutdown_during_slow_startup_is_bounded_and_late_result_cannot_reactiva
         stopping.join(5)
     assert not startup.is_alive() and not stopping.is_alive()
     assert errors == ["qq_direct_database_shutting_down"]
-    assert service.state is QQDirectDatabaseState.CLOSED
+    assert service.state is QQDirectDatabaseState.SHUTTING_DOWN
+    assert service.shutdown() is ShutdownStatus.TIMED_OUT
     with pytest.raises(ApplicationServiceError):
         service.list_sessions()
     assert all(op["method"] == "EchoSnapshotApi.recover" for op in worker.operations)
@@ -496,10 +499,9 @@ def test_shutdown_timeout_retains_old_acquisition_and_recover_binding(tmp_path, 
         assert entered.wait(5)
         worker.boot = "d" * 64
         worker.operations.clear()
-        with pytest.raises(ApplicationServiceError) as error:
-            service.shutdown()
-        assert error.value.code == "qq_direct_database_recovery_failed"
-        assert service.state is QQDirectDatabaseState.CLOSED
+        assert service.shutdown() is ShutdownStatus.TIMED_OUT
+        assert service.state is QQDirectDatabaseState.SHUTTING_DOWN
+        assert not service.runtime_stop_safe
         with pytest.raises(ApplicationServiceError):
             service.prepare_reconnect()
         assert service._runtime_client is client
@@ -510,6 +512,7 @@ def test_shutdown_timeout_retains_old_acquisition_and_recover_binding(tmp_path, 
     assert not task.is_alive()
     assert errors == ["qq_reconnect_required"]
     assert service._active_acquisitions == 0 and worker.operations == []
+    assert service.shutdown() is ShutdownStatus.TIMED_OUT
 
 
 def test_disconnect_and_routine_invalidate_cannot_rebind_without_explicit_connect(tmp_path, monkeypatch):

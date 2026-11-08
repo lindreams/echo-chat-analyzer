@@ -11,6 +11,37 @@ import pytest
 from qq_chat_analyzer import diagnostics
 
 
+def test_pipeline_timing_keeps_nested_boundaries_outcomes_and_private_errors(monkeypatch, caplog):
+    from qq_chat_analyzer import analysis_diagnostics as timing
+
+    caplog.set_level(logging.INFO, logger=timing._LOGGER.name)
+    clock = iter((10.0, 11.0, 13.0, 15.0))
+    monkeypatch.setattr(timing, "perf_counter", lambda: next(clock))
+    with timing.timed_stage("outer"):
+        with timing.timed_stage("inner"):
+            pass
+    assert "[analysis-timing] stage=inner elapsed_ms=2000" in caplog.messages
+    assert "[analysis-timing] stage=outer elapsed_ms=5000" in caplog.messages
+    for error, outcome in ((ValueError("PRIVATE_DETAIL"), "failed"),
+                           (OSError("PRIVATE_PATH"), "failed"),
+                           (TimeoutError("PRIVATE_TIMEOUT"), "timeout"),
+                           (InterruptedError("PRIVATE_CANCEL"), "cancelled")):
+        caplog.clear()
+        clock = iter((100.0, 100.125))
+        with pytest.raises(type(error)) as caught:
+            with timing.timed_stage("operation"):
+                raise error
+        assert caught.value is error
+        assert "stage=operation outcome=started" in caplog.messages[0]
+        assert f"stage=operation outcome={outcome}" in caplog.messages[1]
+        assert caplog.messages[1].endswith("elapsed_ms=125")
+        assert "PRIVATE" not in caplog.text
+    clock = iter((1.0, 2.0))
+    monkeypatch.setattr(timing._LOGGER, "info", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    with timing.timed_stage("logging_unavailable"):
+        pass
+
+
 def test_runtime_provenance_is_written_once_without_local_paths(tmp_path, monkeypatch):
     path = tmp_path / 'echo.log'
     monkeypatch.setattr(diagnostics, 'log_path', lambda: path)

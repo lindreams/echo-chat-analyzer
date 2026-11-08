@@ -273,7 +273,7 @@ def test_analysis_logs_each_timing_stage_without_private_content(
         if record.message.startswith("[analysis-timing]")
     ]
     expected = {
-        "import", "scope_filter", "smart_profile", "message_quality_filter",
+        "import", "payload_read", "scope_filter", "smart_profile", "message_quality_filter",
         "text_analysis", "ExpressionAnalyzer.preflight", "word_ranking", "sticker_data",
         "report_build", "artifact_export", "total",
         "sticker_media_resolve", "sticker_aggregation", "group_sticker_features", "report_view_assets",

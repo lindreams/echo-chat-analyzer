@@ -7,6 +7,7 @@ Thresholds are editorial filters, not statistical significance or social scores.
 from __future__ import annotations
 
 from collections import Counter, defaultdict, deque
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from statistics import median
@@ -125,7 +126,10 @@ class GroupStickerFeatures:
                                   "known_materials_only", "observed_order_only")
 
 
-def analyze_group_stickers(index: StickerFactIndex) -> GroupStickerFeatures:
+def analyze_group_stickers(
+    index: StickerFactIndex, *, check_cancelled: Callable[[], None] = lambda: None,
+) -> GroupStickerFeatures:
+    check_cancelled()
     audit = Counter()
     if not index.available or index.report is None or index.report.conversation_type != "group":
         audit["analysis.unavailable"] = 1
@@ -166,10 +170,10 @@ def analyze_group_stickers(index: StickerFactIndex) -> GroupStickerFeatures:
         usage[key] = tuple(uses)
         material_days[key] = DayCounts.from_counts(counts)
     fields = dict(
-        relays=_relays(index, audit), trends=_trends(index, by_key, material_days, total_days, audit),
+        relays=_relays(index, audit), trends=_trends(index, by_key, material_days, total_days, audit, check_cancelled),
         reunions=_reunions(index, by_key, material_days, total_days, audit),
         signatures=_signatures(index, audit), shared_habits=_shared(index, usage, by_key, audit),
-        adoptions=_adoptions(index, usage, by_key, audit), styles=_styles(index, audit), replies=_replies(index, audit),
+        adoptions=_adoptions(index, usage, by_key, audit, check_cancelled), styles=_styles(index, audit), replies=_replies(index, audit),
     )
     stories = _stories(fields)
     for name, findings in fields.items():
@@ -275,7 +279,7 @@ def _relays(index, audit):
     return tuple(sorted(best.values(), key=lambda f: (-len(f.turns), f.identity_key)))
 
 
-def _trends(index, by_key, series, total, audit):
+def _trends(index, by_key, series, total, audit, check_cancelled):
     if index.first_day is None:
         audit["trends.unavailable_dates"] += 1
         return ()
@@ -285,9 +289,11 @@ def _trends(index, by_key, series, total, audit):
         return ()
     stops = sorted(set(range(first+56, end+1, 28)) | ({end} if end-first >= 56 else set()))
     best = {}
+    active_by_stop = {}
     for key, days in series.items():
         ts = by_key[key]
         for stop in stops:
+            check_cancelled()
             audit["trends.raw_windows"] += 1
             start, mid = stop-56, stop-28
             if index.has_gap(start, stop, sticker_counts_only=True):
@@ -296,17 +302,29 @@ def _trends(index, by_key, series, total, audit):
             if _uncertain(index, ts, key, start, stop):
                 audit["trends.reject_uncertain"] += 1
                 continue
-            windows = tuple(StickerWindow(_day(a), _day(b), days.count(a, b), days.date_count(a, b),
-                total.count(a, b), total.date_count(a, b)) for a, b in ((start, mid), (mid, stop)))
+            previous_sends, current_sends = days.count(start, mid), days.count(mid, stop)
+            if max(previous_sends, current_sends) < 5:
+                audit["trends.reject_counts_or_contrast"] += 1
+                continue
+            windows = tuple(StickerWindow(_day(a), _day(b), count, days.date_count(a, b),
+                total.count(a, b), total.date_count(a, b))
+                for a, b, count in ((start, mid, previous_sends), (mid, stop, current_sends)))
             p, q = windows
             members = tuple(sum(t.dated.count(a, b) > 0 for _, t in ts) for a, b in ((start, mid), (mid, stop)))
-            active = tuple(sum(t.sends.count(a, b) > 0 for t in index.members.values())
-                           for a, b in ((start, mid), (mid, stop)))
             rise = (p.known_send_count >= 10 and q.send_count >= 5 and q.date_count >= 2
                     and members[1] >= 2 and q.share >= 3*p.share and q.share-p.share >= .10)
             fade = (q.known_send_count >= 10 and p.send_count >= 5 and p.date_count >= 2
                     and members[0] >= 2 and p.share >= 3*q.share and p.share-q.share >= .10)
-            if min(active) < 2 or not (rise or fade):
+            if not (rise or fade):
+                audit["trends.reject_counts_or_contrast"] += 1
+                continue
+            # Group activity depends on the window, not the material. Avoid
+            # scanning every member for each material, including rejected ones.
+            if stop not in active_by_stop:
+                active_by_stop[stop] = tuple(sum(t.sends.count(a, b) > 0 for t in index.members.values())
+                                             for a, b in ((start, mid), (mid, stop)))
+            active = active_by_stop[stop]
+            if min(active) < 2:
                 audit["trends.reject_counts_or_contrast"] += 1
                 continue
             f = GroupStickerTrend(key, _media(ts), "rise" if rise else "fade", p, q, *members, *active)
@@ -409,12 +427,14 @@ def _shared(index, usage, by_key, audit):
     return tuple(sorted(results, key=lambda f: (-len(f.members), f.identity_key)))
 
 
-def _adoptions(index, usage, by_key, audit):
+def _adoptions(index, usage, by_key, audit, check_cancelled):
     if not index.source_positions_supplied or index.first_day is None:
         audit["adoptions.unavailable_dates_or_provenance"] += 1
         return ()
     results = []
+    first_epochs = None
     for key, uses in usage.items():
+        check_cancelled()
         audit["adoptions.raw_materials"] += 1
         members = tuple(sorted((u for u in uses if u.send_count >= 3 and u.date_count >= 2 and u.share >= .10
                                 and not u.has_unknown_time), key=lambda u: (u.first_date, u.sender_id)))
@@ -434,14 +454,16 @@ def _adoptions(index, usage, by_key, audit):
             audit["adoptions.reject_order"] += 1
             continue
         # Do not sort source inversions into an apparent adoption order.
-        firsts = [m for m in index.messages if any(s.identity_key == key for s in m.sends)]
-        seen = set()
-        epochs = []
-        for m in firsts:
-            sender = m.message.sender.identity_id
-            if sender not in seen:
-                seen.add(sender)
-                epochs.append(m.epoch_seconds)
+        if first_epochs is None:
+            # Preserve source order and unknown authors/times for every key in
+            # one scan, rather than scanning all messages for each candidate.
+            first_epochs = defaultdict(dict)
+            for m in index.messages:
+                check_cancelled()
+                for send in m.sends:
+                    if send.identity_key:
+                        first_epochs[send.identity_key].setdefault(m.message.sender.identity_id, m.epoch_seconds)
+        epochs = tuple(first_epochs[key].values())
         if any(t is None for t in epochs) or any(a > b for a, b in zip(epochs, epochs[1:])):
             audit["adoptions.reject_order"] += 1
             continue

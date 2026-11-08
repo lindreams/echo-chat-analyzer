@@ -181,14 +181,16 @@ function logDiagnostic(stage) {
   console.error(`qq_direct_db.diagnostic stage=${stage}`);
 }
 
-function traceStage(stage, generationId = null) {
+function traceStage(stage, generationId = null, startedAt = null, outcome = null) {
   // The launcher already uses this file for timestamped runtime diagnostics.
   // Only fixed stage names are written; a logging failure must not affect data.
   const logFile = process.env.QCE_LOG_FILE;
   if (!logFile) return;
   try {
     const generation = generationId ? ` generation_id=${generationId}` : '';
-    appendFileSync(logFile, `[${new Date().toISOString()}] [echo-snapshot] stage=${stage}${generation}\n`);
+    const timing = startedAt === null ? '' :
+      ` outcome=${outcome} elapsed_ms=${Number((process.hrtime.bigint() - startedAt) / 1000000n)}`;
+    appendFileSync(logFile, `[${new Date().toISOString()}] [echo-snapshot] stage=${stage}${generation}${timing}\n`);
   } catch {
     // Best-effort diagnostics only.
   }
@@ -411,16 +413,20 @@ export function createEchoSnapshotApi(core, options = {}) {
   }
 
   async function acquire({ signal, deadline = now() + 120000 } = {}) {
+    const acquireStarted = process.hrtime.bigint();
     const cancelled = () => signal?.aborted || now() >= deadline;
     let entered = false;
-    traceStage('acquire_queued');
+    traceStage('acquire_queued', null, acquireStarted, 'started');
     return withLock(async () => {
       if (cancelled()) return fail(CODES.SNAPSHOT_UNSTABLE);
       entered = true;
-      traceStage('acquire_entered');
+      traceStage('acquire_entered', null, acquireStarted, 'success');
       // 1. Fail-closed cleanup: no decryption may start unless every previous
       //    generation, staging dir and legacy plaintext artifact is gone.
+      const slateStarted = process.hrtime.bigint();
+      traceStage('slate_started', null, slateStarted, 'started');
       const slate = await cleanSlate();
+      traceStage('slate_finished', null, slateStarted, slate.ok ? 'success' : 'failed');
       if (!slate.ok) {
         traceStage('slate_failed');
         return fail(CODES.CLEANUP_FAILED);
@@ -429,7 +435,11 @@ export function createEchoSnapshotApi(core, options = {}) {
       activeGenerationId = null;
 
       // 2. Bounded wait for the in-process DatabaseApi and its passphrase.
+      const apiStarted = process.hrtime.bigint();
+      traceStage('database_ready_wait_started', null, apiStarted, 'started');
       const databaseApiResult = await waitForDatabaseApi(signal, deadline);
+      traceStage('database_ready_wait_finished', null, apiStarted,
+        databaseApiResult ? 'success' : signal?.aborted ? 'cancelled' : 'timeout');
       if (!databaseApiResult) {
         traceStage(databaseApiSeen ? 'passphrase_not_ready' : 'database_api_not_ready');
         logDiagnostic(
@@ -469,12 +479,19 @@ export function createEchoSnapshotApi(core, options = {}) {
       let failureStage = 'source_location';
       let captureWitness = {};
       let capturedPages;
+      const captureStarted = process.hrtime.bigint();
+      const locationStarted = process.hrtime.bigint();
+      let sourceLocated = false;
+      traceStage('main_wal_capture_started', generationId, captureStarted, 'started');
+      traceStage('source_location_started', generationId, locationStarted, 'started');
       try {
         const directory = databaseApi.getNtDbDir();
         if (typeof directory !== 'string' || !directory) {
           const error = new Error('source_unavailable'); error.code = 'source_unavailable'; throw error;
         }
         const mainPath = join(directory, sourceDatabaseName);
+        sourceLocated = true;
+        traceStage('source_location_finished', generationId, locationStarted, 'success');
         failureStage = 'workspace_isolation';
         workspace.assertSourceSeparate(mainPath);
         failureStage = 'source_guard';
@@ -498,8 +515,11 @@ export function createEchoSnapshotApi(core, options = {}) {
         }
         capturedPages = capture.pages;
         traceStage('main_wal_boundary_verified', generationId);
-        traceStage('main_wal_capture_complete', generationId);
+        traceStage('main_wal_capture_complete', generationId, captureStarted, 'success');
       } catch (error) {
+        if (!sourceLocated) traceStage('source_location_finished', generationId, locationStarted, 'failed');
+        traceStage('main_wal_capture_complete', generationId, captureStarted,
+          signal?.aborted ? 'cancelled' : now() >= deadline ? 'timeout' : 'failed');
         traceAcquisitionDiagnostic(failureStage, error, generationId, captureWitness);
         try { workspace.assertLease(); }
         catch (leaseError) { traceAcquisitionDiagnostic('lease', leaseError, generationId); return fail(CODES.CLEANUP_FAILED); }
@@ -523,7 +543,8 @@ export function createEchoSnapshotApi(core, options = {}) {
         traceStage('snapshot_unstable', generationId);
         return fail(cleaned ? CODES.SNAPSHOT_UNSTABLE : CODES.CLEANUP_FAILED);
       }
-      traceStage('decrypt_started');
+      const decryptStarted = process.hrtime.bigint();
+      traceStage('decrypt_started', generationId, decryptStarted, 'started');
       const keyVersionBefore = passphraseVersion(core);
       const keyWitness = {
         key_change_since_previous_decrypt: keyVersionBefore === null || previousDecryptKeyVersion === null
@@ -544,7 +565,7 @@ export function createEchoSnapshotApi(core, options = {}) {
       Object.assign(captureWitness, keyWitness);
       traceAcquisitionDiagnostic('decrypt', null, generationId, keyWitness, false);
       const inputAfter = strongFileState(stagingMerged);
-      traceStage('decrypt_finished');
+      traceStage('decrypt_finished', generationId, decryptStarted, decrypted && !decryptThrew ? 'success' : 'failed');
       try { workspace.assertLease(); }
       catch (error) { traceAcquisitionDiagnostic('lease', error, generationId); return fail(CODES.CLEANUP_FAILED); }
       // Native decryption has no safe interrupt primitive. Await it, then
@@ -650,7 +671,14 @@ export function createEchoSnapshotApi(core, options = {}) {
       activeGenerationId = generationId;
 
       return { ok: true, generation_id: generationId, status: 'ready' };
-    }, () => entered);
+    }, () => entered).then(result => {
+      traceStage('acquire_finished', null, acquireStarted,
+        result?.ok ? 'success' : signal?.aborted ? 'cancelled' : now() >= deadline ? 'timeout' : 'failed');
+      return result;
+    }, error => {
+      traceStage('acquire_finished', null, acquireStarted, 'failed');
+      throw error;
+    });
   }
 
   async function cleanup(generationId) {

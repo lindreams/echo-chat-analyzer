@@ -251,6 +251,7 @@ class QQDirectDatabaseImportService:
         """
         return self._shutdown_drain_seconds + DEFAULT_SHUTDOWN_RECOVER_SECONDS
 
+    @qq_session_stage(_LOGGER, "database_startup")
     def start(self, *, connection_epoch: object | None = None) -> None:
         """Recover orphan plaintext and transition to ACTIVE.
 
@@ -412,7 +413,8 @@ class QQDirectDatabaseImportService:
             try:
                 generation_id: str | None = None
                 try:
-                    generation_id = client.acquire()
+                    with qq_session_stage(_LOGGER, "snapshot_acquire"):
+                        generation_id = client.acquire()
                     database_path, self_uin = _validated_generation(
                         client.generation_directory(generation_id),
                         generation_id,
@@ -465,7 +467,8 @@ class QQDirectDatabaseImportService:
             scratch_context: TemporaryDirectory | None = None
             try:
                 try:
-                    generation_id = client.acquire()
+                    with qq_session_stage(_LOGGER, "snapshot_acquire"):
+                        generation_id = client.acquire()
                     database_path, self_uin = _validated_generation(
                         client.generation_directory(generation_id),
                         generation_id,
@@ -473,25 +476,27 @@ class QQDirectDatabaseImportService:
                     )
                     snapshot_at = time.perf_counter()
                     provider = QQDatabaseProvider(database_path, cancelled=self._read_cancelled.is_set)
-                    session = next(
-                        (
-                            candidate
-                            for candidate in provider.list_sessions(self_uin=self_uin)
-                            if candidate.session_id == session_id
-                        ),
-                        None,
-                    )
+                    with qq_session_stage(_LOGGER, "session_lookup"):
+                        session = next(
+                            (
+                                candidate
+                                for candidate in provider.list_sessions(self_uin=self_uin)
+                                if candidate.session_id == session_id
+                            ),
+                            None,
+                        )
+                        if session is None:
+                            raise QQDirectSessionNotFound()
                     lookup_at = time.perf_counter()
-                    if session is None:
-                        raise QQDirectSessionNotFound()
                     scratch_context = TemporaryDirectory(prefix="chat-analyzer-qq-db-")
-                    payload_path = provider.materialize_session_payload(
-                        session,
-                        Path(scratch_context.name) / "qq-db-session.json",
-                        start_time=start_time,
-                        end_time=end_time,
-                        self_uin=self_uin,
-                    )
+                    with qq_session_stage(_LOGGER, "message_materialization"):
+                        payload_path = provider.materialize_session_payload(
+                            session,
+                            Path(scratch_context.name) / "qq-db-session.json",
+                            start_time=start_time,
+                            end_time=end_time,
+                            self_uin=self_uin,
+                        )
                     materialized_at = time.perf_counter()
                     acquisition = QQDirectDatabaseAcquisition(
                         payload_path=payload_path,

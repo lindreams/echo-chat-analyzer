@@ -544,6 +544,9 @@ def _fetch_facade(tmp_path, *, digest: bytes, content: bytes, mapping_passed: bo
 
 @pytest.mark.parametrize("mine,original", [(False, False), (True, True)])
 def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path, mine, original, caplog):
+    from dataclasses import replace
+    from qq_chat_analyzer.application.sticker_media import _QQMediaSendIndex
+
     png = _fictional_png()
     digest = hashlib.md5(png).hexdigest() if original else _PIC_KEY_BYTES.hex()
     sender = "10086" if mine else "10087"
@@ -555,8 +558,12 @@ def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path,
     provider.calls.clear()  # Inspect the shared report fetch checks with explicit stored facts.
     caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
     caplog.clear()
+    send_index = _QQMediaSendIndex.build(result.stickers.sends)
+    with pytest.raises(TypeError):
+        send_index.occurrence_counts[send.occurrence_id] = 0
     data = facade._fetch_qq_pic(result.stickers, media_key=send.media_key,
-                                       session_id="group:group-partition", stored_facts=provider.stored_facts, provider=provider, occurrence_id=send.occurrence_id)
+                                       session_id="group:group-partition", stored_facts=provider.stored_facts,
+                                       provider=provider, occurrence_id=send.occurrence_id, send_index=send_index)
     assert data.sends is result.stickers.sends
     media, = data.media
     assert media.original_bytes == png and media.status == ("available" if original else "preview")
@@ -573,6 +580,21 @@ def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path,
     assert len(timing_lines) == 2
     assert all(re.fullmatch(r"\[analysis-timing\] stage=sticker_media_(download|verify) elapsed_ms=\d+", line)
                for line in timing_lines)
+    # Rejected/non-QQ occurrences must still prevent a false unique match.
+    provider.calls.clear()
+    duplicate = replace(data, sends=(*data.sends, replace(send, source="wechat", media_key="unrelated")))
+    with pytest.raises(FacadeError) as caught:
+        facade._fetch_qq_pic(duplicate, media_key=send.media_key,
+                            session_id="group:group-partition", stored_facts=provider.stored_facts,
+                            provider=provider, occurrence_id=send.occurrence_id)
+    assert caught.value.code == "qq_media_group_message_unconfirmed"
+    # An index from the earlier immutable sequence cannot authorize this one.
+    with pytest.raises(FacadeError) as caught:
+        facade._fetch_qq_pic(duplicate, media_key=send.media_key,
+                            session_id="group:group-partition", stored_facts=provider.stored_facts,
+                            provider=provider, occurrence_id=send.occurrence_id, send_index=send_index)
+    assert caught.value.code == "qq_media_invalid_selection"
+    assert not provider.calls
 
 
 @pytest.mark.parametrize("field,value,code", [
