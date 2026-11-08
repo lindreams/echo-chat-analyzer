@@ -9,13 +9,14 @@ import re
 import sqlite3
 import warnings
 from dataclasses import dataclass
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 
 from ..qq_db_identity import QQ_DB_SELF_NAMESPACE, canonical_qq_uin
 from ..diagnostics import qq_session_stage
-from .qq_sqlite_reader import needs_qq_layout, read_rows
+from .qq_sqlite_reader import iter_row_batches, needs_qq_layout, read_rows
 
 
 QQ_DB_JSON_FORMAT = "qq-db-json"
@@ -89,12 +90,25 @@ class QQDatabaseProvider:
             )
         return groups + c2c
 
+    def find_session(self, session_id: str, *, self_uin: str | None = None) -> QQSession | None:
+        """Resolve a selection in this snapshot without aggregating other chats."""
+        session_type, separator, internal_key = session_id.partition(":")
+        table_name = {"group": _GROUP_MESSAGE_TABLE, "private": _C2C_MESSAGE_TABLE}.get(session_type)
+        if table_name is None or not separator or not internal_key.strip() or internal_key.strip() == "0":
+            return None
+        sessions = self._discover_sessions_from_table(
+            table_name, session_type, self_uin=self_uin, internal_key=internal_key,
+        )
+        # Preserve exact selection identity even when SQLite applies affinity.
+        return next((session for session in sessions if session.session_id == session_id), None)
+
     def _discover_sessions_from_table(
         self,
         table_name: str,
         session_type: str,
         *,
         self_uin: str | None = None,
+        internal_key: str | None = None,
     ) -> list[QQSession]:
         """Query one message table and return per-session aggregates."""
         peer_column = ""
@@ -108,6 +122,10 @@ class QQDatabaseProvider:
                 'NOT IN (\'\', \'0\', ?) THEN "40033" END) END AS peer_uin '
             )
             parameters = [self_uin, self_uin]
+        predicate = ""
+        if internal_key is not None:
+            predicate = f'WHERE "{_PARTITION_KEY_FIELD}" = ? '
+            parameters.append(internal_key)
         query = (
             f'SELECT "{_PARTITION_KEY_FIELD}" AS internal_key, '
             f'MAX(CASE WHEN TRIM(CAST("{_SESSION_OBJECT_FIELD}" AS TEXT)) '
@@ -117,8 +135,9 @@ class QQDatabaseProvider:
             f'MAX("40050") AS last_message_time '
             f'{peer_column} '
             f'FROM "{table_name}" '
+            f'{predicate}'
             f'GROUP BY "{_PARTITION_KEY_FIELD}" '
-            f'ORDER BY last_message_time DESC'
+            + ('ORDER BY last_message_time DESC' if internal_key is None else '')
         )
         rows = self._query_rows(
             query,
@@ -289,16 +308,16 @@ class QQDatabaseProvider:
             conditions.append('"40050" <= ?')
             parameters.append(end_time)
 
-        locator_columns = ("40021", "40020") if table_name == _GROUP_MESSAGE_TABLE else ("40021",)
+        locator_columns = ("40021", "40020", "40003") if table_name == _GROUP_MESSAGE_TABLE else ("40021",)
         query = (
             'SELECT "40001", "40027", "40030", "40033", "40050", "40800"'
             f'{self._optional_columns(table_name, locator_columns, operation="materialize_session_payload")}'
-            f'{self._group_sequence_selection() if table_name == _GROUP_MESSAGE_TABLE else ""} '
+            ' '
             f'FROM "{table_name}" '
             f"WHERE {' AND '.join(conditions)} "
             'ORDER BY "40050" ASC, "40001" ASC'
         )
-        rows = self._query_rows(
+        rows = self._iter_query_rows(
             query,
             parameters,
             operation="materialize_session_payload",
@@ -306,10 +325,11 @@ class QQDatabaseProvider:
         )
 
         records = []
-        for row in rows:
-            record = _session_record(row, table_name)
-            if record is not None:
-                records.append(record)
+        with closing(rows):
+            for row in rows:
+                record = _session_record(row, table_name)
+                if record is not None:
+                    records.append(record)
         return records
 
     def _optional_columns(
@@ -349,7 +369,17 @@ class QQDatabaseProvider:
         *,
         operation: str,
         table_name: str,
-    ) -> list[sqlite3.Row]:
+    ) -> list[sqlite3.Row | dict[str, Any]]:
+        return list(self._iter_query_rows(query, parameters, operation=operation, table_name=table_name))
+
+    def _iter_query_rows(
+        self,
+        query: str,
+        parameters: list[Any] | None = None,
+        *,
+        operation: str,
+        table_name: str,
+    ) -> Iterator[sqlite3.Row | dict[str, Any]]:
         """Run one read-only query and diagnose SQLite failures in place.
 
         Diagnostics contain only fixed operation/table identifiers and file
@@ -363,14 +393,18 @@ class QQDatabaseProvider:
                 raise sqlite3.DatabaseError("QQ SQLite read cancelled.")
             if needs_qq_layout(self._database_path):
                 stage = "query"
-                names, values = read_rows(self._database_path, query, parameters, cancelled=self._cancelled)
-                rows = [dict(zip(names, row)) for row in values]
+                with closing(iter_row_batches(
+                    self._database_path, query, parameters, cancelled=self._cancelled,
+                )) as batches:
+                    for names, values in batches:
+                        for row in values:
+                            yield dict(zip(names, row))
             else:
                 connection = sqlite3.connect(self._read_only_uri(), uri=True)
                 connection.set_progress_handler(lambda: int(self._cancelled()), 1000)
                 connection.row_factory = sqlite3.Row
                 stage = "query"
-                rows = connection.execute(query, parameters or []).fetchall()
+                yield from connection.execute(query, parameters or [])
             if not self._success_diagnostic_recorded:
                 try:
                     self._log_sqlite_success(
@@ -381,7 +415,6 @@ class QQDatabaseProvider:
                 except Exception:
                     # Diagnostics must never turn a successful read into a failure.
                     pass
-            return rows
         except sqlite3.DatabaseError as error:
             try:
                 self._log_sqlite_failure(

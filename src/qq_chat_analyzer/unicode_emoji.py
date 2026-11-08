@@ -19,8 +19,13 @@ _SEQUENCES = tuple(
 )
 # Longest alternatives first keep flags, modifiers, tags and ZWJ sequences whole.
 # Also reject a shorter prefix before VS16: it belongs to the preceding element.
+# Gate the large alternation by its exact start characters. Most chat text
+# cannot start any supported sequence; do not try thousands of alternatives
+# at every ordinary text position. The sequence and presentation rules stay
+# identical for recognition and lexical masking.
 _EMOJI_RE = re.compile(
-    "(?:" + "|".join(re.escape(item) for item in sorted(_SEQUENCES, key=lambda s: (-len(s), s)))
+    "(?=[" + re.escape("".join(sorted({item[0] for item in _SEQUENCES}))) + "])"
+    + "(?:" + "|".join(re.escape(item) for item in sorted(_SEQUENCES, key=lambda s: (-len(s), s)))
     + ")(?![\ufe0e\ufe0f])"
 )
 

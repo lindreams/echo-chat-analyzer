@@ -101,6 +101,36 @@ def test_list_sessions_groups_by_40027_not_40030(tmp_path: Path) -> None:
     assert len(c2c_2) == 1
 
 
+def test_selected_lookup_matches_discovery_and_only_queries_its_table(tmp_path, monkeypatch):
+    path = tmp_path / "fictional-qq.db"
+    _create_synthetic_qq_database(path)
+    with sqlite3.connect(path) as connection:
+        # Include colliding types, zero objects, mixed senders and INTEGER keys.
+        connection.execute('INSERT INTO group_msg_table VALUES(4, 17, \'0\', \'10086\', 9000, ?)', (b"blob",))
+        connection.execute('INSERT INTO c2c_msg_table VALUES(4, 17, \'0\', \'10086\', 9000, ?)', (b"blob",))
+        connection.execute('INSERT INTO c2c_msg_table VALUES(5, 17, \'12345\', \'12345\', 9500, ?)', (b"blob",))
+    provider = QQDatabaseProvider(path)
+    sessions = provider.list_sessions(self_uin="10086")
+    query_rows = provider._query_rows
+    queries = []
+
+    def query(sql, parameters=None, **kwargs):
+        queries.append((sql, parameters, kwargs["table_name"]))
+        return query_rows(sql, parameters, **kwargs)
+
+    monkeypatch.setattr(provider, "_query_rows", query)
+    for expected in sessions:
+        queries.clear()
+        assert provider.find_session(expected.session_id, self_uin="10086") == expected
+        assert len(queries) == 1
+        sql, parameters, table = queries[0]
+        assert table == ("group_msg_table" if expected.session_type == "group" else "c2c_msg_table")
+        assert 'WHERE "40027" = ?' in sql and "ORDER BY" not in sql
+        assert parameters[-1] == expected.internal_key
+    for missing in ("group:missing", "private:missing", "other:17", "17", "group:", "group:0"):
+        assert provider.find_session(missing, self_uin="10086") is None
+
+
 def test_list_sessions_different_40027_not_merged(tmp_path: Path) -> None:
     db_path = tmp_path / "fictional-qq.db"
     _create_synthetic_qq_database(db_path)

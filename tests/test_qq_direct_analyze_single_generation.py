@@ -116,9 +116,14 @@ def test_group_member_card_and_friend_remark_join_only_by_uin(tmp_path):
         assert runtime.cleaned == ["gen-0001"]
 
 
-def test_payload_materialized_before_generation_release(tmp_path: Path) -> None:
+def test_payload_materialized_before_generation_release(tmp_path: Path, monkeypatch) -> None:
     """The plaintext generation is gone before the analysis consumer runs."""
     service, runtime, _ = _service(tmp_path)
+
+    def unexpected_discovery(*_args, **_kwargs):
+        pytest.fail("Selected report acquisition must not rediscover every session")
+
+    monkeypatch.setattr(QQDatabaseProvider, "list_sessions", unexpected_discovery)
 
     with service.acquired_session(GROUP_SESSION_ID) as acquisition:
         # The generation lease was released before yield, so tokenizer/analyzer
