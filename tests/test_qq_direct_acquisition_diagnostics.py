@@ -122,6 +122,9 @@ def test_source_diagnostics_preserve_database_api_receiver(fictional_source):
     assert result['ok']
     assert 'stage=decrypt_source_before' in result['diagnosticLog']
     assert 'stage=decrypt_source_after' in result['diagnosticLog']
+    import re
+    for stage in ('source_location_finished', 'main_wal_capture_complete', 'decrypt_finished', 'acquire_finished'):
+        assert re.search(rf'stage={stage}[^\n]* outcome=success elapsed_ms=\d+', result['diagnosticLog'])
 
 
 @pytest.mark.parametrize('wal_page_one', [False, True])
@@ -221,6 +224,8 @@ def test_decrypt_failure_is_diagnosable_without_private_fields(fictional_source,
     assert (result.get('retryable') is True) == retryable
     assert f'failure_stage={stage} guard_code={guard}' in result['diagnosticLog']
     assert 'PRIVATE' not in result['diagnosticLog']
+    import re
+    assert re.search(r'stage=acquire_finished[^\n]* outcome=failed elapsed_ms=\d+', result['diagnosticLog'])
     assert str(fictional_source[0]) not in result['diagnosticLog']
     assert result['manifest'] is None and result['stagingCleaned'] and result['recovered']
     if stage == 'plaintext_validation':

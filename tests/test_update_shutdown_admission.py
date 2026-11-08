@@ -52,10 +52,12 @@ def test_drain_timeout_is_not_repaired_by_successful_recover_or_late_completion(
         steps = {step.name: step.status for step in result.steps}
         assert steps['direct_db_cleanup'] is ShutdownStatus.TIMED_OUT
         assert not result.can_apply_update
+        # Only startup recovered; the live acquisition still owns its snapshot.
+        assert client.calls == 1
     finally:
         service._end_acquisition()
     assert service.shutdown() is ShutdownStatus.TIMED_OUT
-    assert client.calls == 2
+    assert client.calls == 1  # Late completion cannot reopen shutdown admission.
 
 
 def test_recover_exception_keeps_failure_on_repeat():

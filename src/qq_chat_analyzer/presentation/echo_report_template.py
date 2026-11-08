@@ -2005,6 +2005,22 @@ document.documentElement.classList.add("js-ready");
   setHidden("sticker-comparison", true);
   if (hasStickers) {
     var stickerAssets = stickers.assets || {};
+    var stickerImageObserver = typeof IntersectionObserver === "function" ? new IntersectionObserver(function (entries) {
+      entries.forEach(function (entry) {
+        var image = entry.target;
+        if (image.loading === "eager") return;
+        if (entry.isIntersecting) {
+          if (!image.hasAttribute("src")) image.src = image.dataset.stickerSrc;
+        } else if (/^(data:image\/gif;|media\/[0-9a-f]{64}\.gif$)/.test(image.dataset.stickerSrc)) {
+          image.removeAttribute("src");
+        }
+      });
+    }) : null;
+    function releaseStickerImages(container) {
+      if (stickerImageObserver) container.querySelectorAll("img[data-sticker-src]").forEach(function (image) {
+        stickerImageObserver.unobserve(image);
+      });
+    }
     var stickerGroup = stickers.conversation_kind === "group";
     document.getElementById("stickers").classList.toggle("sticker-group", stickerGroup);
     setText("sticker-total", formatCount(stickers.total_send_count) + (stickerGroup ? " 次" : ""));
@@ -2030,11 +2046,16 @@ document.documentElement.classList.add("js-ready");
            /^media\/[0-9a-f]{64}\.(png|jpg|gif|webp)$/.test(asset.data_uri || ""))) {
         var image = document.createElement("img");
         image.alt = "表情包";
+        image.loading = "lazy";
+        image.decoding = "async";
+        image.dataset.stickerSrc = asset.data_uri;
         image.addEventListener("error", function () {
           image.hidden = true;
           frame.classList.remove("has-image");
+          if (stickerImageObserver) stickerImageObserver.unobserve(image);
         });
-        image.src = asset.data_uri;
+        if (stickerImageObserver) stickerImageObserver.observe(image);
+        else image.src = asset.data_uri;
         frame.classList.add("has-image");
         frame.appendChild(image);
       }
@@ -2098,6 +2119,7 @@ document.documentElement.classList.add("js-ready");
       function render() {
         container.classList.toggle("is-expanded", expanded);
         list.classList.toggle("is-row-scroll", expanded && stickerGroup);
+        releaseStickerImages(list);
         list.textContent = "";
         items.slice(0, expanded ? items.length : collapsedCount).forEach(function (item, index) {
           var entry = document.createElement("li");
@@ -2164,6 +2186,7 @@ document.documentElement.classList.add("js-ready");
     }
     var selectedMembers = new Set(allStickerMembers.length ? [0] : []);
     function renderStickerMembers() {
+      releaseStickerImages(stickerMembers);
       stickerMembers.textContent = "";
       allStickerMembers.forEach(function (member, index) {
         if (stickerGroup && !selectedMembers.has(index)) { return; }
@@ -2445,10 +2468,29 @@ document.documentElement.classList.add("js-ready");
         var gallery = memoryElement("section", "memory-gallery");
         gallery.dataset.kind = kind;
         gallery.setAttribute("aria-label", memoryLabels[kind]);
-        var cards = entries.map(renderMemoryCard), current = 0;
-        cards.forEach(function (card, index) { card.hidden = index !== 0; gallery.appendChild(card); });
-        if (cards.length > 1) {
-          var nav = memoryElement("div", "memory-gallery-nav");
+        var cards = [], current = 0, nav = null;
+        function cardAt(index) {
+          if (!cards[index]) {
+            cards[index] = renderMemoryCard(entries[index]);
+            cards[index].hidden = true;
+            gallery.insertBefore(cards[index], nav);
+          }
+          return cards[index];
+        }
+        function show(index) {
+          if (index < 0 || index >= entries.length) return;
+          if (cards[current]) cards[current].hidden = true;
+          current = index;
+          cardAt(current).hidden = false;
+          if (nav) {
+            previous.disabled = current === 0;
+            next.disabled = current === entries.length - 1;
+            status.textContent = (current + 1) + " / " + entries.length;
+          }
+        }
+        gallery.echoMaterializeForPrint = function () { entries.forEach(function (_, index) { cardAt(index); }); };
+        if (entries.length > 1) {
+          nav = memoryElement("div", "memory-gallery-nav");
           var previous = memoryElement("button", "", "上一段");
           var next = memoryElement("button", "", "下一段");
           previous.type = next.type = "button";
@@ -2457,19 +2499,12 @@ document.documentElement.classList.add("js-ready");
           var status = memoryElement("span", "");
           status.setAttribute("role", "status");
           status.setAttribute("aria-live", "polite");
-          function show(index) {
-            current = index;
-            cards.forEach(function (card, i) { card.hidden = i !== current; });
-            previous.disabled = current === 0;
-            next.disabled = current === cards.length - 1;
-            status.textContent = (current + 1) + " / " + cards.length;
-          }
           previous.addEventListener("click", function () { show(current - 1); });
           next.addEventListener("click", function () { show(current + 1); });
           nav.appendChild(previous); nav.appendChild(status); nav.appendChild(next);
           gallery.appendChild(nav);
-          show(0);
         }
+        show(0);
         target.appendChild(gallery);
       });
     }
@@ -2480,13 +2515,27 @@ document.documentElement.classList.add("js-ready");
     var hiddenMemoryCards = null;
     window.addEventListener("beforeprint", function () {
       if (hiddenMemoryCards !== null) return;
+      document.getElementById("stickers").querySelectorAll(".memory-gallery").forEach(function (gallery) {
+        gallery.echoMaterializeForPrint();
+      });
       hiddenMemoryCards = Array.from(document.getElementById("stickers")
         .querySelectorAll(".memory-gallery > article[hidden]"));
       hiddenMemoryCards.forEach(function (card) { card.hidden = false; });
+      document.getElementById("stickers").querySelectorAll("img[data-sticker-src]").forEach(function (image) {
+        if (!image.hidden) { image.loading = "eager"; image.src = image.dataset.stickerSrc; }
+      });
     });
     window.addEventListener("afterprint", function () {
       (hiddenMemoryCards || []).forEach(function (card) { card.hidden = true; });
       hiddenMemoryCards = null;
+      if (stickerImageObserver) {
+        stickerImageObserver.disconnect();
+        document.getElementById("stickers").querySelectorAll("img[data-sticker-src]").forEach(function (image) {
+          image.loading = "lazy";
+          if (/^(data:image\/gif;|media\/[0-9a-f]{64}\.gif$)/.test(image.dataset.stickerSrc)) image.removeAttribute("src");
+          if (!image.hidden) stickerImageObserver.observe(image);
+        });
+      }
     });
 
   }

@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .bridge_credential import authorization_headers, resolve_bridge_credential
+from ..diagnostics import qq_session_stage
 
 
 DEFAULT_RPC_TIMEOUT_SECONDS = 30
@@ -240,7 +241,23 @@ class QQDirectSnapshotRuntimeClient:
                     )
                     raise QQSnapshotRuntimeFailure()
                 # One attempt can never outlive the shared deadline.
-                result = self._rpc(_ACQUIRE, [], timeout=remaining)
+                attempt_started = time.perf_counter()
+                attempt_ready = False
+                try:
+                    _LOGGER.info("QQ snapshot acquire attempt=%d outcome=started", attempt)
+                except Exception:
+                    pass
+                try:
+                    result = self._rpc(_ACQUIRE, [], timeout=remaining)
+                    attempt_ready = (isinstance(result, Mapping) and result.get("ok") is True
+                                     and result.get("status") == "ready")
+                finally:
+                    try:
+                        _LOGGER.info("QQ snapshot acquire attempt=%d outcome=%s elapsed_ms=%d",
+                                     attempt, "ready" if attempt_ready else "failed",
+                                     max(0, round((time.perf_counter() - attempt_started) * 1000)))
+                    except Exception:
+                        pass
                 if not isinstance(result, Mapping):
                     raise QQSnapshotRuntimeInvalidResponse()
                 if result.get("ok") is not True or result.get("status") != "ready":
@@ -297,6 +314,8 @@ class QQDirectSnapshotRuntimeClient:
             generation_id,
         )
         return generation_id
+
+    @qq_session_stage(_LOGGER, "cleanup_rpc")
     def cleanup(self, generation_id: str) -> None:
         """Remove one generation.  A missing generation is already cleaned."""
         normalized = validate_generation_id(generation_id)
@@ -329,6 +348,11 @@ class QQDirectSnapshotRuntimeClient:
                     except QQSnapshotRuntimeNotReady:
                         if attempt == RECOVER_READINESS_ATTEMPTS - 1:
                             raise
+                        try:
+                            _LOGGER.info("QQ snapshot stage=recover_rpc outcome=retry attempt=%d delay_ms=%d",
+                                         attempt + 1, round(RECOVER_READINESS_POLL_SECONDS * 1000))
+                        except Exception:
+                            pass
                         time.sleep(RECOVER_READINESS_POLL_SECONDS)
                         continue
                     if isinstance(result, Mapping) and result.get("ok") is True:

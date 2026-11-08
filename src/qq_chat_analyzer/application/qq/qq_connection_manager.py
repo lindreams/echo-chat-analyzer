@@ -7,6 +7,7 @@ only observes status and tracks whether that bridge is waiting for login.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 from ..connection_models import ConnectionSnapshot, ConnectionState
@@ -52,6 +53,7 @@ class QQConnectionManager:
         self._setup_service = setup_service
         self._connection_service = connection_service
         self._auth_waiting = False
+        self._auth_wait_started: float | None = None
 
     # ------------------------------------------------------------ inspection
 
@@ -75,14 +77,17 @@ class QQConnectionManager:
             )
         snapshot = self._from_connection_status(status)
         if snapshot.code == "qq_reconnect_required":
+            self._log_auth_wait_finished("failed")
             self._auth_waiting = False
             return snapshot
         if snapshot.state is ConnectionState.CONNECTED:
+            self._log_auth_wait_finished("connected")
             self._auth_waiting = False
             return snapshot
 
         runtime_status = self._safe_runtime_status()
         if self._auth_waiting and self._runtime_failed(runtime_status):
+            self._log_auth_wait_finished("failed")
             self._auth_waiting = False
             _LOGGER.info("[qq connection] runtime failed, leaving auth wait")
             return self._snapshot(
@@ -112,6 +117,7 @@ class QQConnectionManager:
         only resets the manager's transient auth state so a later snapshot
         does not keep waiting for a login that was cancelled.
         """
+        self._log_auth_wait_finished("cancelled")
         self._auth_waiting = False
         return self._snapshot(
             ConnectionState.DISCONNECTED,
@@ -121,11 +127,27 @@ class QQConnectionManager:
 
     def begin_auth_waiting(self) -> None:
         """Remember that a runtime-owned login window is waiting for auth."""
+        if not self._auth_waiting:
+            self._auth_wait_started = time.monotonic()
+            try:
+                _LOGGER.info("[qq connection] stage=login_wait outcome=started")
+            except Exception:
+                pass
         self._auth_waiting = True
 
     def end_auth_waiting(self) -> None:
         """Stop treating bridge unavailability as an in-progress login."""
+        self._log_auth_wait_finished("stopped")
         self._auth_waiting = False
+
+    def _log_auth_wait_finished(self, outcome: str) -> None:
+        if self._auth_wait_started is not None:
+            try:
+                _LOGGER.info("[qq connection] stage=login_wait outcome=%s elapsed_ms=%d",
+                             outcome, max(0, round((time.monotonic() - self._auth_wait_started) * 1000)))
+            except Exception:
+                pass
+            self._auth_wait_started = None
 
     # ------------------------------------------------------------- internals
 

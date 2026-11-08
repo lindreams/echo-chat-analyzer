@@ -977,15 +977,20 @@ def test_sticker_personal_findings_and_repeated_events_have_their_own_place(tmp_
       const gallery=shared.querySelector('.memory-gallery[data-kind="relay"]');
       const result={hasGallery:!!gallery,sharedPersonal:shared.querySelectorAll('[data-finding="signature"]').length};
       if(gallery){
-        const cards=[...gallery.querySelectorAll("article")], nav=gallery.querySelector(".memory-gallery-nav");
+        const cards=()=>[...gallery.querySelectorAll("article")], nav=gallery.querySelector(".memory-gallery-nav");
         const buttons=nav.querySelectorAll("button"), status=nav.querySelector('[role="status"]');
-        const current=()=>cards.filter(visible).map(x=>x.innerText);
+        const current=()=>cards().filter(visible).map(x=>x.innerText);
+        result.initialCardCount=cards().length;
         result.initial=current();result.firstDisabled=buttons[0].disabled;result.firstCount=status.textContent;
-        result.allCardsHaveStaff=cards.every(x=>x.querySelectorAll(".memory-relay-stage > .sticker-staff").length===1);
+        const first=cards()[0];
         buttons[1].click();result.second=current();result.secondCount=status.textContent;
+        const second=cards().find(visible);
         buttons[1].click();result.third=current();result.lastDisabled=buttons[1].disabled;
         buttons[0].click();result.back=current();
-        window.dispatchEvent(new Event("beforeprint"));result.printCount=cards.filter(visible).length;
+        result.secondReused=cards().find(visible)===second;
+        result.firstReused=cards()[0]===first;
+        result.allCardsHaveStaff=cards().every(x=>x.querySelectorAll(".memory-relay-stage > .sticker-staff").length===1);
+        window.dispatchEvent(new Event("beforeprint"));result.printCount=cards().filter(visible).length;
         window.dispatchEvent(new Event("afterprint"));result.restored=current();
       }
       if(window.ECHO_DATA.conversation.kind==="group"){
@@ -1008,6 +1013,7 @@ def test_sticker_personal_findings_and_repeated_events_have_their_own_place(tmp_
     assert match is not None
     result = json.loads(html.unescape(match.group(1)))
     assert result["hasGallery"] and result["sharedPersonal"] == 0
+    assert result["initialCardCount"] == 1 and result["firstReused"] and result["secondReused"]
     for key, day in (("initial", 1), ("second", 2), ("third", 3), ("back", 2), ("restored", 2)):
         assert len(result[key]) == 1 and f"2025-04-0{day}" in result[key][0]
     assert result["firstDisabled"] and result["lastDisabled"]
@@ -1082,16 +1088,18 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
       const galleries=[...a.querySelectorAll(".memory-gallery")];
       const initial=galleries.map(x=>({kind:x.dataset.kind,
         visible:[...x.querySelectorAll("article")].filter(visible).length,
+            pages:x.querySelector('[role="status"]')?.textContent||"1 / 1",
         total:x.querySelectorAll("article").length}));
       const cards=[...a.querySelectorAll(".memory-gallery > article")];
       const choices=cards.map(x=>x.hidden);
       window.dispatchEvent(new Event("beforeprint"));
-      const printComplete=cards.every(x=>!x.hidden);
+          const printed=galleries.map(x=>({kind:x.dataset.kind,total:x.querySelectorAll("article").length}));
+          const printComplete=galleries.every(x=>[...x.querySelectorAll("article")].every(card=>!card.hidden));
       window.dispatchEvent(new Event("afterprint"));
       const printRestores=cards.every((x,i)=>x.hidden===choices[i]);
       window.dispatchEvent(new Event("beforeprint"));
       const images=[...a.querySelectorAll(".memory-gallery img")];
-      const result={initial,printComplete,printRestores,inside:a.contains(b),visible:!a.hidden,memoriesHidden:b.hidden,
+          const result={initial,printed,printComplete,printRestores,inside:a.contains(b),visible:!a.hidden,memoriesHidden:b.hidden,
         pages:a.querySelectorAll(".page").length,
         toc:[...document.querySelectorAll('a[href="#stickers"],a[href="#sticker-memories"]')].filter(x=>!x.hidden).map(x=>x.getAttribute("href")),
         title:document.getElementById("sticker-title").textContent,
@@ -1192,7 +1200,9 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     if scene == "three":
         assert any(len(finding["windows"]) == 3 for finding in result["findings"] if finding["kind"] == "trend")
     if scene == "many":
-        assert any(gallery["kind"] == "reunion" and gallery["total"] == 6 for gallery in result["initial"])
+        assert any(gallery["kind"] == "reunion" and gallery["total"] == 1 and gallery["pages"] == "1 / 6"
+                   for gallery in result["initial"])
+        assert any(gallery["kind"] == "reunion" and gallery["total"] == 6 for gallery in result["printed"])
     if scene == "combined":
         assert sum(len(m["entries"]) for m in result["tops"])==6
         assert result["sameResource"] and result["loaded"] and result["nativeSave"] and result["offline"]

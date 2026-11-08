@@ -18,6 +18,7 @@ from typing import Any, Callable
 from ..application.facade import ChatAnalyzerFacade, ChatSource
 from ..resources import resources_dir
 from ..version import APP_VERSION
+from ..analysis_diagnostics import timed_stage
 from ..desktop import main
 from .desktop_runtime import (
     STARTUP_FAILED_MESSAGE,
@@ -202,16 +203,18 @@ def _run_gui(argv: list[str] | None = None) -> int:
 
     arguments = list(sys.argv[1:] if argv is None else argv)
 
-    from PySide6.QtWidgets import QApplication, QMessageBox
+    with timed_stage("desktop_environment"):
+        from PySide6.QtWidgets import QApplication, QMessageBox
 
     try:
-        from .main_window import MainWindow
+        with timed_stage("desktop_startup"):
+            from .main_window import MainWindow
 
-        app = QApplication(arguments)
-        app.setQuitOnLastWindowClosed(True)
-        app.setStyleSheet(BASE_QSS)
-        window = MainWindow(build_facade())
-        window.show()
+            app = QApplication(arguments)
+            app.setQuitOnLastWindowClosed(True)
+            app.setStyleSheet(BASE_QSS)
+            window = MainWindow(build_facade())
+            window.show()
         if arguments == ['--echo-uninstall']:
             from PySide6.QtCore import QTimer
             window.show_about_page()

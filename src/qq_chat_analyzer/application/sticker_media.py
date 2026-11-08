@@ -13,9 +13,10 @@ the caller, never inferred from these bytes.
 """
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections import Counter, defaultdict
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from io import BytesIO
 import hashlib
 import os
@@ -24,6 +25,7 @@ import re
 import stat
 import time
 import warnings
+from types import MappingProxyType
 
 from ..analysis.stickers import StickerData, StickerMedia, StickerSend
 
@@ -42,6 +44,36 @@ MAX_DECODE_SECONDS = 2.0
 QQ_MAX_DECODE_PIXELS = 512 * 1024 * 1024
 QQ_MAX_DECODE_WORK = 512 * 1024 * 1024
 QQ_MAX_DECODE_SECONDS = 10.0
+
+
+@dataclass(frozen=True, slots=True)
+class _QQMediaSendIndex:
+    """Read-only lookups owned by one exact retained sending sequence."""
+
+    sends: tuple[StickerSend, ...] = field(repr=False)
+    selections: Mapping[tuple[str, str | None], StickerSend] = field(repr=False)
+    occurrence_counts: Mapping[str, int] = field(repr=False)
+    by_media: Mapping[str, tuple[tuple[int, StickerSend], ...]] = field(repr=False)
+    default_media: tuple[StickerMedia, ...] = field(repr=False)
+
+    @classmethod
+    def build(cls, sends, *, check_cancelled=lambda: None):
+        selections, counts, grouped = {}, Counter(), defaultdict(list)
+        for position, send in enumerate(sends):
+            check_cancelled()
+            # Count every occurrence, including rejected/non-QQ records: a
+            # duplicate must never become unique by filtering the index.
+            counts[send.occurrence_id] += 1
+            grouped[send.media_key].append((position, send))
+            if (send.source == "qq" and send.conversation_type in ("private", "group")
+                    and send.identity_basis == "qq_pic_45406_md5"
+                    and isinstance(send.message_id, str) and send.message_id
+                    and isinstance(send.content_md5, str) and re.fullmatch(r"[0-9a-f]{32}", send.content_md5)):
+                selections.setdefault((send.media_key, None), send)
+                selections.setdefault((send.media_key, send.occurrence_id), send)
+        return cls(sends, MappingProxyType(selections), MappingProxyType(dict(counts)),
+                   MappingProxyType({key: tuple(items) for key, items in grouped.items()}),
+                   resolve_sticker_media(sends))
 
 
 def qq_media_failure(media_key: str, code: str) -> StickerMedia:
@@ -65,6 +97,7 @@ def associate_sticker_media(
     data: StickerData, *, media_keys: tuple[str, ...], roots: tuple[Path, ...] = (),
     source: str, cancelled: Callable[[], bool] = lambda: False,
     diagnostics: dict[str, int | bool] | None = None,
+    send_index: _QQMediaSendIndex | None = None,
 ) -> StickerData:
     """Return the same sending facts with one bounded, explicitly selected batch.
 
@@ -75,16 +108,26 @@ def associate_sticker_media(
     if diagnostics is not None:
         diagnostics.clear()
     keys = set(media_keys)
-    sends = {send.media_key: send for send in data.sends if send.source == source}
+    if send_index is not None:
+        if source != "qq" or send_index.sends is not data.sends:
+            raise ValueError("invalid_sticker_batch")
+        # Preserve source order within each batch: it governs existing budgets
+        # and keeps every occurrence's authorized path hints available.
+        batch_sends = tuple(send for _, send in sorted(
+            item for key in keys for item in send_index.by_media.get(key, ())))
+    else:
+        batch_sends = data.sends
+    sends = {send.media_key: send for send in batch_sends if send.source == source}
     if source not in {"qq", "wechat"} or not keys.issubset(sends) or len(keys) > STICKER_MEDIA_BATCH_SIZE:
         raise ValueError("invalid_sticker_batch")
     if not keys or cancelled():
         return data
-    media = {item.media_key: item for item in resolve_sticker_media(data.sends)}
+    defaults = send_index.default_media if send_index is not None else resolve_sticker_media(data.sends)
+    media = {item.media_key: item for item in defaults}
     media.update((item.media_key, item) for item in data.media)
     # Keep all occurrences' path hints; the resolver still reads/decodes once
     # per unique content. A later send need not carry the earlier cache path.
-    pending = tuple(send for send in data.sends if send.source == source
+    pending = tuple(send for send in batch_sends if send.source == source
                     and send.media_key in keys and not (
         media[send.media_key].status == "available" and (media[send.media_key].original_bytes or media[send.media_key].stored)))
     if not pending:
