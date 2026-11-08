@@ -32,6 +32,18 @@ from qq_chat_analyzer.rich_message import (
 )
 
 
+def test_all_official_emoji_spellings_survive_text_boundaries_and_masking():
+    from qq_chat_analyzer._unicode_emoji_data import EMOJI_CODEPOINT_SEQUENCES
+    from qq_chat_analyzer.unicode_emoji import mask_emoji
+
+    spellings = ["".join(chr(int(point, 16)) for point in line.split())
+                 for line in EMOJI_CODEPOINT_SEQUENCES.splitlines()]
+    separator = "普通文字 orchard "
+    text = separator.join(spellings)
+    assert list(iter_emoji_clusters(text)) == spellings
+    assert mask_emoji(text) == separator.join(" " for _ in spellings)
+
+
 def _chat(
     text: str,
     *,

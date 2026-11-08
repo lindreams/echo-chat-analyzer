@@ -9,7 +9,8 @@ child. The desktop's SQLite library and other databases keep the default layout.
 from __future__ import annotations
 
 import ctypes
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import closing
 import multiprocessing
 import os
 from pathlib import Path
@@ -21,6 +22,7 @@ import time
 _PENDING_BYTE = 0x40000000
 _QQ_PENDING_BYTE = _PENDING_BYTE - 1024
 _READ_TIMEOUT = 300
+_BATCH_ROWS = 1024
 
 
 def needs_qq_layout(path: Path) -> bool:
@@ -84,11 +86,16 @@ def _read_worker(channel, path: str, query: str, parameters: list) -> None:
         connection = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
         cursor = connection.execute(query, parameters)
         names = [column[0] for column in cursor.description or ()]
-        rows = cursor.fetchall()
-        channel.send(("ok", names, rows))
+        channel.send(("columns", names))
+        while rows := cursor.fetchmany(_BATCH_ROWS):
+            channel.send(("rows", rows))
+        channel.send(("done", None))
     except Exception as error:
         # Raw SQLite messages can contain private SQL identifiers or values.
-        channel.send(("error", getattr(error, "sqlite_errorcode", 0), None))
+        try:
+            channel.send(("error", getattr(error, "sqlite_errorcode", 0)))
+        except (EOFError, OSError):
+            pass  # A cancelled/closed consumer no longer accepts diagnostics.
     finally:
         if connection is not None:
             connection.close()
@@ -97,11 +104,15 @@ def _read_worker(channel, path: str, query: str, parameters: list) -> None:
         channel.close()
 
 
-def read_rows(
+def iter_row_batches(
     path: Path, query: str, parameters: list | None = None, *,
     cancelled: Callable[[], bool] = lambda: False,
-) -> tuple[list[str], list[tuple]]:
-    """Run a read-only query in one bounded, private child and always reap it."""
+) -> Iterator[tuple[list[str], list[tuple]]]:
+    """Stream a read-only query in one owned child; close to stop early.
+
+    A batch bounds row and pickle copies, not the size of a single source BLOB.
+    Only successful exhaustion proves the query and child both completed.
+    """
     context = multiprocessing.get_context("spawn")
     receiver, sender = context.Pipe(duplex=False)
     process = context.Process(target=_read_worker, args=(sender, str(path), query, parameters or []), daemon=True)
@@ -113,23 +124,33 @@ def read_rows(
         started = True
         sender.close()
         deadline = time.monotonic() + _READ_TIMEOUT
-        while not receiver.poll(0.1):
+        names = []
+        while True:
             if cancelled():
                 raise sqlite3.DatabaseError("QQ SQLite read cancelled.")
             if time.monotonic() >= deadline:
                 raise sqlite3.DatabaseError("QQ SQLite read timed out.")
-        try:
-            status, names, rows = receiver.recv()
-        except (EOFError, OSError):
-            raise sqlite3.DatabaseError("QQ SQLite reader unavailable.") from None
+            if not receiver.poll(0.1):
+                continue
+            try:
+                status, value = receiver.recv()
+            except (EOFError, OSError):
+                raise sqlite3.DatabaseError("QQ SQLite reader unavailable.") from None
+            if status == "columns":
+                names = value
+            elif status == "rows":
+                yield names, value
+            elif status == "done":
+                break
+            else:
+                error = sqlite3.DatabaseError("QQ SQLite read failed.")
+                error.sqlite_errorcode = value if type(value) is int else 0
+                raise error
         process.join(5)
         if process.is_alive() or process.exitcode != 0:
             raise sqlite3.DatabaseError("QQ SQLite reader failed.")
-        if status != "ok":
-            error = sqlite3.DatabaseError("QQ SQLite read failed.")
-            error.sqlite_errorcode = names if type(names) is int else 0
-            raise error
-        return names, rows
+        # Include column names for an empty result without adding a worker.
+        yield names, []
     finally:
         receiver.close()
         sender.close()
@@ -138,3 +159,15 @@ def read_rows(
                 process.terminate()
             process.join(5)
             process.close()
+
+
+def read_rows(
+    path: Path, query: str, parameters: list | None = None, *,
+    cancelled: Callable[[], bool] = lambda: False,
+) -> tuple[list[str], list[tuple]]:
+    """Collect small metadata results using the same isolated reader."""
+    names, rows = [], []
+    with closing(iter_row_batches(path, query, parameters, cancelled=cancelled)) as batches:
+        for names, batch in batches:
+            rows.extend(batch)
+    return names, rows

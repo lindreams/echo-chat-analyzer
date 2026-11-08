@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from qq_chat_analyzer.providers.qq_sqlite_reader import read_rows, needs_qq_layout, _pending_byte_control
+from qq_chat_analyzer.providers.qq_sqlite_reader import iter_row_batches, read_rows, needs_qq_layout, _pending_byte_control
 
 pytestmark = [pytest.mark.slow_integration, pytest.mark.skipif(os.name != "nt", reason="Windows SQLite layout")]
 
@@ -19,12 +19,41 @@ def test_qq_layout_reader_runs_query_in_child_and_returns_rows(tmp_path: Path) -
     path = tmp_path / "fictional-qq.db"
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE fictional_table(id INTEGER PRIMARY KEY, value TEXT)")
-        connection.execute("INSERT INTO fictional_table VALUES(1, 'fictional')")
+        connection.executemany("INSERT INTO fictional_table VALUES(?, ?)",
+                               ((n, f"fictional-{n}") for n in range(2500)))
 
     names, rows = read_rows(path, "SELECT id, value FROM fictional_table")
 
     assert names == ["id", "value"]
-    assert rows == [(1, "fictional")]
+    assert rows == [(n, f"fictional-{n}") for n in range(2500)]
+
+
+@pytest.mark.parametrize("finish", ["close", "cancel", "query_error"])
+def test_streamed_read_failure_or_early_close_reaps_child(tmp_path, finish):
+    import multiprocessing
+    from contextlib import closing
+
+    path = tmp_path / "fictional-stream.db"
+    with closing(sqlite3.connect(path)) as connection:
+        connection.execute("CREATE TABLE fictional_table(id INTEGER PRIMARY KEY)")
+        connection.executemany("INSERT INTO fictional_table VALUES(?)", ((n,) for n in range(5000)))
+        connection.commit()
+    previous = {child.pid for child in multiprocessing.active_children()}
+    cancelled = False
+    query = ("SELECT CASE WHEN id >= 1500 THEN abs(-9223372036854775808) ELSE id END FROM fictional_table"
+             if finish == "query_error" else "SELECT id FROM fictional_table ORDER BY id")
+    with closing(iter_row_batches(path, query, cancelled=lambda: cancelled)) as batches:
+        names, first = next(batches)
+        assert names and 0 < len(first) < 5000
+        assert first[0] == (0,)
+        if finish != "close":
+            cancelled = finish == "cancel"
+            with pytest.raises(sqlite3.DatabaseError):
+                list(batches)
+    assert {child.pid for child in multiprocessing.active_children()} == previous
+    assert _pending_byte_control()(11, 0) == 0x40000000
+    path.unlink()
+    assert not path.exists()
 
 
 @pytest.mark.qq

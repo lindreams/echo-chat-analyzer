@@ -477,14 +477,7 @@ class QQDirectDatabaseImportService:
                     snapshot_at = time.perf_counter()
                     provider = QQDatabaseProvider(database_path, cancelled=self._read_cancelled.is_set)
                     with qq_session_stage(_LOGGER, "session_lookup"):
-                        session = next(
-                            (
-                                candidate
-                                for candidate in provider.list_sessions(self_uin=self_uin)
-                                if candidate.session_id == session_id
-                            ),
-                            None,
-                        )
+                        session = provider.find_session(session_id, self_uin=self_uin)
                         if session is None:
                             raise QQDirectSessionNotFound()
                     lookup_at = time.perf_counter()
