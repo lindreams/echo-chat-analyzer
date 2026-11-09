@@ -508,7 +508,7 @@ def _encode_echo_assets(view: EchoReportView) -> str:
     assets: dict[str, str] = {}
     for item in _iter_expression_items(view):
         asset_key = getattr(item, "asset_key", None)
-        if not isinstance(asset_key, str) or not asset_key:
+        if not isinstance(asset_key, str) or not asset_key or asset_key in assets:
             continue
         data_uri = expression_asset_data_uri(asset_key)
         if data_uri:
@@ -517,7 +517,7 @@ def _encode_echo_assets(view: EchoReportView) -> str:
     if culture is not None:
         for combination in getattr(culture, "top_combinations", ()):
             for asset_key in getattr(combination, "asset_keys", ()):
-                if not isinstance(asset_key, str) or not asset_key:
+                if not isinstance(asset_key, str) or not asset_key or asset_key in assets:
                     continue
                 data_uri = expression_asset_data_uri(asset_key)
                 if data_uri:

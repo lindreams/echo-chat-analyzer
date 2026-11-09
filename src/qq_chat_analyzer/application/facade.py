@@ -373,6 +373,10 @@ _QQ_MEDIA_STAGE_FAILURES = {
         "qq_media_busy",
         "上一次图片获取尚未结束，请稍后重试。",
     ),
+    "media_wait_timeout": (
+        "qq_media_wait_timeout",
+        "QQ 图片任务长时间未结束，已停止本次素材获取，发送统计已保留。",
+    ),
     "media_budget_exhausted": (
         "qq_media_budget_exhausted",
         "短时间内图片请求较多，请稍后重试。",
@@ -451,7 +455,7 @@ class ChatAnalyzerFacade:
 
     @staticmethod
     def associate_sticker_media(data, *, media_keys, roots=(), source, cancelled=lambda: False,
-                                diagnostics=None):
+                                diagnostics=None, send_index=None):
         """Associate an explicit batch without acquiring another chat database."""
         from .sticker_media import associate_sticker_media
 
@@ -459,7 +463,7 @@ class ChatAnalyzerFacade:
             with timed_stage("sticker_media_associate"):
                 return associate_sticker_media(
                     data, media_keys=media_keys, roots=roots, source=source, cancelled=cancelled,
-                    diagnostics=diagnostics)
+                    diagnostics=diagnostics, send_index=send_index)
         except Exception:
             # Worker diagnostics must not receive private paths or decoder data.
             raise FacadeError(code="sticker_media_failed", public_message="原图验证失败，请稍后重试。") from None
@@ -493,10 +497,10 @@ class ChatAnalyzerFacade:
     def _fetch_qq_pic(
         self, data, *, media_key: str, session_id: str, stored_facts, provider,
         cancelled=lambda: False, occurrence_id: str | None = None,
-        deadline: float | None = None, on_stage=lambda stage: None,
+        deadline: float | None = None, on_stage=lambda stage: None, send_index=None,
     ):
         """Verify the report target against its owned payload and authenticated QQ element."""
-        from .sticker_media import verify_fetched_media
+        from .sticker_media import _QQMediaSendIndex, verify_fetched_media
 
         def remaining(maximum):
             if cancelled():
@@ -507,15 +511,10 @@ class ChatAnalyzerFacade:
             return seconds
 
         on_stage("selection")
-        send = next((
-            item for item in getattr(data, "sends", ())
-            if item.media_key == media_key and item.source == "qq"
-            and (occurrence_id is None or item.occurrence_id == occurrence_id)
-            and item.conversation_type in ("private", "group")
-            and item.identity_basis == "qq_pic_45406_md5"
-            and isinstance(item.message_id, str) and item.message_id
-            and isinstance(item.content_md5, str) and re.fullmatch(r"[0-9a-f]{32}", item.content_md5)
-        ), None)
+        if send_index is None:
+            send_index = _QQMediaSendIndex.build(data.sends)
+        send = (send_index.selections.get((media_key, occurrence_id))
+                if send_index.sends is data.sends else None)
         if send is None:
             raise FacadeError(
                 code="qq_media_invalid_selection",
@@ -523,7 +522,7 @@ class ChatAnalyzerFacade:
             )
         group = send.conversation_type == "group"
         if group:
-            if occurrence_id is not None and sum(s.occurrence_id == occurrence_id for s in data.sends) != 1:
+            if occurrence_id is not None and send_index.occurrence_counts.get(occurrence_id, 0) != 1:
                 raise FacadeError(code="qq_media_group_message_unconfirmed",
                                   public_message="无法在本次分析结果中唯一确认所选发送记录，未下载图片。")
             if not (isinstance(session_id, str) and session_id.startswith("group:") and session_id[6:]):
@@ -676,7 +675,7 @@ class ChatAnalyzerFacade:
         from ..presentation.stickers import sticker_report_targets
         from ..media_content import StoredMedia
         from ..qq_db_adapter import extract_qq_pic_media_facts, load_qq_db_json
-        from .sticker_media import qq_media_failure
+        from .sticker_media import _QQMediaSendIndex, qq_media_failure
 
         view = result.echo_report_view
         targets = sticker_report_targets(view.stickers if view else None)
@@ -698,6 +697,7 @@ class ChatAnalyzerFacade:
         def stopped():
             return cancelled() or self._sources_closing.is_set()
 
+        send_index = _QQMediaSendIndex.build(data.sends, check_cancelled=check_cancel)
         sends = {}
         seen_messages = set()
         target_keys = {target.media_key for target in targets}
@@ -743,7 +743,7 @@ class ChatAnalyzerFacade:
                         try:
                             data = self.associate_sticker_media(
                                 data, media_keys=keys[offset:offset + 32], roots=roots, source="qq",
-                                cancelled=stopped)
+                                cancelled=stopped, send_index=send_index)
                         except FacadeError:
                             # A rejected local scope does not authorize a broader scan.
                             # The separately verified QQ element may still be fetched.
@@ -786,6 +786,9 @@ class ChatAnalyzerFacade:
                             provider = self._qq_connected_provider("resolve_pic_message", "download_pic_media")
                         except FacadeError:
                             setup_failure = "report_media_source_unavailable"
+                # This loop merges each recovered item into its own media map;
+                # do not copy/search all earlier media again for every target.
+                fetch_data = replace(data, media=())
                 index = 0
                 while index < len(pending):
                     key = pending[index]
@@ -808,20 +811,21 @@ class ChatAnalyzerFacade:
                         code = setup_failure
                     else:
                         attempts += 1
-                        _report_progress(progress, f"正在获取表情包素材（{index + 1}/{len(pending)}）...")
                         try:
                             wait_ready = getattr(provider, "wait_media_ready", None)
                             if callable(wait_ready):
                                 trace("waiting_bridge")
+                                _report_progress(progress, f"正在等待 QQ 准备图片（{index + 1}/{len(pending)}）...")
                                 wait_ready(cancelled=stopped)
                                 check_cancel()
+                            _report_progress(progress, f"正在获取表情包素材（{index + 1}/{len(pending)}）...")
                             send = sends[key][candidate_indexes[key]]
                             recovered = self._fetch_qq_pic(
-                                replace(data, media=tuple(media.values())), media_key=key,
+                                fetch_data, media_key=key,
                                 session_id=session.session_id, occurrence_id=send.occurrence_id,
                                 stored_facts=tuple(facts_by_message[send.message_id]),
-                                provider=provider, cancelled=stopped, on_stage=trace)
-                            item = next(item for item in recovered.media if item.media_key == key)
+                                provider=provider, cancelled=stopped, on_stage=trace, send_index=send_index)
+                            item, = recovered.media
                             if item.original_bytes:
                                 item = retain(item)
                             media[key] = item
@@ -838,6 +842,11 @@ class ChatAnalyzerFacade:
                                 error = FacadeError(code=code, public_message=message)
                             code = error.code
                             check_cancel()
+                            if error.code == "qq_media_wait_timeout":
+                                # The bridge still owns its native lease. Finish
+                                # this report with explicit failures; subsequent
+                                # targets must not wait or start another download.
+                                setup_failure = error.code
                             if error.code in {"qq_media_budget_exhausted", "qq_media_busy"} and callable(wait_ready):
                                 _LOGGER.info("[sticker-media-wait] batch=%s target=%d code=%s", batch, ordinal, code)
                                 # The next pass waits for the same bridge; no target
@@ -1615,13 +1624,12 @@ class ChatAnalyzerFacade:
             )
             with _translated_errors(source):
                 _report_progress(progress, "正在处理消息...")
-                _report_progress(progress, "正在分析聊天内容...")
-                if automatic_qq or automatic_wechat:
-                    _report_progress(progress, "正在分析表情包...")
                 core_started_at = _perf_counter()
                 core_completed = False
                 try:
-                    result = analysis_service.execute(request)
+                    result = analysis_service.execute(
+                        request, progress=progress,
+                        cancelled=lambda: cancelled() or self._sources_closing.is_set())
                     core_completed = True
                 finally:
                     if direct_db_diagnostics:

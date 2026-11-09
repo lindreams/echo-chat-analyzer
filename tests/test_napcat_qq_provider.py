@@ -1257,6 +1257,31 @@ def test_media_fetch_reports_a_fixed_stage_for_each_local_rejection(runtime, tmp
     assert str(tmp_path) not in json.dumps(payload)
 
 
+@pytest.mark.parametrize("late_ready", [False, True])
+def test_media_ready_wait_ends_without_releasing_a_stalled_lease(monkeypatch, late_ready):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    clock = [0.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0]+seconds))
+    calls = []
+
+    def rpc(method, *, timeout):
+        assert method == "Core.status"
+        assert 0 < timeout <= min(5, 30-clock[0])
+        calls.append(method)
+        clock[0] += 30 if late_ready else timeout
+        return {"media_busy": not late_ready, "media_retry_after_ms": 0}
+
+    client = provider("http://127.0.0.1:1")
+    monkeypatch.setattr(client, "_rpc", rpc)
+    # A ready reply arriving after the wait budget is still too late.
+    with pytest.raises(module.NapCatQQMediaStageError) as caught:
+        client.wait_media_ready()
+    assert caught.value.stage == "media_wait_timeout"
+    assert clock[0] == 30
+    assert calls and set(calls) == {"Core.status"}
+
+
 def test_report_bridge_budget_is_bounded_and_recovers_without_restart(runtime, tmp_path):
     module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
     clock = tmp_path / "fictional-clock.txt"

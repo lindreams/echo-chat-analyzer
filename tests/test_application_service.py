@@ -109,6 +109,7 @@ def test_execute_returns_completed_privacy_safe_result_without_cli_output(
     tokenizer_module.tokenize("warmup")
     capsys.readouterr()
 
+    progress = []
     result = service_module.AnalysisApplicationService().execute(
         application.AnalysisRequestDTO(
             input_path=input_path,
@@ -116,7 +117,8 @@ def test_execute_returns_completed_privacy_safe_result_without_cli_output(
             stopwords_path=stopwords_path,
             font_path=None,
             top=5,
-        )
+        ),
+        progress=progress.append,
     )
 
     captured = capsys.readouterr()
@@ -144,10 +146,65 @@ def test_execute_returns_completed_privacy_safe_result_without_cli_output(
     }
     assert captured.out == ""
     assert captured.err == ""
+    assert progress == ["正在读取聊天记录...", "正在筛选消息...", "正在分析表情包...",
+                        "正在分析聊天内容...", "正在整理统计结果...", "正在生成报告..."]
     result_repr = repr(result)
     assert str(tmp_path) not in result_repr
     for private_sender in private_senders:
         assert private_sender not in result_repr
+
+
+def test_cancelling_during_tokenization_stops_before_next_message_or_export(tmp_path, monkeypatch):
+    from threading import Event
+    from qq_chat_analyzer.application.errors import AnalysisCancelled
+
+    application, module = _application_module(), _service_module()
+    path = tmp_path / "fictional-cancel-chat.json"
+    _write_fictional_chat(path, [
+        {"timestamp": f"2026-01-01 12:00:0{i}", "sender": {"nickname": "Fictional-Alice"},
+         "type": "text", "content": {"text": text}}
+        for i, text in enumerate(("First fictional message", "Second invented sentence"))
+    ])
+    request = _request(application, tmp_path, path)
+    stop, tokenized, progress = Event(), [], []
+
+    def tokenize(text, **kwargs):
+        tokenized.append(text)
+        stop.set()
+        return ["fictional"]
+
+    monkeypatch.setattr(module, "tokenize", tokenize)
+    service = module.AnalysisApplicationService()
+    with pytest.raises(AnalysisCancelled):
+        service.execute(request, cancelled=stop.is_set, progress=progress.append)
+    assert len(tokenized) == 1
+    assert progress[-1] == "正在分析聊天内容..."
+    assert not (request.output_directory / "echo-report.html").exists()
+    assert not (request.output_directory / "echo-report.json").exists()
+    assert service.is_idle
+
+
+def test_cancelling_before_expression_only_export_preserves_existing_files(tmp_path):
+    from threading import Event
+    from qq_chat_analyzer.application.errors import AnalysisCancelled
+    from test_qq_db_rich_contents import _body, _face, _payload
+
+    application, module = _application_module(), _service_module()
+    path = tmp_path / "fictional-expression-chat.json"
+    path.write_text(json.dumps(_payload(_body(_face()), session_type="group")), encoding="utf-8")
+    request = _request(application, tmp_path, path)
+    request.output_directory.mkdir()
+    previous = {request.output_directory / name: b"fictional previous report"
+                for name in ("echo-report.html", "echo-report.json")}
+    for target, raw in previous.items():
+        target.write_bytes(raw)
+    stop = Event()
+    def progress(stage):
+        if stage == "正在生成报告...":
+            stop.set()
+    with pytest.raises(AnalysisCancelled):
+        module.AnalysisApplicationService().execute(request, progress=progress, cancelled=stop.is_set)
+    assert {target: target.read_bytes() for target in previous} == previous
 
 
 def test_execute_rejects_missing_input_without_exposing_path(

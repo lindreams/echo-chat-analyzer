@@ -110,6 +110,61 @@ def test_trend_requires_wider_use_and_compares_both_windows_denominators():
     assert not any(f.identity_key == "fiction:rising" for f in discover(rows).trends)
 
 
+def test_many_material_trends_do_not_repeat_group_activity_scans(monkeypatch):
+    from qq_chat_analyzer.analysis.group_stickers import analyze_group_stickers
+    from qq_chat_analyzer.analysis.sticker_index import DayCounts
+
+    b = Messages()
+    for member in range(64):
+        b.add(0, str(member), text="fictional boundary", seconds=member)
+        b.add(55, str(member), text="fictional boundary", seconds=member)
+    for day in range(6):
+        for member in "ABC":
+            b.add(day, member, "background", seconds=100)
+    for key in range(8):
+        for day in (28, 29):
+            for member in "ABC":
+                b.add(day, member, f"rising-{key}", seconds=200+key)
+    rows = group_rows(b)
+    index = build_sticker_fact_index(StickerData(collect_sticker_sends(rows)), rows,
+        conversation_kind="group", source_positions=range(len(rows)))
+    activity_series = {id(member.sends) for member in index.members.values()}
+    activity_queries = []
+    count = DayCounts.count
+
+    def counted(series, start, end):
+        if id(series) in activity_series:
+            activity_queries.append((start, end))
+        return count(series, start, end)
+
+    monkeypatch.setattr(DayCounts, "count", counted)
+    features = analyze_group_stickers(index)
+    assert len([f for f in features.trends if f.direction == "rise"]) == 8
+    # One common window's activity stays bounded by members, not materials.
+    assert len(activity_queries) <= 4 * len(index.members)
+
+
+def test_group_discovery_can_cancel_between_trend_windows(monkeypatch):
+    from threading import Event
+    from qq_chat_analyzer.analysis.group_stickers import analyze_group_stickers
+    from qq_chat_analyzer.analysis.sticker_index import DayCounts
+
+    rows = all_group_story_rows()
+    index = build_sticker_fact_index(StickerData(collect_sticker_sends(rows)), rows,
+        conversation_kind="group", source_positions=range(len(rows)))
+    stop = Event()
+    count = DayCounts.count
+    def cancel_after_query(series, start, end):
+        stop.set()
+        return count(series, start, end)
+    def check_cancelled():
+        if stop.is_set():
+            raise InterruptedError("fictional cancellation")
+    monkeypatch.setattr(DayCounts, "count", cancel_after_query)
+    with pytest.raises(InterruptedError, match="fictional cancellation"):
+        analyze_group_stickers(index, check_cancelled=check_cancelled)
+
+
 def test_reunion_needs_old_shared_use_and_active_observable_absence():
     b = Messages()
     for d in (0, 2, 4):
@@ -244,8 +299,8 @@ def test_group_discovery_reaches_formal_source_pipeline_and_share_export(tmp_pat
     observed = []
     analyze = getattr(service, "analyze_group_stickers", None)
     assert analyze is not None, "Group discovery must be connected to the application service"
-    def record_analysis(index):
-        result = analyze(index)
+    def record_analysis(index, **kwargs):
+        result = analyze(index, **kwargs)
         observed.append(result)
         return result
     def resolve(sends, **kwargs):

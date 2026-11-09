@@ -71,7 +71,7 @@ class _RecordingAnalysisService:
         self._result = result
         self.requests: list[object] = []
 
-    def execute(self, request):
+    def execute(self, request, **kwargs):
         self.requests.append(request)
         return self._result
 

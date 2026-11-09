@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Protocol
@@ -67,6 +67,7 @@ from .dto import (
     WordFrequencyDTO,
 )
 from .errors import (
+    AnalysisCancelled,
     ArtifactGenerationFailed,
     InputPathNotFound,
     InvalidAnalysisRequest,
@@ -149,7 +150,11 @@ class AnalysisApplicationService:
             return (ShutdownStatus.UNKNOWN if self._active or self._legacy_word_artifacts is not None
                     else ShutdownStatus.SUCCESS)
 
-    def execute(self, request: AnalysisRequestDTO) -> AnalysisResultDTO:
+    def execute(
+        self, request: AnalysisRequestDTO, *,
+        progress: Callable[[str], None] | None = None,
+        cancelled: Callable[[], bool] = lambda: False,
+    ) -> AnalysisResultDTO:
         """Analyze supported local exports and return a privacy-safe result."""
         with self._lifecycle_lock:
             if self._closing:
@@ -157,7 +162,7 @@ class AnalysisApplicationService:
             self._active += 1
         try:
             with timed_stage("total"):
-                return self._execute(request)
+                return self._execute(request, progress=progress, cancelled=cancelled)
         finally:
             with self._lifecycle_lock:
                 self._active -= 1
@@ -190,8 +195,20 @@ class AnalysisApplicationService:
             with self._lifecycle_lock:
                 self._active -= 1
 
-    def _execute(self, request: AnalysisRequestDTO) -> AnalysisResultDTO:
+    def _execute(self, request: AnalysisRequestDTO, *, progress=None, cancelled=lambda: False) -> AnalysisResultDTO:
+        def check_cancelled():
+            if cancelled():
+                raise AnalysisCancelled()
+
+        def report(message):
+            check_cancelled()
+            if progress is not None:
+                progress(message)
+            check_cancelled()
+
+        check_cancelled()
         _validate_request(request)
+        report("正在读取聊天记录...")
         with timed_stage("import"):
             outcome = ImportService().execute(
                 ImportRequest(input_path=request.input_path)
@@ -199,6 +216,7 @@ class AnalysisApplicationService:
         _log_identity_diagnostics(outcome.messages)
         processed_message_count = outcome.processed_message_count
         parsed_messages = list(outcome.messages)
+        report("正在筛选消息...")
         with timed_stage("scope_filter"):
             scoped_messages = filter_messages(parsed_messages, request.scope)
         if (
@@ -262,6 +280,7 @@ class AnalysisApplicationService:
             for legacy, rich in outcome.rich_message_pairs
             if id(legacy) in kept_instances
         }
+        report("正在分析表情包...")
         with timed_stage("sticker_data"):
             # Both collectors must describe one message set: the kept messages
             # that still have Rich facts. Legacy-only messages stay uncounted
@@ -305,7 +324,8 @@ class AnalysisApplicationService:
                     if sticker_kind == "private":
                         private_stickers = analyze_private_stickers(sticker_index)
                     else:
-                        group_stickers = analyze_group_stickers(sticker_index)
+                        group_stickers = analyze_group_stickers(sticker_index, check_cancelled=check_cancelled)
+            check_cancelled()
             with timed_stage("sticker_media_resolve"):
                 media_sends = sticker_sends
                 features = private_stickers if sticker_kind == "private" else group_stickers
@@ -317,7 +337,8 @@ class AnalysisApplicationService:
                     if any(member.send_count is not None for member in selected.members):
                         keys = {t.media_key for t in sticker_report_targets(selected)}
                         media_sends = tuple(s for s in sticker_sends if s.media_key in keys)
-                sticker_media = resolve_sticker_media(media_sends, roots=request.sticker_media_roots)
+                sticker_media = resolve_sticker_media(media_sends, roots=request.sticker_media_roots,
+                                                     cancelled=cancelled)
             stickers = replace(stickers, media=sticker_media)
         diagnostic_counts = AnalysisDiagnosticCounts(
             raw_message_count=outcome.processed_message_count,
@@ -326,17 +347,21 @@ class AnalysisApplicationService:
             filtered_message_count=len(kept_messages),
             analyzed_message_count=len(kept_messages),
         )
+        report("正在分析聊天内容...")
         with timed_stage("text_analysis"):
             analyzed = _analyze_kept_messages(
                 kept_messages,
                 request.stopwords_path,
                 rich_by_instance,
+                check_cancelled=check_cancelled,
             )
+        check_cancelled()
         with timed_stage("ExpressionAnalyzer.preflight"):
             expression_report = ExpressionAnalyzer().analyze(
                 kept_messages,
                 rich_by_instance=rich_by_instance,
             )
+        check_cancelled()
         has_expression_report = expression_report.expression_message_count > 0
 
         has_nontext = private_nudges is not None or any(
@@ -370,6 +395,7 @@ class AnalysisApplicationService:
             kept_messages or [legacy for legacy, _ in nudge_pairs],
             request.conversation_kind,
         )
+        report("正在整理统计结果...")
         try:
             with timed_stage("report_build"):
                 reports = _build_reports(
@@ -411,6 +437,7 @@ class AnalysisApplicationService:
                     ]
 
             try:
+                report("正在生成报告...")
                 with timed_stage("artifact_export"):
                     legacy_artifacts = ()
                     if ranked_words and self._legacy_word_artifacts is not None:
@@ -433,9 +460,12 @@ class AnalysisApplicationService:
                         source_positions=[import_positions[id(message)] for message in kept_messages],
                         sticker_media=stickers.media,
                         write=request.export_echo_report,
+                        cancelled=cancelled,
                     )
             except (OSError, ValueError):
                 raise ArtifactGenerationFailed() from None
+        except AnalysisCancelled:
+            raise
         except Exception:
             if ranked_words:
                 raise
@@ -453,6 +483,7 @@ class AnalysisApplicationService:
                     pass
             raise
 
+        check_cancelled()
         _LOGGER.info(
             "[analysis] echo view prepared echo_view=%s conversation_type=%s exported=%s",
             echo_report_view is not None,
@@ -636,6 +667,7 @@ def _analyze_kept_messages(
     messages: list[ChatMessage],
     stopwords_path: Path,
     rich_by_instance: Mapping[int, RichMessage] | None = None,
+    *, check_cancelled: Callable[[], None] = lambda: None,
 ) -> _AnalyzedMessages:
     valid_text_count = 0
     tokens: list[str] = []
@@ -644,6 +676,7 @@ def _analyze_kept_messages(
     stopwords: set[str] | None = None
 
     for message in messages:
+        check_cancelled()
         cleaned_text = clean_text(message.text, platform=message.platform)
         message_tokens = []
         if cleaned_text:
@@ -803,6 +836,7 @@ def _export_echo_artifacts(
     source_positions: list[int],
     sticker_media: tuple[StickerMedia, ...] = (),
     write: bool = True,
+    cancelled: Callable[[], bool] = lambda: False,
 ) -> EchoReportView:
     """Write the Echo JSON and self-contained HTML report artifacts."""
     output_directory = request.output_directory
@@ -818,7 +852,7 @@ def _export_echo_artifacts(
             view, messages, message_tokens, source_positions=source_positions,
         ))
     if write:
-        _write_echo_view(view, output_directory)
+        _write_echo_view(view, output_directory, cancelled=cancelled)
     return view
 
 

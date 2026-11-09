@@ -639,8 +639,12 @@ def test_echo_report_html_escapes_injected_user_text(tmp_path: Path) -> None:
 
 
 def test_echo_report_html_inlines_data_and_expression_assets_without_local_paths(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ) -> None:
+    from dataclasses import replace
+    from unittest.mock import Mock
+    from qq_chat_analyzer.presentation import echo_serializer as module
+
     culture = EchoExpressionCulture(
         available=True,
         expression_message_count=3,
@@ -659,6 +663,12 @@ def test_echo_report_html_inlines_data_and_expression_assets_without_local_paths
             ),
         ),
     )
+    culture = replace(culture,
+        members=(EchoMemberExpression("fictional-alice", "虚构 Alice", 3, 3, 100, 1,
+                                      top_expressions=culture.top_expressions),),
+        top_combinations=(EchoExpressionCombination(("wechat:捂脸", "wechat:捂脸"), 1),))
+    encoded_asset = Mock(wraps=module.expression_asset_data_uri)
+    monkeypatch.setattr(module, "expression_asset_data_uri", encoded_asset)
     output_path = tmp_path / "echo-report.html"
 
     result_path = export_echo_report_html(
@@ -692,6 +702,8 @@ def test_echo_report_html_inlines_data_and_expression_assets_without_local_paths
     assert 'id="voices-intro"' in html and '"mode":"group_distinctive"' in html
     assert "D:" not in html
     assert "references" not in html
+    # A shared successful asset is encoded once across rankings and combinations.
+    encoded_asset.assert_called_once_with("wechat:捂脸")
 
 
 @pytest.mark.parametrize("key, expected", [

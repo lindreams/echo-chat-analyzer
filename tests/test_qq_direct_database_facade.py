@@ -241,6 +241,31 @@ def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monk
     assert (outcome.report_directory / asset["data_uri"]).read_bytes() == raw
     assert asset["data_uri"] in outcome.report_path.read_text(encoding="utf-8")
     assert "正在获取表情包素材..." in progress
+    stages = ["正在读取聊天记录...", "正在筛选消息...", "正在分析表情包...", "正在分析聊天内容..."]
+    positions = [progress.index(stage) for stage in stages]
+    assert positions == sorted(positions)
+    assert positions[-1] < progress.index("正在获取表情包素材...")
+
+
+def test_cancelling_at_core_sticker_stage_releases_qq_payload_without_fetch_or_report(tmp_path):
+    from threading import Event
+
+    raw = _fictional_png()
+    facade, provider, runtime = _fetch_facade(tmp_path, digest=hashlib.md5(raw).digest(), content=raw,
+                                             group_sender="10087")
+    stop = Event()
+    def progress(stage):
+        if stage == "正在分析表情包...":
+            stop.set()
+    output = tmp_path / "cancelled-report"
+    with pytest.raises(FacadeError) as caught:
+        facade.analyze_session(ChatSource.QQ, "group:group-partition", AnalysisConfig(output_directory=output),
+                               progress=progress, cancelled=stop.is_set)
+    assert caught.value.code == "analysis_cancelled"
+    assert provider.calls == []
+    assert runtime.acquired == runtime.cleaned and len(runtime.acquired) == 1
+    assert not (output / "echo-report.html").exists()
+
 
 
 @pytest.mark.parametrize("kind", ["private", "group"])
@@ -280,7 +305,7 @@ def test_report_uses_another_verified_send_when_the_first_copy_has_no_resource(t
     assert str(tmp_path) not in lines[0] and hashlib.md5(raw).hexdigest() not in lines[0]
 
 
-@pytest.mark.parametrize("limit", ["none", "many", "bridge", "time", "transport", "cancel"])
+@pytest.mark.parametrize("limit", ["none", "many", "bridge", "time", "transport", "cancel", "stalled"])
 def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
     tmp_path, monkeypatch, caplog, limit,
 ):
@@ -313,6 +338,12 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
     clock = [0.0]
     monkeypatch.setattr(module, "_monotonic", lambda: clock[0])
     downloads = []
+    if limit == "stalled":
+        waits = []
+        def stalled(**kwargs):
+            waits.append(True)
+            raise NapCatQQMediaStageError("media_wait_timeout")
+        monkeypatch.setattr(provider, "wait_media_ready", stalled, raising=False)
     if limit == "bridge":
         resolve = provider.resolve_pic_message
         throttled = [False, False]
@@ -364,8 +395,8 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
         expected = len(targets)
         if limit == "many":
             assert expected == 40
-        assert len(downloads) == len(set(downloads)) == expected
-        if limit != "transport":
+        assert len(downloads) == len(set(downloads)) == (0 if limit == "stalled" else expected)
+        if limit not in {"transport", "stalled"}:
             assert {"available", "failed"} <= {a["status"] for a in chapter["assets"].values()}
         limited = sum(a["status"] == "limited" for a in chapter["assets"].values())
         assert limited == 0
@@ -377,11 +408,16 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
         assert [int(re.search(r"target=(\d+)", line)[1]) for line in results] == list(range(1, len(targets) + 1))
         assert all(str(tmp_path) not in line and "u_fiction" not in line and
                    not any(digest in line for digest in by_digest) for line in details)
-        if expected >= 2 and limit != "transport":
+        if expected >= 2 and limit not in {"transport", "stalled"}:
             assert any("code=qq_media_download_timeout" in line for line in results)
         if limit == "time":
             assert not any("code=report_media_time_budget" in line for line in results)
-        if limit == "transport":
+        if limit == "stalled":
+            assert waits == [True]
+            assert all(a["status"] == "failed" and a["reason"] == "qq_media_wait_timeout"
+                       for a in chapter["assets"].values())
+            assert not any("stage=kernel_query" in line or "stage=kernel_download" in line for line in details)
+        elif limit == "transport":
             assert all("code=qq_media_transport_timeout" in line for line in results)
             assert not any("code=external_file" in line for line in details)
         else:
@@ -544,6 +580,9 @@ def _fetch_facade(tmp_path, *, digest: bytes, content: bytes, mapping_passed: bo
 
 @pytest.mark.parametrize("mine,original", [(False, False), (True, True)])
 def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path, mine, original, caplog):
+    from dataclasses import replace
+    from qq_chat_analyzer.application.sticker_media import _QQMediaSendIndex
+
     png = _fictional_png()
     digest = hashlib.md5(png).hexdigest() if original else _PIC_KEY_BYTES.hex()
     sender = "10086" if mine else "10087"
@@ -555,8 +594,12 @@ def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path,
     provider.calls.clear()  # Inspect the shared report fetch checks with explicit stored facts.
     caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
     caplog.clear()
+    send_index = _QQMediaSendIndex.build(result.stickers.sends)
+    with pytest.raises(TypeError):
+        send_index.occurrence_counts[send.occurrence_id] = 0
     data = facade._fetch_qq_pic(result.stickers, media_key=send.media_key,
-                                       session_id="group:group-partition", stored_facts=provider.stored_facts, provider=provider, occurrence_id=send.occurrence_id)
+                                       session_id="group:group-partition", stored_facts=provider.stored_facts,
+                                       provider=provider, occurrence_id=send.occurrence_id, send_index=send_index)
     assert data.sends is result.stickers.sends
     media, = data.media
     assert media.original_bytes == png and media.status == ("available" if original else "preview")
@@ -573,6 +616,21 @@ def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path,
     assert len(timing_lines) == 2
     assert all(re.fullmatch(r"\[analysis-timing\] stage=sticker_media_(download|verify) elapsed_ms=\d+", line)
                for line in timing_lines)
+    # Rejected/non-QQ occurrences must still prevent a false unique match.
+    provider.calls.clear()
+    duplicate = replace(data, sends=(*data.sends, replace(send, source="wechat", media_key="unrelated")))
+    with pytest.raises(FacadeError) as caught:
+        facade._fetch_qq_pic(duplicate, media_key=send.media_key,
+                            session_id="group:group-partition", stored_facts=provider.stored_facts,
+                            provider=provider, occurrence_id=send.occurrence_id)
+    assert caught.value.code == "qq_media_group_message_unconfirmed"
+    # An index from the earlier immutable sequence cannot authorize this one.
+    with pytest.raises(FacadeError) as caught:
+        facade._fetch_qq_pic(duplicate, media_key=send.media_key,
+                            session_id="group:group-partition", stored_facts=provider.stored_facts,
+                            provider=provider, occurrence_id=send.occurrence_id, send_index=send_index)
+    assert caught.value.code == "qq_media_invalid_selection"
+    assert not provider.calls
 
 
 @pytest.mark.parametrize("field,value,code", [

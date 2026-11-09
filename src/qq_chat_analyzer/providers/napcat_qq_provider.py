@@ -551,17 +551,25 @@ class NapCatQQProvider:
                 pass  # A disconnected/generation-changed transfer expires on its owner.
 
     def wait_media_ready(self, *, cancelled: Callable[[], bool] = lambda: False) -> None:
-        """Pace the serial queue without discarding targets or overlapping QQ."""
+        """Pace the queue; a stalled lease ends this wait without releasing QQ."""
+        deadline = time.monotonic() + 30
         while True:
             if cancelled():
                 raise NapCatQQMediaStageError("media_cancelled")
-            status = self._rpc("Core.status", timeout=5)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise NapCatQQMediaStageError("media_wait_timeout")
+            status = self._rpc("Core.status", timeout=min(5, remaining))
             busy, delay = status.get("media_busy"), status.get("media_retry_after_ms")
             if type(busy) is not bool or type(delay) is not int or not 0 <= delay <= 60000:
                 raise NapCatQQMediaStageError("media_transport_invalid")
+            if cancelled():
+                raise NapCatQQMediaStageError("media_cancelled")
+            if time.monotonic() >= deadline:
+                raise NapCatQQMediaStageError("media_wait_timeout")
             if not busy and delay == 0:
                 return
-            until = time.monotonic() + (0.1 if busy else delay / 1000)
+            until = min(deadline, time.monotonic() + (0.1 if busy else delay / 1000))
             while time.monotonic() < until:
                 if cancelled():
                     raise NapCatQQMediaStageError("media_cancelled")
