@@ -211,6 +211,12 @@
       "description": "Echo NapCat program asset."
     },
     {
+      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/diagnostic_log.mjs",
+      "source": "qq-napcat-candidate",
+      "type": "file",
+      "description": "Echo NapCat program asset."
+    },
+    {
       "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/main_wal.mjs",
       "source": "qq-napcat-candidate",
       "type": "file",

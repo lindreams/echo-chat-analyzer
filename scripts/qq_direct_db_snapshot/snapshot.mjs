@@ -17,7 +17,7 @@
 // change booleans. The identity value (QQ UIN), nicknames, message text, the
 // passphrase and absolute paths never appear in a status object, log line or
 // exception message.
-import { appendFileSync, existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
@@ -25,6 +25,7 @@ import { unlinkSync, readFileSync } from 'node:fs';
 import { createMergedEncryptedDatabase, finalizeStandaloneSnapshot, captureCodeHash, fileState as strongFileState } from './main_wal.mjs';
 import { createWorkspace, workspaceCodeHash } from './workspace.mjs';
 import { acquireSourceGuard } from './source_guard.mjs';
+import { appendDiagnostic } from './diagnostic_log.mjs';
 
 const snapshotCodeHash = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
 const FAILURE_STAGES = new Set(['source_location', 'workspace_isolation', 'shm_witness',
@@ -96,8 +97,7 @@ function traceAcquisitionDiagnostic(stage, error = null, generationId = null, wi
       }
       fields += ` snapshot_code_hash=${snapshotCodeHash} capture_code_hash=${captureCodeHash} workspace_code_hash=${workspaceCodeHash}`;
     }
-    const logFile = process.env.QCE_LOG_FILE;
-    if (logFile) appendFileSync(logFile, `[${new Date().toISOString()}] [echo-snapshot] stage=acquisition_diagnostic${generationId ? ` generation_id=${generationId}` : ''}${fields}\n`);
+    appendDiagnostic(`[${new Date().toISOString()}] [echo-snapshot] stage=acquisition_diagnostic${generationId ? ` generation_id=${generationId}` : ''}${fields}\n`);
   } catch { /* No diagnostic failure changes acquisition behavior. */ }
 }
 
@@ -190,7 +190,7 @@ function traceStage(stage, generationId = null, startedAt = null, outcome = null
     const generation = generationId ? ` generation_id=${generationId}` : '';
     const timing = startedAt === null ? '' :
       ` outcome=${outcome} elapsed_ms=${Number((process.hrtime.bigint() - startedAt) / 1000000n)}`;
-    appendFileSync(logFile, `[${new Date().toISOString()}] [echo-snapshot] stage=${stage}${generation}${timing}\n`);
+    appendDiagnostic(`[${new Date().toISOString()}] [echo-snapshot] stage=${stage}${generation}${timing}\n`);
   } catch {
     // Best-effort diagnostics only.
   }
@@ -247,8 +247,7 @@ function traceSourceDatabaseState(stage, state, before = null, generationId = nu
     `wal_present=${state.wal.present} wal_bytes=${state.wal.bytes} ` +
     `shm_present=${state.shm.present} shm_bytes=${state.shm.bytes}`;
   try {
-    appendFileSync(
-      logFile,
+    appendDiagnostic(
       `[${new Date().toISOString()}] [echo-snapshot] stage=${stage} ${details}${changed}\n`,
     );
   } catch {
@@ -260,8 +259,7 @@ function traceInputWitness(before, after, generationId) {
   const logFile = process.env.QCE_LOG_FILE;
   if (!logFile) return;
   try {
-    appendFileSync(
-      logFile,
+    appendDiagnostic(
       `[${new Date().toISOString()}] [echo-snapshot] stage=decrypt_input_witness ` +
       `generation_id=${generationId} ` +
       `before_valid=${before !== null} after_valid=${after !== null} ` +

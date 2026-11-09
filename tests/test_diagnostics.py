@@ -11,6 +11,54 @@ import pytest
 from qq_chat_analyzer import diagnostics
 
 
+@pytest.mark.slow_integration
+def test_node_log_rotation_preserves_legacy_and_retries_locked_rename(tmp_path):
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node required for snapshot diagnostic retention")
+    helper = Path(__file__).resolve().parents[1] / "scripts/qq_direct_db_snapshot/diagnostic_log.mjs"
+    script = r"""
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import {syncBuiltinESMExports} from 'node:module';
+const file = process.env.QCE_LOG_FILE;
+const {appendDiagnostic} = await import(process.argv[1]);
+const limit = 5 * 1024 * 1024;
+const legacy = Buffer.alloc(limit + 100, 'L');
+fs.writeFileSync(file, legacy);
+appendDiagnostic('stage=acquire outcome=failed guard_code=fictional\n');
+assert.deepEqual(fs.readFileSync(file + '.1'), legacy);
+assert.match(fs.readFileSync(file, 'utf8'), /guard_code=fictional/);
+for (let i = 0; i < 24; i++) appendDiagnostic('x'.repeat(1024 * 1024));
+const files = [file, ...[1, 2, 3].map(i => file + '.' + i)];
+assert(files.every(p => fs.statSync(p).size < limit));
+assert(!fs.existsSync(file + '.4'));
+const history = files.slice(1).map(p => fs.readFileSync(p));
+const rename = fs.renameSync;
+fs.renameSync = () => { throw Object.assign(new Error('fictional lock'), {code: 'EPERM'}); };
+syncBuiltinESMExports();
+appendDiagnostic('z'.repeat(limit));
+files.slice(1).forEach((p, i) => assert.deepEqual(fs.readFileSync(p), history[i]));
+assert(fs.readFileSync(file, 'utf8').endsWith('z'.repeat(limit)));
+fs.renameSync = rename;
+syncBuiltinESMExports();
+appendDiagnostic('stage=cleanup outcome=ok\n');
+assert.equal(fs.readFileSync(file, 'utf8'), 'stage=cleanup outcome=ok\n');
+assert(fs.statSync(file + '.1').size > limit);
+// A logging I/O failure must never escape into acquisition.
+process.env.QCE_LOG_FILE = file + '/not-a-directory';
+appendDiagnostic('stage=acquire outcome=started\n');
+"""
+    # Keep JavaScript string escapes literal; all state remains in this test root.
+    import os
+    env = {**os.environ, "QCE_LOG_FILE": str(tmp_path / "qq-snapshot-diagnostics.log")}
+    subprocess.run([node, "--input-type=module", "-e", script, helper.as_uri()],
+                   env=env, check=True, capture_output=True, text=True, timeout=30)
+
+
 def test_log_rotation_preserves_legacy_file_and_filters_all_backups(tmp_path, monkeypatch):
     from logging.handlers import RotatingFileHandler
     from qq_chat_analyzer.logging_config import build_diagnostic_handler

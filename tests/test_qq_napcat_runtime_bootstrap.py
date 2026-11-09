@@ -193,6 +193,8 @@ def test_plugin_loads_without_bridge_or_acquisition(tmp_path):
     shutil.copy2(entry.parent / "bridge.mjs", tmp_path / "bridge.mjs")
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
+    shutil.copy2(ROOT / "scripts/qq_direct_db_snapshot/diagnostic_log.mjs",
+                 snapshot / "diagnostic_log.mjs")
     (snapshot / "snapshot.mjs").write_text("export function registerEchoSnapshotApi(core, options) { core.apis.EchoSnapshotApi = {acquire(){throw Error('unexpected acquisition')},recover:async()=>({ok:true})}; }", encoding="utf-8")
     check = "import {plugin_init,plugin_cleanup} from './index.mjs'; process.env.ECHO_BRIDGE_PORT='0'; process.env.ECHO_SNAPSHOT_ROOT=process.cwd(); process.env.ECHO_BRIDGE_TOKEN='" + FICTIONAL_TOKEN + "'; const core={apis:{}}; let logged=false; await plugin_init({core,logger:{info(){logged=true}}}); if (!core.apis.EchoSnapshotApi) throw Error('not registered'); if (!logged) throw Error('plugin readiness log missing'); await plugin_cleanup();"
     result = subprocess.run([node, "--input-type=module", "-e", check], cwd=tmp_path, capture_output=True, text=True, timeout=15)
@@ -211,6 +213,8 @@ def test_plugin_refuses_an_absent_or_malformed_bridge_credential(tmp_path, token
     shutil.copy2(entry.parent / "bridge.mjs", tmp_path / "bridge.mjs")
     snapshot = tmp_path / "snapshot"
     snapshot.mkdir()
+    shutil.copy2(ROOT / "scripts/qq_direct_db_snapshot/diagnostic_log.mjs",
+                 snapshot / "diagnostic_log.mjs")
     (snapshot / "snapshot.mjs").write_text("export function registerEchoSnapshotApi(core, options) { core.apis.EchoSnapshotApi = {acquire(){throw Error('unexpected acquisition')},recover:async()=>({ok:true})}; }", encoding="utf-8")
     lines = [
         "import {plugin_init} from './index.mjs';",

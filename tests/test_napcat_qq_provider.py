@@ -225,6 +225,9 @@ def runtime(tmp_path_factory):
         pytest.skip("Node required for real bridge transport contract")
     directory = tmp_path_factory.mktemp("echo-bridge")
     shutil.copy2(BRIDGE, directory / "bridge.mjs")
+    (directory / "snapshot").mkdir()
+    shutil.copy2(ROOT / "scripts/qq_direct_db_snapshot/diagnostic_log.mjs",
+                 directory / "snapshot/diagnostic_log.mjs")
     (directory / "server.mjs").write_text(SERVER, encoding="utf-8")
     processes = []
     by_base = {}
@@ -258,6 +261,7 @@ def runtime(tmp_path_factory):
         return start(port=urllib.parse.urlsplit(base).port, **kwargs)
 
     start.restart = restart
+    start.bridge_uri = (directory / "bridge.mjs").as_uri()
 
     def control(base, action):
         process = by_base[base]
@@ -778,21 +782,21 @@ def test_provider_rejects_non_loopback_or_ambiguous_urls(url):
         module.NapCatQQProvider(url)
 
 
-def test_bridge_cannot_bind_external_address():
+def test_bridge_cannot_bind_external_address(runtime):
     assert BRIDGE.is_file()
     node=shutil.which("node")
     if not node: pytest.skip("Node unavailable")
-    script=f"import {{startBridge}} from {json.dumps(BRIDGE.as_uri())}; try {{ await startBridge({{apis:{{}}}},{{}},{{host:'0.0.0.0',port:0,token:'{TOKEN}'}}); process.exit(1); }} catch {{ process.exit(0); }}"
+    script=f"import {{startBridge}} from {json.dumps(runtime.bridge_uri)}; try {{ await startBridge({{apis:{{}}}},{{}},{{host:'0.0.0.0',port:0,token:'{TOKEN}'}}); process.exit(1); }} catch {{ process.exit(0); }}"
     result=subprocess.run([node,"--input-type=module","-e",script],capture_output=True,timeout=10)
     assert result.returncode == 0
 
 
-def test_bridge_refuses_an_absent_or_malformed_credential():
+def test_bridge_refuses_an_absent_or_malformed_credential(runtime):
     assert BRIDGE.is_file()
     node=shutil.which("node")
     if not node: pytest.skip("Node unavailable")
     script = (
-        f"import {{startBridge}} from {json.dumps(BRIDGE.as_uri())};"
+        f"import {{startBridge}} from {json.dumps(runtime.bridge_uri)};"
         "const core={apis:{}}; const snapshot={};"
         "for (const token of [undefined, null, '', 'fictional', 'A'.repeat(64), 'f'.repeat(63), 'f'.repeat(65)]) {"
         "  try { await startBridge(core, snapshot, {port:0, token}); process.exit(3); }"

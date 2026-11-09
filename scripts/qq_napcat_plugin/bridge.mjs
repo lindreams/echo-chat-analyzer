@@ -1,7 +1,8 @@
 import {createServer} from 'node:http';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
-import {appendFileSync, constants as fsConstants, promises as fs} from 'node:fs';
+import {constants as fsConstants, promises as fs} from 'node:fs';
 import {isAbsolute, basename, dirname, join, normalize} from 'node:path';
+import {appendDiagnostic} from './snapshot/diagnostic_log.mjs';
 
 const MAX_REQUEST_BYTES = 4096;
 const CREDENTIAL = /^[0-9a-f]{64}$/;
@@ -15,8 +16,7 @@ const generation = value => typeof value === 'string' && value.length > 0 && val
 // Internal literal stages/outcomes only; stdout/stderr are intentionally not copied into user logs.
 const logSnapshot = (stage, outcome) => {
   try {
-    const file = process.env.QCE_LOG_FILE;
-    if (file) appendFileSync(file, `[${new Date().toISOString()}] [echo-snapshot] stage=${stage} outcome=${outcome}\n`);
+    appendDiagnostic(`[${new Date().toISOString()}] [echo-snapshot] stage=${stage} outcome=${outcome}\n`);
   } catch {}
 };
 const MEDIA_CALL_BURST = 64;
@@ -131,7 +131,7 @@ const logNativeMedia = (stage, value) => {
       if (code !== null) fields += ` ${key}=${code}`;
     }
     const present = typeof value?.filePath === 'string' && value.filePath.length > 0;
-    appendFileSync(logFile, `[${new Date().toISOString()}] [echo-media] stage=${stage}${fields} path_present=${Number(present)}\n`);
+    appendDiagnostic(`[${new Date().toISOString()}] [echo-media] stage=${stage}${fields} path_present=${Number(present)}\n`);
   } catch { /* Diagnostics cannot change acquisition behavior. */ }
 };
 // Inspect only paths supplied by the identity-confirmed PIC, never a directory.
