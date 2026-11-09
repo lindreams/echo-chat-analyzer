@@ -241,6 +241,31 @@ def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monk
     assert (outcome.report_directory / asset["data_uri"]).read_bytes() == raw
     assert asset["data_uri"] in outcome.report_path.read_text(encoding="utf-8")
     assert "正在获取表情包素材..." in progress
+    stages = ["正在读取聊天记录...", "正在筛选消息...", "正在分析表情包...", "正在分析聊天内容..."]
+    positions = [progress.index(stage) for stage in stages]
+    assert positions == sorted(positions)
+    assert positions[-1] < progress.index("正在获取表情包素材...")
+
+
+def test_cancelling_at_core_sticker_stage_releases_qq_payload_without_fetch_or_report(tmp_path):
+    from threading import Event
+
+    raw = _fictional_png()
+    facade, provider, runtime = _fetch_facade(tmp_path, digest=hashlib.md5(raw).digest(), content=raw,
+                                             group_sender="10087")
+    stop = Event()
+    def progress(stage):
+        if stage == "正在分析表情包...":
+            stop.set()
+    output = tmp_path / "cancelled-report"
+    with pytest.raises(FacadeError) as caught:
+        facade.analyze_session(ChatSource.QQ, "group:group-partition", AnalysisConfig(output_directory=output),
+                               progress=progress, cancelled=stop.is_set)
+    assert caught.value.code == "analysis_cancelled"
+    assert provider.calls == []
+    assert runtime.acquired == runtime.cleaned and len(runtime.acquired) == 1
+    assert not (output / "echo-report.html").exists()
+
 
 
 @pytest.mark.parametrize("kind", ["private", "group"])
@@ -280,7 +305,7 @@ def test_report_uses_another_verified_send_when_the_first_copy_has_no_resource(t
     assert str(tmp_path) not in lines[0] and hashlib.md5(raw).hexdigest() not in lines[0]
 
 
-@pytest.mark.parametrize("limit", ["none", "many", "bridge", "time", "transport", "cancel", "retries", "permanent", "deadline", "stale-core"])
+@pytest.mark.parametrize("limit", ["none", "many", "bridge", "time", "transport", "cancel", "retries", "permanent", "deadline", "stale-core", "stalled"])
 def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
     tmp_path, monkeypatch, caplog, limit,
 ):
@@ -318,6 +343,12 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
     monkeypatch.setattr(module, "_monotonic", lambda: clock[0])
     downloads = []
     locators = []
+    if limit == "stalled":
+        waits = []
+        def stalled(**kwargs):
+            waits.append(True)
+            raise NapCatQQMediaStageError("media_wait_timeout")
+        monkeypatch.setattr(provider, "wait_media_ready", stalled, raising=False)
     if limit == "bridge":
         resolve = provider.resolve_pic_message
         throttled = [False, False]
@@ -378,7 +409,7 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
             assert expected == material_count
         from collections import Counter
         calls = Counter(downloads)
-        assert max(calls.values()) <= 2
+        assert max(calls.values(), default=0) <= 2
         assert len({(item["expected_md5"], item["msg_id"]) for item in locators}) == len(downloads)
         assert all(0 < item["timeout"] <= 5 for item in locators)
         statuses = {a["status"] for a in chapter["assets"].values()}
@@ -390,8 +421,13 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
             assert outcome.report_path.is_file()
             assert clock[0] == (30 if limit == "time" else 45)  # No later request at the foreground deadline.
         else:
-            assert limited == 0 and len(calls) == expected
-            if limit == "retries":
+            assert limited == 0 and len(calls) == (0 if limit == "stalled" else expected)
+            if limit == "stalled":
+                assert waits == [True]
+                assert statuses == {"failed"}
+                assert all(a["reason"] == "qq_media_wait_timeout" for a in chapter["assets"].values())
+                assert not downloads and not locators
+            elif limit == "retries":
                 assert set(calls.values()) == {2} and statuses == {"failed"}
                 assert downloads == downloads[:expected] * 2  # Fair rounds, never exhaust one material first.
             elif limit == "stale-core":
@@ -427,7 +463,7 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
         if limit == "transport":
             assert all("code=qq_media_transport_timeout" in line for line in results)
             assert not any("code=external_file" in line for line in details)
-        elif limit not in {"retries", "permanent"}:
+        elif limit not in {"retries", "permanent", "stalled"}:
             assert any("code=external_file" in line for line in details)
     assert runtime.acquired == runtime.cleaned and len(runtime.acquired) == 1
     assert historical.read_bytes() == b"fictional old report"

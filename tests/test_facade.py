@@ -346,7 +346,7 @@ def test_metadata_failure_keeps_retained_scratch_and_creates_no_package(
     module = _facade_module()
 
     class _WritingService(_StubAnalysisService):
-        def execute(self, request):
+        def execute(self, request, **kwargs):
             self.requests.append(request)
             for name in ("echo-report.html", "echo-report.json"):
                 (request.output_directory / name).write_text("fictional", encoding="utf-8")
@@ -390,7 +390,7 @@ class _StubAnalysisService:
         self._error = error
         self.requests: list[object] = []
 
-    def execute(self, request):
+    def execute(self, request, **kwargs):
         self.requests.append(request)
         if self._error is not None:
             raise self._error
@@ -706,7 +706,7 @@ def test_shutdown_cleans_scratch_but_keeps_packaged_report(
     tmp_path: Path,
 ) -> None:
     class _WritingAnalysisService(_StubAnalysisService):
-        def execute(self, request):
+        def execute(self, request, **kwargs):
             self.requests.append(request)
             (request.output_directory / "echo-report.html").write_text(
                 "<html>fictional echo</html>",
@@ -903,7 +903,7 @@ def _analysis_over_existing_reports(tmp_path, existing):
         )
         old.append(module.package_echo_report(source, reports_root=root, metadata=metadata))
     class WritingService(_StubAnalysisService):
-        def execute(self, request):
+        def execute(self, request, **kwargs):
             for name in ("echo-report.html", "echo-report.json"):
                 (request.output_directory / name).write_text("fictional", encoding="utf-8")
             return _result_with_echo_artifact()

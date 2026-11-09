@@ -195,7 +195,7 @@ def test_preflight_refuses_running_analysis_without_sealing_it(tmp_path, monkeyp
     service, _, calls = fixture(tmp_path)
     analysis = AnalysisApplicationService()
     entered, release = Event(), Event()
-    def execute(_):
+    def execute(_, **kwargs):
         entered.set()
         assert release.wait(5)
     monkeypatch.setattr(analysis, '_execute', execute)

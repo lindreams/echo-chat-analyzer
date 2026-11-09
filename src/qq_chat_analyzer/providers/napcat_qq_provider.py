@@ -580,18 +580,22 @@ class NapCatQQProvider:
 
     def wait_media_ready(self, *, cancelled: Callable[[], bool] = lambda: False,
                          timeout: float = 5) -> None:
-        """Pace the serial queue without discarding targets or overlapping QQ."""
+        """Bound this wait without releasing the bridge's native lease."""
         deadline = time.monotonic() + timeout
         while True:
             if cancelled():
                 raise NapCatQQMediaStageError("media_cancelled")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise NapCatQQMediaStageError("media_busy")
+                raise NapCatQQMediaStageError("media_wait_timeout")
             status = self._rpc("Core.status", timeout=min(5, remaining))
             busy, delay = status.get("media_busy"), status.get("media_retry_after_ms")
             if type(busy) is not bool or type(delay) is not int or not 0 <= delay <= 60000:
                 raise NapCatQQMediaStageError("media_transport_invalid")
+            if cancelled():
+                raise NapCatQQMediaStageError("media_cancelled")
+            if time.monotonic() >= deadline:
+                raise NapCatQQMediaStageError("media_wait_timeout")
             if busy and status.get("media_pending_state") in {"abandoned", "uncertain"}:
                 raise NapCatQQMediaStageError("media_pending")
             if not busy and delay == 0 and time.monotonic() < deadline:

@@ -20,6 +20,13 @@ class InvalidAnalysisRequest(ApplicationServiceError):
     public_message = "The analysis request is invalid."
 
 
+class AnalysisCancelled(ApplicationServiceError):
+    """Raised at a cooperative checkpoint before publishing more results."""
+
+    code = "analysis_cancelled"
+    public_message = "分析已取消。"
+
+
 class InvalidAnalysisScope(ApplicationServiceError):
     """Raised when an analysis scope cannot be resolved safely."""
 

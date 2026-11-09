@@ -43,7 +43,7 @@ def test_idle_analysis_owner_is_not_unknown_just_because_it_exists():
 def test_running_analysis_is_unknown_even_if_it_later_finishes(monkeypatch):
     service = AnalysisApplicationService()
     entered, release = threading.Event(), threading.Event()
-    def execute(_):
+    def execute(_, **kwargs):
         entered.set()
         assert release.wait(2)
     monkeypatch.setattr(service, '_execute', execute)
@@ -113,7 +113,7 @@ def test_inflight_inert_builder_is_unknown_even_before_bundle_publication():
 def test_completed_analysis_is_idle_and_new_admission_is_sealed(monkeypatch):
     from qq_chat_analyzer.application.analysis_service import AnalysisServiceClosing
     service = AnalysisApplicationService()
-    monkeypatch.setattr(service, '_execute', lambda _: 'fictional result')
+    monkeypatch.setattr(service, '_execute', lambda _, **kwargs: 'fictional result')
     assert service.execute(None) == 'fictional result'
     assert steps(ChatAnalyzerFacade(analysis_service=service))['source_lifecycle'] is ShutdownStatus.SUCCESS
     with pytest.raises(AnalysisServiceClosing):

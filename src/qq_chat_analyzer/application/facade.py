@@ -390,6 +390,10 @@ _QQ_MEDIA_STAGE_FAILURES = {
         "qq_media_time_budget",
         "本次已停止等待图片，发送统计已保留。",
     ),
+    "media_wait_timeout": (
+        "qq_media_wait_timeout",
+        "QQ 图片任务长时间未结束，已停止本次素材获取，发送统计已保留。",
+    ),
     "media_budget_exhausted": (
         "qq_media_budget_exhausted",
         "短时间内图片请求较多，请稍后重试。",
@@ -892,7 +896,6 @@ class ChatAnalyzerFacade:
                                           else StickerMedia(key, "failed", setup_failure))
                             code = setup_failure
                         else:
-                            _report_progress(progress, f"正在获取表情包素材（第 {round_number} 轮，{ordinal}/{len(targets)}）...")
                             send = sends[key][candidate_index]
                             facts = tuple(facts_by_message[send.message_id])
                             # Never share a negative result across accounts,
@@ -913,8 +916,10 @@ class ChatAnalyzerFacade:
                                 wait_ready = getattr(provider, "wait_media_ready", None)
                                 if callable(wait_ready):
                                     trace("waiting_bridge")
+                                    _report_progress(progress, f"正在等待 QQ 准备图片（{ordinal}/{len(targets)}）...")
                                     wait_ready(cancelled=stopped, timeout=min(_QQ_MEDIA_REQUEST_SECONDS, deadline - _monotonic()))
                                     check_budget()
+                                _report_progress(progress, f"正在获取表情包素材（第 {round_number} 轮，{ordinal}/{len(targets)}）...")
                                 recovered = self._fetch_qq_pic(
                                     fetch_data, media_key=key,
                                     session_id=session.session_id, occurrence_id=send.occurrence_id,
@@ -948,9 +953,9 @@ class ChatAnalyzerFacade:
                                 # request used the last of the foreground budget.
                                 media[key] = qq_media_failure(key, error.code)
                                 check_budget()
-                                if error.code == "qq_media_pending":
-                                    # One abandoned/uncertain native operation
-                                    # occupies the bridge across reports. Do
+                                if error.code in {"qq_media_pending", "qq_media_wait_timeout"}:
+                                    # A stalled or uncertain native operation
+                                    # may still occupy the bridge. Do
                                     # not spend another wait on every target.
                                     setup_failure = error.code
                                     following.clear()
@@ -1776,13 +1781,12 @@ class ChatAnalyzerFacade:
             )
             with _translated_errors(source):
                 _report_progress(progress, "正在处理消息...")
-                _report_progress(progress, "正在分析聊天内容...")
-                if automatic_qq or automatic_wechat:
-                    _report_progress(progress, "正在分析表情包...")
                 core_started_at = _perf_counter()
                 core_completed = False
                 try:
-                    result = analysis_service.execute(request)
+                    result = analysis_service.execute(
+                        request, progress=progress,
+                        cancelled=lambda: cancelled() or self._sources_closing.is_set())
                     core_completed = True
                 finally:
                     if direct_db_diagnostics:
