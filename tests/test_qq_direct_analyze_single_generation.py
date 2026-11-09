@@ -147,7 +147,7 @@ def test_materialize_exception_still_cleans_up(
     def _raise(*_args, **_kwargs) -> None:
         raise RuntimeError("materialization exploded")
 
-    monkeypatch.setattr(QQDatabaseProvider, "materialize_session_payload", _raise)
+    monkeypatch.setattr(QQDatabaseProvider, "read_session_payload", _raise)
 
     with pytest.raises(RuntimeError, match="materialization exploded"):
         with service.acquired_session(GROUP_SESSION_ID):
@@ -157,23 +157,30 @@ def test_materialize_exception_still_cleans_up(
     assert not runtime.generation_directory("gen-0001").exists()
 
 
-def test_payload_enrichment_reads_once_after_generation_cleanup(tmp_path, monkeypatch):
+def test_payload_enrichment_writes_once_after_generation_cleanup(tmp_path, monkeypatch):
     service, runtime, _ = _service(tmp_path)
     original_read = Path.read_text
-    payload_reads = []
+    original_write = Path.write_text
+    payload_writes = []
 
     def read(path, *args, **kwargs):
         if path.name == "qq-db-session.json":
-            assert runtime.cleaned == ["gen-0001"]
-            payload_reads.append(path)
+            pytest.fail("Identity enrichment must reuse the records already in memory")
         return original_read(path, *args, **kwargs)
 
+    def write(path, *args, **kwargs):
+        if path.name == "qq-db-session.json":
+            assert runtime.cleaned == ["gen-0001"]
+            payload_writes.append(path)
+        return original_write(path, *args, **kwargs)
+
     monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(Path, "write_text", write)
     with service.acquired_session(GROUP_SESSION_ID) as acquisition:
-        assert len(payload_reads) == 1
+        assert payload_writes == [acquisition.payload_path]
         payload = json.loads(original_read(acquisition.payload_path, encoding="utf-8"))
         assert len(payload["records"]) == 1
-    assert not payload_reads[0].exists()
+    assert not payload_writes[0].exists()
 
 
 def test_invalid_manifest_still_cleans_up(tmp_path: Path) -> None:
@@ -190,21 +197,22 @@ def test_invalid_manifest_still_cleans_up(tmp_path: Path) -> None:
     assert runtime.cleaned == ["gen-0001"]
 
 
-def test_unreadable_payload_releases_scratch_and_generation(tmp_path, monkeypatch):
+def test_payload_write_failure_releases_scratch_and_generation(tmp_path, monkeypatch):
     service, runtime, _ = _service(tmp_path)
-    materialize = QQDatabaseProvider.materialize_session_payload
+    original_write = Path.write_text
     paths = []
 
-    def corrupt(provider, *args, **kwargs):
-        path = materialize(provider, *args, **kwargs)
-        path.write_text("{invalid fictional payload", encoding="utf-8")
-        paths.append(path)
-        return path
+    def fail_write(path, *args, **kwargs):
+        if path.name == "qq-db-session.json":
+            assert runtime.cleaned == ["gen-0001"]
+            paths.append(path)
+            raise OSError("fictional disk write failure")
+        return original_write(path, *args, **kwargs)
 
-    monkeypatch.setattr(QQDatabaseProvider, "materialize_session_payload", corrupt)
-    with pytest.raises(json.JSONDecodeError):
+    monkeypatch.setattr(Path, "write_text", fail_write)
+    with pytest.raises(OSError, match="fictional disk write failure"):
         with service.acquired_session(GROUP_SESSION_ID):
-            pytest.fail("Invalid JSON must not reach a consumer")
+            pytest.fail("A failed payload write must not reach a consumer")
     assert runtime.cleaned == ["gen-0001"]
     assert not runtime.generation_directory("gen-0001").exists()
     assert not paths[0].parent.exists()

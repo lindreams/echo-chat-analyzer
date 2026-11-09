@@ -215,6 +215,25 @@ class QQDatabaseProvider:
     ) -> Path:
         """Write source-specific records for one session as a qq-db-json payload.
 
+        File consumers use the same source payload as direct acquisition.
+        """
+        payload = self.read_session_payload(
+            session, start_time=start_time, end_time=end_time, self_uin=self_uin,
+        )
+        output_path = Path(payload_path)
+        output_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        return output_path
+
+    def read_session_payload(
+        self,
+        session: QQSession,
+        *,
+        start_time: int | float | str | None = None,
+        end_time: int | float | str | None = None,
+        self_uin: str | None = None,
+    ) -> dict[str, Any]:
+        """Read source-specific records without a serialization round trip.
+
         Uses the session internal_key (column 40027) as the query
         predicate, and routes to the correct table based on session_type.
 
@@ -233,8 +252,7 @@ class QQDatabaseProvider:
         else:
             raise ValueError(f"Unsupported QQ session type: {session.session_type}")
         records = self._read_session_records(session, table_name, start_time, end_time)
-        output_path = Path(payload_path)
-        payload = {
+        return {
             "format": QQ_DB_JSON_FORMAT,
             "format_version": 0,
             "source": "qq",
@@ -249,11 +267,6 @@ class QQDatabaseProvider:
             },
             "records": records,
         }
-        output_path.write_text(
-            json.dumps(payload, ensure_ascii=False),
-            encoding="utf-8",
-        )
-        return output_path
 
     def _read_group_records(
         self,

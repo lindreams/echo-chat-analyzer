@@ -458,8 +458,9 @@ class QQDirectDatabaseImportService:
         :meth:list_sessions; the target session is located by typed identity
         and materialized from that same generation DB.  The generation is
         removed in `finally` before the payload is yielded, so the plaintext
-        DB is released as soon as the `qq-db-json` payload is fully written
-        and no tokenizer/analyzer/report ever holds the plaintext DB.
+        DB is released as soon as its records are read. Identity enrichment
+        then writes the final `qq-db-json` once; no tokenizer/analyzer/report
+        ever holds the plaintext DB.
         """
         client = self._begin_acquisition()
         try:
@@ -483,10 +484,10 @@ class QQDirectDatabaseImportService:
                             raise QQDirectSessionNotFound()
                     lookup_at = time.perf_counter()
                     scratch_context = TemporaryDirectory(prefix="chat-analyzer-qq-db-")
+                    payload_path = Path(scratch_context.name) / "qq-db-session.json"
                     with qq_session_stage(_LOGGER, "message_materialization"):
-                        payload_path = provider.materialize_session_payload(
+                        payload = provider.read_session_payload(
                             session,
-                            Path(scratch_context.name) / "qq-db-session.json",
                             start_time=start_time,
                             end_time=end_time,
                             self_uin=self_uin,
@@ -516,7 +517,6 @@ class QQDirectDatabaseImportService:
                 cleaned_at = time.perf_counter()
                 group_names, friend_names = self._metadata_names()
                 metadata_at = time.perf_counter()
-                payload = json.loads(payload_path.read_text(encoding="utf-8"))
                 if session.session_type == "group":
                     try:
                         sender_names = _group_sender_names_with_diagnostics(client, session, payload)
