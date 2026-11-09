@@ -1278,6 +1278,63 @@ def test_batch_rejects_oversized_selection_before_io(tmp_path, monkeypatch):
                                 roots=(tmp_path,), source="qq")
 
 
+def test_qq_cache_inventory_reuses_walk_across_batches_with_identical_results(tmp_path, monkeypatch):
+    from dataclasses import replace
+    from qq_chat_analyzer.analysis.stickers import StickerData
+    from qq_chat_analyzer.application import sticker_media
+
+    raws = (image_bytes("PNG"), image_bytes("GIF", animated=True))
+    sends = [qq_pic(hashlib.md5(raw).hexdigest()) for raw in raws]
+    (tmp_path / f"{sends[0].content_md5}.bin").write_bytes(raws[0])
+    opaque = tmp_path / "opaque-original"
+    opaque.write_bytes(raws[1])
+    sends[1] = replace(sends[1], local_paths=(str(opaque),))
+    sends += [replace(sends[1], local_paths=()), qq_pic("a" * 32)]
+    expected = resolve(sends, (tmp_path,), targeted=True, digest_names_only=True)
+    data = StickerData(sends=tuple(sends))
+    index = sticker_media._QQMediaSendIndex.build(data.sends)
+    scan_cache = sticker_media._QQMediaCacheScan()
+    scans, real_scan = [], sticker_media.os.scandir
+
+    def scan(path):
+        scans.append(path)
+        return real_scan(path)
+
+    monkeypatch.setattr(sticker_media.os, "scandir", scan)
+    for key in dict.fromkeys(send.media_key for send in sends):
+        data = sticker_media.associate_sticker_media(
+            data, media_keys=(key,), roots=(tmp_path,), source="qq",
+            send_index=index, scan_cache=scan_cache)
+    assert scans == [tmp_path]
+    assert data.media == expected
+    assert data.sends is index.sends
+
+
+def test_qq_cached_inventory_rechecks_files_and_rejects_changed_scope(tmp_path):
+    from qq_chat_analyzer.application import sticker_media
+
+    raw = image_bytes("PNG")
+    send = qq_pic(hashlib.md5(raw).hexdigest())
+    path = tmp_path / f"{send.content_md5}.bin"
+    path.write_bytes(raw)
+    scan_cache = sticker_media._QQMediaCacheScan()
+    options = dict(targeted=True, digest_names_only=True, scan_cache=scan_cache)
+    # An incomplete walk is never published for later batches.
+    item, = resolve((send,), (tmp_path,), max_scan_entries=0, **options)
+    assert item.status == "limited" and scan_cache.signature is None
+    item, = resolve((send,), (tmp_path,), **options)
+    assert item.status == "available"
+    path.write_bytes(b"fictional replacement, not the authorized digest")
+    stats = {}
+    item, = resolve((send,), (tmp_path,), diagnostics=stats, **options)
+    assert (item.status, item.reason) == ("missing", "digest_mismatch")
+    assert item.original_bytes is None and stats["scan_reused"] and stats["files_read"] == 1
+    changed_root = tmp_path / "another-scope"
+    changed_root.mkdir()
+    item, = resolve((send,), (changed_root,), **options)
+    assert (item.status, item.reason) == ("unsafe", "scan_scope_changed")
+
+
 def test_batch_memory_ceiling_applies_across_pages(tmp_path, monkeypatch):
     from qq_chat_analyzer.analysis.stickers import StickerData
     from qq_chat_analyzer.application import sticker_media

@@ -76,6 +76,21 @@ class _QQMediaSendIndex:
                    resolve_sticker_media(sends))
 
 
+@dataclass(slots=True)
+class _QQMediaCacheScan:
+    """One report's complete directory inventory; never caches read authority.
+
+    Only names inside the exact original roots/scopes are reused. Every
+    selected file still goes through the current path/handle witnesses, MD5
+    and full decode. New cache entries can be found on the next report (or
+    by native QQ recovery), never by broadening this inventory's scope.
+    """
+
+    signature: tuple | None = field(default=None, repr=False)
+    files: tuple[tuple[Path, Path], ...] = field(default=(), repr=False)
+    entries: int = 0
+
+
 def qq_media_failure(media_key: str, code: str) -> StickerMedia:
     """Fixed shared failure categories; no private provider text enters reports."""
     if code == "qq_media_time_budget":
@@ -98,6 +113,7 @@ def associate_sticker_media(
     source: str, cancelled: Callable[[], bool] = lambda: False,
     diagnostics: dict[str, int | bool] | None = None,
     send_index: _QQMediaSendIndex | None = None,
+    scan_cache: _QQMediaCacheScan | None = None,
 ) -> StickerData:
     """Return the same sending facts with one bounded, explicitly selected batch.
 
@@ -118,7 +134,8 @@ def associate_sticker_media(
     else:
         batch_sends = data.sends
     sends = {send.media_key: send for send in batch_sends if send.source == source}
-    if source not in {"qq", "wechat"} or not keys.issubset(sends) or len(keys) > STICKER_MEDIA_BATCH_SIZE:
+    if (source not in {"qq", "wechat"} or not keys.issubset(sends)
+            or len(keys) > STICKER_MEDIA_BATCH_SIZE or (scan_cache is not None and source != "qq")):
         raise ValueError("invalid_sticker_batch")
     if not keys or cancelled():
         return data
@@ -143,7 +160,7 @@ def associate_sticker_media(
     results = resolve_sticker_media(
         pending, roots=roots, targeted=source == "qq", digest_names_only=source == "qq",
         cancelled=cancelled, max_total_bytes=max(0, MAX_RETAINED_MEDIA_BYTES - retained),
-        diagnostics=diagnostics,
+        diagnostics=diagnostics, scan_cache=scan_cache,
         **options)
     if cancelled():
         return data
@@ -412,6 +429,7 @@ def resolve_sticker_media(
     max_files: int = 4096,
     max_total_pixels: int = 64 * 1024 * 1024, max_total_frames: int | None = None,
     diagnostics: dict[str, int | bool] | None = None,
+    scan_cache: _QQMediaCacheScan | None = None,
 ) -> tuple[StickerMedia, ...]:
     """Return one media result per key; any incomplete search fails closed.
 
@@ -444,7 +462,8 @@ def resolve_sticker_media(
     unique = {send.media_key: send for send in occurrences}
     stats = dict(entries_seen=0, files_seen=0, candidate_files=0, files_read=0,
                  name_candidates=0, path_candidates=0, content_matches=0,
-                 traversal_complete=False, all_files_checked=False, budget_exhausted=False)
+                 traversal_complete=False, all_files_checked=False, budget_exhausted=False,
+                 scan_reused=False)
     if diagnostics is not None:
         diagnostics.clear()
         diagnostics.update(stats)
@@ -479,6 +498,12 @@ def resolve_sticker_media(
 
     try:
         check_cancelled()
+        scan_signature = (roots, authorized_scopes, max_entries, max_scan_entries, max_depth)
+        if scan_cache is not None and (
+            not targeted or not digest_names_only or
+            (scan_cache.signature is not None and scan_cache.signature != scan_signature)
+        ):
+            raise _Rejected("unsafe", "scan_scope_changed")
         if len(roots) > 16:
             raise _Rejected("limited", "root_budget")
         hints: dict[str, set[Path]] = {digest: set() for digest in wanted}
@@ -496,6 +521,29 @@ def resolve_sticker_media(
                 if (path.is_absolute() and ".." not in path.parts
                         and not path.drive.startswith("\\\\") and "\x00" not in value):
                     hints[send.content_md5].add(path)
+
+        inventory = [] if scan_cache is not None and scan_cache.signature is None else None
+
+        def nominate(path, root):
+            nonlocal files
+            files += 1
+            item = (path, root)
+            if len(every) < max_entries:
+                every.append(item)
+            if inventory is not None:
+                inventory.append(item)
+            if targeted or digest_names_only:
+                name = path.name.lower()
+                name_match = path_match = False
+                for digest in wanted:
+                    by_name, by_path = digest in name, path in hints[digest]
+                    if by_name or by_path:
+                        named[digest].append(item)
+                    name_match |= by_name
+                    path_match |= by_path
+                stats["name_candidates"] += int(name_match)
+                stats["path_candidates"] += int(path_match)
+
         limit = max_scan_entries if targeted else max_entries
         pending = []
         for supplied in roots:
@@ -528,6 +576,17 @@ def resolve_sticker_media(
                     raise _Rejected("unsafe", "invalid_scope")
                 scopes.add(scope)
                 scope_ancestors.update((scope, *scope.parents))
+        if scan_cache is not None and scan_cache.signature is not None:
+            # Root/scope validation above is repeated. The inventory nominates
+            # candidates only; _open_original below revalidates every read.
+            entries = scan_cache.entries
+            for path, root in scan_cache.files:
+                check_cancelled()
+                if time.monotonic() > deadline:
+                    raise _Rejected("limited", "scan_budget")
+                nominate(path, root)
+            pending.clear()
+            stats["scan_reused"] = True
         while pending:
             check_cancelled()
             directory, root, depth = pending.pop()
@@ -555,22 +614,14 @@ def resolve_sticker_media(
                         raise _Rejected("unsafe", "not_regular_file")
                     if not inside_scope:
                         raise _Rejected("unsafe", "scope_changed")
-                    files += 1
-                    if len(every) < max_entries:
-                        every.append((path, root))
-                    if targeted or digest_names_only:
-                        name = path.name.lower()
-                        name_match = path_match = False
-                        for digest in wanted:
-                            by_name, by_path = digest in name, path in hints[digest]
-                            if by_name or by_path:
-                                named[digest].append((path, root))
-                            name_match |= by_name
-                            path_match |= by_path
-                        stats["name_candidates"] += int(name_match)
-                        stats["path_candidates"] += int(path_match)
+                    nominate(path, root)
 
         stats["traversal_complete"] = True
+        if inventory is not None:
+            # Publish only a complete walk, never a partial/failed scan.
+            scan_cache.files = tuple(inventory)
+            scan_cache.entries = entries
+            scan_cache.signature = scan_signature
         complete = targeted and not digest_names_only and files <= max_entries and len(every) == files
         if (not targeted and not digest_names_only) or complete:
             selected = every

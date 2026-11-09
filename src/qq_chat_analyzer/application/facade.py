@@ -472,7 +472,7 @@ class ChatAnalyzerFacade:
 
     @staticmethod
     def associate_sticker_media(data, *, media_keys, roots=(), source, cancelled=lambda: False,
-                                diagnostics=None, send_index=None):
+                                diagnostics=None, send_index=None, scan_cache=None):
         """Associate an explicit batch without acquiring another chat database."""
         from .sticker_media import associate_sticker_media
 
@@ -480,7 +480,7 @@ class ChatAnalyzerFacade:
             with timed_stage("sticker_media_associate"):
                 return associate_sticker_media(
                     data, media_keys=media_keys, roots=roots, source=source, cancelled=cancelled,
-                    diagnostics=diagnostics, send_index=send_index)
+                    diagnostics=diagnostics, send_index=send_index, scan_cache=scan_cache)
         except Exception:
             # Worker diagnostics must not receive private paths or decoder data.
             raise FacadeError(code="sticker_media_failed", public_message="原图验证失败，请稍后重试。") from None
@@ -696,7 +696,7 @@ class ChatAnalyzerFacade:
         from ..presentation.stickers import sticker_report_targets
         from ..media_content import StoredMedia
         from ..qq_db_adapter import extract_qq_pic_media_facts, load_qq_db_json
-        from .sticker_media import _QQMediaSendIndex, qq_media_failure
+        from .sticker_media import _QQMediaCacheScan, _QQMediaSendIndex, qq_media_failure
         from .qq.qq_marketface_media import MarketFaceRecovery, is_marketface
 
         started_at = _perf_counter()
@@ -807,6 +807,7 @@ class ChatAnalyzerFacade:
                 keys = tuple(target.media_key for target in targets if target.media_key in sends)
                 # No discovery: use only caller/source-owned, previously trusted scopes.
                 if roots:
+                    scan_cache = _QQMediaCacheScan()
                     _LOGGER.info("[sticker-media-local] batch=%s state=start main_thread=%s", batch,
                                  threading.current_thread() is threading.main_thread())
                     for offset in range(0, len(keys), 32):
@@ -814,12 +815,13 @@ class ChatAnalyzerFacade:
                         try:
                             data = self.associate_sticker_media(
                                 data, media_keys=keys[offset:offset + 32], roots=roots, source="qq",
-                                cancelled=budget_stopped, send_index=send_index)
+                                cancelled=budget_stopped, send_index=send_index, scan_cache=scan_cache)
                             media.update((item.media_key, item) for item in data.media)
                         except FacadeError:
                             # A rejected local scope does not authorize a broader scan.
                             # The separately verified QQ element may still be fetched.
                             check_budget()
+                    del scan_cache
                     _LOGGER.info("[sticker-media-local] batch=%s state=finished", batch)
                 check_budget()
                 media = {item.media_key: item for item in data.media}
