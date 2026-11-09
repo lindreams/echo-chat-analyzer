@@ -653,11 +653,21 @@ def _content_from_segment(
         fallback = f"[QQ表情 {key}]"
     elif content_type == 11:
         identity = values.get((45600, 2))
-        if not isinstance(identity, bytes) or not identity:
+        pack = [value for tag, wire, value in fields if tag == 80810 and wire == 0]
+        resource = [value for tag, wire, value in fields if tag == 80903 and wire == 2]
+        locator = (len(pack) == len(resource) == 1
+                   and 0 < pack[0] <= 0xFFFFFFFF and len(resource[0]) == 16
+                   and [value for tag, wire, value in fields if tag == 45002] == [11]
+                   and sum(tag == 80810 for tag, _, _ in fields) == 1
+                   and sum(tag == 80903 for tag, _, _ in fields) == 1)
+        if locator:
+            key = f"qq-marketface:resource:{pack[0]}:{resource[0].hex()}"
+        elif isinstance(identity, bytes) and identity:
+            # Preserve historical opaque identities, without guessing an alias
+            # or treating their hash as a resource/file digest.
+            key = "qq-marketface:sha256:" + hashlib.sha256(identity).hexdigest()
+        else:
             return None
-        # Opaque content-derived identity, not a decoded QQ emoji ID or a
-        # resource MD5. Keep its namespace separate from numeric QQ faces.
-        key = "qq-marketface:sha256:" + hashlib.sha256(identity).hexdigest()
         kind = EXPRESSION_KIND_STICKER
         label = _utf8_text(values.get((80900, 2)))
         fallback = "[贴图]"
@@ -679,8 +689,10 @@ def _content_from_segment(
         position=expression_position,
         sticker=StickerIdentity(
             classification_basis="qq_content_type_11",
-            identity_basis="qq_45600_sha256_opaque",
+            identity_basis="qq_marketface_pack_resource" if locator else "qq_45600_sha256_opaque",
             identity_key=key,
+            resource_pack_id=pack[0] if locator else None,
+            resource_id=resource[0].hex() if locator else None,
             local_paths=tuple(text for tag in (45812, 45814)
                               if (text := _utf8_text(values.get((tag, 2))))),
         ) if kind == EXPRESSION_KIND_STICKER else None,

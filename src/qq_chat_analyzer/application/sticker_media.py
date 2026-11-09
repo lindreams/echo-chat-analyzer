@@ -80,7 +80,7 @@ def qq_media_failure(media_key: str, code: str) -> StickerMedia:
     """Fixed shared failure categories; no private provider text enters reports."""
     if code == "qq_media_time_budget":
         return StickerMedia(media_key, "limited", "report_media_time_budget")
-    if code in {"qq_media_budget_exhausted", "qq_media_too_large", "qq_media_decode_budget", "qq_media_transport_limit"}:
+    if code in {"qq_media_budget_exhausted", "qq_media_pending", "qq_media_too_large", "qq_media_decode_budget", "qq_media_transport_limit"}:
         return StickerMedia(media_key, "limited", code)
     if code in {"qq_media_mapping_rejected", "qq_media_element_unconfirmed", "qq_media_message_unconfirmed"} or code.startswith("qq_media_group_"):
         return StickerMedia(media_key, "failed", "message_mapping_unconfirmed")
@@ -243,7 +243,7 @@ def _witness(info):
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def _check_gif_canvas(raw: bytes, check_time: Callable[[], None]) -> None:
+def _check_gif_canvas(raw: bytes, check_time: Callable[[], None], *, require_eof: bool = False) -> None:
     """Check block extents before a codec can allocate a disposal canvas.
 
     This skips compressed sub-blocks; it does not decode LZW or replace Pillow's
@@ -263,6 +263,8 @@ def _check_gif_canvas(raw: bytes, check_time: Callable[[], None]) -> None:
         tag = raw[position]
         position += 1
         if tag == 0x3B:  # trailer
+            if require_eof and position != len(raw):
+                raise _Rejected("invalid", "invalid_image")
             if width * height > MAX_FRAME_PIXELS:
                 raise _Rejected("limited", "decode_budget")
             return

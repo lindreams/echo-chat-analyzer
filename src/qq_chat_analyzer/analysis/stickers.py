@@ -41,15 +41,18 @@ class StickerSend:
     # serialized, never part of identity; the fetched bytes must still match
     # content_md5 before use.
     recovery_url: str | None = field(default=None, repr=False, compare=False)
+    resource_pack_id: int | None = field(default=None, repr=False)
+    resource_id: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
 class StickerMedia:
     """One verified original, a distinct trusted preview, or an explicit failure.
 
-    ``available`` is the digest-verified original. ``preview`` is content whose
-    message and PIC element the kernel uniquely confirmed while its bytes do not
-    match the message digest: displayable, never claimed as the original.
+    ``available`` is the digest-verified original. ``preview`` has verified
+    source binding (a kernel-confirmed PIC or a mapped MarketFace resource)
+    and complete image validation, without proof of the message original's
+    digest: displayable, never claimed as a digest-verified original.
     Immutable original_bytes outlive temporary payloads and external cache
     changes. QQ report media may instead own a temporary byte snapshot.
     Consumers must check status before using bytes; verified_reference is
@@ -348,6 +351,7 @@ def collect_sticker_sends(messages: Iterable[RichMessage]) -> tuple[StickerSend,
                 media_key=evidence.identity_key or f"unresolved:{occurrence_id}",
                 content_md5=evidence.content_md5, local_paths=evidence.local_paths,
                 recovery_url=evidence.recovery_url,
+                resource_pack_id=evidence.resource_pack_id, resource_id=evidence.resource_id,
             ))
     return tuple(sends)
 

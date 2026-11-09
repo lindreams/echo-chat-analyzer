@@ -51,7 +51,7 @@ class NapCatQQWorkerGenerationChanged(NapCatQQError):
 _MEDIA_STAGES = frozenset({
     "probe_timeout", "probe_api_unavailable",
     "media_mapping_rejected", "media_message_query_failed", "media_api_unavailable",
-    "media_busy", "media_budget_exhausted", "media_download_timeout",
+    "media_busy", "media_pending", "media_budget_exhausted", "media_download_timeout", "media_abandoned",
     "media_download_failed", "media_download_no_path", "media_download_no_cache_hint", "media_path_type_invalid",
     "media_path_not_absolute", "media_path_invalid", "media_file_missing",
     "media_open_failed", "media_file_type_rejected", "media_file_identity_changed",
@@ -326,6 +326,29 @@ class NapCatQQProvider:
                             value["database_api_ready"], value["passphrase_ready"], value["snapshot_api_ready"],
                             _text(value.get("runtime_id")) or None, self._boot_id)
 
+    def marketface_cache_root(self, *, self_uin: str, runtime_id: str, boot_id: str,
+                             timeout: float) -> Path:
+        """A narrow read scope bound to the exact snapshot account and launch."""
+        if (not isinstance(self_uin, str) or not re.fullmatch(r"[1-9][0-9]{4,19}", self_uin)
+                or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                       for value in (runtime_id, boot_id))):
+            raise NapCatQQError()
+        value = self._rpc("EchoMetadata.marketfaceScope", timeout=timeout)
+        if (not isinstance(value, dict) or value.get("self_uin") != self_uin
+                or value.get("runtime_id") != runtime_id or value.get("boot_id") != boot_id
+                or self._runtime_id != runtime_id or self._boot_id != boot_id
+                or not isinstance(value.get("root"), str)):
+            raise NapCatQQError()
+        root = Path(value["root"])
+        owner = root.parent.parent.parent
+        if owner.name == "nt_qq":
+            owner = owner.parent
+        if (not root.is_absolute() or root.anchor.startswith("\\\\") or ".." in root.parts
+                or root.name != "marketface" or root.parent.name != "Emoji"
+                or root.parent.parent.name != "nt_data" or owner.name != self_uin):
+            raise NapCatQQError()
+        return root
+
     def list_friends(self, *, timeout: float | None = None) -> list[NapCatFriend]:
         rows = self._rpc("EchoMetadata.listFriends", timeout=timeout)
         if not isinstance(rows, list):
@@ -463,8 +486,8 @@ class NapCatQQProvider:
         media. Only bounded bytes return; the runtime's local path, URL, file
         name and account IDs never cross the bridge.
 
-        The client deadline stays above the bridge's own 120 s media budget so a
-        timeout is reported by the bridge as a stage instead of being lost here.
+        One client budget covers download, chunks and release. It bounds waiting;
+        a transport timeout does not prove QQ's native download was cancelled.
         """
         if (
             not _valid_pic_request(
@@ -476,9 +499,14 @@ class NapCatQQProvider:
             or not isinstance(element_id, str)
         ):
             raise NapCatQQError()
+        deadline = time.monotonic() + (135 if timeout is None else min(135, timeout))
         def call(method, params):
             try:
-                budget = timeout if method == "EchoMediaProbe.downloadPicMedia" else 10
+                budget = deadline - time.monotonic()
+                if budget <= 0:
+                    raise NapCatQQMediaStageError("media_transport_timeout")
+                if method != "EchoMediaProbe.downloadPicMedia":
+                    budget = min(10, budget)
                 return self._rpc(method, params, timeout=budget)
             except NapCatQQError as error:
                 stage = getattr(error, "rpc_error", None)
@@ -550,18 +578,25 @@ class NapCatQQProvider:
             except NapCatQQError:
                 pass  # A disconnected/generation-changed transfer expires on its owner.
 
-    def wait_media_ready(self, *, cancelled: Callable[[], bool] = lambda: False) -> None:
+    def wait_media_ready(self, *, cancelled: Callable[[], bool] = lambda: False,
+                         timeout: float = 5) -> None:
         """Pace the serial queue without discarding targets or overlapping QQ."""
+        deadline = time.monotonic() + timeout
         while True:
             if cancelled():
                 raise NapCatQQMediaStageError("media_cancelled")
-            status = self._rpc("Core.status", timeout=5)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise NapCatQQMediaStageError("media_busy")
+            status = self._rpc("Core.status", timeout=min(5, remaining))
             busy, delay = status.get("media_busy"), status.get("media_retry_after_ms")
             if type(busy) is not bool or type(delay) is not int or not 0 <= delay <= 60000:
                 raise NapCatQQMediaStageError("media_transport_invalid")
-            if not busy and delay == 0:
+            if busy and status.get("media_pending_state") in {"abandoned", "uncertain"}:
+                raise NapCatQQMediaStageError("media_pending")
+            if not busy and delay == 0 and time.monotonic() < deadline:
                 return
-            until = time.monotonic() + (0.1 if busy else delay / 1000)
+            until = min(deadline, time.monotonic() + (0.1 if busy else delay / 1000))
             while time.monotonic() < until:
                 if cancelled():
                     raise NapCatQQMediaStageError("media_cancelled")

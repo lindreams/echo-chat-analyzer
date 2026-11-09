@@ -212,6 +212,50 @@ def test_sticker_key_uses_identity_bytes_not_label_or_resource_url() -> None:
     assert keys[0] != keys[2]
 
 
+def test_marketface_resource_identity_keeps_pure_messages_and_legacy_separate():
+    from qq_chat_analyzer.analysis.stickers import collect_sticker_sends, aggregate_stickers, StickerData
+
+    coordinates = _scalar(80810, 17) + _bytes(80903, bytes.fromhex("ab" * 16))
+    modern = _scalar(45002, 11) + coordinates
+    messages, _ = parse_qq_db_rich_messages(_payload(
+        _body(modern), _body(modern + _bytes(45600, b"legacy")),
+        _body(_sticker(b"legacy")), _body(_scalar(45002, 11) + _scalar(80810, 18)
+                                       + _bytes(80903, bytes.fromhex("ab" * 16))),
+    ))
+    assert len(messages) == 4
+    sends = collect_sticker_sends(messages)
+    assert len(sends) == 4
+    assert sends[0].identity_key == sends[1].identity_key == "qq-marketface:resource:17:" + "ab" * 16
+    assert sends[2].identity_key.startswith("qq-marketface:sha256:")
+    assert len({s.identity_key for s in sends}) == 3
+    assert all(s.content_md5 is None for s in sends)
+    assert sends[0].resource_pack_id == 17 and sends[0].resource_id == "ab" * 16
+    assert all(m.sender.identity_id == messages[0].sender.identity_id for m in messages)
+    report, = aggregate_stickers(StickerData(sends=sends), messages)
+    assert report.total_send_count == 4 and sorted(m.count for m in report.materials) == [1, 1, 2]
+    expressions = ExpressionAnalyzer().analyze(project_legacy_messages(messages), messages)
+    assert expressions.expression_occurrence_count == 4 and expressions.unique_expression_count == 3
+    for other_type in (2, 8):
+        other = _parse(_scalar(45002, other_type) + coordinates)
+        assert collect_sticker_sends([other]) == ()
+
+
+@pytest.mark.parametrize("bad", [
+    _scalar(80810, 0) + _bytes(80903, b"a" * 16),
+    _scalar(80810, 2**32) + _bytes(80903, b"a" * 16),
+    _scalar(80810, 17) + _bytes(80903, b"short"),
+    _scalar(80810, 17) * 2 + _bytes(80903, b"a" * 16),
+    _scalar(80810, 17) + _bytes(80903, b"a" * 16) * 2,
+    _bytes(80810, b"17") + _bytes(80903, b"a" * 16),
+])
+def test_ambiguous_marketface_coordinates_cannot_authorize_resource(bad):
+    legacy = _parse(_sticker() + bad).contents[0]
+    assert legacy.sticker.identity_basis == "qq_45600_sha256_opaque"
+    assert legacy.sticker.resource_id is None
+    messages, _ = parse_qq_db_rich_messages(_payload(_body(_scalar(45002, 11) + bad)))
+    assert messages == []
+
+
 def test_provider_import_legacy_and_expression_report_chain(tmp_path) -> None:
     database = tmp_path / "fictional.db"
     blobs = [

@@ -80,7 +80,7 @@ if(config.clockFile) Object.defineProperty(performance,'now',{value:()=>Number(f
 const mark = name => { if (config.marker) fs.appendFileSync(config.marker, name + '\\n'); };
 const info = fields => new Proxy(fields, {get(target, key) { mark('Core.status'); return target[key]; }});
 const core={dbPassphrase:'PRIVATE',selfInfo:info({uin:'12345678',uid:'u_self',nick:'Self',online:true,secret:'PRIVATE'}),apis:{
- DatabaseApi:{hasPassphrase:()=>true,decryptDatabase(){mark('decryptDatabase')}},
+ DatabaseApi:{hasPassphrase:()=>true,getNtDbDir:()=>config.databaseDir,decryptDatabase(){mark('decryptDatabase')}},
  FileApi:{downloadMedia:async function(...args){
    mark('downloadMedia');
    if(config.expectedDownload && JSON.stringify(args.slice(0,4))!==JSON.stringify(config.expectedDownload)) throw new Error('wrong locator');
@@ -113,6 +113,7 @@ if(config.nativeDownload) {
   core.eventWrapper={async callNormalEventV2(method,listener,params,check,match){
     if(this!==core.eventWrapper) throw Error('PRIVATE wrong receiver');
     mark('nativeDownload');
+    if(config.nativeTimeout) throw Error('PRIVATE native timeout without completion');
     const result=config.nativeResult ?? {result:0};
     if(!check(result)) throw Error('PRIVATE rejected request');
     const event={msgId:params[0].msgId,msgElementId:params[0].elementId,
@@ -177,6 +178,14 @@ if(config.controlledMedia) {
   };
   const lstat=fs.promises.lstat.bind(fs.promises);
   fs.promises.lstat=async(...args)=>{if(args[0]===config.mediaPath) mark('mediaRead');return lstat(...args);};
+}
+if(config.controlledQuery) {
+  const query=core.apis.MsgApi.getMsgsByMsgId;
+  core.apis.MsgApi.getMsgsByMsgId=(...args)=>{
+    if(finishMedia) return query(...args);
+    mark('queryWaiting');
+    return new Promise(resolve=>{finishMedia=()=>resolve(query(...args));});
+  };
 }
 if(config.queryFailure==='unavailable') delete core.apis.MsgApi;
 if(config.queryFailure==='timeout') core.apis.MsgApi.getMsgsByMsgId=()=>{
@@ -274,6 +283,37 @@ def provider(base, credential=TOKEN):
     module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
     source = None if credential is None else _Credential(credential)
     return module.NapCatQQProvider(base, credential=source)
+
+
+@pytest.mark.parametrize("layout", ["nt_qq", "nt_qq/nt_data", ""])
+def test_marketface_scope_binds_account_worker_and_narrow_layout(runtime, tmp_path, monkeypatch, layout):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    owner = tmp_path / "12345678"
+    database = owner / layout / "nt_db"
+    base = runtime(runtime_id=RUNTIME_ID, databaseDir=str(database))
+    client = provider(base)
+    state = client.status()
+    scope = client.marketface_cache_root(self_uin="12345678", runtime_id=RUNTIME_ID,
+                                         boot_id=state.boot_id, timeout=2)
+    expected = owner / ("nt_qq/nt_data" if layout.startswith("nt_qq") else "nt_data") / "Emoji/marketface"
+    assert scope == expected
+    for changes in ({"self_uin": "87654321"}, {"boot_id": "ee" * 32}, {"runtime_id": "ff" * 32}):
+        args = dict(self_uin="12345678", runtime_id=RUNTIME_ID, boot_id=state.boot_id, timeout=2)
+        with pytest.raises(module.NapCatQQError):
+            client.marketface_cache_root(**{**args, **changes})
+    assert request(base, "EchoMetadata.marketfaceScope", credential=WRONG_TOKEN)[0] == 401
+    invalid = provider(runtime(runtime_id=RUNTIME_ID, databaseDir=str(tmp_path / "unbound/nt_db")))
+    invalid_state = invalid.status()
+    with pytest.raises(module.NapCatQQError):
+        invalid.marketface_cache_root(self_uin="12345678", runtime_id=RUNTIME_ID,
+                                     boot_id=invalid_state.boot_id, timeout=2)
+    for bad_root in (str(expected / "../marketface"), str(tmp_path / "other/nt_data/Emoji/marketface"),
+                     str(owner / "nt_data/Pic"), "\\\\foreign\\share\\marketface", 123):
+        monkeypatch.setattr(client, "_rpc", lambda *a, **k: dict(root=bad_root, self_uin="12345678",
+                             runtime_id=RUNTIME_ID, boot_id=state.boot_id))
+        with pytest.raises(module.NapCatQQError):
+            client.marketface_cache_root(self_uin="12345678", runtime_id=RUNTIME_ID,
+                                         boot_id=state.boot_id, timeout=2)
 
 
 def test_abandoned_acquire_cleans_late_generation(runtime, tmp_path):
@@ -876,7 +916,7 @@ _GROUP_WIRE = {**_PROBE_WIRE, "chatType": 2, "peerUid": "45678901",
 
 
 @pytest.mark.parametrize("ending", ["resolve", "reject"])
-@pytest.mark.parametrize("cancel", [False, True])
+@pytest.mark.parametrize("cancel", ["bridge", "disconnect", "transport"])
 def test_media_lease_survives_timeout_or_disconnect_until_kernel_settles(runtime, tmp_path, ending, cancel):
     """A deadline/disconnected caller cannot release a still-running download."""
     import time
@@ -891,14 +931,14 @@ def test_media_lease_survives_timeout_or_disconnect_until_kernel_settles(runtime
     boot = client.status().boot_id
     with ThreadPoolExecutor(max_workers=1) as pool:
         connection = None
-        if cancel:
+        if cancel == "disconnect":
             parsed = urllib.parse.urlsplit(base)
             connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=3)
             connection.request("POST", "/rpc", json.dumps({
                 "method": "EchoMediaProbe.downloadPicMedia", "params": [_MEDIA_WIRE], "boot_id": boot,
             }), headers={"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
         else:
-            future = pool.submit(client.download_pic_media, **_MEDIA)
+            future = pool.submit(client.download_pic_media, **_MEDIA, timeout=0.05 if cancel == "transport" else 135)
         try:
             deadline = time.monotonic() + 3
             while "downloadMedia" not in marker.read_text():
@@ -909,11 +949,30 @@ def test_media_lease_survives_timeout_or_disconnect_until_kernel_settles(runtime
             with pytest.raises(NapCatQQMediaStageError) as caught:
                 client.download_pic_media(**_MEDIA)
             assert caught.value.stage == "media_busy"
+            if cancel == "transport":
+                with pytest.raises(NapCatQQMediaStageError) as caught:
+                    future.result(timeout=3)
+                assert caught.value.stage == "media_transport_timeout"
             runtime.control(base, 120000)
-            if not cancel:
+            if cancel == "bridge":
                 with pytest.raises(NapCatQQMediaStageError) as caught:
                     future.result(timeout=3)
                 assert caught.value.stage == "media_download_timeout"
+            # Different reports/providers cannot reset the one live bridge
+            # slot, even for a different material. QQ stays online throughout.
+            deadline = time.monotonic() + 2
+            while request(base)[1]["result"]["media_pending_state"] != "abandoned":
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+            for _ in range(5):
+                status = request(base)[1]["result"]
+                assert status["qq_online"] is True and status["media_pending_count"] == 1
+                with pytest.raises(NapCatQQMediaStageError) as pending:
+                    provider(base).wait_media_ready()
+                assert pending.value.stage == "media_pending"
+                with pytest.raises(NapCatQQMediaStageError) as pending:
+                    provider(base).download_pic_media(**{**_MEDIA, "expected_md5": "cd" * 16})
+                assert pending.value.stage == "media_busy"
             with pytest.raises(NapCatQQMediaStageError) as caught:
                 client.download_pic_media(**_MEDIA)
             assert caught.value.stage == "media_busy"
@@ -926,6 +985,74 @@ def test_media_lease_survives_timeout_or_disconnect_until_kernel_settles(runtime
         assert client.download_pic_media(**_MEDIA) == path.read_bytes()
         assert client.download_pic_media(**_MEDIA) == path.read_bytes()
         assert marker.read_text().splitlines().count("downloadMedia") == 3
+        assert request(base)[1]["result"]["media_pending_count"] == 0
+
+
+def test_disconnected_identity_query_cannot_start_a_late_download(runtime, tmp_path):
+    import time
+    from qq_chat_analyzer.providers.napcat_qq_provider import NapCatQQMediaStageError
+
+    marker = tmp_path / "query-calls.txt"
+    media = tmp_path / "fictional-media.bin"
+    media.write_bytes(b"fictional-media")
+    base = runtime(controlledQuery=True, marker=marker, mediaPath=str(media))
+    with pytest.raises(NapCatQQMediaStageError) as expired:
+        provider(base).download_pic_media(**_MEDIA, timeout=0.05)
+    assert expired.value.stage == "media_transport_timeout"
+    assert "queryWaiting" in marker.read_text()
+    runtime.control(base, "resolve")
+    deadline = time.monotonic() + 2
+    while request(base)[1]["result"]["media_pending_count"]:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert "downloadMedia" not in marker.read_text()
+    assert request(base)[1]["result"]["qq_online"] is True
+    assert provider(base).download_pic_media(**_MEDIA) == b"fictional-media"
+
+
+def test_media_wait_budget_includes_chunks_and_does_not_restart_for_release(monkeypatch):
+    import base64
+    from qq_chat_analyzer.providers import napcat_qq_provider as module
+
+    clock, calls = [0.0], []
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    client = provider("http://127.0.0.1:40655")
+    def rpc(method, params=None, **kwargs):
+        calls.append((method, kwargs["timeout"]))
+        if method == "EchoMediaProbe.downloadPicMedia":
+            return {"transfer_id": "a" * 64, "size": 6, "chunk_size": 3}
+        assert method == "EchoMediaProbe.readPicMediaChunk"
+        clock[0] = 2
+        return {"offset": 0, "base64": base64.b64encode(b"abc").decode(), "eof": False}
+    monkeypatch.setattr(client, "_rpc", rpc)
+    with pytest.raises(module.NapCatQQMediaStageError) as expired:
+        client.download_pic_media(**_MEDIA, timeout=2)
+    assert expired.value.stage == "media_transport_timeout"
+    assert calls == [("EchoMediaProbe.downloadPicMedia", 2), ("EchoMediaProbe.readPicMediaChunk", 2)]
+    # The bridge owns/limits an abandoned transfer and expires its idle handle;
+    # expiry never authorizes an extra RPC after this client's wait budget.
+
+
+def test_native_timeout_quarantines_one_slot_without_restarting_qq(runtime, tmp_path):
+    from qq_chat_analyzer.providers.napcat_qq_provider import NapCatQQMediaStageError
+
+    marker = tmp_path / "native-calls.txt"
+    base = runtime(nativeDownload=True, nativeTimeout=True, marker=marker)
+    client = provider(base)
+    with pytest.raises(NapCatQQMediaStageError) as failed:
+        client.download_pic_media(**_MEDIA)
+    assert failed.value.stage == "media_download_failed"
+    for _ in range(5):
+        status = request(base)[1]["result"]
+        assert status["qq_online"] is True
+        assert status["media_pending_state"] == "uncertain" and status["media_pending_count"] == 1
+        with pytest.raises(NapCatQQMediaStageError) as pending:
+            provider(base).wait_media_ready()
+        assert pending.value.stage == "media_pending"
+        with pytest.raises(NapCatQQMediaStageError) as busy:
+            provider(base).download_pic_media(**_MEDIA)
+        assert busy.value.stage == "media_busy"
+    assert marker.read_text().splitlines().count("nativeDownload") == 1
 
 
 @pytest.mark.parametrize("failure,code", [
@@ -946,7 +1073,7 @@ def test_query_errors_survive_bridge_and_download_recheck_without_private_detail
             (client.resolve_pic_message, _PROBE), (client.download_pic_media, _MEDIA),
         ], 1):
             future = pool.submit(method, **locator)
-            if failure == "timeout":
+            if failure == "timeout" and ordinal == 1:
                 deadline = time.monotonic() + 3
                 while marker.read_text().splitlines().count("getMsgsByMsgId") < ordinal:
                     assert time.monotonic() < deadline
@@ -956,9 +1083,13 @@ def test_query_errors_survive_bridge_and_download_recheck_without_private_detail
                 future.result(timeout=3)
             actual = getattr(caught.value, "stage", None) or caught.value.rpc_error
             want = "media_message_query_failed" if failure == "private" and ordinal == 2 else code
+            if failure == "timeout" and ordinal == 2:
+                want = "media_busy"
             assert actual == want
             assert "PRIVATE" not in str(caught.value)
     assert "downloadMedia" not in marker.read_text()
+    if failure == "timeout":
+        assert marker.read_text().splitlines().count("getMsgsByMsgId") == 1
 
 
 @pytest.mark.parametrize("mine", [False, True])

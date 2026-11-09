@@ -5,6 +5,10 @@
 **目标：** 为近期 QQFace / MarketFace 表情统计确认稳定 identity 与资源来源。
 **范围：** 只回答“数据是否齐备、能否归一、需要动哪里”，不落地实现。
 
+> 后续事实修正（MFACE 整改）：本文关于 45600 内含 sticker_id/MD5 的判断未获证实，
+> 不再作为当前协议依据。现役 Adapter 使用合法 80810/80903 复合资源身份，保留
+> 45600-only 旧身份；80903 不是文件 MD5。当前合同见 docs/STICKER_DATA.md。
+
 ## 0. 方法与证据来源
 
 - 现有产品代码：`src/qq_chat_analyzer/providers/qq_database_provider.py`（Provider）、

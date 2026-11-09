@@ -53,6 +53,9 @@ StickerIdentity，核心 `analysis/stickers.py` 提取逐次发送事实，并�
 有来源摘要的原件，结果通过 `AnalysisResultDTO.stickers` 返回；报告只序列化选定的展示统计和媒体。
 QQ 正式报告通过 Facade 自动获取展示所需素材，复用同次 acquisition 持有的 payload，
 不额外获取聊天数据库；独立素材窗口、手动获取、网络确认和另存新报告流程已退休。
+MFACE 经 `application/qq/qq_marketface_media.py` 从账号/运行时代际授权的窄缓存目录恢复，
+缺失后只请求固定 raw200 CDN；无消息摘要证明时作为完整校验的 preview，保留原件摘要合同。
+最多两个 Echo 自有工作进程与 PIC 共用阶段预算；只回收自有工作，不操作 QQ/NapCat 生命周期。
 微信 Type 47 复用统一解析、统计和报告链，仅从显式授权的明文目录匹配原件。
 发送事实与媒体可用性独立；群聊按 sender_id 区分成员，QQ 原生获取复核群与成员身份。
 QQ 媒体可暂存于进程拥有、关闭即删除的临时文件，正式导出才写入报告包，

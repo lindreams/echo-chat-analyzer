@@ -98,7 +98,7 @@
     {
       "source": "qq_napcat_plugin/bridge.mjs",
       "target": "plugins/napcat-plugin-echo/bridge.mjs",
-      "sha256": "5d421f430143a8faf675c42a081e78e447692989a3942562786c3704b54591d2"
+      "sha256": "b80c0340c7931cfd1c0086349b08d79e39e148db34a657e7fc4d71cdffe31cbc"
     },
     {
       "source": "qq_direct_db_snapshot/source_guard.mjs",

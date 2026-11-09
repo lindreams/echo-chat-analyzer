@@ -182,6 +182,7 @@ DOMAIN_MODULES = {
         "test_qq_explicit_reconnect",
         "test_qq_job_wiring",
         "test_qq_large_database_decrypt",
+        "test_qq_marketface_media",
         "test_qq_napcat_runtime_bootstrap",
         "test_qq_napcat_upgrade",
         "test_qq_private_unknown_sender",

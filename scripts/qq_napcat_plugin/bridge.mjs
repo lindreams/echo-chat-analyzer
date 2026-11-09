@@ -1,7 +1,7 @@
 import {createServer} from 'node:http';
 import {randomBytes, timingSafeEqual} from 'node:crypto';
 import {appendFileSync, constants as fsConstants, promises as fs} from 'node:fs';
-import {isAbsolute} from 'node:path';
+import {isAbsolute, basename, dirname, join, normalize} from 'node:path';
 
 const MAX_REQUEST_BYTES = 4096;
 const CREDENTIAL = /^[0-9a-f]{64}$/;
@@ -103,7 +103,7 @@ const MEDIA_TIMEOUT_MS = 120000;
 const MEDIA_STAGES = new Set([
   'probe_timeout', 'probe_api_unavailable',
   'media_mapping_rejected', 'media_message_query_failed', 'media_api_unavailable',
-  'media_busy', 'media_budget_exhausted', 'media_download_timeout',
+  'media_busy', 'media_pending', 'media_budget_exhausted', 'media_download_timeout', 'media_abandoned',
   'media_download_failed', 'media_download_no_path', 'media_download_no_cache_hint', 'media_path_type_invalid',
   'media_path_not_absolute', 'media_path_invalid', 'media_file_missing',
   'media_open_failed', 'media_file_type_rejected', 'media_file_identity_changed',
@@ -159,9 +159,9 @@ const logMediaCache = async pic => {
     logNativeMedia('cache_location', fields);
   } catch { /* Cache diagnostics cannot change acquisition behavior. */ }
 };
-const observedMediaApi = fileApi => {
+const observedMediaApi = (fileApi, observation) => {
   const wrapper = fileApi.core?.eventWrapper;
-  if (!process.env.QCE_LOG_FILE || typeof wrapper?.callNormalEventV2 !== 'function') return fileApi;
+  if (typeof wrapper?.callNormalEventV2 !== 'function') return fileApi;
   // The pinned FileApi drops the native result and returns only filePath.
   // Observe that call on a per-download receiver; never patch the shared API
   // or event wrapper used by QQ and other plugins.
@@ -170,11 +170,15 @@ const observedMediaApi = fileApi => {
     const media = args[0] === 'NodeIKernelMsgService/downloadRichMedia' &&
       args[1] === 'NodeIKernelMsgListener/onRichMediaDownloadComplete';
     if (media) {
+      observation.started = true;
       const check = args[3];
       args[3] = value => { logNativeMedia('native_request', value); return check(value); };
     }
     const result = await wrapper.callNormalEventV2(...args);
-    if (media) logNativeMedia('native_complete', result?.[1]);
+    if (media) {
+      observation.completed = true;
+      logNativeMedia('native_complete', result?.[1]);
+    }
     return result;
   };
   const core = Object.create(fileApi.core);
@@ -314,7 +318,9 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
     rpc_auth: 'bearer-v1',
     boot_id: bootId,
     bridge_ready: true,
-    media_busy: mediaBusy || transfer !== null,
+    media_busy: mediaBusy || transfer !== null || pendingQuery !== null,
+    media_pending_count: Number(mediaBusy || pendingQuery !== null),
+    media_pending_state: pendingMedia?.state ?? (pendingQuery !== null ? 'query' : transfer !== null ? 'transfer' : 'idle'),
     media_retry_after_ms: Math.max(allowProbe.retryAfter(), allowMedia.retryAfter()),
     qq_online: core.selfInfo?.online === true,
     self_info: {uin: uin(core.selfInfo?.uin), uid: text(core.selfInfo?.uid), nickname: text(core.selfInfo?.nick)},
@@ -323,6 +329,21 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
     snapshot_api_ready: ['acquire', 'cleanup', 'recover'].every(name => typeof snapshot?.[name] === 'function'),
     ...(runtimeId === null ? {} : {runtime_id: runtimeId})
   });
+  const marketfaceScope = () => {
+    const account = uin(core.selfInfo?.uin);
+    const directory = core.apis.DatabaseApi?.getNtDbDir?.();
+    if (!account || core.selfInfo?.online !== true || typeof directory !== 'string' ||
+        !isAbsolute(directory) || basename(directory) !== 'nt_db' || directory !== normalize(directory)) {
+      throw new Error('marketface_scope_unconfirmed');
+    }
+    const parent = dirname(directory);
+    const data = basename(parent) === 'nt_data' ? parent : join(parent, 'nt_data');
+    const owner = basename(dirname(data)) === 'nt_qq' ? dirname(dirname(data)) : dirname(data);
+    if (basename(owner) !== account || (parent !== owner && basename(parent) !== 'nt_qq' && basename(parent) !== 'nt_data')) {
+      throw new Error('marketface_scope_unconfirmed');
+    }
+    return {root: join(data, 'Emoji', 'marketface'), self_uin: account, runtime_id: runtimeId, boot_id: bootId};
+  };
   const friends = async () => {
     const categories = await core.apis.FriendApi.getBuddyV2ExWithCate();
     if (!Array.isArray(categories)) throw new Error('invalid_metadata');
@@ -352,12 +373,19 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
   // One shared read-only locator for the diagnostic probe and the media fetch.
   // It fetches exactly the requested message and returns only the fields each
   // caller may use; the caller never supplies an element independently.
+  let pendingQuery = null;
   const inspectPicMessage = async value => {
+    // A timed-out read-only query retains its slot until its original promise
+    // settles. Subsequent reports cannot create an unbounded native query queue.
+    if (pendingQuery !== null) throw mediaError('media_busy');
     const msgApi = core.apis?.MsgApi;
     if (!msgApi || typeof msgApi.getMsgsByMsgId !== 'function') throw mediaError('probe_api_unavailable');
     const peer = {guildId: '', chatType: value.chatType, peerUid: value.peerUid};
-    const response = await bounded(msgApi.getMsgsByMsgId(peer, [value.msgId]),
-      PROBE_TIMEOUT_MS, () => mediaError('probe_timeout'));
+    const query = Promise.resolve(msgApi.getMsgsByMsgId(peer, [value.msgId]));
+    pendingQuery = query;
+    const settled = () => { if (pendingQuery === query) pendingQuery = null; };
+    void query.then(settled, settled);
+    const response = await bounded(query, PROBE_TIMEOUT_MS, () => mediaError('probe_timeout'));
     const messages = Array.isArray(response?.msgList) ? response.msgList : [];
     const empty = {
       found: messages.length > 0, unique: false, msg_id_matches: false,
@@ -421,6 +449,7 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
   };
   const allowProbe = mediaCallBudget();
   const probePicMessage = async value => {
+    if (mediaBusy) throw mediaError('media_pending');
     if (!allowProbe()) throw mediaError('media_budget_exhausted');
     const {element, ...facts} = await inspectPicMessage(value);
     // Recompute the verdict instead of trusting the caller or a label.
@@ -433,6 +462,7 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
   };
   const allowMedia = mediaCallBudget();
   let mediaBusy = false;
+  let pendingMedia = null;
   let transfer = null;
   const closeTransfer = async current => {
     if (!current || transfer !== current) return;
@@ -472,12 +502,19 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
   // The only media read path. It re-locates the same message and the one PIC
   // element matching the recorded element ID, digest and file UUID, then asks
   // QQ for that element only. Bytes leave bounded; the local path never does.
-  const downloadPicMedia = async value => {
-    if (mediaBusy || transfer !== null) throw mediaError('media_busy');
+  const downloadPicMedia = async (value, context) => {
+    if (mediaBusy || transfer !== null || pendingQuery !== null) throw mediaError('media_busy');
     if (!allowMedia()) throw mediaError('media_budget_exhausted');
     mediaBusy = true;
+    const observation = {started: false, completed: false};
+    const pending = {state: 'locating'};
+    pendingMedia = pending;
+    const abandoned = () => context?.abandoned === true;
+    if (context) context.onAbandon = () => { pending.state = 'abandoned'; };
+    const checkAbandoned = () => { if (abandoned()) throw mediaError('media_abandoned'); };
     let download = null;
     try {
+      checkAbandoned();
       let facts;
       try {
         facts = await inspectPicMessage(value);
@@ -485,6 +522,7 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
         throw MEDIA_STAGES.has(error?.code) ? error : mediaError('media_message_query_failed');
       }
       const element = facts.element;
+      checkAbandoned();
       if (!facts.found || !facts.unique || !facts.msg_id_matches || !facts.time_matches ||
           !facts.peer_matches || facts.sender_matches === false ||
           facts.matched_pic_count !== 1 || !facts.md5_matches ||
@@ -503,30 +541,44 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
         const cachedPath = element.picElement.sourcePath ?? '';
         if (cachedPath !== '') validateMediaPath(cachedPath);
         await logMediaCache(element.picElement);
-        download = Promise.resolve(observedMediaApi(fileApi).downloadMedia(value.msgId, value.chatType, value.peerUid, value.elementId,
+        checkAbandoned();
+        pending.state = 'downloading';
+        download = Promise.resolve(observedMediaApi(fileApi, observation).downloadMedia(value.msgId, value.chatType, value.peerUid, value.elementId,
           '', cachedPath, MEDIA_TIMEOUT_MS, false));
         localPath = await bounded(download, MEDIA_TIMEOUT_MS, () => mediaError('media_download_timeout'));
+        checkAbandoned();
         if ((localPath == null || localPath === '') && cachedPath === '') {
           throw mediaError('media_download_no_cache_hint');
         }
       } catch (error) {
+        if (error?.code === 'media_download_timeout') pending.state = 'abandoned';
         throw MEDIA_STAGES.has(error?.code) ? error : mediaError('media_download_failed');
       }
+      checkAbandoned();
       const file = await openBoundedMedia(localPath);
+      if (abandoned()) { await file.close(); throw mediaError('media_abandoned'); }
       transfer = {id: randomBytes(32).toString('hex'), file, reading: false};
       armTransfer(transfer);
       return {transfer_id: transfer.id, size: file.size, chunk_size: MEDIA_CHUNK_BYTES};
     } finally {
       // A deadline or disconnected caller cannot cancel QQ's native operation.
       // Keep its lease until it settles; late paths/bytes never enter the report.
-      if (download === null) mediaBusy = false;
-      else void download.then(() => { mediaBusy = false; }, () => { mediaBusy = false; });
+      const settled = () => {
+        // FileApi's own timeout may reject without cancelling the native
+        // download. Keep one quarantined slot rather than accumulate unknown
+        // native operations across reports. No automatic runtime restart.
+        if (observation.started && !observation.completed) pending.state = 'uncertain';
+        else { mediaBusy = false; pendingMedia = null; }
+      };
+      if (download === null) settled();
+      else void download.then(settled, settled);
     }
   };
   const methods = new Map([
     ['Core.status', {count: 0, call: status}],
     ['EchoMetadata.listFriends', {count: 0, call: friends}],
     ['EchoMetadata.listGroups', {count: 0, call: groups}],
+    ['EchoMetadata.marketfaceScope', {count: 0, call: marketfaceScope}],
     ['GroupApi.getGroupMemberAll', {count: 1, valid: value => !!uin(value) && typeof value === 'string', call: members}],
     ['EchoMediaProbe.resolvePicMessage', {count: 1, valid: probeRequest, call: probePicMessage}],
     ['EchoMediaProbe.downloadPicMedia', {count: 1, valid: mediaRequest, call: downloadPicMedia}],
@@ -601,6 +653,18 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       const acquireDeadline = acquiring ? performance.now() + acquireBudget : 0;
       const acquireController = acquiring ? new AbortController() : null;
       const acquireTimer = acquiring ? setTimeout(() => acquireController.abort(), acquireBudget) : null;
+      const downloading = body.method === 'EchoMediaProbe.downloadPicMedia';
+      const mediaContext = downloading ? {abandoned: res.destroyed, onAbandon: null} : null;
+      const onMediaClose = () => {
+        if (res.writableFinished) return;
+        mediaContext.abandoned = true;
+        mediaContext.onAbandon?.();
+        // Close only this response's transfer, never a newer client's handle.
+        if (result?.transfer_id && transfer?.id === result.transfer_id) {
+          void closeTransfer(transfer).catch(() => {});
+        }
+      };
+      if (downloading) res.once('close', onMediaClose);
       let result, cleanupStarted = false;
       const cleanupAbandoned = async () => {
         if (cleanupStarted || result?.ok !== true || result.status !== 'ready' || !generation(result.generation_id)) return;
@@ -622,7 +686,11 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       try {
         result = acquiring
           ? await method.call({ signal: acquireController.signal, deadline: acquireDeadline })
-          : await method.call(...params);
+          : downloading ? await method.call(params[0], mediaContext) : await method.call(...params);
+        if (downloading && (mediaContext.abandoned || res.destroyed)) {
+          onMediaClose();
+          return;
+        }
         if (acquiring && (res.destroyed || performance.now() >= acquireDeadline)) {
           logSnapshot('acquire_response_discarded', res.destroyed ? 'client_disconnected' : 'deadline_exceeded');
           await cleanupAbandoned();

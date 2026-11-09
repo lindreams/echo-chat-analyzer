@@ -45,6 +45,10 @@ class StickerIdentity:
     # Untrusted acquisition hint taken from validated source XML; never part of
     # identity and never serialized. A consumer must still verify the digest.
     recovery_url: str | None = field(default=None, repr=False, compare=False)
+    # Resource coordinates, not a file digest. Only the QQ MarketFace basis
+    # authorizes their interpretation; they never grant filesystem access.
+    resource_pack_id: int | None = field(default=None, repr=False)
+    resource_id: str | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)

@@ -155,6 +155,7 @@ class QQDirectDatabaseAcquisition:
     payload_path: Path
     self_uin: str | None = None
     session: QQSession | None = None
+    runtime_binding: tuple[str, str] | None = None
 
 
 class QQDirectDatabaseImportService:
@@ -495,6 +496,7 @@ class QQDirectDatabaseImportService:
                         payload_path=payload_path,
                         self_uin=self_uin,
                         session=session,
+                        runtime_binding=getattr(client, "runtime_binding", None),
                     )
                 except QQSnapshotWorkerGenerationChanged as error:
                     self._require_reconnect()

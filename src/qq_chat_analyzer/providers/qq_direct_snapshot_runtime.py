@@ -398,6 +398,12 @@ class QQDirectSnapshotRuntimeClient:
             raise QQSnapshotRuntimeInvalidResponse()
         return result
 
+    @property
+    def runtime_binding(self) -> tuple[str, str] | None:
+        if self._runtime_id is None or self._boot_id is None:
+            return None
+        return self._runtime_id, self._boot_id
+
     def get_private_identity_metadata(self, *, timeout: float) -> Mapping[str, Any]:
         """Read identity metadata with this snapshot client's launch binding."""
         deadline = time.monotonic() + timeout
