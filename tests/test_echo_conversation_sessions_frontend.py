@@ -739,7 +739,11 @@ def test_sticker_chapter_offline_images_rankings_and_member_comparison(tmp_path,
           visible: !sheet.hidden, count: document.querySelectorAll("#stickers.page").length,
           width: rect.width, height: rect.height,
           tops: sheet.querySelectorAll("#sticker-members .sticker-top-list li").length,
-          offline: Array.from(sheet.querySelectorAll("img")).every(x => x.src.startsWith("data:image/") || x.src.startsWith(new URL("media/", document.baseURI).href)),
+          offline: Array.from(sheet.querySelectorAll("img")).every(x => {
+            const source = x.getAttribute("src") || x.dataset.stickerSrc || "";
+            return /^data:image\/(png|jpeg|gif|webp);base64,/.test(source) ||
+              /^media\/[0-9a-f]{64}\.(png|jpg|gif|webp)$/.test(source);
+          }),
           loaded: image && image.complete && image.naturalWidth > 0,
           missing: sheet.querySelectorAll(".sticker-image:not(.has-image)").length,
           overflow: document.documentElement.scrollWidth > window.innerWidth,
@@ -1152,6 +1156,8 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
         overflow:document.documentElement.scrollWidth>innerWidth,viewport:innerWidth,
         tail:bounds(a).bottom-bounds(b.hidden?document.getElementById("sticker-rankings"):b).bottom,
         chapterHeight:bounds(a).height,
+        qualityNoteHeight:(()=>{const note=a.querySelector("#sticker-quality-note"), style=getComputedStyle(note);
+          return note.hidden ? 0 : bounds(note).height+parseFloat(style.marginTop)+parseFloat(style.marginBottom);})(),
         fits:[...a.querySelectorAll(".memory-gallery li,.memory-gallery h3,.memory-art,.memory-date,.memory-trend-row")].every(x=>bounds(x).right<=bounds(a).right&&x.scrollWidth<=x.clientWidth+1),
         text:a.innerText};
       const heading=a.querySelector(".memory-gallery h3");
@@ -1195,7 +1201,8 @@ def test_private_memories_are_an_independent_offline_chapter_on_desktop(tmp_path
     assert all((65 if width > 720 else 60)<=item["width"]<=164 for item in result["art"])
     assert len(result["findings"]) <= len(findings)  # Adjacent trend windows may share one chart.
     if scene == "zero":
-        assert result["chapterHeight"] < 800
+        assert result["qualityNoteHeight"] > 0
+        assert result["chapterHeight"] - result["qualityNoteHeight"] < 800
     if findings:
         assert result["longTitleFits"]
     for finding in findings:
