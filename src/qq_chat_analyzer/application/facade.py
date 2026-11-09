@@ -712,6 +712,7 @@ class ChatAnalyzerFacade:
         budget_seconds = 30 if len(targets) <= 12 else 45
         deadline = budget_started + budget_seconds
         attempts = query_calls = download_calls = completed = 0
+        local_candidates = local_hits = qq_targets = local_elapsed_ms = 0
         def check_cancel():
             closing = self._sources_closing.is_set()
             if closing or cancelled():
@@ -807,22 +808,27 @@ class ChatAnalyzerFacade:
                 keys = tuple(target.media_key for target in targets if target.media_key in sends)
                 # No discovery: use only caller/source-owned, previously trusted scopes.
                 if roots:
+                    local_started = _perf_counter()
                     scan_cache = _QQMediaCacheScan()
                     _LOGGER.info("[sticker-media-local] batch=%s state=start main_thread=%s", batch,
                                  threading.current_thread() is threading.main_thread())
                     for offset in range(0, len(keys), 32):
                         check_budget()
+                        diagnostics = {}
                         try:
                             data = self.associate_sticker_media(
                                 data, media_keys=keys[offset:offset + 32], roots=roots, source="qq",
-                                cancelled=budget_stopped, send_index=send_index, scan_cache=scan_cache)
+                                cancelled=budget_stopped, send_index=send_index, scan_cache=scan_cache,
+                                diagnostics=diagnostics)
                             media.update((item.media_key, item) for item in data.media)
                         except FacadeError:
                             # A rejected local scope does not authorize a broader scan.
                             # The separately verified QQ element may still be fetched.
                             check_budget()
+                        local_candidates += diagnostics.get("candidate_targets", 0)
                     del scan_cache
-                    _LOGGER.info("[sticker-media-local] batch=%s state=finished", batch)
+                    local_elapsed_ms = max(0, round((_perf_counter() - local_started) * 1000))
+                    _LOGGER.info("[sticker-media-local] batch=%s state=finished elapsed_ms=%d", batch, local_elapsed_ms)
                 check_budget()
                 media = {item.media_key: item for item in data.media}
                 for key, item in tuple(media.items()):
@@ -832,6 +838,7 @@ class ChatAnalyzerFacade:
                                 for item in media.values())
                 pending = tuple(key for key in keys if not (
                     key in media and media[key].status in {"available", "preview"} and (media[key].original_bytes or media[key].stored)))
+                local_hits, qq_targets = len(keys) - len(pending), len(pending)
                 facts_by_message = defaultdict(list)
                 pending_keys = set(pending)
                 provider, setup_failure = None, None
@@ -1028,6 +1035,13 @@ class ChatAnalyzerFacade:
                      batch, len(targets), len(keys), attempts, counts["available"] + counts["preview"],
                      max(0, round((_perf_counter() - started_at) * 1000)), budget_seconds)
         _LOGGER.info("[sticker-media-calls] batch=%s queries=%d downloads=%d", batch, query_calls, download_calls)
+        # Q is the distinct PIC set requiring the bridge, not the number of
+        # retries. FileApi can itself hit cache; RPC counts cannot prove how
+        # many native downloads started. Those are recorded by the bridge.
+        _LOGGER.info("[pic-cache-funnel] batch=%s U=%d T=%d R=%d C=%d L=%d Q=%d N=%s local_ms=%d elapsed_ms=%d",
+                     batch, view.stickers.unique_material_count, len(targets), len(keys),
+                     local_candidates, local_hits, qq_targets, "unknown" if download_calls else "0",
+                     local_elapsed_ms, max(0, round((_perf_counter() - started_at) * 1000)))
         _LOGGER.info("[sticker-report-media-failures] mapping=%d source=%d fetch=%d resource_budget=%d request_budget=%d time_budget=%d asset_budget=%d",
                      reasons["message_mapping_unconfirmed"], sum(reasons[r] for r in
                          ("report_media_source_unavailable", "report_payload_unavailable", "report_scope_unconfirmed")),
@@ -2247,13 +2261,29 @@ class ChatAnalyzerFacade:
                     )
                 _publish_phase(on_phase, AnalysisPhase.ANALYZING_REPORT)
                 raw_session = getattr(acquisition, "session", None)
+                media_identity = (
+                    (acquisition.self_uin, *acquisition.runtime_binding)
+                    if getattr(acquisition, "self_uin", None) and getattr(acquisition, "runtime_binding", None)
+                    else None
+                )
+                pic_roots = ()
+                scope_started = _perf_counter()
+                if media_identity is not None:
+                    try:
+                        account, runtime_id, boot_id = media_identity
+                        provider = self._qq_connected_provider("pic_cache_roots")
+                        pic_roots = provider.pic_cache_roots(
+                            self_uin=account, runtime_id=runtime_id, boot_id=boot_id, timeout=2.0)
+                    except Exception:
+                        # An unavailable/unconfirmed scope never widens authority
+                        # or prevents the existing verified NapCat recovery path.
+                        _LOGGER.info("[pic-cache-scope] state=unavailable")
+                _LOGGER.info("[pic-cache-scope] roots=%d elapsed_ms=%d", len(pic_roots),
+                             max(0, round((_perf_counter() - scope_started) * 1000)))
                 yield _SessionExport(
                     payload_path=Path(acquisition.payload_path),
-                    qq_media_identity=(
-                        (acquisition.self_uin, *acquisition.runtime_binding)
-                        if getattr(acquisition, "self_uin", None) and getattr(acquisition, "runtime_binding", None)
-                        else None
-                    ),
+                    sticker_media_roots=pic_roots,
+                    qq_media_identity=media_identity,
                     conversation_id=getattr(raw_session, "conversation_id", None),
                     session=(
                         _to_session_info(source, raw_session)

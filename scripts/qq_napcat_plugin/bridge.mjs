@@ -126,7 +126,8 @@ const logNativeMedia = (stage, value) => {
     if (returned !== null) fields += ` return_code=${returned}`;
     for (const key of ['result', 'errCode', 'retCode', 'resultCode', 'errorCode', 'status',
       'fileErrCode', 'fileSrvErrCode', 'trasferStatus', 'step', 'fileDownType', 'thumbSize',
-      'source_state', 'file_state', 'thumb_count', 'thumb_regular', 'thumb_missing', 'thumb_invalid', 'thumb_other']) {
+      'source_state', 'file_state', 'thumb_count', 'thumb_regular', 'thumb_missing', 'thumb_invalid', 'thumb_other',
+      'native_started', 'native_completed']) {
       const code = numericCode(value?.[key]);
       if (code !== null) fields += ` ${key}=${code}`;
     }
@@ -162,6 +163,7 @@ const logMediaCache = async pic => {
 const observedMediaApi = (fileApi, observation) => {
   const wrapper = fileApi.core?.eventWrapper;
   if (typeof wrapper?.callNormalEventV2 !== 'function') return fileApi;
+  observation.observable = true;
   // The pinned FileApi drops the native result and returns only filePath.
   // Observe that call on a per-download receiver; never patch the shared API
   // or event wrapper used by QQ and other plugins.
@@ -343,6 +345,46 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       throw new Error('marketface_scope_unconfirmed');
     }
     return {root: join(data, 'Emoji', 'marketface'), self_uin: account, runtime_id: runtimeId, boot_id: bootId};
+  };
+  const picScope = async expectedAccount => {
+    const account = uin(core.selfInfo?.uin);
+    const directory = core.apis.DatabaseApi?.getNtDbDir?.();
+    // Pinned DatabaseApi derives this from QQ's native user-data config,
+    // never from the plugin's dataPath. Only this verified layout is supported.
+    if (!account || account !== expectedAccount || core.selfInfo?.online !== true ||
+        !CREDENTIAL.test(runtimeId ?? '') || typeof directory !== 'string' ||
+        !isAbsolute(directory) || directory.startsWith('\\\\') || directory !== normalize(directory) ||
+        basename(directory) !== 'nt_db' || basename(dirname(directory)) !== 'nt_qq' ||
+        basename(dirname(dirname(directory))) !== account) throw new Error('pic_scope_unconfirmed');
+    const until = performance.now() + 1000;
+    let entries = 0;
+    const regularDirectory = async path => {
+      for (let current = path; ; current = dirname(current)) {
+        if (performance.now() >= until) throw new Error('pic_scope_unconfirmed');
+        let info;
+        try { info = await fs.lstat(current); }
+        catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+        if (!info.isDirectory() || info.isSymbolicLink()) throw new Error('pic_scope_unconfirmed');
+        if (dirname(current) === current) return true;
+      }
+    };
+    if (!await regularDirectory(directory)) throw new Error('pic_scope_unconfirmed');
+    const data = join(dirname(directory), 'nt_data');
+    const roots = [];
+    // Grant existing originals only, excluding Thumb, marketface and other accounts.
+    for (const base of [join(data, 'Pic'), join(data, 'Emoji', 'emoji-recv')]) {
+      if (!await regularDirectory(base)) continue;
+      const listing = await fs.opendir(base);
+      for await (const month of listing) {
+        if (++entries > 4096 || performance.now() >= until) throw new Error('pic_scope_unconfirmed');
+        if (!/^[0-9]{4}-(0[1-9]|1[0-2])$/.test(month.name)) continue;
+        const original = join(base, month.name, 'Ori');
+        if (await regularDirectory(original)) roots.push(original);
+      }
+    }
+    if (uin(core.selfInfo?.uin) !== account || core.selfInfo?.online !== true ||
+        core.apis.DatabaseApi?.getNtDbDir?.() !== directory) throw new Error('pic_scope_unconfirmed');
+    return {roots, self_uin: account, runtime_id: runtimeId, boot_id: bootId};
   };
   const friends = async () => {
     const categories = await core.apis.FriendApi.getBuddyV2ExWithCate();
@@ -561,6 +603,8 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       armTransfer(transfer);
       return {transfer_id: transfer.id, size: file.size, chunk_size: MEDIA_CHUNK_BYTES};
     } finally {
+      logNativeMedia('download_summary', {native_started: download !== null && !observation.observable ? -1 : Number(observation.started),
+        native_completed: Number(observation.completed)});
       // A deadline or disconnected caller cannot cancel QQ's native operation.
       // Keep its lease until it settles; late paths/bytes never enter the report.
       const settled = () => {
@@ -579,6 +623,7 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
     ['EchoMetadata.listFriends', {count: 0, call: friends}],
     ['EchoMetadata.listGroups', {count: 0, call: groups}],
     ['EchoMetadata.marketfaceScope', {count: 0, call: marketfaceScope}],
+    ['EchoMetadata.picScope', {count: 1, valid: value => typeof value === 'string' && !!uin(value), call: picScope}],
     ['GroupApi.getGroupMemberAll', {count: 1, valid: value => !!uin(value) && typeof value === 'string', call: members}],
     ['EchoMediaProbe.resolvePicMessage', {count: 1, valid: probeRequest, call: probePicMessage}],
     ['EchoMediaProbe.downloadPicMedia', {count: 1, valid: mediaRequest, call: downloadPicMedia}],

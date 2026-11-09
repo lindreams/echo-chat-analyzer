@@ -460,7 +460,7 @@ def resolve_sticker_media(
     """
     occurrences = tuple(sends)
     unique = {send.media_key: send for send in occurrences}
-    stats = dict(entries_seen=0, files_seen=0, candidate_files=0, files_read=0,
+    stats = dict(entries_seen=0, files_seen=0, candidate_files=0, candidate_targets=0, files_read=0,
                  name_candidates=0, path_candidates=0, content_matches=0,
                  traversal_complete=False, all_files_checked=False, budget_exhausted=False,
                  scan_reused=False)
@@ -709,6 +709,7 @@ def resolve_sticker_media(
             results[key] = StickerMedia(key, status, reason)
     finally:
         stats["entries_seen"], stats["files_seen"] = entries, files
+        stats["candidate_targets"] = sum(bool(items) for items in named.values())
         stats["content_matches"] = len(originals)
         stats["budget_exhausted"] = any(item.status == "limited" for item in results.values())
         if diagnostics is not None:

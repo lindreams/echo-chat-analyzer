@@ -494,3 +494,36 @@ QQ 路径验证了约 30 MiB 的 320 × 240、300 帧 GIF，以及超过旧累�
 尚未验收：微信 `encrypturl` 加密 CDN 与本地缓存解密、QQ MFACE 原件、全部 QQ 版本的 PIC 分类、全部格式与大动画、
 预算外素材、跨机器及本轮 Frozen/Setup 集成。历史打包或虚构解码测试不能替代这些验收。
 只对用户检查过的来源版本与样本报告成功；真实 QQ 和媒体最终验证由用户手动进行。
+
+## 默认 QQ 报告的 PIC 本地授权
+
+Provider 的独立 `pic_cache_roots` 请求 `EchoMetadata.picScope`，绑定本次快照的
+账号、runtime、boot。桥接使用 QQ `DatabaseApi.getNtDbDir()`；固定版本实现由原生
+`getNTUserDataInfoConfig()` 和在线账号派生 `<账号>/nt_qq/nt_db`，不是插件 dataPath。
+仅授权该位置旁 `nt_data/Pic/YYYY-MM/Ori` 和
+`nt_data/Emoji/emoji-recv/YYYY-MM/Ori` 中实际存在、祖先不含链接的目录。
+未知布局、离线、身份变化、非法路径或目录枚举不完整均不授权；不会探测其他磁盘或账号。
+授权枚举有独立的 1 秒／4096 个目录项安全预算，耗尽时整次授权失败，不截断素材统计。
+固定 SDK 的数据根来源和本机已有 QQ 缓存的两种按月 Ori 布局均已核实。
+现场目录核查只读元数据，未将真实原件或账号状态用作自动化测试输入；本轮未登录真实 QQ，
+没有真实 PIC 原件缓存命中或跨机器布局的验收结论。
+
+Facade 将 roots 随 `_SessionExport` 交给统计完成后的同一个 Python 扫描器，
+一次报告复用 `_QQMediaCacheScan`；清单复用不缓存身份或完整性校验结果。
+只有本地 MD5、文件句柄位置和完整图片解码均通过的目标才跳过 QQ 查询和下载。
+缓存未命中或授权不可用继续现有 NapCat 路径；两次消息身份复核、单在途和预算不变。
+MFACE 的授权、缓存和 CDN 通路不变。
+
+匿名 `pic-cache-funnel` 记录：U 为报告内全部不同素材数，T 为章节合并去重目标数，
+R 为其中有原件 MD5 和唯一消息定位依据的 PIC 目标数（仍须后续身份复核），
+C 为有本地路径／摘要文件名候选的不同 PIC 目标数，L 为本地验证成功数，Q 为剩余需桥接的目标数。
+C 不是候选文件数，Q 不是请求／重试次数，也不保证预算内全部尝试。
+N 为真正启动的 downloadRichMedia 次数：没有下载入口调用时 Python 可确认 N=0；
+否则 Python 记 unknown，不能把 FileApi 调用当作网络下载。
+Node 每次下载操作记录 `download_summary` 的 native_started/native_completed（0/1）；
+观察接口不可用时 native_started=-1，不能算作 0。可按本次阶段时间窗口汇总 N，
+未完成的原生操作仍保持原有隔离租约。scope、local、identity、media、export 阶段耗时各自记录。
+
+自动化覆盖使用虚构账号、隔离原件和真实 HTTP 桥接，验证默认 roots 传递、重复素材去重、
+本地命中零查询／零下载、缓存缺失／授权失败回退，以及与显式授权和桥接路径的 JSON/HTML
+字节一致性。真实 QQ 缓存命中率、大群耗时和 GUI 现场体验仍待登录后的验收。

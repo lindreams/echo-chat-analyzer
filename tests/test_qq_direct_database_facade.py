@@ -28,6 +28,7 @@ from qq_db_test_data import (
     length_delimited_field as _field,
     synthetic_text_message_blob as _message_blob,
 )
+from test_napcat_qq_provider import runtime  # Isolated real HTTP bridge fixture.
 
 
 @pytest.mark.parametrize("fails", [False, True])
@@ -205,17 +206,31 @@ class _ProviderConnection:
         return self._provider
 
 
-@pytest.mark.parametrize("kind,local", [("private", False), ("group", False), ("group", True)])
-def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monkeypatch, kind, local):
+@pytest.mark.parametrize("kind,local", [("private", False), ("group", False), ("group", True), ("group", None)])
+def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monkeypatch, caplog, runtime, kind, local):
     import json
     from qq_chat_analyzer.presentation import echo_serializer
+    from test_napcat_qq_provider import RUNTIME_ID, provider as bridge_provider
 
     raw = _fictional_png()
     digest = hashlib.md5(raw).digest()
-    facade, provider, runtime = _fetch_facade(tmp_path, digest=digest, content=raw,
+    facade, provider, snapshot = _fetch_facade(tmp_path, digest=digest, content=raw,
                                              group_sender="10087" if kind == "group" else None)
-    roots = tmp_path / "approved-originals"
-    roots.mkdir()
+    table = "group_msg_table" if kind == "group" else "c2c_msg_table"
+    with sqlite3.connect(tmp_path / "plaintext-qq.db") as db:
+        db.execute(f'''INSERT INTO {table}
+            ("40001", "40020", "40021", "40027", "40030", "40033", "40050", "40800")
+            SELECT 202, "40020", "40021", "40027", "40030", "40033", "40050" + 1, "40800"
+            FROM {table} WHERE "40001" = 201''')
+    database = tmp_path / "10086/nt_qq/nt_db"
+    database.mkdir(parents=True)
+    roots = database.parent / "nt_data/Pic/2026-01/Ori"
+    roots.mkdir(parents=True)
+    client = bridge_provider(runtime(runtime_id=RUNTIME_ID,
+        databaseDir=str(database if local is not None else tmp_path / "unbound/nt_db"), selfUin="10086"))
+    state = client.status()
+    snapshot.runtime_binding = (RUNTIME_ID, state.boot_id)
+    provider.pic_cache_roots = client.pic_cache_roots
     if local:
         (roots / f"{digest.hex()}.png").write_bytes(raw)
     exports = []
@@ -227,19 +242,40 @@ def test_generate_qq_report_recovers_media_before_its_only_export(tmp_path, monk
         return original(view, path, **kwargs)
 
     monkeypatch.setattr("qq_chat_analyzer.application.analysis_service.export_echo_report_html", export)
+    caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.facade")
     progress = []
     outcome = facade.analyze_session(ChatSource.QQ, f"{kind}:{kind}-partition",
-                                    AnalysisConfig(output_directory=tmp_path / "output",
-                                                   sticker_media_roots=(roots,)), progress=progress.append)
+                                    AnalysisConfig(output_directory=tmp_path / "output"), progress=progress.append)
     assert len(exports) == 1
-    assert len(runtime.acquired) == 1  # Same acquired payload for stats and media identity.
+    assert len(snapshot.acquired) == 1  # Same acquired payload for stats and media identity.
     assert len(provider.calls) == (0 if local else 2)
     chapter = json.loads((outcome.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]
+    assert chapter["total_send_count"] == 2 and chapter["unique_material_count"] == 1
     asset, = chapter["assets"].values()
     assert asset["status"] == "available"
     assert asset["data_uri"].startswith("media/")
     assert (outcome.report_directory / asset["data_uri"]).read_bytes() == raw
     assert asset["data_uri"] in outcome.report_path.read_text(encoding="utf-8")
+    assert ("[sticker-media-local]" in caplog.text) == (local is not None)
+    assert f"U=1 T=1 R=1 C={int(bool(local))} L={int(bool(local))} Q={int(not local)} N={'0' if local else 'unknown'}" in caplog.text
+    if local:
+        # The explicitly authorized path is the previous supported contract.
+        # Default scope wiring must produce the identical JSON and HTML.
+        explicit = facade.analyze_session(ChatSource.QQ, f"{kind}:{kind}-partition",
+            AnalysisConfig(output_directory=tmp_path / "explicit", sticker_media_roots=(roots,)))
+        assert (explicit.report_directory / "echo-report.json").read_bytes() == (outcome.report_directory / "echo-report.json").read_bytes()
+        assert explicit.report_path.read_bytes() == outcome.report_path.read_bytes()
+        assert provider.calls == []
+        # An unavailable grant takes the original bridge path, preserving output.
+        from qq_chat_analyzer.providers.napcat_qq_provider import NapCatQQError
+        def unavailable(**kwargs):
+            raise NapCatQQError()
+        monkeypatch.setattr(provider, "pic_cache_roots", unavailable)
+        fallback = facade.analyze_session(ChatSource.QQ, f"{kind}:{kind}-partition",
+            AnalysisConfig(output_directory=tmp_path / "fallback"))
+        assert len(provider.calls) == 2
+        assert (fallback.report_directory / "echo-report.json").read_bytes() == (outcome.report_directory / "echo-report.json").read_bytes()
+        assert fallback.report_path.read_bytes() == outcome.report_path.read_bytes()
     assert "正在获取表情包素材..." in progress
     stages = ["正在读取聊天记录...", "正在筛选消息...", "正在分析表情包...", "正在分析聊天内容..."]
     positions = [progress.index(stage) for stage in stages]

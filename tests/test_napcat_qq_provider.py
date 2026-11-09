@@ -79,7 +79,7 @@ if(config.mediaRace) {
 if(config.clockFile) Object.defineProperty(performance,'now',{value:()=>Number(fs.readFileSync(config.clockFile,'utf8'))});
 const mark = name => { if (config.marker) fs.appendFileSync(config.marker, name + '\\n'); };
 const info = fields => new Proxy(fields, {get(target, key) { mark('Core.status'); return target[key]; }});
-const core={dbPassphrase:'PRIVATE',selfInfo:info({uin:'12345678',uid:'u_self',nick:'Self',online:true,secret:'PRIVATE'}),apis:{
+const core={dbPassphrase:'PRIVATE',selfInfo:info({uin:config.selfUin ?? '12345678',uid:'u_self',nick:'Self',online:true,secret:'PRIVATE'}),apis:{
  DatabaseApi:{hasPassphrase:()=>true,getNtDbDir:()=>config.databaseDir,decryptDatabase(){mark('decryptDatabase')}},
  FileApi:{downloadMedia:async function(...args){
    mark('downloadMedia');
@@ -320,6 +320,49 @@ def test_marketface_scope_binds_account_worker_and_narrow_layout(runtime, tmp_pa
                                          boot_id=state.boot_id, timeout=2)
 
 
+def test_pic_scope_binds_account_launch_and_only_existing_originals(runtime, tmp_path, monkeypatch):
+    module = importlib.import_module("qq_chat_analyzer.providers.napcat_qq_provider")
+    owner = tmp_path / "12345678/nt_qq"
+    database = owner / "nt_db"
+    database.mkdir(parents=True)
+    originals = tuple(owner / relative for relative in (
+        "nt_data/Pic/2026-01/Ori", "nt_data/Emoji/emoji-recv/2026-02/Ori"))
+    for root in originals:
+        root.mkdir(parents=True)
+    for relative in ("nt_data/Pic/2026-01/Thumb", "nt_data/Pic/not-a-month/Ori",
+                     "nt_data/Pic/2026-13/Ori", "nt_data/Emoji/marketface/123"):
+        (owner / relative).mkdir(parents=True)
+    base = runtime(runtime_id=RUNTIME_ID, databaseDir=str(database))
+    client = provider(base)
+    state = client.status()
+    args = dict(self_uin="12345678", runtime_id=RUNTIME_ID, boot_id=state.boot_id, timeout=2)
+    assert set(client.pic_cache_roots(**args)) == set(originals)
+    for changes in ({"self_uin": "87654321"}, {"boot_id": "ee" * 32}, {"runtime_id": "ff" * 32}):
+        with pytest.raises(module.NapCatQQError):
+            client.pic_cache_roots(**{**args, **changes})
+    assert request(base, "EchoMetadata.picScope", ["12345678"], credential=WRONG_TOKEN)[0] == 401
+    assert request(base, "EchoMetadata.picScope", ["87654321"])[1]["ok"] is False
+    for bad_root in (str(owner / "nt_data/Pic"), str(owner / "nt_data/Pic/2026-01/Thumb"),
+                     str(tmp_path / "87654321/nt_qq/nt_data/Pic/2026-01/Ori"),
+                     str(originals[0] / "../Ori"), "\\\\foreign\\share\\Ori", 123):
+        with monkeypatch.context() as patch:
+            patch.setattr(client, "_rpc", lambda *a, **k: dict(roots=[bad_root], self_uin="12345678",
+                                 runtime_id=RUNTIME_ID, boot_id=state.boot_id))
+            with pytest.raises(module.NapCatQQError):
+                client.pic_cache_roots(**args)
+    # A junction must never turn scope discovery into another account's walk.
+    foreign = tmp_path / "87654321/nt_qq/nt_data/Pic/2026-03/Ori"
+    foreign.mkdir(parents=True)
+    subprocess.run(["cmd", "/c", "mklink", "/J", str(owner / "nt_data/Pic/2026-03"), str(foreign.parent)],
+                   check=True, capture_output=True)
+    with pytest.raises(module.NapCatQQError):
+        client.pic_cache_roots(**args)
+    invalid = provider(runtime(runtime_id=RUNTIME_ID, databaseDir=str(tmp_path / "unbound/nt_db")))
+    invalid_state = invalid.status()
+    with pytest.raises(module.NapCatQQError):
+        invalid.pic_cache_roots(**{**args, "boot_id": invalid_state.boot_id})
+
+
 def test_abandoned_acquire_cleans_late_generation(runtime, tmp_path):
     import time
     marker = tmp_path / "fictional-operations.txt"
@@ -526,6 +569,7 @@ def executed(path):
 
 @pytest.mark.parametrize("method,params", [
     ("EchoMetadata.listFriends", []),
+    ("EchoMetadata.picScope", ["12345678"]),
     ("EchoSnapshotApi.cleanup", ["old-generation"]),
 ])
 @pytest.mark.parametrize("boot", [None, "a" * 64])
@@ -1186,10 +1230,12 @@ def test_media_fetch_relocates_the_element_and_returns_only_bounded_bytes(runtim
 
     # The original is already cached. A repeated native download can return no
     # path, so the bridge must pass the confirmed PIC's cache to FileApi.
-    base = runtime(mediaPath="", picOverrides={"picElement": {
+    cache_log = tmp_path / "cache-reuse.log"
+    base = runtime(mediaPath="", nativeDownload=True, nativeLog=str(cache_log), picOverrides={"picElement": {
         "md5HexStr": "AB" * 16, "fileUuid": "fictional-file-uuid",
         "sourcePath": str(media_file), "fileName": "PRIVATE.jpg"}})
     assert provider(base).download_pic_media(**_MEDIA) == raw
+    assert "stage=download_summary native_started=0 native_completed=0" in cache_log.read_text(encoding="utf-8")
 
     # The raw response carries bytes only: no path, file name or element ID.
     status, payload = request(base, "EchoMediaProbe.downloadPicMedia", [dict(_MEDIA_WIRE)])
@@ -1218,6 +1264,7 @@ def test_native_media_diagnostics_keep_only_codes_and_cannot_block_downloads(run
     assert caught.value.stage == "media_download_no_path"
     diagnostic = log.read_text(encoding="utf-8")
     assert "stage=native_request return_code=0" in diagnostic
+    assert "stage=download_summary native_started=1 native_completed=1" in diagnostic
     assert "fileErrCode=-123 fileSrvErrCode=1001 trasferStatus=2 step=3" in diagnostic
     assert "stage=cache_location source_state=2 file_state=3 thumb_count=2 thumb_regular=1 thumb_missing=1 thumb_invalid=0 thumb_other=0" in diagnostic
     assert "path_present=0" in diagnostic

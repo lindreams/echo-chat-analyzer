@@ -349,6 +349,39 @@ class NapCatQQProvider:
             raise NapCatQQError()
         return root
 
+    def pic_cache_roots(self, *, self_uin: str, runtime_id: str, boot_id: str,
+                        timeout: float) -> tuple[Path, ...]:
+        """Existing PIC originals authorized by this snapshot's account/launch."""
+        if (not isinstance(self_uin, str) or not re.fullmatch(r"[1-9][0-9]{4,19}", self_uin)
+                or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value)
+                       for value in (runtime_id, boot_id))
+                or self._runtime_id != runtime_id or self._boot_id != boot_id):
+            raise NapCatQQError()
+        value = self._rpc("EchoMetadata.picScope", [self_uin], timeout=timeout)
+        if (not isinstance(value, dict) or set(value) != {"roots", "self_uin", "runtime_id", "boot_id"}
+                or value["self_uin"] != self_uin or value["runtime_id"] != runtime_id
+                or value["boot_id"] != boot_id or self._runtime_id != runtime_id
+                or self._boot_id != boot_id or not isinstance(value["roots"], list)):
+            raise NapCatQQError()
+        roots = []
+        for supplied in value["roots"]:
+            if not isinstance(supplied, str):
+                raise NapCatQQError()
+            root = Path(supplied)
+            base = root.parent.parent
+            data = base.parent if base.name == "Pic" else base.parent.parent
+            if (not root.is_absolute() or root.anchor.startswith("\\\\") or ".." in root.parts
+                    or root.name != "Ori" or not re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", root.parent.name)
+                    or not (base.name == "Pic" or base.name == "emoji-recv" and base.parent.name == "Emoji")
+                    or data.name != "nt_data" or data.parent.name != "nt_qq"
+                    or data.parent.parent.name != self_uin):
+                raise NapCatQQError()
+            if root not in roots:
+                roots.append(root)
+        # The scanner rechecks every directory and opened file, including links
+        # and handle location. This grant never caches a file-validation verdict.
+        return tuple(roots)
+
     def list_friends(self, *, timeout: float | None = None) -> list[NapCatFriend]:
         rows = self._rpc("EchoMetadata.listFriends", timeout=timeout)
         if not isinstance(rows, list):
