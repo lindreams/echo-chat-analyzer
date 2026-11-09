@@ -133,6 +133,7 @@ def _render_frontend(
     sessions: dict[str, object] | None,
     expression_culture: dict[str, object] | None = None,
     stickers: dict[str, object] | None = None,
+    overview: dict[str, object] | None = None,
 ) -> dict[str, dict[str, object]]:
     payload = {
         "conversation": {"kind": kind, "name": "", "time_span": ""},
@@ -149,6 +150,8 @@ def _render_frontend(
     }
     if sessions is not None:
         payload["conversation_sessions"] = sessions
+    if overview is not None:
+        payload["overview"].update(overview)
     dom = _ReportDOM()
     dom.feed(export_echo_report_html(
         EchoReportView(title="Fictional Echo"), tmp_path / "echo.html",
@@ -169,6 +172,31 @@ def _render_frontend(
         env=environment,
     )
     return json.loads(completed.stdout)
+
+
+def test_report_explains_name_opening_and_media_gaps_without_claiming_deletion(tmp_path):
+    from qq_chat_analyzer.presentation import build_echo_report_view, echo_report_to_dict
+
+    sessions = _sessions(session_count=4, group_initiators={"unknown_count": 2,
+        "top_member": {"display_name": "Fictional member", "count": 1, "share": .25}})
+    sessions["unattributed_session_count"] = 1
+    chapter = echo_report_to_dict(build_echo_report_view(None, conversation_kind="group"))["stickers"]
+    chapter.update(total_send_count=10, assets={
+        "fiction-a": {"status": "available", "data_uri": "media/fiction.png", "reason": None},
+        "fiction-b": {"status": "preview", "data_uri": "media/fiction-preview.png", "reason": None},
+        "fiction-c": {"status": "failed", "data_uri": "", "reason": "qq_media_download_no_path"},
+        "fiction-d": {"status": "limited", "data_uri": "", "reason": "report_media_time_budget"},
+    })
+    rendered = _render_frontend(tmp_path, kind="group", sessions=sessions, stickers=chapter,
+        overview={"unnamed_member_count": 3})
+    assert "3 位成员未取得名称" in rendered["report-member-note"]["text"]
+    assert "2 / 4 个片段" in rendered["session-quality-note"]["text"]
+    assert "1 个片段没有可识别参与者" in rendered["session-quality-note"]["text"]
+    assert rendered["session-group-top"]["text"].startswith("已确认开场者中")
+    assert "不代表话题边界" in rendered["session-threshold-note"]["text"]
+    summary = rendered["sticker-quality-note"]["text"]
+    assert all(text in summary for text in ["4 项展示素材", "1 项原件", "1 项预览", "1 项本次未取得", "1 项因等待时限未完成"])
+    assert "不能据此确定原因" in summary
 
 
 @pytest.mark.parametrize("variation,merged", [
@@ -916,7 +944,8 @@ def test_saved_qq_media_report_loads_actual_images_offline(tmp_path, kind, caplo
       const result = {loaded: images.length > 0 && images.every(x => x.complete && x.naturalWidth > 0),
         offline: images.every(x => x.src.startsWith("data:image/") || x.src.startsWith(new URL("media/", document.baseURI).href)),
         states: Object.values(window.ECHO_DATA.stickers.assets).map(x => x.status),
-        preview: chapter.textContent.includes("预览"), count: window.ECHO_DATA.stickers.total_send_count};
+        preview: [...chapter.querySelectorAll(".sticker-preview")].some(x => x.textContent.includes("预览")),
+        count: window.ECHO_DATA.stickers.total_send_count};
       const pre = document.createElement("pre"); pre.id = "saved-media-probe";
       pre.hidden = true; pre.textContent = JSON.stringify(result); document.body.appendChild(pre);
     }, 500);});</script>'''

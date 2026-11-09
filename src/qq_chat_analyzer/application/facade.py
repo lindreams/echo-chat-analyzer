@@ -80,8 +80,9 @@ from .scope_filter import AnalysisScope, AnalysisScopeMode, resolve_scope
 
 _LOGGER = logging.getLogger("qq_chat_analyzer.desktop.facade")
 # One foreground report, serial requests, bounded report-local retries.
-_QQ_MEDIA_MAX_CANDIDATES = 3
+_QQ_MEDIA_MAX_CANDIDATES = 2
 _QQ_MEDIA_REQUEST_SECONDS = 5.0
+_QQ_MEDIA_MISSING_TTL_SECONDS = 300.0
 _QQ_MEDIA_RETRYABLE = frozenset({
     "qq_media_download_no_path", "qq_media_download_no_cache_hint", "qq_media_file_missing",
     "qq_media_query_timeout", "qq_media_download_timeout", "qq_media_download_failed",
@@ -704,7 +705,7 @@ class ChatAnalyzerFacade:
         batch = batch or uuid4().hex[:12]
         # Includes selection, local recovery, identity preparation and RPCs.
         # This is a soft wait budget, never proof native QQ work has stopped.
-        budget_seconds = 30 if len(targets) <= 12 else 60 if len(targets) <= 40 else 180
+        budget_seconds = 30 if len(targets) <= 12 else 45
         deadline = budget_started + budget_seconds
         attempts = query_calls = download_calls = completed = 0
         def check_cancel():
@@ -782,10 +783,10 @@ class ChatAnalyzerFacade:
                     first = send_index.selections.get((target.media_key, None))
                     if first is None:
                         continue
-                    candidates = [first]
-                    # The original representative and two most recent distinct
-                    # sends in the same retained conversation. Never collect an
-                    # unbounded historical candidate list or relax its identity.
+                    candidates = []
+                    # Prefer recent copies, then one other distinct retained
+                    # message. Old representatives need not consume a round
+                    # before a recent, potentially cached copy gets its chance.
                     for _, send in reversed(send_index.by_media[target.media_key]):
                         check_budget()
                         if (send.source, send.identity_basis, send.conversation_type,
@@ -793,11 +794,12 @@ class ChatAnalyzerFacade:
                             first.source, first.identity_basis, first.conversation_type,
                             first.conversation_id, first.content_md5):
                             continue
-                        if send.message_id and all(send.message_id != item.message_id for item in candidates):
+                        if (send.message_id and send_index.selections.get((send.media_key, send.occurrence_id)) is send
+                                and all(send.message_id != item.message_id for item in candidates)):
                             candidates.append(send)
                             if len(candidates) == _QQ_MEDIA_MAX_CANDIDATES:
                                 break
-                    sends[target.media_key] = candidates
+                    sends[target.media_key] = candidates or [first]
                 keys = tuple(target.media_key for target in targets if target.media_key in sends)
                 # No discovery: use only caller/source-owned, previously trusted scopes.
                 if roots:
@@ -859,9 +861,14 @@ class ChatAnalyzerFacade:
                 # This loop merges each recovered item into its own media map;
                 # do not copy/search all earlier media again for every target.
                 fetch_data = replace(data, media=())
-                queue = [(key, 0) for key in pending]
+                primary_keys = {item.media_key for item in sticker_report_targets(view.stickers, primary_only=True)}
+                queue = [(key, 0) for key in pending if key in primary_keys]
+                later = [(key, 0) for key in pending if key not in primary_keys]
                 round_number = 1
-                while queue and round_number <= _QQ_MEDIA_MAX_CANDIDATES:
+                while queue or later:
+                    if not queue:
+                        queue, later = later, []
+                        round_number = 1
                     following = []
                     round_started, round_attempts = _perf_counter(), attempts
                     for key, candidate_index in queue:
@@ -885,19 +892,33 @@ class ChatAnalyzerFacade:
                                           else StickerMedia(key, "failed", setup_failure))
                             code = setup_failure
                         else:
-                            attempts += 1
                             _report_progress(progress, f"正在获取表情包素材（第 {round_number} 轮，{ordinal}/{len(targets)}）...")
+                            send = sends[key][candidate_index]
+                            facts = tuple(facts_by_message[send.message_id])
+                            # Never share a negative result across accounts,
+                            # runtime boots, conversations or changed locators.
+                            missing_key = None
+                            if qq_media_identity is not None and len(facts) == 1:
+                                fact = facts[0]
+                                missing_key = (qq_media_identity, session.session_id, send.message_id,
+                                    fact.timestamp, fact.sender_uin, fact.sender_uid, fact.group_id, fact.peer_uid, fact.is_self,
+                                    tuple((e.segment_id, e.file_uuid, e.content_md5) for e in fact.elements))
                             try:
+                                with self._source_publication_lock:
+                                    expires = self._recent_qq_media_failures.get(missing_key, 0)
+                                if expires > _monotonic():
+                                    raise FacadeError(code="qq_media_download_no_path",
+                                        public_message="QQ 最近未能提供此消息的图片，已保留发送统计。")
+                                attempts += 1
                                 wait_ready = getattr(provider, "wait_media_ready", None)
                                 if callable(wait_ready):
                                     trace("waiting_bridge")
                                     wait_ready(cancelled=stopped, timeout=min(_QQ_MEDIA_REQUEST_SECONDS, deadline - _monotonic()))
                                     check_budget()
-                                send = sends[key][candidate_index]
                                 recovered = self._fetch_qq_pic(
                                     fetch_data, media_key=key,
                                     session_id=session.session_id, occurrence_id=send.occurrence_id,
-                                    stored_facts=tuple(facts_by_message[send.message_id]),
+                                    stored_facts=facts,
                                     provider=provider, cancelled=stopped, on_stage=trace, send_index=send_index,
                                     deadline=deadline, request_timeout=_QQ_MEDIA_REQUEST_SECONDS)
                                 item, = recovered.media
@@ -917,6 +938,15 @@ class ChatAnalyzerFacade:
                                     error = FacadeError(code=code, public_message=message)
                                 code = error.code
                                 failures[code] += 1
+                                if code == "qq_media_download_no_path" and missing_key is not None:
+                                    with self._source_publication_lock:
+                                        if expires <= _monotonic():
+                                            if len(self._recent_qq_media_failures) >= 1024:
+                                                self._recent_qq_media_failures.pop(next(iter(self._recent_qq_media_failures)))
+                                            self._recent_qq_media_failures[missing_key] = _monotonic() + _QQ_MEDIA_MISSING_TTL_SECONDS
+                                # Preserve the actual outcome even when this
+                                # request used the last of the foreground budget.
+                                media[key] = qq_media_failure(key, error.code)
                                 check_budget()
                                 if error.code == "qq_media_pending":
                                     # One abandoned/uncertain native operation
@@ -942,7 +972,7 @@ class ChatAnalyzerFacade:
                     _LOGGER.info("[sticker-media-round] batch=%s round=%d targets=%d attempts=%d retry=%d elapsed_ms=%d",
                                  batch, round_number, len(queue), attempts - round_attempts, len(following),
                                  max(0, round((_perf_counter() - round_started) * 1000)))
-                    queue = following
+                    queue = following if round_number < _QQ_MEDIA_MAX_CANDIDATES else []
                     round_number += 1
                 if marketfaces is not None:
                     while not marketfaces.done.is_set():
@@ -963,8 +993,11 @@ class ChatAnalyzerFacade:
             drain_marketfaces()
             for target in targets:
                 item = media.get(target.media_key)
-                if not (item and item.status in {"available", "preview"} and (item.original_bytes or item.stored)):
-                    media[target.media_key] = qq_media_failure(target.media_key, error.code)
+                if item and (item.status in {"failed", "missing", "invalid", "unsafe", "unreadable",
+                                             "ambiguous", "unsupported", "limited"}
+                             or item.status in {"available", "preview"} and (item.original_bytes or item.stored)):
+                    continue
+                media[target.media_key] = qq_media_failure(target.media_key, error.code)
             data = replace(data, media=tuple(media.values()))
         except BaseException:
             for stored in owned_media:
@@ -1114,6 +1147,8 @@ class ChatAnalyzerFacade:
         self._shutdown_result: ShutdownResult | None = None
         self._sources_closing = threading.Event()
         self._source_publication_lock = threading.Lock()
+        # Bounded, memory-only failed message candidates; no bytes or paths.
+        self._recent_qq_media_failures: dict[tuple, float] = {}
 
     def can_uninstall_setup(self) -> bool:
         return self._setup_uninstall_service.is_available()

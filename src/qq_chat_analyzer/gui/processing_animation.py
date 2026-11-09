@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from functools import lru_cache
 
 from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import (
-    QBrush, QColor, QGradient, QLinearGradient, QPainter,
+    QBrush, QColor, QGradient, QImage, QLinearGradient, QPainter,
     QPainterPath, QPen, QRadialGradient,
 )
 
@@ -56,24 +57,30 @@ def _ellipse(x, y, rx, ry):
     return path
 
 
-def _grain(painter, path):
-    """SVG's 37 x 31 pattern, clipped in logical user-space coordinates."""
-    painter.save()
+@lru_cache(maxsize=1)
+def _grain_brush():
+    """Render the immutable SVG tile once, rather than thousands of Qt calls per frame."""
+    tile = QImage(37, 31, QImage.Format.Format_ARGB32_Premultiplied)
+    tile.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(tile)
     try:
-        painter.setClipPath(path, Qt.ClipOperation.IntersectClip)
-        rect = path.boundingRect()
-        for y in range(math.floor(rect.top()/31)*31, math.ceil(rect.bottom()/31)*31, 31):
-            for x in range(math.floor(rect.left()/37)*37, math.ceil(rect.right()/37)*37, 37):
-                _draw(painter, _ellipse(x+3, y+7, .5, .5), "#a78865", opacity=.15)
-                _draw(painter, _ellipse(x+19, y+23, .45, .45), "#8f795f", opacity=.12)
-                marks = QPainterPath()
-                marks.moveTo(x+28, y+11)
-                marks.lineTo(x+29.5, y+11)
-                marks.moveTo(x+9, y+27)
-                marks.lineTo(x+10, y+27)
-                _draw(painter, marks, stroke="#a78865", width=.45, opacity=.13)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        _draw(painter, _ellipse(3, 7, .5, .5), "#a78865", opacity=.15)
+        _draw(painter, _ellipse(19, 23, .45, .45), "#8f795f", opacity=.12)
+        marks = QPainterPath()
+        marks.moveTo(28, 11)
+        marks.lineTo(29.5, 11)
+        marks.moveTo(9, 27)
+        marks.lineTo(10, 27)
+        _draw(painter, marks, stroke="#a78865", width=.45, opacity=.13)
     finally:
-        painter.restore()
+        painter.end()
+    return QBrush(tile)
+
+
+def _grain(painter, path):
+    """Tile the same 37 x 31 grain in logical coordinates, clipped to the paper."""
+    painter.fillPath(path, _grain_brush())
 
 
 def _paper(painter, points, side, *, incoming_progress=None, recorded=False):

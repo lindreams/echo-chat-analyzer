@@ -106,6 +106,8 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <div class="rhythm-stat rhythm-participants" id="rhythm-participants" hidden><span>参与成员</span><p><strong id="overview-participants"></strong><span>人</span></p></div>
       </div>
       <p class="rhythm-count-note">本页统计本次范围内清洗后保留的消息，与会话列表的原始记录数可能不同。</p>
+      <p class="report-quality-note" id="report-data-note">仅基于本机现存、可读取的记录，不代表完整聊天历史。</p>
+      <p class="report-quality-note" id="report-member-note" hidden></p>
       <div class="rhythm-toolbar">
         <h3>日常的时间纹理</h3>
         <div class="rhythm-scopes" id="rhythm-private-scopes" role="group" aria-label="选择成员消息分布" hidden></div>
@@ -134,6 +136,7 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <div><p class="folio">SESSIONS</p><h2 id="sessions-title">每次聊起</h2></div>
       </header>
       <p class="chapter-intro" id="session-lead"></p>
+      <p class="report-quality-note" id="session-quality-note" hidden></p>
       <div class="session-summary" id="session-summary" hidden>
         <div class="session-total"><span>这段时间，一共聊起</span><p><strong id="session-round-count"></strong><span>轮</span></p></div>
         <div id="session-movement" hidden>
@@ -303,6 +306,7 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <div><p class="folio">STICKERS</p><h2 id="sticker-title">表情包里的故事</h2></div>
       </header>
       <p class="chapter-intro">有些回应，交给一张图。</p>
+      <p class="report-quality-note" id="sticker-quality-note" hidden></p>
       <dl class="sticker-fields" id="sticker-fields">
         <div><dt>发出的表情包</dt><dd id="sticker-total"></dd><p class="sticker-stat-detail" id="sticker-sends-split" hidden></p></div>
         <div><dt>不同的图样</dt><dd id="sticker-unique"></dd><p class="sticker-stat-detail" id="sticker-kinds-split" hidden></p></div>
@@ -353,6 +357,7 @@ window.ECHO_DATA = __ECHO_DATA__;
 
 
 ECHO_REPORT_CSS = r"""
+.report-quality-note { color: #766f65; font-size: 12px; line-height: 1.8; margin: 8px 0 16px; }
 :root {
   --paper: #f3efe6;
   --paper-light: #faf7f0;
@@ -1268,6 +1273,11 @@ document.documentElement.classList.add("js-ready");
   var hasData = Boolean(overview && overview.has_data);
   var emptyDescription =
     overview && overview.empty_description ? overview.empty_description : "";
+  var unnamedMembers = overview && overview.unnamed_member_count;
+  if (Number.isSafeInteger(unnamedMembers) && unnamedMembers > 0) {
+    setText("report-member-note", formatCount(unnamedMembers) + " 位成员未取得名称，已用不同的未命名成员编号分别统计；这不表示作者身份相同，也不能据此判断是否退群。");
+    setHidden("report-member-note", false);
+  }
 
   function setText(id, value) {
     var node = document.getElementById(id);
@@ -1522,7 +1532,7 @@ document.documentElement.classList.add("js-ready");
       if (groupInitiators && groupInitiators.top_member) {
         var topMember = groupInitiators.top_member;
         setText("session-group-top",
-          "最常发起聊天：" + topMember.display_name +
+          (groupInitiators.unknown_count > 0 ? "已确认开场者中，记录最多：" : "最常发起聊天：") + topMember.display_name +
           "（" + formatCount(topMember.count) + " 轮，" + formatPercent(topMember.share) + "）"
         );
         var topStarts = finiteNumber(topMember.count);
@@ -1592,8 +1602,20 @@ document.documentElement.classList.add("js-ready");
       var thresholdSeconds = finiteNumber(sessions.threshold_seconds);
       var thresholdMinutes = thresholdSeconds !== null && thresholdSeconds > 0 ? Math.round(thresholdSeconds / 60) : 30;
       setText("session-threshold-note",
-        "超过 " + String(thresholdMinutes) + " 分钟未继续交流，会视作下一轮聊天。"
+        "相邻保留记录间隔超过 " + String(thresholdMinutes) + " 分钟，划分为下一段活动；不代表话题边界或某个人连续聊天的时长。历史记录缺失可能改变片段边界和开场者。"
       );
+      var unknownOpenings = isGroup && groupInitiators ? groupInitiators.unknown_count :
+        sessions.private_initiators && sessions.private_initiators.unknown_count;
+      var noParticipants = sessions.unattributed_session_count;
+      var qualityNotes = [];
+      if (Number.isSafeInteger(unknownOpenings) && unknownOpenings > 0) {
+        qualityNotes.push(formatCount(unknownOpenings) + " / " + formatCount(sessionCount) + " 个片段无法确认首条记录的作者，未猜测开场者；份额以全部片段为分母。");
+      }
+      if (Number.isSafeInteger(noParticipants) && noParticipants > 0) {
+        qualityNotes.push("其中 " + formatCount(noParticipants) + " 个片段没有可识别参与者，保留记录计数，不能据此推断成员行为。");
+      }
+      setText("session-quality-note", qualityNotes.join(" "));
+      setHidden("session-quality-note", !qualityNotes.length);
     }
   }
 
@@ -2005,6 +2027,18 @@ document.documentElement.classList.add("js-ready");
   setHidden("sticker-comparison", true);
   if (hasStickers) {
     var stickerAssets = stickers.assets || {};
+    var assetValues = Object.keys(stickerAssets).map(function (key) { return stickerAssets[key]; });
+    var originalCount = assetValues.filter(function (a) { return a.status === "available" && a.data_uri; }).length;
+    var previewCount = assetValues.filter(function (a) { return a.status === "preview" && a.data_uri; }).length;
+    var deferredCount = assetValues.filter(function (a) { return a.reason === "report_media_time_budget"; }).length;
+    var unavailableCount = assetValues.length - originalCount - previewCount - deferredCount;
+    if (assetValues.length) {
+      setText("sticker-quality-note", "本报告选取 " + formatCount(assetValues.length) + " 项展示素材：" +
+        formatCount(originalCount) + " 项原件、" + formatCount(previewCount) + " 项预览可展示，" +
+        formatCount(unavailableCount) + " 项本次未取得" + (deferredCount ? "，" + formatCount(deferredCount) + " 项因等待时限未完成" : "") +
+        "。图片缺失不等于发送记录缺失；删除记录、缓存缺失等可能影响获取，但不能据此确定原因。已识别的发送统计保留。");
+      setHidden("sticker-quality-note", false);
+    }
     var stickerImageObserver = typeof IntersectionObserver === "function" ? new IntersectionObserver(function (entries) {
       entries.forEach(function (entry) {
         var image = entry.target;
@@ -2040,7 +2074,11 @@ document.documentElement.classList.add("js-ready");
       fallback.textContent = "图片暂不可用";
       frame.appendChild(fallback);
       var asset = stickerAssets[item.asset_key];
-      if (asset) fallback.title = asset.reason || asset.status || "";
+      if (asset) {
+        fallback.title = asset.reason === "report_media_time_budget" ? "本次等待已结束，素材未完成获取。" :
+          asset.reason === "qq_media_download_no_path" ? "QQ 本次未能提供图片，无法据此确定是否已删除或永久失效。" :
+          "本次未取得可展示图片；发送统计已保留。";
+      }
       if (asset && (asset.status === "available" || asset.status === "preview") &&
           (/^data:image\/(png|jpeg|gif|webp);base64,/.test(asset.data_uri || "") ||
            /^media\/[0-9a-f]{64}\.(png|jpg|gif|webp)$/.test(asset.data_uri || ""))) {

@@ -22,7 +22,7 @@ REPORT_STICKER_BYTE_BUDGET = 16 * 1024 * 1024
 SHARED_RANKING_MIN_MATERIALS = 1
 
 
-def sticker_report_targets(chapter: EchoStickers | None) -> tuple[EchoStickerItem, ...]:
+def sticker_report_targets(chapter: EchoStickers | None, *, primary_only: bool = False) -> tuple[EchoStickerItem, ...]:
     """The selected rankings/signature union, once per reliable material."""
     if chapter is None or not chapter.available:
         return ()
@@ -30,6 +30,10 @@ def sticker_report_targets(chapter: EchoStickers | None) -> tuple[EchoStickerIte
     # consumes the foreground request budget. This changes acquisition order,
     # never a ranking or a member's qualification.
     items = list(chapter.total_top_materials) + list(chapter.shared_materials)
+    if primary_only:
+        for memory in chapter.memories:
+            items.extend(memory.materials)
+        return tuple({item.media_key: item for item in items if item.media_key}.values())
     for memory in chapter.memories:
         if not memory.compact:
             items.extend(memory.materials)

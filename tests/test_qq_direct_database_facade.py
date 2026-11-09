@@ -261,16 +261,16 @@ def test_report_uses_another_verified_send_when_the_first_copy_has_no_resource(t
     download = provider.download_pic_media
     def fetch(**locator):
         downloads.append(locator["msg_id"])
-        if locator["msg_id"] == "201":
+        if locator["msg_id"] == "202":
             raise NapCatQQMediaStageError("media_download_no_path")
         return download(**locator)
     monkeypatch.setattr(provider, "download_pic_media", fetch)
     with caplog.at_level("DEBUG", logger="qq_chat_analyzer.desktop.facade"):
         outcome = facade.analyze_session(ChatSource.QQ, f"{kind}:{kind}-partition",
             AnalysisConfig(output_directory=tmp_path / "report"))
-    assert downloads == ["201", "202"]
+    assert downloads == ["202", "201"]
     assert [(call[1]["msg_id"], call[1]["expected_time"]) for call in provider.calls if call[0] == "resolve"] == [
-        ("201", 1760000001), ("202", 1760000002)]
+        ("202", 1760000002), ("201", 1760000001)]
     chapter = json.loads((outcome.report_directory / "echo-report.json").read_text("utf-8"))["stickers"]
     asset, = chapter["assets"].values()
     assert chapter["total_send_count"] == 2 and asset["status"] == "available"
@@ -280,7 +280,7 @@ def test_report_uses_another_verified_send_when_the_first_copy_has_no_resource(t
     assert str(tmp_path) not in lines[0] and hashlib.md5(raw).hexdigest() not in lines[0]
 
 
-@pytest.mark.parametrize("limit", ["none", "many", "bridge", "time", "transport", "cancel", "retries", "permanent", "deadline"])
+@pytest.mark.parametrize("limit", ["none", "many", "bridge", "time", "transport", "cancel", "retries", "permanent", "deadline", "stale-core"])
 def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
     tmp_path, monkeypatch, caplog, limit,
 ):
@@ -297,14 +297,15 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
     with sqlite3.connect(tmp_path / "plaintext-qq.db") as db:
         seed, = db.execute('SELECT "40800" FROM group_msg_table').fetchone()
         db.execute('DELETE FROM group_msg_table')
-        material_count = 64 if limit == "deadline" else 40 if limit == "many" else 12
+        material_count = 64 if limit == "deadline" else 40 if limit in {"many", "stale-core"} else 12
         for index in range(material_count):
             stream = BytesIO()
             Image.new("RGB", (3, 2), (index * 5 % 256, 50 + index // 52, 80)).save(stream, format="PNG")
             content = stream.getvalue()
             digest = hashlib.md5(content).digest()
             by_digest[digest.hex()] = content
-            members = ((str(10086 + index // 8),) if limit in {"many", "deadline"} else
+            members = ((str(10086 + 2 * (index // 8)), str(10087 + 2 * (index // 8))) if limit == "stale-core" else
+                       (str(10086 + index // 8),) if limit in {"many", "deadline"} else
                        tuple(str(10086 + n) for n in range(5)) if limit == "retries" else ("10086", "10087"))
             for member_index, member in enumerate(members):
                 db.execute('''INSERT INTO group_msg_table
@@ -335,6 +336,8 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
         digest = locator["expected_md5"]
         downloads.append(digest)
         locators.append(locator)
+        if limit == "stale-core" and int(locator["msg_id"]) % 8 == 202 % 8:
+            raise NapCatQQMediaStageError("media_download_no_path")
         if limit == "transport":
             raise NapCatQQMediaStageError("media_transport_timeout")
         if limit == "retries":
@@ -344,8 +347,8 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
         if limit == "cancel":
             cancelled.set()
         elif limit in {"time", "deadline"}:
-            clock[0] = 26.0 if len(downloads) == 1 else 30.0 if limit == "time" else 180.0
-        if len(downloads) == 2:
+            clock[0] = 26.0 if len(downloads) == 1 else 30.0 if limit == "time" else 45.0
+        if len(downloads) == 2 and limit != "stale-core":
             raise NapCatQQMediaStageError("media_download_timeout")
         return by_digest[digest]
 
@@ -365,7 +368,7 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
         outcome = facade.analyze_session(ChatSource.QQ, "group:group-partition",
                                          AnalysisConfig(output_directory=output), progress=progress.append)
         chapter = json.loads((outcome.report_directory / "echo-report.json").read_text(encoding="utf-8"))["stickers"]
-        assert chapter["total_send_count"] == (material_count if limit in {"many", "deadline"} else 60 if limit == "retries" else 24)
+        assert chapter["total_send_count"] == (material_count if limit in {"many", "deadline"} else material_count * 2 if limit == "stale-core" else 60 if limit == "retries" else 24)
         assert chapter["unique_material_count"] == material_count
         from qq_chat_analyzer.presentation.stickers import sticker_report_targets
         targets = sticker_report_targets(outcome.echo_report_view.stickers)
@@ -375,21 +378,24 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
             assert expected == material_count
         from collections import Counter
         calls = Counter(downloads)
-        assert max(calls.values()) <= 3
+        assert max(calls.values()) <= 2
         assert len({(item["expected_md5"], item["msg_id"]) for item in locators}) == len(downloads)
         assert all(0 < item["timeout"] <= 5 for item in locators)
         statuses = {a["status"] for a in chapter["assets"].values()}
         limited = sum(a["status"] == "limited" for a in chapter["assets"].values())
         if limit in {"time", "deadline"}:
-            assert len(downloads) == 2 and limited == expected - 1
+            assert len(downloads) == 2 and limited == expected - 2
+            assert sum(a["reason"] == "qq_media_download_timeout" for a in chapter["assets"].values()) == 1
             assert sum(a["status"] == "available" for a in chapter["assets"].values()) == 1
             assert outcome.report_path.is_file()
-            assert clock[0] == (30 if limit == "time" else 180)  # No request after the deadline.
+            assert clock[0] == (30 if limit == "time" else 45)  # No later request at the foreground deadline.
         else:
             assert limited == 0 and len(calls) == expected
             if limit == "retries":
-                assert set(calls.values()) == {3} and statuses == {"failed"}
-                assert downloads == downloads[:expected] * 3  # Fair rounds, never exhaust one material first.
+                assert set(calls.values()) == {2} and statuses == {"failed"}
+                assert downloads == downloads[:expected] * 2  # Fair rounds, never exhaust one material first.
+            elif limit == "stale-core":
+                assert set(calls.values()) == {2} and statuses == {"available"}
             elif limit == "transport":
                 assert set(calls.values()) == {2} and statuses == {"failed"}
             elif limit == "permanent":
@@ -403,7 +409,13 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
         details = [r.getMessage() for r in caplog.records if r.getMessage().startswith("[sticker-media-")]
         results = [line for line in details if line.startswith("[sticker-media-result]")]
         ordinals = [int(re.search(r"target=(\d+)", line)[1]) for line in results]
-        assert ordinals[:min(expected, len(ordinals))] == list(range(1, min(expected, len(ordinals)) + 1))
+        if limit == "stale-core":
+            primary = len(sticker_report_targets(outcome.echo_report_view.stickers, primary_only=True))
+            assert primary < expected
+            assert ordinals[:primary * 2] == list(range(1, primary + 1)) * 2
+            assert all(ordinal > primary for ordinal in ordinals[primary * 2:])
+        else:
+            assert ordinals[:min(expected, len(ordinals))] == list(range(1, min(expected, len(ordinals)) + 1))
         assert all(record.levelname == "DEBUG" for record in caplog.records
                    if record.getMessage().startswith(("[sticker-media-plan]", "[sticker-media-stage]", "[sticker-media-result]", "[sticker-media-asset]")))
         assert all(str(tmp_path) not in line and "u_fiction" not in line and
@@ -419,6 +431,39 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
             assert any("code=external_file" in line for line in details)
     assert runtime.acquired == runtime.cleaned and len(runtime.acquired) == 1
     assert historical.read_bytes() == b"fictional old report"
+
+
+def test_report_missing_candidate_cache_is_bounded_to_boot_identity_and_expires(tmp_path, monkeypatch):
+    from qq_chat_analyzer.application import facade as module
+    from qq_chat_analyzer.providers.napcat_qq_provider import NapCatQQMediaStageError
+
+    raw = _fictional_png()
+    facade, provider, runtime = _fetch_facade(tmp_path, digest=hashlib.md5(raw).digest(), content=raw,
+        group_sender="10087", download_error=NapCatQQMediaStageError("media_download_no_path"))
+    runtime.runtime_binding = ("fictional-runtime", "fictional-boot-a")
+    clock = [10.0]
+    monkeypatch.setattr(module, "_monotonic", lambda: clock[0])
+    def analyze():
+        return facade.analyze_session(ChatSource.QQ, "group:group-partition",
+            AnalysisConfig(output_directory=tmp_path / f"run-{len(runtime.acquired)}"))
+
+    first = analyze()
+    assert len(provider.calls) == 2
+    second = analyze()
+    assert len(provider.calls) == 2  # Neither probe nor native download is repeated.
+    assert first.result.stickers.message_counts == second.result.stickers.message_counts
+    assert second.result.stickers.media[0].reason == "qq_media_download_no_path"
+    runtime.runtime_binding = ("fictional-runtime", "fictional-boot-b")
+    analyze()
+    assert len(provider.calls) == 4
+    runtime.identity_value = "10088"
+    analyze()
+    assert len(provider.calls) == 6
+    clock[0] += 301
+    analyze()
+    assert len(provider.calls) == 8
+    assert len(facade._recent_qq_media_failures) == 3
+    assert len(runtime.acquired) == len(runtime.cleaned) == 5
 
 
 @pytest.mark.parametrize("cancel", [False, True])

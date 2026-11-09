@@ -260,6 +260,34 @@ def test_group_report_budget_reaches_global_leaders_before_member_long_tail():
     first_batch = sticker_report_targets(chapter)[:32]
     assert {f"global-{i}" for i in range(10)} <= {target.media_key for target in first_batch}
     assert len(sticker_report_targets(chapter)) == 50
+    assert len(sticker_report_targets(chapter, primary_only=True)) == 10
+
+
+def test_missing_member_names_have_stable_distinct_safe_labels_and_coverage():
+    from dataclasses import replace
+    from qq_chat_analyzer.analysis.models import UserProfile, UserProfileReport
+
+    profiles = tuple(UserProfile(speaker=key, speaker_key=key, display_name="未知成员",
+        message_count=count, message_share_percent=50, average_length=1, max_length=1)
+        for key, count in (("fictional-b", 7), ("fictional-a", 3)))
+    def build(rows):
+        return echo_report_to_dict(build_echo_report_view(analysis_models.AnalysisReports(
+            user_profiles=UserProfileReport(total_message_count=sum(p.message_count for p in rows),
+                profiles=rows, speaker_count=len(rows))), conversation_kind="group"))
+    first = build(profiles)
+    second = build(tuple(reversed(profiles)))
+    assert first["overview"]["unnamed_member_count"] == 2
+    labels = {m["speaker_key"]: m["display_name"] for m in first["members"]}
+    assert len(set(labels.values())) == 2
+    assert labels == {m["speaker_key"]: m["display_name"] for m in second["members"]}
+    assert all("fictional" not in label for label in labels.values())
+    assert [m["message_count"] for m in first["members"]] == [7, 3]
+    named = build((replace(profiles[0], nickname="未知成员"),))
+    assert named["overview"]["unnamed_member_count"] == 0  # An explicitly supplied name is still a name.
+    assert named["members"][0]["display_name"] == "未知成员"
+    fallback = build((replace(profiles[0], speaker="Fictional Alice", speaker_key=None, display_name=None),))
+    assert fallback["members"][0]["display_name"] == "Fictional Alice"
+    assert fallback["overview"]["unnamed_member_count"] == 0
 
 
 @pytest.mark.parametrize("kind,senders,limit", [
@@ -541,10 +569,11 @@ def test_activity_analysis_preserves_report_distribution_and_density_contract(tm
         activity=ActivityAnalyzer().analyze(messages),
     ), conversation_kind="group")
     payload = echo_report_to_dict(view)
-    assert payload["schema_version"] == "echo-report.v0.19"
+    assert payload["schema_version"] == "echo-report.v0.20"
     assert "group_replies" not in payload  # Deferred to 0.4, including group reports.
     assert payload["overview"] == {
         "has_data": True, "total_message_count": 3, "participant_count": 0,
+        "unnamed_member_count": 0,
         "empty_description": "", "active_days": 1,
         "average_messages_per_active_day": 3.0,
     }

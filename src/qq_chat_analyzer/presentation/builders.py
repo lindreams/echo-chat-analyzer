@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import replace
 from collections import Counter
 from itertools import islice
-from ..identity_names import resolve_member_names
+from ..identity_names import first_identity_name, resolve_member_names
 from ..analysis.stickers import StickerMedia
 from .stickers import build_echo_stickers
 
@@ -326,6 +326,7 @@ def _build_echo_sessions(
         ),
         group_initiators=tuple(openers),
         group_unknown_count=group.unknown_initiated_count if group else 0,
+        unattributed_session_count=sum(session.participant_count == 0 for session in report.sessions),
         viewer_identity_reliable=(
             group is not None and group.self_initiated_count is not None
         ),
@@ -656,6 +657,21 @@ def build_echo_report_view(
         _build_echo_member(profile, viewer_speaker_key, conversation_kind)
         for profile in (profiles.profiles if profiles else ())
     )
+    # A missing name is not a missing identity. Use report-local labels derived
+    # from stable keys, without exposing account numbers or merging members.
+    reserved = {member.display_name for member in members if member.name_available}
+    unnamed_labels = {}
+    for key in sorted(member.speaker_key for member in members if not member.name_available):
+        ordinal = len(unnamed_labels) + 1
+        label = f"未命名成员 {ordinal:03d}"
+        while label in reserved:
+            ordinal += 1
+            label = f"未命名成员 {ordinal:03d}"
+        unnamed_labels[key] = label
+        reserved.add(label)
+    members = tuple(replace(member, display_name=unnamed_labels[member.speaker_key],
+                            primary_name=unnamed_labels[member.speaker_key])
+                    if member.speaker_key in unnamed_labels else member for member in members)
     total_message_count = activity.total_message_count if activity else 0
     participant_count = profiles.speaker_count if profiles else 0
     has_data = (
@@ -754,6 +770,8 @@ def _build_echo_member(
         remark=profile.remark,
         contextual_name=contextual_name,
         nickname=profile.nickname,
+        name_available=bool(first_identity_name(profile.remark, profile.contextual_name, profile.nickname)
+                            or primary_name != "未知成员"),
         is_viewer=(
             viewer_speaker_key is not None
             and speaker_key == viewer_speaker_key

@@ -42,6 +42,7 @@ class EchoMemberCard:
     weekday_average_activity: tuple[ChartPoint, ...] = ()
     first_seen_order: int | None = None
     nickname: str | None = None
+    name_available: bool = True
 
     @property
     def search_names(self) -> tuple[str, ...]:
@@ -228,6 +229,7 @@ class EchoConversationSessions:
     group_initiators: tuple[EchoSessionInitiator, ...] = ()
     group_unknown_count: int = 0
     viewer_identity_reliable: bool = False
+    unattributed_session_count: int = 0
     start_hour_distribution: tuple[ChartPoint, ...] = ()
     peak_start_hour: int | None = None
     session_character: str | None = None

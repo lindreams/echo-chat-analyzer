@@ -374,7 +374,12 @@ def test_group_report_member_contract_keeps_self_and_departed_messages(tmp_path:
     assert {profile.speaker_key: profile.resolved_display_name for profile in profiles.profiles} == expected_names
     assert all(profile.message_count == 1 for profile in profiles.profiles)
     report = json.loads((tmp_path / "report/echo-report.json").read_text(encoding="utf-8"))
-    assert {member["speaker_key"]: member["display_name"] for member in report["members"]} == expected_names
+    report_names = dict(expected_names, departed="未命名成员 001", nameless="未命名成员 002")
+    assert {member["speaker_key"]: member["display_name"] for member in report["members"]} == report_names
+    assert {member["speaker_key"] for member in report["members"] if not member["name_available"]} == {
+        "nameless", "departed",
+    }
+    assert report["overview"]["unnamed_member_count"] == 2
     assert report["overview"]["total_message_count"] == 5
     assert (tmp_path / "report/echo-report.html").is_file()
     assert outcome.result.status.value == "completed"

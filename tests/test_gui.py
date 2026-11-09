@@ -2272,3 +2272,24 @@ def test_generate_button_opens_only_final_report_with_media(
     assert "表情包图片 1/1" in window._status_label.text()
     assert "预算受限" not in window._status_label.text()
     window.close()
+
+
+def test_processing_paper_grain_is_tiled_and_clipped(qt_app):
+    from PySide6.QtCore import Qt, QRectF
+    from PySide6.QtGui import QImage, QPainter, QPainterPath
+    from qq_chat_analyzer.gui.processing_animation import _grain
+
+    image = QImage(140, 100, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    paper = QPainterPath()
+    paper.addRect(QRectF(10, 10, 110, 70))
+    painter = QPainter(image)
+    try:
+        _grain(painter, paper)
+    finally:
+        painter.end()
+    assert image.pixelColor(0, 0).alpha() == 0
+    assert image.pixelColor(130, 90).alpha() == 0
+    assert any(image.pixelColor(x, y).alpha() for x in range(40, 77) for y in range(31, 62))
+    assert all(image.pixelColor(x, y) == image.pixelColor(x+37, y)
+               for x in range(40, 77) for y in range(31, 62))

@@ -33,7 +33,7 @@ from .expression_assets import (
 )
 
 
-ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.19"
+ECHO_REPORT_SCHEMA_VERSION = "echo-report.v0.20"
 
 
 def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
@@ -50,6 +50,7 @@ def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
             "has_data": view.has_data,
             "total_message_count": view.total_message_count,
             "participant_count": view.participant_count,
+            "unnamed_member_count": sum(not member.name_available for member in view.members),
             "empty_description": view.empty_description,
             "active_days": view.active_days,
             "average_messages_per_active_day": (
@@ -342,6 +343,7 @@ def _conversation_sessions_to_dict(
         ),
         "items": [_session_to_dict(item) for item in sessions.items],
         "viewer_identity_reliable": sessions.viewer_identity_reliable,
+        "unattributed_session_count": sessions.unattributed_session_count,
         "start_hour_distribution": [
             {"label": p.label, "value": p.value}
             for p in sessions.start_hour_distribution
@@ -403,6 +405,7 @@ def _member_to_dict(
     return {
         "speaker_key": member.speaker_key,
         "display_name": member.display_name,
+        "name_available": member.name_available,
         "primary_name": member.primary_name,
         "secondary_name": member.secondary_name,
         "remark": member.remark,
