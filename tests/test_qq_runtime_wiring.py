@@ -39,6 +39,7 @@ def release(tmp_path, monkeypatch):
         'plugins/napcat-plugin-echo/index.mjs': (ROOT / 'scripts/qq_napcat_plugin/index.mjs').read_bytes(),
         'plugins/napcat-plugin-echo/bridge.mjs': (ROOT / 'scripts/qq_napcat_plugin/bridge.mjs').read_bytes(),
         'plugins/napcat-plugin-echo/snapshot/snapshot.mjs': (ROOT / 'scripts/qq_direct_db_snapshot/snapshot.mjs').read_bytes(),
+        'plugins/napcat-plugin-echo/snapshot/diagnostic_log.mjs': (ROOT / 'scripts/qq_direct_db_snapshot/diagnostic_log.mjs').read_bytes(),
         'plugins/napcat-plugin-echo/snapshot/main_wal.mjs': (ROOT / 'scripts/qq_direct_db_snapshot/main_wal.mjs').read_bytes(),
         'plugins/napcat-plugin-echo/snapshot/source_guard.mjs': (ROOT / 'scripts/qq_direct_db_snapshot/source_guard.mjs').read_bytes(),
         'plugins/napcat-plugin-echo/snapshot/source_guard.ps1': (ROOT / 'scripts/qq_direct_db_snapshot/source_guard.ps1').read_bytes(),
