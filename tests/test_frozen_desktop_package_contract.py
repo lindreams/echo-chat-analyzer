@@ -41,6 +41,49 @@ RETIRED_QQ_MODULES = (
 pytestmark = pytest.mark.slow_integration
 
 
+@pytest.mark.skipif(sys.platform != 'win32', reason='Windows acceptance launcher')
+def test_acceptance_launcher_uses_one_isolated_windows_profile(tmp_path):
+    """Run the delivered script with a captured launch, never start real QQ."""
+    package = tmp_path / 'fictional acceptance'
+    app = package / 'Echo'
+    app.mkdir(parents=True)
+    (app / 'Echo.exe').write_bytes(b'fictional executable, must never run')
+    script = PROJECT_ROOT / 'scripts/start_frozen_acceptance.ps1'
+    # The mock captures the exact environment at the GUI launch boundary.
+    command = r'''
+function Start-Process {
+    param($FilePath, $WorkingDirectory)
+    $Result = @{ executable = $FilePath; cwd = $WorkingDirectory }
+    foreach ($Name in @('HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP',
+                        'PYTHONPATH','PYTHONHOME','PYTHONSTARTUP')) {
+        $Result[$Name] = [Environment]::GetEnvironmentVariable($Name, 'Process')
+    }
+    $Result | ConvertTo-Json -Compress
+}
+& $env:ECHO_ACCEPTANCE_SCRIPT -PackageDirectory $env:ECHO_ACCEPTANCE_PACKAGE
+'''
+    environment = dict(os.environ, ECHO_ACCEPTANCE_SCRIPT=str(script),
+                       ECHO_ACCEPTANCE_PACKAGE=str(package),
+                       PYTHONPATH='fictional-source', PYTHONHOME='fictional-python',
+                       PYTHONSTARTUP='fictional-startup')
+    result = subprocess.run(['powershell.exe', '-NoProfile', '-NonInteractive',
+                             '-ExecutionPolicy', 'Bypass', '-Command', command],
+                            env=environment, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 0, result.stderr
+    launch = json.loads(result.stdout)
+    profile = Path(launch['USERPROFILE'])
+    assert profile.is_relative_to(package / 'acceptance-user')
+    assert Path(launch['HOME']) == profile
+    assert Path(launch['APPDATA']) == profile / 'AppData/Roaming'
+    assert Path(launch['LOCALAPPDATA']) == profile / 'AppData/Local'
+    assert Path(launch['TEMP']) == Path(launch['TMP']) == profile / 'AppData/Local/Temp'
+    assert all(Path(launch[name]).is_dir() for name in
+               ('HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP'))
+    assert all(launch[name] is None for name in ('PYTHONPATH','PYTHONHOME','PYTHONSTARTUP'))
+    assert Path(launch['executable']) == app / 'Echo.exe'
+    assert Path(launch['cwd']) == app
+
+
 def _require_frozen_build() -> None:
     if not EXECUTABLE.is_file():
         pytest.skip(f"no frozen desktop build at {DIST_APP}")
