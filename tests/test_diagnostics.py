@@ -11,6 +11,44 @@ import pytest
 from qq_chat_analyzer import diagnostics
 
 
+def test_log_rotation_preserves_legacy_file_and_filters_all_backups(tmp_path, monkeypatch):
+    from logging.handlers import RotatingFileHandler
+    from qq_chat_analyzer.logging_config import build_diagnostic_handler
+
+    path = tmp_path / "echo.log"
+    legacy = b"fictional historical evidence\n" * 200000
+    path.write_bytes(legacy)
+    handler = build_diagnostic_handler(path)
+    try:
+        assert isinstance(handler, RotatingFileHandler)
+        assert handler.maxBytes == 5 * 1024 * 1024 and handler.backupCount == 3
+        logger = logging.Logger("rotation-test", level=logging.INFO)
+        logger.addHandler(handler)
+        logger.info("轮转已启用 token=fictional-secret")
+        assert path.with_suffix(".log.1").read_bytes() == legacy
+        assert "轮转已启用" in path.read_text("utf-8")
+        assert "fictional-secret" not in path.read_text("utf-8")
+        # Exercise steady-state retention without writing another 20 MiB.
+        handler.maxBytes = 512
+        for index in range(40):
+            logger.info("批次=%d token=fictional-secret | %s", index, "x" * 100)
+        files = list(tmp_path.glob("echo.log*"))
+        assert {item.name for item in files} == {"echo.log", "echo.log.1", "echo.log.2", "echo.log.3"}
+        assert all(item.stat().st_size <= 512 for item in files)
+        assert all("fictional-secret" not in item.read_text("utf-8") for item in files)
+        import os
+        with monkeypatch.context() as locked:
+            locked.setattr(os, "rename", lambda *args: (_ for _ in ()).throw(PermissionError()))
+            handler.maxBytes = 1
+            logger.info("备份暂被占用 token=fictional-secret")
+            assert "备份暂被占用" in path.read_text("utf-8")
+            assert "fictional-secret" not in path.read_text("utf-8")
+        logger.info("轮转已恢复")
+        assert "轮转已恢复" in path.read_text("utf-8")
+    finally:
+        handler.close()
+
+
 def test_pipeline_timing_keeps_nested_boundaries_outcomes_and_private_errors(monkeypatch, caplog):
     from qq_chat_analyzer import analysis_diagnostics as timing
 
