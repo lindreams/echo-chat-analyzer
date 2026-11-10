@@ -160,7 +160,7 @@ def test_materialize_exception_still_cleans_up(
 def test_payload_enrichment_writes_once_after_generation_cleanup(tmp_path, monkeypatch):
     service, runtime, _ = _service(tmp_path)
     original_read = Path.read_text
-    original_write = Path.write_text
+    original_open = Path.open
     payload_writes = []
 
     def read(path, *args, **kwargs):
@@ -168,14 +168,14 @@ def test_payload_enrichment_writes_once_after_generation_cleanup(tmp_path, monke
             pytest.fail("Identity enrichment must reuse the records already in memory")
         return original_read(path, *args, **kwargs)
 
-    def write(path, *args, **kwargs):
-        if path.name == "qq-db-session.json":
+    def open_payload(path, mode="r", *args, **kwargs):
+        if path.name == "qq-db-session.json" and mode == "w":
             assert runtime.cleaned == ["gen-0001"]
             payload_writes.append(path)
-        return original_write(path, *args, **kwargs)
+        return original_open(path, mode, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", read)
-    monkeypatch.setattr(Path, "write_text", write)
+    monkeypatch.setattr(Path, "open", open_payload)
     with service.acquired_session(GROUP_SESSION_ID) as acquisition:
         assert payload_writes == [acquisition.payload_path]
         payload = json.loads(original_read(acquisition.payload_path, encoding="utf-8"))
@@ -197,19 +197,30 @@ def test_invalid_manifest_still_cleans_up(tmp_path: Path) -> None:
     assert runtime.cleaned == ["gen-0001"]
 
 
-def test_payload_write_failure_releases_scratch_and_generation(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure_at", ["open", "write"])
+def test_payload_write_failure_releases_scratch_and_generation(tmp_path, monkeypatch, failure_at):
     service, runtime, _ = _service(tmp_path)
-    original_write = Path.write_text
+    original_open = Path.open
     paths = []
 
-    def fail_write(path, *args, **kwargs):
-        if path.name == "qq-db-session.json":
+    def open_payload(path, mode="r", *args, **kwargs):
+        if path.name == "qq-db-session.json" and mode == "w":
             assert runtime.cleaned == ["gen-0001"]
             paths.append(path)
-            raise OSError("fictional disk write failure")
-        return original_write(path, *args, **kwargs)
+            if failure_at == "open":
+                raise OSError("fictional disk write failure")
+            stream = original_open(path, mode, *args, **kwargs)
+            original_write = stream.write
 
-    monkeypatch.setattr(Path, "write_text", fail_write)
+            def fail_write(value):
+                original_write(value[:1])
+                raise OSError("fictional disk write failure")
+
+            stream.write = fail_write
+            return stream
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_payload)
     with pytest.raises(OSError, match="fictional disk write failure"):
         with service.acquired_session(GROUP_SESSION_ID):
             pytest.fail("A failed payload write must not reach a consumer")

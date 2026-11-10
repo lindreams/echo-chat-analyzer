@@ -110,13 +110,29 @@ def test_named_sender_payload_keeps_all_names_and_stable_identity(tmp_path, kind
     path = tmp_path / "payload.json"
     provider.materialize_session_payload(session, path)
     payload = json.loads(path.read_text(encoding="utf-8"))
-    identity = SenderIdentity("123456789", "虚构备注", remark="虚构备注", nickname="虚构昵称", contextual_name="虚构群名片")
+    identity = SenderIdentity("123456789", "虚构备注🙂", remark="虚构备注🙂", nickname="虚构昵称", contextual_name="虚构群名片")
     _attach_sender_names(path, payload, {"123456789": identity}, "999999999")
+    assert path.read_bytes().isascii()
     messages, warnings = parse_qq_db_rich_messages(json.loads(path.read_text(encoding="utf-8")))
     message, = messages
     assert not warnings
     assert message.sender.identity_id == "123456789"
-    assert (message.sender.remark, message.sender.nickname, message.sender.contextual_name) == ("虚构备注", "虚构昵称", "虚构群名片")
+    assert (message.sender.remark, message.sender.nickname, message.sender.contextual_name) == ("虚构备注🙂", "虚构昵称", "虚构群名片")
+
+
+def test_transient_payload_keeps_every_record_and_trailing_metadata(tmp_path):
+    payload = {
+        "format": "qq-db-json",
+        "records": [
+            {"fields": {"40033": "123456789"}, "text": f"虚构消息🙂 {index}"}
+            for index in range(2051)
+        ],
+        "private_nudge_context": {"peer_name": "虚构对方🙂", "optional": None},
+    }
+    path = tmp_path / "payload.json"
+    _attach_sender_names(path, payload, {}, None)
+    assert path.read_bytes().isascii()
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
 
 
 def test_private_peer_is_the_only_non_self_sender(tmp_path) -> None:
