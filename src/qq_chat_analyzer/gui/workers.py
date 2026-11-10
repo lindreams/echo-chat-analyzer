@@ -90,7 +90,7 @@ class _CallbackRelay(QObject):
 
     @Slot(object)
     def _progress(self, message: Any) -> None:
-        _WORKER_LOGGER.info("[worker] forward progress: %s", message)
+        _WORKER_LOGGER.debug("[worker] forward progress: %s", message)
         if self._on_progress is not None:
             self._on_progress(message)
 
@@ -152,7 +152,7 @@ class FacadeWorker(QRunnable):
             def _report_progress(message: Any) -> None:
                 if self._cancelled.is_set():
                     raise _OperationCancelled
-                _WORKER_LOGGER.info("[wechat worker] emit progress: %s", message)
+                _WORKER_LOGGER.debug("[worker] emit progress: %s", message)
                 self._emit("progress", message)
                 if self._cancelled.is_set():
                     raise _OperationCancelled

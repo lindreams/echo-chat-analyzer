@@ -1263,10 +1263,13 @@ def test_native_media_diagnostics_keep_only_codes_and_cannot_block_downloads(run
         provider(base).download_pic_media(**_MEDIA)
     assert caught.value.stage == "media_download_no_path"
     diagnostic = log.read_text(encoding="utf-8")
-    assert "stage=native_request return_code=0" in diagnostic
+    assert diagnostic.count("[echo-media]") == 1
+    assert "request_return_code=0" in diagnostic
     assert "stage=download_summary native_started=1 native_completed=1" in diagnostic
-    assert "fileErrCode=-123 fileSrvErrCode=1001 trasferStatus=2 step=3" in diagnostic
-    assert "stage=cache_location source_state=2 file_state=3 thumb_count=2 thumb_regular=1 thumb_missing=1 thumb_invalid=0 thumb_other=0" in diagnostic
+    assert "outcome=failed failure_code=media_download_no_path" in diagnostic
+    assert "complete_fileErrCode=-123 complete_fileSrvErrCode=1001 complete_trasferStatus=2 complete_step=3" in diagnostic
+    assert "cache_source_state=2 cache_file_state=3 cache_thumb_count=2 cache_thumb_regular=1 cache_thumb_missing=1 cache_thumb_invalid=0 cache_thumb_other=0" in diagnostic
+    assert "elapsed_ms=" in diagnostic and "native_elapsed_ms=" in diagnostic
     assert "path_present=0" in diagnostic
     assert "errCode=" not in diagnostic and "fileDownType=" not in diagnostic
     assert all(secret not in diagnostic for secret in (
@@ -1274,6 +1277,12 @@ def test_native_media_diagnostics_keep_only_codes_and_cannot_block_downloads(run
     # Cache checks and logging cannot return a different image or block a download.
     base = runtime(nativeDownload=True, nativeLog=str(tmp_path), mediaPath=str(image))
     assert provider(base).download_pic_media(**_MEDIA) == b"fictional-native-media"
+    success_log = tmp_path / "success-diagnostics.log"
+    base = runtime(nativeDownload=True, nativeLog=str(success_log), mediaPath=str(image))
+    assert provider(base).download_pic_media(**_MEDIA) == b"fictional-native-media"
+    summary = success_log.read_text(encoding="utf-8")
+    assert summary.count("[echo-media]") == 1
+    assert "outcome=success failure_code=none" in summary
 
 
 def test_large_media_is_chunked_and_does_not_hold_the_next_download(runtime, tmp_path):

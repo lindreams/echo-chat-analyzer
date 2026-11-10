@@ -20,8 +20,11 @@ Timing uses the existing local logs: `echo.log` and
 when investigating QQ acquisition. No chat content, credentials, account IDs,
 database paths or additional diagnostic export is needed.
 
-Python records `[analysis-stage]` start and final outcome lines with `elapsed_ms`.
-The existing `[analysis-timing]` records remain available. Direct DB stages use
+At the default INFO level Python records one `[analysis-timing]` line per phase.
+`[analysis-stage]` start/success lines and successful per-material timings are
+DEBUG details; failed, cancelled and timed-out stages retain their outcome,
+fixed failure category and `elapsed_ms` at INFO. Worker progress forwarding is
+also DEBUG; worker completion and failure remain visible. Direct DB stages use
 the existing `[qq sessions]` format; runtime attempts and login waiting retain
 their own existing logger. The snapshot helper appends elapsed milliseconds to
 its existing trace stages. Python uses a monotonic performance clock; Node uses
@@ -42,8 +45,9 @@ its existing trace stages. Python uses a monotonic performance clock; Node uses
 | `task_total` | One selected-session analysis through report/media preparation and task cleanup. Excludes earlier login/session listing, browser rendering and later user interaction. |
 
 Nested intervals overlap: do not sum parent and child durations. The existing
-core-analysis total covers a smaller boundary than facade `task_total`. A start
-without an end is incomplete evidence, for example after process termination.
+core-analysis total covers a smaller boundary than facade `task_total`. In DEBUG
+logs a start without an end is incomplete evidence, for example after process
+termination. At INFO a missing completion does not establish success.
 Failures, cancellation and timeouts retain elapsed time and a fixed outcome;
 they must not be interpreted as successful completion. Native decryption time
 does not separately measure every internal read or cipher operation.

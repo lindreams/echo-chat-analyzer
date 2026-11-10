@@ -1248,7 +1248,7 @@ def test_batch_association_reuses_one_scan_and_preserves_send_facts(tmp_path, mo
 
     monkeypatch.setattr(sticker_media.os, "scandir", scan)
     monkeypatch.setattr(sticker_media, "_inspect", inspect)
-    caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
+    caplog.set_level("DEBUG", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
     result = ChatAnalyzerFacade.associate_sticker_media(
         data, media_keys=tuple(dict.fromkeys(s.media_key for s in sends)),
         roots=(tmp_path,), source="qq", send_index=send_index)

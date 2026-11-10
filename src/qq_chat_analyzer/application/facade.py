@@ -477,7 +477,7 @@ class ChatAnalyzerFacade:
         from .sticker_media import associate_sticker_media
 
         try:
-            with timed_stage("sticker_media_associate"):
+            with timed_stage("sticker_media_associate", detail=True):
                 return associate_sticker_media(
                     data, media_keys=media_keys, roots=roots, source=source, cancelled=cancelled,
                     diagnostics=diagnostics, send_index=send_index, scan_cache=scan_cache)
@@ -654,7 +654,7 @@ class ChatAnalyzerFacade:
         timeout = remaining(135)
         on_stage("kernel_download")
         try:
-            with timed_stage("sticker_media_download"):
+            with timed_stage("sticker_media_download", detail=True):
                 raw = provider.download_pic_media(**locator, element_id=element.segment_id,
                                                   cancelled=cancelled, timeout=timeout)
         except Exception as error:
@@ -668,7 +668,7 @@ class ChatAnalyzerFacade:
             raise FacadeError(code="qq_media_cancelled", public_message="已取消，未保存媒体。")
         remaining(2)
         on_stage("decode")
-        with timed_stage("sticker_media_verify"):
+        with timed_stage("sticker_media_verify", detail=True):
             media = verify_fetched_media(
                 raw, media_key=media_key, expected_md5=element.content_md5, cancelled=cancelled)
         if media.status == "cancelled":

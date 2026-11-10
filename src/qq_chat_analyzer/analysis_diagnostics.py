@@ -12,12 +12,12 @@ _LOGGER = logging.getLogger("qq_chat_analyzer.desktop.analysis_diagnostics")
 
 
 @contextmanager
-def timed_stage(stage: str) -> Iterator[None]:
+def timed_stage(stage: str, *, detail: bool = False) -> Iterator[None]:
     """Log one fixed pipeline stage, including when the stage raises."""
     started_at = perf_counter()
     outcome, category = "success", "none"
     try:
-        _LOGGER.info("[analysis-stage] stage=%s outcome=started", stage)
+        _LOGGER.debug("[analysis-stage] stage=%s outcome=started", stage)
     except Exception:
         pass
     try:
@@ -31,10 +31,11 @@ def timed_stage(stage: str) -> Iterator[None]:
     finally:
         elapsed_ms = max(0, round((perf_counter() - started_at) * 1000))
         try:
-            _LOGGER.info(
+            _LOGGER.log(logging.DEBUG if outcome == "success" else logging.INFO,
                 "[analysis-stage] stage=%s outcome=%s failure_code=%s elapsed_ms=%d",
                 stage, outcome, category, elapsed_ms,
             )
-            _LOGGER.info("[analysis-timing] stage=%s elapsed_ms=%d", stage, elapsed_ms)
+            _LOGGER.log(logging.DEBUG if detail else logging.INFO,
+                        "[analysis-timing] stage=%s elapsed_ms=%d", stage, elapsed_ms)
         except Exception:
             pass  # Logging cannot replace the operation's result or exception.

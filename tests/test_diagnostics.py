@@ -100,7 +100,7 @@ def test_log_rotation_preserves_legacy_file_and_filters_all_backups(tmp_path, mo
 def test_pipeline_timing_keeps_nested_boundaries_outcomes_and_private_errors(monkeypatch, caplog):
     from qq_chat_analyzer import analysis_diagnostics as timing
 
-    caplog.set_level(logging.INFO, logger=timing._LOGGER.name)
+    caplog.set_level(logging.DEBUG, logger=timing._LOGGER.name)
     clock = iter((10.0, 11.0, 13.0, 15.0))
     monkeypatch.setattr(timing, "perf_counter", lambda: next(clock))
     with timing.timed_stage("outer"):
@@ -123,9 +123,25 @@ def test_pipeline_timing_keeps_nested_boundaries_outcomes_and_private_errors(mon
         assert caplog.messages[1].endswith("elapsed_ms=125")
         assert "PRIVATE" not in caplog.text
     clock = iter((1.0, 2.0))
-    monkeypatch.setattr(timing._LOGGER, "info", lambda *a, **k: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(timing._LOGGER, "log", lambda *a, **k: (_ for _ in ()).throw(OSError()))
     with timing.timed_stage("logging_unavailable"):
         pass
+
+    # Default logs keep one timing per phase and failure reasons per material.
+    caplog.clear()
+    caplog.set_level(logging.INFO, logger=timing._LOGGER.name)
+    monkeypatch.undo()
+    with timing.timed_stage("report"):
+        pass
+    with timing.timed_stage("material", detail=True):
+        pass
+    with pytest.raises(OSError):
+        with timing.timed_stage("material", detail=True):
+            raise OSError("PRIVATE_PATH")
+    assert len(caplog.messages) == 2
+    assert caplog.messages[0].startswith("[analysis-timing] stage=report ")
+    assert "stage=material outcome=failed failure_code=io_error" in caplog.messages[1]
+    assert "PRIVATE" not in caplog.text
 
 
 def test_runtime_provenance_is_written_once_without_local_paths(tmp_path, monkeypatch):

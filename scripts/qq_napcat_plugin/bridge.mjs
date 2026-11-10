@@ -113,32 +113,36 @@ const MEDIA_STAGES = new Set([
 const mediaError = code => Object.assign(new Error(code), {code});
 // Use the existing child-only diagnostic channel. Native messages, paths,
 // identities and arbitrary fields never reach it; logging is best effort.
-const logNativeMedia = (stage, value) => {
+const nativeMediaFields = (value, prefix = '') => {
   try {
-    const logFile = process.env.QCE_LOG_FILE;
-    if (!logFile) return;
     const numericCode = raw => {
       const code = typeof raw === 'string' && /^-?(?:0|[1-9]\d{0,9})$/.test(raw) ? Number(raw) : raw;
       return Number.isSafeInteger(code) && code >= -2147483648 && code <= 4294967295 ? code : null;
     };
     let fields = '';
     const returned = numericCode(value);
-    if (returned !== null) fields += ` return_code=${returned}`;
+    if (returned !== null) fields += ` ${prefix}return_code=${returned}`;
     for (const key of ['result', 'errCode', 'retCode', 'resultCode', 'errorCode', 'status',
       'fileErrCode', 'fileSrvErrCode', 'trasferStatus', 'step', 'fileDownType', 'thumbSize',
       'source_state', 'file_state', 'thumb_count', 'thumb_regular', 'thumb_missing', 'thumb_invalid', 'thumb_other',
-      'native_started', 'native_completed']) {
+      'native_started', 'native_completed', 'elapsed_ms', 'native_elapsed_ms']) {
       const code = numericCode(value?.[key]);
-      if (code !== null) fields += ` ${key}=${code}`;
+      if (code !== null) fields += ` ${prefix}${key}=${code}`;
     }
     const present = typeof value?.filePath === 'string' && value.filePath.length > 0;
-    appendDiagnostic(`[${new Date().toISOString()}] [echo-media] stage=${stage}${fields} path_present=${Number(present)}\n`);
+    return `${fields} ${prefix}path_present=${Number(present)}`;
+  } catch { return ''; }
+};
+const logNativeMedia = (stage, value, details = '') => {
+  try {
+    if (!process.env.QCE_LOG_FILE) return;
+    appendDiagnostic(`[${new Date().toISOString()}] [echo-media] stage=${stage}${nativeMediaFields(value)}${details}\n`);
   } catch { /* Diagnostics cannot change acquisition behavior. */ }
 };
 // Inspect only paths supplied by the identity-confirmed PIC, never a directory.
 // States: 0 absent, 1 malformed, 2 missing, 3 regular file, 4 other type, 5 inaccessible.
-const logMediaCache = async pic => {
-  if (!process.env.QCE_LOG_FILE) return;
+const mediaCacheFields = async pic => {
+  if (!process.env.QCE_LOG_FILE) return '';
   try {
     const state = async path => {
       if (path == null || path === '') return 0;
@@ -157,8 +161,8 @@ const logMediaCache = async pic => {
           kind === 0 || kind === 1 ? 'thumb_invalid' : 'thumb_other']++;
       }
     }
-    logNativeMedia('cache_location', fields);
-  } catch { /* Cache diagnostics cannot change acquisition behavior. */ }
+    return nativeMediaFields(fields, 'cache_');
+  } catch { return ''; }
 };
 const observedMediaApi = (fileApi, observation) => {
   const wrapper = fileApi.core?.eventWrapper;
@@ -173,13 +177,21 @@ const observedMediaApi = (fileApi, observation) => {
       args[1] === 'NodeIKernelMsgListener/onRichMediaDownloadComplete';
     if (media) {
       observation.started = true;
+      observation.startedAt = performance.now();
       const check = args[3];
-      args[3] = value => { logNativeMedia('native_request', value); return check(value); };
+      args[3] = value => {
+        observation.request = nativeMediaFields(value, 'request_');
+        if (observation.summaryWritten) logNativeMedia('native_request_late', value);
+        return check(value);
+      };
     }
     const result = await wrapper.callNormalEventV2(...args);
     if (media) {
       observation.completed = true;
-      logNativeMedia('native_complete', result?.[1]);
+      observation.nativeElapsedMs = Math.max(0, Math.round(performance.now() - observation.startedAt));
+      observation.complete = nativeMediaFields(result?.[1], 'complete_');
+      if (observation.summaryWritten) logNativeMedia('native_complete_late', result?.[1],
+        ` native_elapsed_ms=${observation.nativeElapsedMs}`);
     }
     return result;
   };
@@ -548,13 +560,15 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
     if (mediaBusy || transfer !== null || pendingQuery !== null) throw mediaError('media_busy');
     if (!allowMedia()) throw mediaError('media_budget_exhausted');
     mediaBusy = true;
-    const observation = {started: false, completed: false};
+    const observation = {started: false, completed: false, request: '', complete: '', cache: ''};
+    const startedAt = performance.now();
     const pending = {state: 'locating'};
     pendingMedia = pending;
     const abandoned = () => context?.abandoned === true;
     if (context) context.onAbandon = () => { pending.state = 'abandoned'; };
     const checkAbandoned = () => { if (abandoned()) throw mediaError('media_abandoned'); };
     let download = null;
+    let failureCode = 'none';
     try {
       checkAbandoned();
       let facts;
@@ -582,7 +596,7 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
         // no path. Never accept a path from the RPC caller or force deletion.
         const cachedPath = element.picElement.sourcePath ?? '';
         if (cachedPath !== '') validateMediaPath(cachedPath);
-        await logMediaCache(element.picElement);
+        observation.cache = await mediaCacheFields(element.picElement);
         checkAbandoned();
         pending.state = 'downloading';
         download = Promise.resolve(observedMediaApi(fileApi, observation).downloadMedia(value.msgId, value.chatType, value.peerUid, value.elementId,
@@ -602,9 +616,16 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
       transfer = {id: randomBytes(32).toString('hex'), file, reading: false};
       armTransfer(transfer);
       return {transfer_id: transfer.id, size: file.size, chunk_size: MEDIA_CHUNK_BYTES};
+    } catch (error) {
+      failureCode = MEDIA_STAGES.has(error?.code) ? error.code : 'media_download_failed';
+      throw error;
     } finally {
+      observation.summaryWritten = true;
       logNativeMedia('download_summary', {native_started: download !== null && !observation.observable ? -1 : Number(observation.started),
-        native_completed: Number(observation.completed)});
+        native_completed: Number(observation.completed), elapsed_ms: Math.max(0, Math.round(performance.now() - startedAt)),
+        native_elapsed_ms: observation.nativeElapsedMs},
+        ` outcome=${failureCode === 'none' ? 'success' : 'failed'} failure_code=${failureCode}` +
+        observation.cache + observation.request + observation.complete);
       // A deadline or disconnected caller cannot cancel QQ's native operation.
       // Keep its lease until it settles; late paths/bytes never enter the report.
       const settled = () => {

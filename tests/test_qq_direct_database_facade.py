@@ -768,7 +768,7 @@ def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path,
     send, = result.stickers.sends
     assert send.sender_id == sender and send.is_self is mine
     provider.calls.clear()  # Inspect the shared report fetch checks with explicit stored facts.
-    caplog.set_level("INFO", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
+    caplog.set_level("DEBUG", logger="qq_chat_analyzer.desktop.analysis_diagnostics")
     caplog.clear()
     send_index = _QQMediaSendIndex.build(result.stickers.sends)
     with pytest.raises(TypeError):
