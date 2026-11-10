@@ -4,7 +4,7 @@
 
 Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连接聊天来源，选择一段会话，把聊天节奏、表达习惯和常用表情包整理成可以慢慢回看的 **Echo Report**。
 
-**[下载 Windows x64 安装版](https://cnb.cool/echo_mly/echo_releases/-/releases/download/v0.3.2/Echo-0.3.2-windows-x64-Setup.exe)** · [GitHub 备用下载](https://github.com/lindreams/echo-chat-analyzer/releases/download/v0.3.2/Echo-0.3.2-windows-x64-Setup.exe) · [查看版本说明](https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v0.3.2) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
+**[下载 Windows x64 安装版](https://cnb.cool/echo_mly/echo_releases/-/releases/download/v0.3.4/Echo-0.3.4-windows-x64-Setup.exe)** · [GitHub 备用下载](https://github.com/lindreams/echo-chat-analyzer/releases/download/v0.3.4/Echo-0.3.4-windows-x64-Setup.exe) · [查看版本说明](https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v0.3.4) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
 
 当前版本为 **v0.3.2**。无需安装 Python。
 
@@ -78,7 +78,7 @@ v0.3.0 的表情包分析、词语原话查看、私聊拍一拍／戳一戳和�
 
 不同电脑与 QQ / 微信版本的兼容性仍在收集反馈。
 
-[查看发布说明与所有下载文件](https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v0.3.2) · [GitHub 发布页](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.2) · [查看所有版本](https://cnb.cool/echo_mly/echo_releases/-/releases) · [后续开发计划](docs/ROADMAP.md)
+[查看发布说明与所有下载文件](https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v0.3.4) · [GitHub 发布页](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.4) · [查看所有版本](https://cnb.cool/echo_mly/echo_releases/-/releases) · [后续开发计划](docs/ROADMAP.md)
 
 <details>
 <summary>已安装用户如何更新？</summary>
