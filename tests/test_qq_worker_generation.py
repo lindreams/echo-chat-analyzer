@@ -61,7 +61,7 @@ def test_bound_client_rejects_restart_and_new_client_explicitly_binds(tmp_path, 
     assert worker.operations[-1]["boot_id"] == "d" * 64
 
 
-@pytest.mark.parametrize("operation", ["acquire", "cleanup", "recover", "get_group_member_all"])
+@pytest.mark.parametrize("operation", ["acquire", "cleanup", "recover", "get_group_member_all", "snapshot_lease"])
 def test_stale_snapshot_never_operates_on_new_worker(tmp_path, operation):
     worker = Worker()
     client = make(worker, tmp_path, "snapshot")
@@ -69,6 +69,13 @@ def test_stale_snapshot_never_operates_on_new_worker(tmp_path, operation):
     worker.boot = "d" * 64
     worker.operations.clear()
     args = ["fictional-generation"] if operation == "cleanup" else ["45678901"] if operation == "get_group_member_all" else []
+    if operation == "snapshot_lease":
+        args = ["fictional-generation", "consume"]
+        # This fixture is deliberately unmanaged: without a runtime identity
+        # there is no reuse capability and no RPC should be sent at all.
+        assert client.snapshot_lease(*args) is False
+        assert worker.operations == [] and len(worker.calls) == 2
+        return
     with pytest.raises(QQSnapshotRuntimeError) as error:
         getattr(client, operation)(*args)
     assert error.value.code == "qq_snapshot_worker_generation_changed"

@@ -38,6 +38,8 @@
     "plugins/napcat-plugin-echo/snapshot/diagnostic_log.mjs",
     "plugins/napcat-plugin-echo/snapshot/main_wal.mjs",
     "plugins/napcat-plugin-echo/snapshot/snapshot.mjs",
+    "plugins/napcat-plugin-echo/snapshot/snapshot_guard.mjs",
+    "plugins/napcat-plugin-echo/snapshot/snapshot_guard.ps1",
     "plugins/napcat-plugin-echo/snapshot/source_guard.mjs",
     "plugins/napcat-plugin-echo/snapshot/source_guard.ps1",
     "plugins/napcat-plugin-echo/snapshot/workspace.mjs",

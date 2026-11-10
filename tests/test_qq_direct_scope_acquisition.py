@@ -56,7 +56,7 @@ class _RecordingQQService:
         return []
 
     @contextmanager
-    def acquired_session(self, session_id, *, start_time=None, end_time=None):
+    def acquired_session(self, session_id, *, start_time=None, end_time=None, cancelled=lambda: False):
         request = SimpleNamespace(
             session_id=session_id, start_time=start_time, end_time=end_time
         )

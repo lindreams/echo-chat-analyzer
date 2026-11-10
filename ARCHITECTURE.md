@@ -147,11 +147,14 @@ GUI → Facade.list_sessions / analyze_session → QQDirectDatabaseImportService
 - root / staging owner、generation manifest、固定文件 allowlist 共同限定删除范围；先验证全部候选，再删除，所有权证明最后移除。未知成员或无效所有权不能被递归清除。
 - 不相关 generation 的 cleanup 不释放当前消费者 lease。清理／恢复失败阻止正常返回；清理错误不能被先前的获取／解密错误掩盖，保留可恢复残留，不包装为成功。
 - 已准入任务捕获原 client，读取、metadata 和 cleanup 都维持原代际；cleanup 本身仍算活动获取，不能被重连挤出。
-- generation 中的 plaintext DB 在会话查询完成或 payload 物化后 cleanup，早于下游分析；临时 qq-db-json 仍含明文，由 acquisition 上下文在消费结束／异常后清理。二者均不作长期 cache。
+- 会话列表可把已通过原 manifest 与整库 quick_check 的 generation 移交给进程内一次性租约：列表结束后最多保留 120 秒，仅供下一次群聊分析使用。刷新、私聊获取、过期、取消、断开及重连释放旧租约；群聊物化后 cleanup，早于下游分析。连续分析其他群仍重新获取。
+- 复用要求原 client、启动凭据、runtime_id、boot_id、连接 epoch、generation 和账号全部成立；原 Worker 的认证 lease RPC 复核在线账号、工作区 lease 和固定文件身份。原生登录服务的连接／断线／退出回调，以及 SelfOffline／KickedOffLine 事件使连接证据失效，即使两次 RPC 之间已经重新上线也不得复用；无法注册观察者时仅走新获取流程。隐藏 Windows helper 持续以 FileShare.Read 持有 snapshot.db 与 manifest.json，禁止写入／删除，复核句柄文件 ID、单链接及辅助文件缺失。TTL、大小和 mtime 不构成有效性证明。
+- runtime 与应用各自有到期清理；runtime 将未完成列表的 pin 限为 900 秒、待选租约限为 120 秒、消费阶段限为 650 秒，文件 helper 自身也有 900 秒上限。超时失去保护即拒绝复用，不续用已失效文件。原 Worker 丢失时旧 client 不得操作新 Worker，由显式重连后的合法 recover 清理残留。
+- 临时 qq-db-json 仍含明文，由 acquisition 上下文在消费结束／异常后清理；snapshot 与 payload 均不作长期 cache。
 
-GUI 取消会话结果只使请求失效，不中断底层 acquisition / cleanup。授权取消绑定具体 Event，迟到取消不能关闭新授权；迟到 launcher 返回的自有资源必须关闭。
+GUI 会话请求失效通过 Facade 传到获取服务，取消可中止自有 SQLite reader 并阻止保留租约；获取中的 native decrypt 仍须等待返回并安全清理。授权取消绑定具体 Event，迟到取消不能关闭新授权；迟到 launcher 返回的自有资源必须关闭。
 
-`disconnect_qq()` 结束授权／运行会话，不执行完整 Direct DB drain / recover，也不提供全部资源释放证明。正常 shutdown 另见第 7 节；Worker 异常丢失时的失败关闭不代表残留已经清除，须由后续合法 recover 处理。
+`disconnect_qq()` 先释放空闲快照租约，再结束授权／运行会话；活动获取阻止该操作。它不执行完整 Direct DB drain / recover，也不提供全部资源释放证明。正常 shutdown 另见第 7 节；Worker 异常丢失时的失败关闭不代表残留已经清除，须由后续合法 recover 处理。
 
 ## 5. 微信连接、取钥与数据库读取
 

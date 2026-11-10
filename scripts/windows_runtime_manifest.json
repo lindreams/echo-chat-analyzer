@@ -229,6 +229,18 @@
       "description": "Echo NapCat program asset."
     },
     {
+      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/snapshot_guard.mjs",
+      "source": "qq-napcat-candidate",
+      "type": "file",
+      "description": "Echo immutable snapshot handle guard."
+    },
+    {
+      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/snapshot_guard.ps1",
+      "source": "qq-napcat-candidate",
+      "type": "file",
+      "description": "Echo immutable snapshot handle guard."
+    },
+    {
       "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/source_guard.mjs",
       "source": "qq-napcat-candidate",
       "type": "file",

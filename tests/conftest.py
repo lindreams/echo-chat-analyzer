@@ -177,6 +177,7 @@ DOMAIN_MODULES = {
         "test_qq_direct_session_discovery",
         "test_qq_direct_session_materialization",
         "test_qq_direct_snapshot_lease",
+        "test_qq_direct_snapshot_reuse",
         "test_qq_direct_snapshot_runtime_client",
         "test_qq_direct_snapshot_workspace",
         "test_qq_explicit_reconnect",

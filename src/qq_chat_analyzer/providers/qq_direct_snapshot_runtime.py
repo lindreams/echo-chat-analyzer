@@ -382,6 +382,19 @@ class QQDirectSnapshotRuntimeClient:
 
     # ------------------------------------------------------------------ paths
 
+    def snapshot_lease(self, generation_id: str, action: str) -> bool:
+        """Check the original authenticated owner, account and immutable handles.
+
+        The runtime grants a single consume after retain. No identity or file
+        metadata supplied by a caller can authorize a lease.
+        """
+        if action not in {"pin", "retain", "consume", "check"}:
+            raise ValueError("Invalid snapshot lease action.")
+        if self.runtime_binding is None:
+            return False
+        result = self._rpc("lease", [{"generation_id": validate_generation_id(generation_id), "action": action}])
+        return isinstance(result, Mapping) and result.get("ok") is True and result.get("status") == "leased"
+
     def generation_directory(self, generation_id: str) -> Path:
         """Compute the generation directory under the known snapshot root."""
         normalized = validate_generation_id(generation_id)

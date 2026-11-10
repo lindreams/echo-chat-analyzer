@@ -1,8 +1,8 @@
 // Local-only Direct DB snapshot lifecycle — runtime-side generation API (Phase 1).
 //
 // This helper never auto-decrypts and never accesses or serializes the
-// passphrase.  It exposes a restricted EchoSnapshotApi with three methods
-// (acquire / cleanup / recover) that own the plaintext snapshot lifecycle
+// passphrase. It exposes a restricted EchoSnapshotApi with four methods
+// (acquire / cleanup / recover / lease) that own the plaintext snapshot lifecycle
 // through an explicit generation + atomic-publish scheme:
 //
 //   <root>/generations/<id>/snapshot.db
@@ -25,6 +25,7 @@ import { unlinkSync, readFileSync } from 'node:fs';
 import { createMergedEncryptedDatabase, finalizeStandaloneSnapshot, captureCodeHash, fileState as strongFileState } from './main_wal.mjs';
 import { createWorkspace, workspaceCodeHash } from './workspace.mjs';
 import { acquireSourceGuard } from './source_guard.mjs';
+import { pinSnapshot } from './snapshot_guard.mjs';
 import { appendDiagnostic } from './diagnostic_log.mjs';
 
 const snapshotCodeHash = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
@@ -314,6 +315,50 @@ export function createEchoSnapshotApi(core, options = {}) {
   // chain, so decrypt can never run concurrently (max concurrency = 1).
   let lockTail = Promise.resolve();
   let activeGenerationId = null;
+  let activeSelfUin = null;
+  let activeConnection = null;
+  let connection = {};
+  let connectionObserved = false;
+  const invalidateConnection = () => { connection = {}; };
+  // Observe native login transitions even if offline -> online completes
+  // between two RPCs. The pinned candidate exposes this exact kernel API.
+  // No observer (or a replaced core/event owner) means fresh acquisition only.
+  const wrapper = core?.context?.wrapper;
+  const events = core?.event;
+  try {
+    const login = wrapper?.NodeIKernelLoginService?.get();
+    if (typeof login?.addKernelLoginListener === 'function' &&
+        typeof events?.on === 'function') {
+      const transitions = new Set(['onLoginConnected', 'onLoginDisConnected',
+        'onLoginConnecting', 'onLoginFailed', 'onLogoutSucceed']);
+      login.addKernelLoginListener(new Proxy({}, {get: (_target, name) =>
+        transitions.has(name) ? invalidateConnection : () => {}}));
+      events.on('SelfOffline', invalidateConnection);
+      events.on('KickedOffLine', invalidateConnection);
+      connectionObserved = true;
+    }
+  } catch { /* Unknown native lifecycle cannot grant reuse. */ }
+  const sameConnection = () => connectionObserved && activeConnection === connection &&
+    core?.context?.wrapper === wrapper && core?.event === events &&
+    core?.selfInfo?.online === true &&
+    canonicalizeUin(core?.selfInfo?.uin) === activeSelfUin;
+  let heldSnapshot = null;
+  async function unpin() {
+    if (!heldSnapshot) return;
+    clearTimeout(heldSnapshot.timer);
+    await heldSnapshot.pin.release();
+    heldSnapshot = null;
+  }
+  function expire(record, milliseconds) {
+    clearTimeout(record.timer);
+    record.deadline = now() + milliseconds;
+    record.timer = setTimeout(() => {
+      void cleanup(record.id, record).then(result => {
+        if (!result.ok) traceStage('retained_cleanup_failed');
+      });
+    }, milliseconds);
+    record.timer.unref();
+  }
   let previousDecryptKeyVersion = null;
   function withLock(task, releaseOnFailure = () => false) {
     const guarded = async () => {
@@ -342,6 +387,7 @@ export function createEchoSnapshotApi(core, options = {}) {
       // fail-closed error rather than a silent no-op.
       await workspace.acquireLease();
       failureStage = 'cleanup';
+      await unpin();
       workspace.recover();
       return { ok: true };
     } catch (error) {
@@ -419,6 +465,7 @@ export function createEchoSnapshotApi(core, options = {}) {
       if (cancelled()) return fail(CODES.SNAPSHOT_UNSTABLE);
       entered = true;
       traceStage('acquire_entered', null, acquireStarted, 'success');
+      const acquiredConnection = connection;
       // 1. Fail-closed cleanup: no decryption may start unless every previous
       //    generation, staging dir and legacy plaintext artifact is gone.
       const slateStarted = process.hrtime.bigint();
@@ -667,6 +714,8 @@ export function createEchoSnapshotApi(core, options = {}) {
 
       traceStage('generation_ready', generationId);
       activeGenerationId = generationId;
+      activeSelfUin = identityAfter;
+      activeConnection = acquiredConnection;
 
       return { ok: true, generation_id: generationId, status: 'ready' };
     }, () => entered).then(result => {
@@ -679,8 +728,10 @@ export function createEchoSnapshotApi(core, options = {}) {
     });
   }
 
-  async function cleanup(generationId) {
+  async function cleanup(generationId, expired = null) {
     return withLock(async () => {
+      // A queued expiry cannot delete a generation consumed or renewed later.
+      if (expired && (heldSnapshot !== expired || now() < expired.deadline)) return {ok: true};
       const id = normalizeGenerationId(generationId);
       if (id === null) {
         return fail(CODES.GENERATION_NOT_FOUND);
@@ -692,17 +743,58 @@ export function createEchoSnapshotApi(core, options = {}) {
       }
       try {
         await workspace.acquireLease();
+        await unpin();
         if (!existsSync(directory)) {
           return fail(CODES.GENERATION_NOT_FOUND);
         }
         workspace.cleanup(id);
         activeGenerationId = null;
+        activeSelfUin = null;
+        activeConnection = null;
         return { ok: true, status: 'cleaned' };
       } catch (error) {
         traceAcquisitionDiagnostic('cleanup', error);
         return fail(CODES.CLEANUP_FAILED);
       } finally {
         await workspace.release();
+      }
+    });
+  }
+
+  async function lease(request) {
+    return withLock(async () => {
+      const id = normalizeGenerationId(request?.generation_id);
+      if (!id || id !== activeGenerationId || !activeSelfUin || !sameConnection()) {
+        return fail(CODES.GENERATION_NOT_FOUND);
+      }
+      try {
+        workspace.assertGeneration(id);
+        if (request.action === 'pin') {
+          if (heldSnapshot) return fail(CODES.GENERATION_NOT_FOUND);
+          const pin = await pinSnapshot(join(generationsDirectory, id));
+          heldSnapshot = {id, pin, state: 'pinned', deadline: 0, timer: null};
+          expire(heldSnapshot, 900000);
+          if (!sameConnection()) return fail(CODES.GENERATION_NOT_FOUND);
+        } else {
+          if (!heldSnapshot || heldSnapshot.id !== id || now() >= heldSnapshot.deadline) {
+            return fail(CODES.GENERATION_NOT_FOUND);
+          }
+          await heldSnapshot.pin.check();
+          if (!sameConnection()) return fail(CODES.GENERATION_NOT_FOUND);
+          if (request.action === 'retain' && heldSnapshot.state === 'pinned') {
+            heldSnapshot.state = 'retained';
+            expire(heldSnapshot, 120000);
+          } else if (request.action === 'consume' && heldSnapshot.state === 'retained') {
+            heldSnapshot.state = 'consumed';
+            expire(heldSnapshot, 650000);
+          } else if (request.action !== 'check') return fail(CODES.GENERATION_NOT_FOUND);
+        }
+        return {ok: true, status: 'leased'};
+      } catch (error) {
+        if (error?.snapshotPin) {
+          heldSnapshot = {id, pin: error.snapshotPin, state: 'broken', deadline: 0, timer: null};
+        }
+        return fail(CODES.GENERATION_NOT_FOUND);
       }
     });
   }
@@ -723,7 +815,7 @@ export function createEchoSnapshotApi(core, options = {}) {
     });
   }
 
-  return { acquire, cleanup, recover };
+  return { acquire, cleanup, recover, lease };
 }
 
 export function registerEchoSnapshotApi(runtimeCore, options = {}) {

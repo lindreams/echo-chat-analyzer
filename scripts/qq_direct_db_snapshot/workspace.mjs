@@ -184,5 +184,11 @@ export function createWorkspace(rootDirectory) {
   function assertLease() {
     if (!lease || lease.exitCode !== null || lease.signalCode !== null || lease.killed) reject();
   }
-  return { acquireLease, release, recover, createStaging, discard, cleanup, assertSourceSeparate, assertLease };
+  function assertGeneration(id) {
+    assertLease();
+    const directory = join(generations, id);
+    if (!existsSync(directory)) reject();
+    validateDirectory(directory, 'generation', id);
+  }
+  return { acquireLease, release, recover, createStaging, discard, cleanup, assertSourceSeparate, assertLease, assertGeneration };
 }

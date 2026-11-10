@@ -652,6 +652,9 @@ export async function startBridge(core, snapshot, {port = 40655, host = '127.0.0
     ['EchoMediaProbe.releasePicMedia', {count: 1, valid: transferRequest, call: releaseTransfer}],
     ['EchoSnapshotApi.acquire', {count: 0, call: context => snapshot.acquire(context)}],
     ['EchoSnapshotApi.cleanup', {count: 1, valid: generation, call: id => snapshot.cleanup(id)}],
+    ['EchoSnapshotApi.lease', {count: 1, valid: value => value &&
+      Object.keys(value).length === 2 && generation(value.generation_id) &&
+      ['pin', 'retain', 'consume', 'check'].includes(value.action), call: value => snapshot.lease(value)}],
     ['EchoSnapshotApi.recover', {count: 0, call: () => snapshot.recover()}]
   ]);
   const server = createServer((req, res) => {

@@ -82,7 +82,7 @@ class _StubQQService:
         return self.list_groups()
 
     @contextmanager
-    def acquired_session(self, session_id, *, start_time=None, end_time=None):
+    def acquired_session(self, session_id, *, start_time=None, end_time=None, cancelled=lambda: False):
         request = SimpleNamespace(
             session_id=session_id, start_time=start_time, end_time=end_time
         )
@@ -125,7 +125,7 @@ class _ContextManagedQQService(_StubQQService):
         self.entered = False
         self.exited = False
 
-    def acquired_session(self, session_id, *, start_time=None, end_time=None):
+    def acquired_session(self, session_id, *, start_time=None, end_time=None, cancelled=lambda: False):
         request = SimpleNamespace(
             session_id=session_id, start_time=start_time, end_time=end_time
         )
@@ -174,7 +174,7 @@ class _TrackingQQService(_StubQQService):
         self.acquisition_exited = 0
 
     @contextmanager
-    def acquired_session(self, session_id, *, start_time=None, end_time=None):
+    def acquired_session(self, session_id, *, start_time=None, end_time=None, cancelled=lambda: False):
         with super().acquired_session(
             session_id,
             start_time=start_time,

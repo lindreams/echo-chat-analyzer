@@ -1281,13 +1281,13 @@ class ChatAnalyzerFacade:
     # ------------------------------------------------------------- discovery
 
     @timed_stage("session_list_total")
-    def list_sessions(self, source: ChatSource) -> list[SessionInfo]:
+    def list_sessions(self, source: ChatSource, *, cancelled: Callable[[], bool] | None = None) -> list[SessionInfo]:
         """Return the conversations one source offers, normalised."""
         chat_source = _coerce_source(source)
         service = self._require_service(chat_source)
         with _translated_errors(chat_source):
-            if chat_source is ChatSource.QQ:
-                raw_sessions = service.list_sessions()
+            if chat_source is ChatSource.QQ and cancelled is not None:
+                raw_sessions = service.list_sessions(cancelled=cancelled)
             else:
                 raw_sessions = service.list_sessions()
 
@@ -1358,6 +1358,9 @@ class ChatAnalyzerFacade:
                 prepare = getattr(service, "prepare_reconnect", None)
                 connection = self._optional_qq_connection_service()
                 reconnect = getattr(connection, "reconnect", None)
+                release = getattr(service, "release_retained_snapshot", None)
+                if callable(release):
+                    release()
                 # Only the two in-memory resets share admission's lock. The
                 # runtime login flow below deliberately runs outside it.
                 with ExitStack() as resets:
@@ -1394,6 +1397,10 @@ class ChatAnalyzerFacade:
         active login session is stopped so a different account can scan a
         fresh QR code.
         """
+        with _translated_errors(ChatSource.QQ):
+            release = getattr(self._qq_service_if_present(), "release_retained_snapshot", None)
+            if callable(release):
+                release()
         return self._require_qq_auth_bridge().disconnect()
 
     def disconnect_wechat(self) -> WeChatConnectionStatus | None:
@@ -1699,6 +1706,7 @@ class ChatAnalyzerFacade:
                 scratch_directory,
                 scope=scope,
                 on_phase=on_phase,
+                cancelled=cancelled,
             ) as session_export:
                 acquired_at = _perf_counter()
                 _LOGGER.info(
@@ -2235,6 +2243,7 @@ class ChatAnalyzerFacade:
         *,
         scope: AnalysisScope | None = None,
         on_phase: PhaseCallback | None = None,
+        cancelled: Callable[[], bool] | None = None,
     ) -> Iterator[_SessionExport]:
         """Yield an export while preserving source-specific ownership.
 
@@ -2257,6 +2266,7 @@ class ChatAnalyzerFacade:
                             session_id,
                             start_time=start_seconds,
                             end_time=end_seconds,
+                            **({"cancelled": cancelled} if cancelled is not None else {}),
                         )
                     )
                 _publish_phase(on_phase, AnalysisPhase.ANALYZING_REPORT)

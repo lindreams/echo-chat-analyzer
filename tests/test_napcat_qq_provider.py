@@ -28,6 +28,7 @@ import {startBridge} from './bridge.mjs';
 import fs from 'node:fs';
 import {mock} from 'node:test';
 import {createInterface} from 'node:readline';
+import {EventEmitter} from 'node:events';
 const config = JSON.parse(process.argv[2]);
 delete process.env.QCE_LOG_FILE;
 if(config.nativeLog) process.env.QCE_LOG_FILE=config.nativeLog;
@@ -109,6 +110,12 @@ const core={dbPassphrase:'PRIVATE',selfInfo:info({uin:config.selfUin ?? '1234567
    return {result:0,msgList:config.mode==='probe-duplicate'?[message,{...message}]:[message]};
  }}
 }};
+let loginListener;
+core.context={wrapper:{NodeIKernelLoginService:{get:()=>({
+  addKernelLoginListener:listener=>{loginListener=listener;}
+})}}};
+core.event=new EventEmitter();
+if(config.noConnectionObserver) delete core.context;
 if(config.nativeDownload) {
   core.eventWrapper={async callNormalEventV2(method,listener,params,check,match){
     if(this!==core.eventWrapper) throw Error('PRIVATE wrong receiver');
@@ -199,6 +206,9 @@ console.log(JSON.stringify({port:bridge.port}));
 createInterface({input:process.stdin}).on('line',async line=>{
   const action=JSON.parse(line);
   if(typeof action==='number') mock.timers.tick(action);
+  else if(action && typeof action==='object' && action.selfUin) core.selfInfo.uin=action.selfUin;
+  else if(action?.loginTransition) loginListener[action.loginTransition]();
+  else if(action?.offlineEvent) core.event.emit(action.offlineEvent);
   else finishMedia(action);
   await new Promise(resolve=>setImmediate(resolve));
   console.log(JSON.stringify({action}));
@@ -630,6 +640,8 @@ def test_same_endpoint_worker_restart_refuses_old_provider_and_snapshot(runtime,
     generation = snapshot.acquire()
     calls = tmp_path / "new-worker-calls.txt"
     assert runtime.restart(base, runtime_id=RUNTIME_ID, marker=calls) == base
+    with pytest.raises(QQSnapshotWorkerGenerationChanged):
+        snapshot.snapshot_lease(generation, 'consume')
     with pytest.raises(QQSnapshotWorkerGenerationChanged):
         snapshot.cleanup(generation)
     with pytest.raises(NapCatQQWorkerGenerationChanged):

@@ -88,7 +88,7 @@
     {
       "source": "qq_direct_db_snapshot/snapshot.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/snapshot.mjs",
-      "sha256": "21ba4c7b74e235f307a1bc87a1b94075dc0d06a20fb13f16a72808564e4c0f62"
+      "sha256": "029c532ede470d08bac56c9e937f3b64b8017641d855e00868b6f28172c033c3"
     },
     {
       "source": "qq_direct_db_snapshot/main_wal.mjs",
@@ -98,12 +98,12 @@
     {
       "source": "qq_direct_db_snapshot/workspace.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/workspace.mjs",
-      "sha256": "c848164c887c7881ed83bc08f1f42fe6bda43953565ba5449baeea169e5533b3"
+      "sha256": "1850f2c90f3c4992b4f698a7e90c5e86803d2f1a36471f7dfccef67ba92b6054"
     },
     {
       "source": "qq_napcat_plugin/bridge.mjs",
       "target": "plugins/napcat-plugin-echo/bridge.mjs",
-      "sha256": "04cd04dc9664f43f54a6025459a0f5ca511b6beb4a41f6222ac20ba49531aa56"
+      "sha256": "bb4130bd522530b3f6c4656f260fc354f5a8737031059b967334161a2a425d06"
     },
     {
       "source": "qq_direct_db_snapshot/source_guard.mjs",
@@ -114,6 +114,16 @@
       "source": "qq_direct_db_snapshot/source_guard.ps1",
       "target": "plugins/napcat-plugin-echo/snapshot/source_guard.ps1",
       "sha256": "6e3eff278f9ad74440a204ee6d752f1f2fe1e488f1da6eec29f55b31bf08dbc3"
+    },
+    {
+      "source": "qq_direct_db_snapshot/snapshot_guard.mjs",
+      "target": "plugins/napcat-plugin-echo/snapshot/snapshot_guard.mjs",
+      "sha256": "6b223caf85c86ecaee3a494968dcb40e47db6eb2d8e49bc8b7a42fcfd32052fb"
+    },
+    {
+      "source": "qq_direct_db_snapshot/snapshot_guard.ps1",
+      "target": "plugins/napcat-plugin-echo/snapshot/snapshot_guard.ps1",
+      "sha256": "adca1eedfdd2f810c5dc45b4310bc62cfc457485ceb10d9cea9a7858a389ee46"
     }
   ],
   "pluginConfigSha256": "83f2f45b62071d5ad84ece29baa2a25654cab204f469e59cc0f44149346b55eb"

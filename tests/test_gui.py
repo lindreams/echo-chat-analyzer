@@ -167,7 +167,7 @@ class StubFacade:
     def list_sources(self):
         return self._sources
 
-    def list_sessions(self, source):
+    def list_sessions(self, source, *, cancelled=None):
         self.list_sessions_calls.append(source)
         if self._error is not None:
             raise self._error
@@ -981,7 +981,7 @@ def test_qq_cancelled_queued_operations_do_not_use_new_connection(qt_app):
     executor = _DeferredExecutor()
     facade = StubFacade()
     calls = []
-    facade.list_sessions = lambda source: calls.append("sessions") or []
+    facade.list_sessions = lambda source, **kwargs: calls.append("sessions") or []
     workspace = QQWorkspace(facade, executor=executor)
     workspace._load_sessions()
     sessions = executor.operation
@@ -1850,9 +1850,9 @@ def test_wechat_workspace_verifies_the_database_before_listing_sessions(
         order.append("verify")
         return verify()
 
-    def list_sessions_spy(source):
+    def list_sessions_spy(source, **kwargs):
         order.append("list_sessions")
-        return list_sessions(source)
+        return list_sessions(source, **kwargs)
 
     facade.verify_wechat_database = verify_spy
     facade.list_sessions = list_sessions_spy

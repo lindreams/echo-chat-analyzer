@@ -1136,7 +1136,9 @@ class QQWorkspace(QWidget):
             self._handle_session_error(code, message)
 
         self._executor(
-            lambda: self._facade.list_sessions(ChatSource.QQ) if self._session_request is request else [],
+            lambda: self._facade.list_sessions(
+                ChatSource.QQ, cancelled=lambda: self._session_request is not request,
+            ) if self._session_request is request else [],
             on_success=succeeded,
             on_error=failed,
         )

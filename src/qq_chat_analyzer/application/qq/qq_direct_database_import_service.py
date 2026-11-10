@@ -16,7 +16,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -81,6 +81,7 @@ DEFAULT_SHUTDOWN_DRAIN_SECONDS = 5.0
 DEFAULT_SHUTDOWN_RECOVER_SECONDS = 5.1
 DEFAULT_STARTUP_READINESS_SECONDS = 10.0
 DEFAULT_METADATA_TIMEOUT_SECONDS = 5.0
+SNAPSHOT_REUSE_SECONDS = 120.0
 _STARTUP_RETRY_INTERVAL_SECONDS = 0.1
 
 
@@ -158,15 +159,27 @@ class QQDirectDatabaseAcquisition:
     runtime_binding: tuple[str, str] | None = None
 
 
+@dataclass(slots=True)
+class _RetainedSnapshot:
+    client: Any
+    generation_id: str
+    database_path: Path
+    self_uin: str
+    runtime_binding: tuple[str, str]
+    epoch: object
+    retained_at: float
+    timer: threading.Timer | None = None
+
+
 class QQDirectDatabaseImportService:
     """Small Direct DB acquisition orchestrator for the QQ product path.
 
     It intentionally delegates DB reads to `QQDatabaseProvider` and leaves
     parsing, importing, analysis, and reporting to their existing services.
-    Each acquisition owns exactly one runtime generation: it is validated,
-    read, materialized into a `qq-db-json` payload, and released in
-    `finally` before the payload is handed to the consumer, so the plaintext
-    DB never outlives payload materialization.
+    Each analysis owns one validated generation and releases it before yielding
+    its payload. A successful list may instead transfer its pinned generation
+    to a 120-second, single-use lease for the next group analysis. Refresh,
+    expiry, cancellation, disconnect and shutdown release that idle lease.
 
     It also owns the application-side lifecycle: before the first generation is
     read, `recover` removes any plaintext left behind by a previous run (a
@@ -199,6 +212,106 @@ class QQDirectDatabaseImportService:
         self._connection_epoch = object()
         self._starting = False
         self._read_cancelled = threading.Event()
+        self._retained_snapshot: _RetainedSnapshot | None = None
+
+    def _cleanup_generation(self, client: Any, generation_id: str) -> None:
+        try:
+            with qq_session_stage(_LOGGER, "cleanup"):
+                client.cleanup(generation_id)
+        except QQSnapshotWorkerGenerationChanged as error:
+            self._require_reconnect()
+            raise QQReconnectRequired() from error
+        except QQSnapshotRuntimeError as error:
+            raise QQDirectSnapshotCleanupFailed() from error
+
+    def _discard_retained(self) -> None:
+        # Caller owns acquisition admission (or has drained shutdown).
+        with self._condition:
+            retained = self._retained_snapshot
+            self._retained_snapshot = None
+            self._condition.notify_all()
+        if retained is not None:
+            if retained.timer:
+                retained.timer.cancel()
+            self._cleanup_generation(retained.client, retained.generation_id)
+            _LOGGER.info("QQ snapshot reuse outcome=released retained_ms=%d", int(
+                (time.monotonic() - retained.retained_at) * 1000))
+
+    def _expire_retained(self, retained: _RetainedSnapshot) -> None:
+        with self._condition:
+            while (self._retained_snapshot is retained and self._active_acquisitions
+                   and not self._shutdown_started):
+                self._condition.wait()
+            if self._retained_snapshot is not retained or self._shutdown_started:
+                return
+            self._active_acquisitions += 1
+        try:
+            self._discard_retained()
+        except Exception:
+            # No background failure may grant another acquisition. Recovery
+            # remains owned by the original runtime and explicit reconnect.
+            self._require_reconnect()
+            _LOGGER.warning("QQ snapshot reuse outcome=cleanup_failed")
+        finally:
+            self._end_acquisition()
+
+    def release_retained_snapshot(self) -> None:
+        """Seal admission and release idle plaintext before connection I/O."""
+        with self._condition:
+            if self._starting or self._active_acquisitions:
+                raise QQDirectDatabaseShuttingDown()
+            # Disconnect/authentication runs outside this lock. A concurrent
+            # reader must not enter between lease cleanup and runtime stop.
+            self._reconnect_required = True
+            self._active_acquisitions += 1
+        try:
+            self._discard_retained()
+        finally:
+            self._end_acquisition()
+
+    def _retain_generation(self, client: Any, generation_id: str, database: Path, self_uin: str) -> bool:
+        file_bytes = database.stat().st_size
+        if not client.snapshot_lease(generation_id, "retain"):
+            return False
+        retained = _RetainedSnapshot(client, generation_id, database, self_uin,
+                                     client.runtime_binding, self._connection_epoch, time.monotonic())
+        with self._condition:
+            if self._shutdown_started:
+                return False
+            self._retained_snapshot = retained
+            retained.timer = threading.Timer(SNAPSHOT_REUSE_SECONDS, self._expire_retained, args=(retained,))
+            retained.timer.daemon = True
+            retained.timer.start()
+        _LOGGER.info("QQ snapshot reuse outcome=retained ttl_ms=%d file_bytes=%d",
+                     int(SNAPSHOT_REUSE_SECONDS * 1000), file_bytes)
+        return True
+
+    def _consume_retained(self, client: Any, session_id: str) -> _RetainedSnapshot | None:
+        with self._condition:
+            retained = self._retained_snapshot
+        if retained is None:
+            return None
+        eligible = (session_id.startswith("group:") and retained.client is client
+                    and retained.epoch is self._connection_epoch
+                    and retained.runtime_binding == getattr(client, "runtime_binding", None)
+                    and time.monotonic() - retained.retained_at < SNAPSHOT_REUSE_SECONDS)
+        if eligible:
+            try:
+                eligible = client.snapshot_lease(retained.generation_id, "consume")
+            except QQSnapshotRuntimeError:
+                eligible = False
+        if not eligible:
+            self._discard_retained()
+            _LOGGER.info("QQ snapshot reuse outcome=miss")
+            return None
+        with self._condition:
+            self._retained_snapshot = None
+            self._condition.notify_all()
+        if retained.timer:
+            retained.timer.cancel()
+        _LOGGER.info("QQ snapshot reuse outcome=hit retained_ms=%d", int(
+            (time.monotonic() - retained.retained_at) * 1000))
+        return retained
 
     def _require_reconnect(self) -> None:
         with self._condition:
@@ -211,7 +324,8 @@ class QQDirectDatabaseImportService:
     def prepare_reconnect(self) -> None:
         """Reset only after old acquisitions have finished, on explicit connect."""
         with self._condition:
-            if self._starting or self._active_acquisitions or self._state is QQDirectDatabaseState.SHUTTING_DOWN:
+            if (self._starting or self._active_acquisitions or self._retained_snapshot is not None
+                    or self._state is QQDirectDatabaseState.SHUTTING_DOWN):
                 raise QQDirectDatabaseShuttingDown()
             self._connection_epoch = object()
             self._runtime_client = None
@@ -370,6 +484,7 @@ class QQDirectDatabaseImportService:
         try:
             if client is None:
                 raise QQDirectDatabaseRecoveryFailed()
+            self._discard_retained()
             self._recover_on_shutdown(
                 client=client,
                 deadline=min(
@@ -403,26 +518,37 @@ class QQDirectDatabaseImportService:
                 time.monotonic() - started_at,
             )
         return self._shutdown_status
-    def list_sessions(self) -> list[QQSession]:
-        """Discover sessions from one fresh generation, then release it.
-
-        The generation is cleaned up in `finally` so the plaintext DB never
-        outlives this call.
-        """
+    def list_sessions(self, *, cancelled: Callable[[], bool] = lambda: False) -> list[QQSession]:
+        """Discover fresh sessions, optionally retaining one immutable generation."""
         with qq_session_stage(_LOGGER, "service"):
             client = self._begin_acquisition()
             try:
+                self._discard_retained()
                 generation_id: str | None = None
                 try:
+                    if cancelled():
+                        return []
                     with qq_session_stage(_LOGGER, "snapshot_acquire"):
                         generation_id = client.acquire()
+                    binding = getattr(client, "runtime_binding", None)
+                    pinned = (isinstance(binding, tuple) and len(binding) == 2 and all(binding)
+                              and callable(getattr(client, "snapshot_lease", None))
+                              and client.snapshot_lease(generation_id, "pin"))
+                    is_cancelled = lambda: self._read_cancelled.is_set() or cancelled()
                     database_path, self_uin = _validated_generation(
                         client.generation_directory(generation_id),
                         generation_id,
-                        cancelled=self._read_cancelled.is_set,
+                        cancelled=is_cancelled,
                     )
-                    provider = QQDatabaseProvider(database_path, cancelled=self._read_cancelled.is_set)
+                    provider = QQDatabaseProvider(database_path, cancelled=is_cancelled)
                     sessions = provider.list_sessions(self_uin=self_uin)
+                    with qq_session_stage(_LOGGER, "names"):
+                        sessions = self._named_sessions(sessions)
+                    if not is_cancelled() and pinned and self._retain_generation(
+                            client, generation_id, database_path, self_uin):
+                        generation_id = None  # Idle lease now owns cleanup.
+                        if is_cancelled():
+                            self._discard_retained()
                 except QQSnapshotWorkerGenerationChanged as error:
                     self._require_reconnect()
                     raise QQReconnectRequired() from error
@@ -430,16 +556,8 @@ class QQDirectDatabaseImportService:
                     raise QQDirectSnapshotAcquireFailed() from error
                 finally:
                     if generation_id is not None:
-                        try:
-                            with qq_session_stage(_LOGGER, "cleanup"):
-                                client.cleanup(generation_id)
-                        except QQSnapshotWorkerGenerationChanged as error:
-                            self._require_reconnect()
-                            raise QQReconnectRequired() from error
-                        except QQSnapshotRuntimeError as error:
-                            raise QQDirectSnapshotCleanupFailed() from error
-                with qq_session_stage(_LOGGER, "names"):
-                    return self._named_sessions(sessions)
+                        self._cleanup_generation(client, generation_id)
+                return sessions
             finally:
                 self._end_acquisition()
 
@@ -450,8 +568,9 @@ class QQDirectDatabaseImportService:
         *,
         start_time: int | None = None,
         end_time: int | None = None,
+        cancelled: Callable[[], bool] = lambda: False,
     ) -> Iterator[QQDirectDatabaseAcquisition]:
-        """Materialize one selected session from one fresh generation.
+        """Consume the listed group lease once, or acquire a fresh generation.
 
         One runtime generation is acquired exactly once.  Its manifest and
         database are validated with the same helper used by
@@ -469,15 +588,23 @@ class QQDirectDatabaseImportService:
             scratch_context: TemporaryDirectory | None = None
             try:
                 try:
-                    with qq_session_stage(_LOGGER, "snapshot_acquire"):
-                        generation_id = client.acquire()
-                    database_path, self_uin = _validated_generation(
-                        client.generation_directory(generation_id),
-                        generation_id,
-                        cancelled=self._read_cancelled.is_set,
-                    )
+                    is_cancelled = lambda: self._read_cancelled.is_set() or cancelled()
+                    if is_cancelled():
+                        self._discard_retained()
+                        raise QQDirectDatabaseShuttingDown()
+                    retained = self._consume_retained(client, session_id)
+                    if retained is not None:
+                        generation_id = retained.generation_id
+                        database_path, self_uin = retained.database_path, retained.self_uin
+                    else:
+                        with qq_session_stage(_LOGGER, "snapshot_acquire"):
+                            generation_id = client.acquire()
+                        database_path, self_uin = _validated_generation(
+                            client.generation_directory(generation_id), generation_id,
+                            cancelled=is_cancelled,
+                        )
                     snapshot_at = time.perf_counter()
-                    provider = QQDatabaseProvider(database_path, cancelled=self._read_cancelled.is_set)
+                    provider = QQDatabaseProvider(database_path, cancelled=is_cancelled)
                     with qq_session_stage(_LOGGER, "session_lookup"):
                         session = provider.find_session(session_id, self_uin=self_uin)
                         if session is None:
@@ -493,6 +620,10 @@ class QQDirectDatabaseImportService:
                             self_uin=self_uin,
                         )
                     materialized_at = time.perf_counter()
+                    if is_cancelled():
+                        raise QQDirectDatabaseShuttingDown()
+                    if retained is not None and not client.snapshot_lease(generation_id, "check"):
+                        raise QQDirectSnapshotInvalid()
                     acquisition = QQDirectDatabaseAcquisition(
                         payload_path=payload_path,
                         self_uin=self_uin,
@@ -506,14 +637,7 @@ class QQDirectDatabaseImportService:
                     raise QQDirectSnapshotAcquireFailed() from error
                 finally:
                     if generation_id is not None:
-                        try:
-                            with qq_session_stage(_LOGGER, "cleanup"):
-                                client.cleanup(generation_id)
-                        except QQSnapshotWorkerGenerationChanged as error:
-                            self._require_reconnect()
-                            raise QQReconnectRequired() from error
-                        except QQSnapshotRuntimeError as error:
-                            raise QQDirectSnapshotCleanupFailed() from error
+                        self._cleanup_generation(client, generation_id)
                 cleaned_at = time.perf_counter()
                 group_names, friend_names = self._metadata_names()
                 metadata_at = time.perf_counter()
@@ -566,6 +690,8 @@ class QQDirectDatabaseImportService:
                     _elapsed_ms(metadata_at, members_at),
                     _elapsed_ms(members_at, ready_at),
                 )
+                if is_cancelled():
+                    raise QQDirectDatabaseShuttingDown()
                 yield replace(acquisition, session=named_session)
             finally:
                 if scratch_context is not None:
