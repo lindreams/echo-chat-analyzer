@@ -1046,6 +1046,11 @@ h1, h2, h3, p { margin-top: 0; }
 .nudge-counts dt { color: var(--muted); font: 12px/1.8 var(--sans); height: 3.6em; overflow-wrap: anywhere; white-space: pre-wrap; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
 .nudge-counts dd { margin: 10px 0 0; font: 24px/1.4 var(--serif); }
 
+/* Keep line-end punctuation inside these text boxes. */
+#session-group-top, .nudge-counts dt {
+  padding-inline-end: .5em;
+}
+
 .movement-heading {
   display: flex;
   align-items: center;
