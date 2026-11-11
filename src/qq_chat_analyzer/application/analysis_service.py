@@ -6,6 +6,7 @@ import logging
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
+from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
 
@@ -718,15 +719,43 @@ def _analyze_kept_messages(
     per_message_tokens: list[list[str]] = []
     stopwords: set[str] | None = None
 
-    for message in messages:
-        check_cancelled()
-        cleaned_text = clean_text(message.text, platform=message.platform)
-        message_tokens = []
+    def prepare_text(text: str, platform: str | None) -> tuple[bool, tuple[str, ...]]:
+        nonlocal stopwords
+        cleaned_text = clean_text(text, platform=platform)
         if cleaned_text:
             if stopwords is None:
                 stopwords = load_stopwords(str(stopwords_path))
-            message_tokens = tokenize(cleaned_text, stopwords=stopwords)
-        if cleaned_text:
+            return True, tuple(tokenize(cleaned_text, stopwords=stopwords))
+        return False, ()
+
+    # Do not pay an LRU miss and retention cost for mostly unique exports.
+    # Enable the per-run cache only after a bounded sample proves substantial
+    # short-text repetition. Cached tuples are immutable; each message still
+    # receives its own list and contributes independently to every count.
+    sample_size = 512
+    sample_seen: set[tuple[str, str | None]] = set()
+    sample_repeats = 0
+    eligible_samples = 0
+    cached_text = None
+
+    for message in messages:
+        check_cancelled()
+        eligible = isinstance(message.text, str) and len(message.text) <= 1024
+        if cached_text is not None and eligible:
+            has_text, prepared_tokens = cached_text(message.text, message.platform)
+        else:
+            has_text, prepared_tokens = prepare_text(message.text, message.platform)
+            if cached_text is None and eligible and eligible_samples < sample_size:
+                key = (message.text, message.platform)
+                sample_repeats += key in sample_seen
+                sample_seen.add(key)
+                eligible_samples += 1
+                if eligible_samples == sample_size:
+                    if sample_repeats * 8 >= sample_size:
+                        cached_text = lru_cache(maxsize=8192)(prepare_text)
+                    sample_seen.clear()
+        message_tokens = list(prepared_tokens)
+        if has_text:
             valid_text_count += 1
         tokens.extend(message_tokens)
         per_message_tokens.append(message_tokens)
@@ -743,6 +772,16 @@ def _analyze_kept_messages(
             sender_tokens.append(
                 (stable_sender_key(message), combined_tokens)
             )
+
+    cache_info = cached_text.cache_info() if cached_text is not None else None
+    _LOGGER.info(
+        "[analysis] text_cache enabled=%s sample_size=%d sample_repeats=%d hits=%d misses=%d",
+        cache_info is not None,
+        eligible_samples,
+        sample_repeats,
+        cache_info.hits if cache_info is not None else 0,
+        cache_info.misses if cache_info is not None else 0,
+    )
 
     return _AnalyzedMessages(
         valid_text_count=valid_text_count,

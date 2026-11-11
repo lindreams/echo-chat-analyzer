@@ -374,6 +374,47 @@ def test_distinctive_report_reuses_pipeline_tokens_and_stable_sender_keys(
     }
 
 
+def test_repeated_short_text_uses_only_per_analysis_token_cache(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service_module = importlib.import_module(
+        "qq_chat_analyzer.application.analysis_service"
+    )
+    message_module = importlib.import_module("qq_chat_analyzer.message")
+    stopwords_path = tmp_path / "stopwords.txt"
+    stopwords_path.write_text("", encoding="utf-8")
+    messages = [
+        message_module.ChatMessage(
+            timestamp=index,
+            sender=f"Member {index % 3}",
+            sender_id=f"stable-{index % 3}",
+            message_type="text",
+            text=f"common repeated phrase {index % 3}",
+            platform="qq",
+        )
+        for index in range(1200)
+    ]
+    tokenized = []
+    original_tokenize = service_module.tokenize
+
+    def tokenize(text, **kwargs):
+        tokenized.append(text)
+        return original_tokenize(text, **kwargs)
+
+    monkeypatch.setattr(service_module, "tokenize", tokenize)
+    analyzed = service_module._analyze_kept_messages(messages, stopwords_path)
+    assert len(tokenized) < 530
+    assert len(analyzed.message_tokens) == len(analyzed.sender_tokens) == len(messages)
+    assert analyzed.message_tokens[0] == analyzed.message_tokens[3]
+    assert analyzed.message_tokens[0] is not analyzed.message_tokens[3]
+
+    stopwords_path.write_text("common", encoding="utf-8")
+    rerun = service_module._analyze_kept_messages(messages[:1], stopwords_path)
+    assert "common" in analyzed.message_tokens[0]
+    assert "common" not in rerun.message_tokens[0]
+
+
 def test_weekday_period_excludes_out_of_scope_and_cleaned_records(tmp_path):
     from dataclasses import replace
     from datetime import date
