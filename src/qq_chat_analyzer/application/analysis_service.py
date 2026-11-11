@@ -49,7 +49,7 @@ from ..cleaner import clean_text
 from ..message import ChatMessage
 from ..message_quality_filter import apply_message_quality_filter
 from ..filter_pipeline import FilterPipeline
-from ..rich_message import ExpressionContent, NonTextContent, RichMessage
+from ..rich_message import ExpressionContent, NonTextContent, RichMessage, TextContent
 from ..presentation import (
     EchoReportView,
     build_echo_report_view,
@@ -215,7 +215,7 @@ class AnalysisApplicationService:
             )
         _log_identity_diagnostics(outcome.messages)
         processed_message_count = outcome.processed_message_count
-        parsed_messages = list(outcome.messages)
+        parsed_messages = outcome.messages
         report("正在筛选消息...")
         with timed_stage("scope_filter"):
             scoped_messages = filter_messages(parsed_messages, request.scope)
@@ -226,7 +226,7 @@ class AnalysisApplicationService:
             raise NoMessagesInScope()
         if request.scope.mode is not AnalysisScopeMode.ALL:
             processed_message_count = len(scoped_messages)
-        nudge_pairs = [(legacy, rich) for legacy, rich in outcome.rich_message_pairs
+        nudge_pairs = [(legacy, rich) for legacy, rich in outcome.iter_rich_message_pairs()
                        if rich.message_type == "nudge"]
         nudge_instances = {id(legacy) for legacy, _ in nudge_pairs}
         with timed_stage("smart_profile"):
@@ -275,17 +275,41 @@ class AnalysisApplicationService:
         # Filters retain projection instances. The outcome keeps them alive,
         # so object identity cannot be reused during this analysis run.
         kept_instances = {id(message) for message in kept_messages}
-        rich_by_instance = {
-            id(legacy): rich
-            for legacy, rich in outcome.rich_message_pairs
-            if id(legacy) in kept_instances
-        }
+        sticker_rich_messages = []
+        rich_by_instance = {}
+        sticker_positions = []
+        non_sticker_messages = {}
+        has_nontext = private_nudges is not None
+        for legacy, rich in outcome.iter_rich_message_pairs():
+            instance = id(legacy)
+            if instance in kept_instances:
+                sticker_rich_messages.append(rich)
+                sticker_positions.append(import_positions[instance])
+                authored_text = "".join(
+                    part.text for part in rich.contents if isinstance(part, TextContent)
+                )
+                if (
+                    authored_text != legacy.text
+                    or any(isinstance(part, ExpressionContent) for part in rich.contents)
+                ):
+                    rich_by_instance[instance] = rich
+                if not has_nontext and any(
+                    isinstance(part, NonTextContent) for part in rich.contents
+                ):
+                    has_nontext = True
+            elif (
+                rich.source == "wechat"
+                and type(rich.source_type) is int
+                and rich.source_type & 0xFFFFFFFF == 1
+                and rich.message_type == "text"
+            ):
+                non_sticker_messages[import_positions[instance]] = rich
         report("正在分析表情包...")
         with timed_stage("sticker_data"):
             # Both collectors must describe one message set: the kept messages
             # that still have Rich facts. Legacy-only messages stay uncounted
             # rather than being reported as covered denominator.
-            sticker_scope = tuple(rich_by_instance.values())
+            sticker_scope = tuple(sticker_rich_messages)
             sticker_sends = collect_sticker_sends(sticker_scope)
             stickers = StickerData(
                 sends=sticker_sends,
@@ -300,20 +324,12 @@ class AnalysisApplicationService:
             group_stickers = None
             sticker_kind = _resolve_conversation_type(kept_messages, request.conversation_kind)
             if sticker_kind in {"private", "group"}:
-                sticker_positions = tuple(import_positions[id(legacy)]
-                                          for legacy, _ in outcome.rich_message_pairs if id(legacy) in kept_instances)
+                sticker_positions = tuple(sticker_positions)
                 # WeChat's native Type 1 declares text, unlike QQ's content-
                 # derived message_type (which may omit malformed segments).
                 # Pass existing typed rows as evidence, never inspect/export
                 # their text or re-read the source. The index validates member,
                 # scope, time and content types before clearing count gaps.
-                non_sticker_messages = {
-                    import_positions[id(legacy)]: rich
-                    for legacy, rich in outcome.rich_message_pairs
-                    if id(legacy) not in kept_instances and rich.source == "wechat"
-                    and type(rich.source_type) is int and rich.source_type & 0xFFFFFFFF == 1
-                    and rich.message_type == "text"
-                }
                 with timed_stage(f"{sticker_kind}_sticker_features"):
                     sticker_index = build_sticker_fact_index(
                         stickers, sticker_scope, reports=sticker_reports,
@@ -340,12 +356,30 @@ class AnalysisApplicationService:
                 sticker_media = resolve_sticker_media(media_sends, roots=request.sticker_media_roots,
                                                      cancelled=cancelled)
             stickers = replace(stickers, media=sticker_media)
+        analysis_platform = outcome.result.platform
+        source_positions = [import_positions[id(message)] for message in kept_messages]
         diagnostic_counts = AnalysisDiagnosticCounts(
             raw_message_count=outcome.processed_message_count,
             imported_message_count=len(parsed_messages),
             scope_message_count=len(scoped_messages),
             filtered_message_count=len(kept_messages),
             analyzed_message_count=len(kept_messages),
+        )
+        # The lexical/report stages need the kept legacy messages and only the
+        # sparse Rich rows that contain expressions. Release import/filter
+        # containers and the full Rich graph before allocating token reports.
+        del (
+            outcome,
+            parsed_messages,
+            scoped_messages,
+            filtering_result,
+            quality_result,
+            import_positions,
+            kept_instances,
+            sticker_rich_messages,
+            sticker_scope,
+            sticker_positions,
+            non_sticker_messages,
         )
         report("正在分析聊天内容...")
         with timed_stage("text_analysis"):
@@ -364,10 +398,6 @@ class AnalysisApplicationService:
         check_cancelled()
         has_expression_report = expression_report.expression_message_count > 0
 
-        has_nontext = private_nudges is not None or any(
-            any(isinstance(part, NonTextContent) for part in message.contents)
-            for message in rich_by_instance.values()
-        )
         ranked_words, status = _rank_words_and_select_status(
             analyzed,
             top=request.top,
@@ -381,6 +411,12 @@ class AnalysisApplicationService:
             diagnostic_counts.scope_message_count, diagnostic_counts.filtered_message_count,
             analyzed.valid_text_count, len(analyzed.tokens), expression_report.expression_message_count,
             status.value,
+        )
+        analyzed = _AnalyzedMessages(
+            valid_text_count=analyzed.valid_text_count,
+            tokens=[],
+            sender_tokens=analyzed.sender_tokens,
+            message_tokens=analyzed.message_tokens,
         )
         if status in (AnalysisStatus.NO_VALID_TEXT, AnalysisStatus.NO_TOKENS):
             return AnalysisResultDTO(
@@ -406,12 +442,19 @@ class AnalysisApplicationService:
                     conversation_type=conversation_type,
                     rich_by_instance=rich_by_instance,
                     expression_report=expression_report,
-                    expression_source=outcome.result.platform,
+                    expression_source=analysis_platform,
                     stickers=stickers,
                     sticker_reports=sticker_reports,
                     private_stickers=private_stickers,
                     group_stickers=group_stickers,
                     private_nudges=private_nudges,
+                )
+            if self._legacy_word_artifacts is None:
+                analyzed = _AnalyzedMessages(
+                    valid_text_count=analyzed.valid_text_count,
+                    tokens=[],
+                    sender_tokens=[],
+                    message_tokens=analyzed.message_tokens,
                 )
             if ranked_words and self._legacy_word_artifacts is not None:
                 with timed_stage("word_speaker_analysis"):
@@ -454,10 +497,10 @@ class AnalysisApplicationService:
                             kept_messages, request.viewer_speaker_key,
                         ),
                         conversation_kind=conversation_type,
-                        expression_source=outcome.result.platform,
+                        expression_source=analysis_platform,
                         messages=kept_messages,
                         message_tokens=analyzed.message_tokens,
-                        source_positions=[import_positions[id(message)] for message in kept_messages],
+                        source_positions=source_positions,
                         sticker_media=stickers.media,
                         write=request.export_echo_report,
                         cancelled=cancelled,
@@ -691,7 +734,11 @@ def _analyze_kept_messages(
             message,
             rich_by_instance or {},
         )
-        combined_tokens = [*message_tokens, *expression_tokens]
+        combined_tokens = (
+            [*message_tokens, *expression_tokens]
+            if expression_tokens
+            else message_tokens
+        )
         if combined_tokens and is_chat_participant(message):
             sender_tokens.append(
                 (stable_sender_key(message), combined_tokens)
@@ -731,17 +778,17 @@ def _expression_tokens(
 def _text_sender_tokens(
     sender_tokens: list[tuple[str, list[str]]],
 ) -> list[tuple[str, list[str]]]:
-    return [
-        (
-            speaker_key,
-            [
-                token
-                for token in message_tokens
-                if not token.startswith("expression:")
-            ],
-        )
-        for speaker_key, message_tokens in sender_tokens
-    ]
+    rows = []
+    for row in sender_tokens:
+        speaker_key, message_tokens = row
+        if any(token.startswith("expression:") for token in message_tokens):
+            rows.append((
+                speaker_key,
+                [token for token in message_tokens if not token.startswith("expression:")],
+            ))
+        else:
+            rows.append(row)
+    return rows
 
 
 def _speaker_display_names(reports: AnalysisReports) -> dict[str, str]:

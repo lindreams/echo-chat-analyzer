@@ -85,7 +85,7 @@ class ImportService:
 
         messages: list[ChatMessage] = []
         rich_messages: list[RichMessage] = []
-        rich_message_pairs: list[tuple[ChatMessage, RichMessage]] = []
+        rich_message_indexes: list[int] | None = None
         warnings: list[str] = []
         formats: set[str] = set()
         detected_platforms: list[str] = []
@@ -97,12 +97,22 @@ class ImportService:
             if imported.platform is _UNKNOWN_PLATFORM:
                 continue
             detected_platforms.append(imported.platform)
+            message_offset = len(messages)
+            rich_offset = len(rich_messages)
+            aligned_before = rich_message_indexes is None and message_offset == rich_offset
             messages.extend(imported.messages)
-            rich_messages.extend(imported.rich_messages)
             if imported.rich_messages:
-                rich_message_pairs.extend(
-                    zip(imported.messages, imported.rich_messages, strict=True)
-                )
+                if len(imported.messages) != len(imported.rich_messages):
+                    raise ValueError("invalid imported Rich message association")
+                if rich_message_indexes is None and not aligned_before:
+                    rich_message_indexes = list(range(rich_offset))
+                if rich_message_indexes is not None:
+                    rich_message_indexes.extend(
+                        range(message_offset, message_offset + len(imported.rich_messages))
+                    )
+                rich_messages.extend(imported.rich_messages)
+            elif imported.messages and rich_message_indexes is None and rich_messages:
+                rich_message_indexes = list(range(rich_offset))
             if imported.format is not None:
                 formats.add(imported.format)
             processed_message_count += imported.raw_count
@@ -120,7 +130,7 @@ class ImportService:
             processed_message_count=processed_message_count,
             messages=tuple(messages),
             rich_messages=tuple(rich_messages),
-            rich_message_pairs=tuple(rich_message_pairs),
+            rich_message_indexes=tuple(rich_message_indexes or ()),
         )
 
 
