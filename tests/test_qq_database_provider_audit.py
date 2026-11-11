@@ -6,7 +6,7 @@ import json
 import sqlite3
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 import pytest
 
@@ -145,7 +145,9 @@ def test_quick_check_logs_only_fixed_classification(tmp_path, monkeypatch, caplo
         f"integrity_kind={kind} sqlite_version={version} classifier_version=1"
     ]
     assert not any(record.exc_info or record.stack_info for record in caplog.records)
-    connection.execute.assert_called_once_with("PRAGMA quick_check(1)")
+    assert connection.execute.call_args_list == [
+        call("PRAGMA mmap_size=268435456"), call("PRAGMA quick_check(1)"),
+    ]
     connection.close.assert_called_once()
 
 

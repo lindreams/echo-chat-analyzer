@@ -16,7 +16,7 @@ from typing import Any
 
 from ..qq_db_identity import QQ_DB_SELF_NAMESPACE, canonical_qq_uin
 from ..diagnostics import qq_session_stage
-from .qq_sqlite_reader import iter_row_batches, needs_qq_layout, read_rows
+from .qq_sqlite_reader import configure_read_connection, iter_row_batches, needs_qq_layout, read_rows
 
 
 QQ_DB_JSON_FORMAT = "qq-db-json"
@@ -126,6 +126,13 @@ class QQDatabaseProvider:
         if internal_key is not None:
             predicate = f'WHERE "{_PARTITION_KEY_FIELD}" = ? '
             parameters.append(internal_key)
+        # GROUP BY has no affinity conversions; unary + preserves its values
+        # and collation but lets SQLite avoid a non-covering partition-index
+        # scan with one table lookup per message. Covering indexes remain
+        # available. Selected lookups and private peer discovery keep their SQL.
+        grouping = f'"{_PARTITION_KEY_FIELD}"'
+        if session_type == "group" and internal_key is None:
+            grouping = "+" + grouping
         query = (
             f'SELECT "{_PARTITION_KEY_FIELD}" AS internal_key, '
             f'MAX(CASE WHEN TRIM(CAST("{_SESSION_OBJECT_FIELD}" AS TEXT)) '
@@ -136,7 +143,7 @@ class QQDatabaseProvider:
             f'{peer_column} '
             f'FROM "{table_name}" '
             f'{predicate}'
-            f'GROUP BY "{_PARTITION_KEY_FIELD}" '
+            f'GROUP BY {grouping} '
             + ('ORDER BY last_message_time DESC' if internal_key is None else '')
         )
         rows = self._query_rows(
@@ -417,6 +424,7 @@ class QQDatabaseProvider:
                 connection.set_progress_handler(lambda: int(self._cancelled()), 1000)
                 connection.row_factory = sqlite3.Row
                 stage = "query"
+                configure_read_connection(connection)
                 yield from connection.execute(query, parameters or [])
             if not self._success_diagnostic_recorded:
                 try:
@@ -554,6 +562,7 @@ def _quick_check(database_path: Path, *, cancelled: Callable[[], bool] = lambda:
         else:
             uri = f"{database_path.resolve().as_uri()}?mode=ro"
             connection = sqlite3.connect(uri, uri=True)
+            configure_read_connection(connection)
             connection.set_progress_handler(lambda: int(cancelled()), 1000)
             row = connection.execute("PRAGMA quick_check(1)").fetchone()
         if row and row[0] == "ok":

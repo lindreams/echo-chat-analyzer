@@ -23,6 +23,17 @@ _PENDING_BYTE = 0x40000000
 _QQ_PENDING_BYTE = _PENDING_BYTE - 1024
 _READ_TIMEOUT = 300
 _BATCH_ROWS = 1024
+_MMAP_BYTES = 256 * 1024 * 1024
+
+
+def configure_read_connection(connection: sqlite3.Connection) -> None:
+    """Bound read-only mapping while retaining SQLite's pager/locking checks.
+
+    Large checks otherwise issue a ReadFile for almost every database page.
+    Mapping is capped rather than scaling resident memory with database size;
+    SQLite reads pages beyond the cap through its ordinary page cache.
+    """
+    connection.execute(f"PRAGMA mmap_size={_MMAP_BYTES}")
 
 
 def needs_qq_layout(path: Path) -> bool:
@@ -84,6 +95,7 @@ def _read_worker(channel, path: str, query: str, parameters: list) -> None:
         if control(11, 0) != _QQ_PENDING_BYTE:
             raise sqlite3.DatabaseError("QQ SQLite layout unavailable.")
         connection = sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+        configure_read_connection(connection)
         cursor = connection.execute(query, parameters)
         names = [column[0] for column in cursor.description or ()]
         channel.send(("columns", names))

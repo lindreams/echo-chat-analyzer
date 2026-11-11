@@ -15,6 +15,8 @@ import dataclasses
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from qq_chat_analyzer.providers.qq_database_provider import (
     QQDatabaseProvider,
     QQSession,
@@ -85,6 +87,33 @@ def _create_synthetic_qq_database(path: Path) -> None:
             """,
             (3, "local-partition-4", "external-uin-300", "sender-peer", 8000, b"blob"),
         )
+
+
+@pytest.mark.parametrize("index_columns", [None, '"40027", "40050"', '"40027", "40030", "40050"'])
+def test_group_discovery_preserves_collation_storage_types_and_all_row_counts(tmp_path, index_columns):
+    path = tmp_path / "fictional-mixed.db"
+    with sqlite3.connect(path) as connection:
+        # No affinity: INTEGER 1 and TEXT '1' are distinct partitions. Unary +
+        # must retain this and the column's NOCASE collation.
+        connection.execute('CREATE TABLE group_msg_table ("40027" COLLATE NOCASE, "40030", "40050", "40800")')
+        connection.execute('CREATE TABLE c2c_msg_table ("40027", "40030", "40050")')
+        connection.executemany('INSERT INTO group_msg_table VALUES(?,?,?,?)', [
+            (1, "0", 10, b"fictional"), (1, " object-a ", 20, None),
+            ("1", "object-text", 30, b""),
+            ("Mixed", "object-a", 40, b"fictional"), ("mixed", "object-z", 50, None),
+            ("fallback", "0", 60, b"fictional"), ("fallback", "", 70, None),
+            (None, "unselectable", 80, b"fictional"), (" 0 ", "unselectable", 90, None),
+        ])
+        if index_columns:
+            connection.execute(f'CREATE INDEX fictional_partition ON group_msg_table({index_columns})')
+    before = path.stat()
+    sessions = QQDatabaseProvider(path).list_sessions()
+    assert [(s.internal_key, s.session_object, s.message_count, s.last_message_time) for s in sessions] == [
+        ("fallback", "", 2, 70), ("mixed", "object-z", 2, 50),
+        ("1", "object-text", 1, 30), ("1", "object-a", 2, 20),
+    ]
+    assert path.stat().st_size == before.st_size
+    assert path.stat().st_mtime_ns == before.st_mtime_ns
 
 
 def test_list_sessions_groups_by_40027_not_40030(tmp_path: Path) -> None:
