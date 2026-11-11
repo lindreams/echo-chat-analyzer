@@ -809,6 +809,73 @@ def test_group_analyzed_send_reaches_native_fetch_after_identity_check(tmp_path,
     assert not provider.calls
 
 
+def test_report_media_reuses_parsed_locator_without_reloading_payload(
+    tmp_path, monkeypatch,
+):
+    from qq_chat_analyzer import qq_db_adapter
+
+    png = _fictional_png()
+    facade, provider, runtime = _fetch_facade(
+        tmp_path,
+        digest=hashlib.md5(png).digest(),
+        content=png,
+        group_sender="10087",
+    )
+    monkeypatch.setattr(
+        qq_db_adapter,
+        "load_qq_db_json",
+        lambda _path: pytest.fail("report recovery reloaded the full QQ payload"),
+    )
+
+    outcome = facade.analyze_session(
+        ChatSource.QQ,
+        "group:group-partition",
+        AnalysisConfig(output_directory=tmp_path / "report"),
+    )
+
+    media, = outcome.result.stickers.media
+    assert media.status == "available"
+    assert [name for name, _ in provider.calls] == ["resolve", "download"]
+    assert runtime.acquired == runtime.cleaned
+
+
+def test_report_media_refuses_retained_fact_from_another_session(
+    tmp_path, monkeypatch,
+):
+    from dataclasses import replace
+
+    png = _fictional_png()
+    facade, provider, runtime = _fetch_facade(
+        tmp_path,
+        digest=hashlib.md5(png).digest(),
+        content=png,
+        group_sender="10087",
+    )
+    execute = facade._analysis_service.execute
+
+    def mismatched(*args, **kwargs):
+        result = execute(*args, **kwargs)
+        return replace(
+            result,
+            qq_pic_media_facts=tuple(
+                replace(fact, session_id="group:another-partition")
+                for fact in result.qq_pic_media_facts
+            ),
+        )
+
+    monkeypatch.setattr(facade._analysis_service, "execute", mismatched)
+    outcome = facade.analyze_session(
+        ChatSource.QQ,
+        "group:group-partition",
+        AnalysisConfig(output_directory=tmp_path / "report"),
+    )
+
+    media, = outcome.result.stickers.media
+    assert (media.status, media.reason) == ("failed", "report_scope_unconfirmed")
+    assert not provider.calls
+    assert runtime.acquired == runtime.cleaned
+
+
 @pytest.mark.parametrize("field,value,code", [
     ("sender_matches", None, "sender"), ("file_uuid_matches", None, "uuid"),
     ("segment_id_matches", False, "element"),

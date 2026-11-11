@@ -58,15 +58,24 @@ def parse_qq_db_rich_messages(
     payload: Mapping[str, Any] | None,
 ) -> tuple[list[RichMessage], tuple[str, ...]]:
     """Interpret supported group/private content into source-neutral facts."""
+    messages, warnings, _ = parse_qq_db_rich_messages_with_media_facts(payload)
+    return messages, warnings
+
+
+def parse_qq_db_rich_messages_with_media_facts(
+    payload: Mapping[str, Any] | None,
+) -> tuple[list[RichMessage], tuple[str, ...], tuple[QQPicMediaFact, ...]]:
+    """Parse messages and retain only compact custom-PIC recovery facts."""
     if not is_qq_db_payload(payload):
-        return [], ()
+        return [], (), ()
 
     parsed_messages: list[RichMessage] = []
+    media_facts: list[QQPicMediaFact] = []
     skipped_record = False
     records = payload["records"]
     session_context = _session_context(payload)
     if session_context is None:
-        return [], (WARNING_QQ_DB_RECORD_SKIPPED,) if records else ()
+        return [], (WARNING_QQ_DB_RECORD_SKIPPED,) if records else (), ()
     self_uin = _self_uin(payload)
     query = payload["query"]
     nudge_context = _private_nudge_context(payload, session_context)
@@ -82,24 +91,27 @@ def parse_qq_db_rich_messages(
                 )
     for record in records:
         in_session = _record_in_session(record, query)
-        parsed_message = _parse_record(
+        parsed_message, media_fact = _parse_record(
             record,
             session_context,
             self_uin,
             reply_targets if in_session else {},
             nudge_context if in_session else None,
+            query,
         )
         if parsed_message is None:
             skipped_record = True
         else:
             parsed_messages.append(parsed_message)
+            if media_fact is not None:
+                media_facts.append(media_fact)
 
     warnings = (WARNING_QQ_DB_RECORD_SKIPPED,) if skipped_record else ()
     if session_context[0] == "private":
         _LOGGER.info("QQ private_nudges records=%d accepted=%d identity_bound=%s",
                      len(records), sum(message.message_type == "nudge" for message in parsed_messages),
                      nudge_context is not None)
-    return parsed_messages, warnings
+    return parsed_messages, warnings, tuple(media_facts)
 
 
 def is_qq_db_payload(payload: Mapping[str, Any] | None) -> bool:
@@ -141,6 +153,9 @@ class QQPicMediaFact:
     group_id: str | None = field(default=None, repr=False)
     sender_uin: str | None = field(default=None, repr=False)
     sender_uid: str | None = field(default=None, repr=False)
+    # Bound query identity used by report recovery to retain the original
+    # selected-session check without reopening the full payload.
+    session_id: str | None = field(default=None, repr=False)
 
 
 def extract_qq_pic_media_facts(
@@ -189,62 +204,107 @@ def extract_qq_pic_media_facts(
             if field_number != 40800 or wire_type != 2:
                 continue
             segment = _protobuf_fields(value)
-            values = {(tag, wire): data for tag, wire, data in segment}
-            if values.get((45002, 0)) != 2:
-                continue
-            subtype = [item for tag, wire, item in segment if tag == 45003 and wire == 0]
-            segment_id = values.get((45001, 0))
-            file_uuid = _utf8_text(values.get((45503, 2)))
-            if conversation_type == "group":
-                # Repeated locating fields cannot silently pick the last value.
-                if sum(tag == 45001 for tag, _, _ in segment) != 1:
-                    segment_id = None
-                if sum(tag == 45503 for tag, _, _ in segment) != 1:
-                    file_uuid = None
-            elements.append(
-                QQPicMediaElement(
-                    segment_id=(
-                        str(segment_id)
-                        if isinstance(segment_id, int)
-                        and not isinstance(segment_id, bool)
-                        and segment_id > 0
-                        else None
-                    ),
-                    file_uuid=file_uuid,
-                    content_md5=_pic_digest(segment),
-                    is_custom_sticker=subtype == [1],
-                )
+            element = _qq_pic_media_element(
+                segment,
+                group=conversation_type == "group",
             )
+            if element is not None:
+                elements.append(element)
         if not elements:
             continue
-        group_id = _stringify_identifier(fields.get("40030"))
-        if not (
-            conversation_type == "group" and group_id
-            and re.fullmatch(r"[1-9][0-9]{4,19}", group_id)
-            and _stringify_identifier(fields.get("40021")) == group_id == conversation_id
-            and _record_in_session(record, payload["query"])
-        ):
-            group_id = None
         facts.append(
-            QQPicMediaFact(
-                message_id=message_id,
-                timestamp=timestamp,
-                peer_uid=(
-                    _stringify_identifier(fields.get("40021"))
-                    or _utf8_text(fields.get("40021"))
-                ) if conversation_type == "private" else None,
-                conversation_type=conversation_type,
-                is_self=_resolve_is_self(fields.get("40033"), self_uin),
-                elements=tuple(elements),
-                conversation_id=conversation_id,
-                group_id=group_id,
-                sender_uin=canonical_qq_uin(fields.get("40033")) if conversation_type == "group" else None,
-                sender_uid=(
-                    _stringify_identifier(fields.get("40020")) or _utf8_text(fields.get("40020"))
-                ) if conversation_type == "group" else None,
+            _qq_pic_media_fact(
+                record,
+                fields,
+                session_context,
+                self_uin,
+                tuple(elements),
+                payload["query"],
             )
         )
     return tuple(facts)
+
+
+def _qq_pic_media_element(
+    segment: tuple[tuple[int, int, int | bytes], ...],
+    *,
+    group: bool,
+    values: Mapping[tuple[int, int], int | bytes] | None = None,
+) -> QQPicMediaElement | None:
+    if values is None:
+        values = {(tag, wire): data for tag, wire, data in segment}
+    if values.get((45002, 0)) != 2:
+        return None
+    subtype = [item for tag, wire, item in segment if tag == 45003 and wire == 0]
+    segment_id = values.get((45001, 0))
+    file_uuid = _utf8_text(values.get((45503, 2)))
+    if group:
+        # Repeated locating fields cannot silently pick the last value.
+        if sum(tag == 45001 for tag, _, _ in segment) != 1:
+            segment_id = None
+        if sum(tag == 45503 for tag, _, _ in segment) != 1:
+            file_uuid = None
+    return QQPicMediaElement(
+        segment_id=(
+            str(segment_id)
+            if isinstance(segment_id, int)
+            and not isinstance(segment_id, bool)
+            and segment_id > 0
+            else None
+        ),
+        file_uuid=file_uuid,
+        content_md5=_pic_digest(segment),
+        is_custom_sticker=subtype == [1],
+    )
+
+
+def _qq_pic_media_fact(
+    record: Mapping[str, Any],
+    fields: Mapping[str, Any],
+    session_context: tuple[str, str],
+    self_uin: Any,
+    elements: tuple[QQPicMediaElement, ...],
+    query: Mapping[str, Any],
+) -> QQPicMediaFact:
+    conversation_type, conversation_id = session_context
+    group_id = _stringify_identifier(fields.get("40030"))
+    if not (
+        conversation_type == "group"
+        and group_id
+        and re.fullmatch(r"[1-9][0-9]{4,19}", group_id)
+        and _stringify_identifier(fields.get("40021")) == group_id == conversation_id
+        and _record_in_session(record, query)
+    ):
+        group_id = None
+    internal_key = _stringify_identifier(query.get("internal_key"))
+    session_id = (
+        f"{conversation_type}:{internal_key}"
+        if internal_key is not None
+        else None
+    )
+    return QQPicMediaFact(
+        message_id=_stringify_identifier(record.get("record_id")) or "",
+        timestamp=fields.get("40050"),
+        peer_uid=(
+            _stringify_identifier(fields.get("40021"))
+            or _utf8_text(fields.get("40021"))
+        ) if conversation_type == "private" else None,
+        conversation_type=conversation_type,
+        is_self=_resolve_is_self(fields.get("40033"), self_uin),
+        elements=elements,
+        conversation_id=conversation_id,
+        group_id=group_id,
+        sender_uin=(
+            canonical_qq_uin(fields.get("40033"))
+            if conversation_type == "group"
+            else None
+        ),
+        sender_uid=(
+            _stringify_identifier(fields.get("40020"))
+            or _utf8_text(fields.get("40020"))
+        ) if conversation_type == "group" else None,
+        session_id=session_id,
+    )
 
 
 def _parse_record(
@@ -253,12 +313,13 @@ def _parse_record(
     self_uin: Any,
     reply_targets: dict[str, list[str | None]],
     nudge_context: Mapping[str, str] | None = None,
-) -> RichMessage | None:
+    query: Mapping[str, Any] | None = None,
+) -> tuple[RichMessage | None, QQPicMediaFact | None]:
     if not isinstance(record, Mapping):
-        return None
+        return None, None
     fields = record.get("fields")
     if not isinstance(fields, Mapping):
-        return None
+        return None, None
 
     # These field numbers only describe the feasibility-supported Adapter v0
     # slice; they are not stable across QQ versions.
@@ -268,16 +329,23 @@ def _parse_record(
         not isinstance(timestamp, (int, float, str))
         or isinstance(timestamp, bool)
     ):
-        return None
+        return None, None
 
-    contents, relations, has_reply, parties = _extract_semantics(record, reply_targets, nudge_context)
+    pic_elements: list[QQPicMediaElement] = []
+    contents, relations, has_reply, parties = _extract_semantics(
+        record,
+        reply_targets,
+        nudge_context,
+        pic_elements=pic_elements,
+        group=session_context[0] == "group",
+    )
     if parties is not None:
         message_id = _nonzero_identifier(record.get("record_id"))
         if (message_id is None or re.fullmatch(r"-?[1-9][0-9]{0,19}", message_id) is None
                 or not -(1 << 63) <= int(message_id) <= (1 << 64) - 1
                 or message_id != _nonzero_identifier(fields.get("40001"))
                 or to_epoch_seconds(timestamp) is None):
-            return None
+            return None, None
         actor, _ = parties
         is_self = actor == self_uin
         return RichMessage(
@@ -288,9 +356,9 @@ def _parse_record(
             timestamp=timestamp, message_type="nudge", contents=(),
             relations=relations,
             is_system=True, is_self=is_self,
-        )
+        ), None
     if sender_id is None or (not contents and not relations and not has_reply):
-        return None
+        return None, None
 
     conversation_type, conversation_id = session_context
     sender_data = record.get("sender")
@@ -316,7 +384,7 @@ def _parse_record(
         sender_id = None
         display_name = ""
         remark = nickname = contextual_name = None
-    return RichMessage(
+    message = RichMessage(
         message_id=_stringify_identifier(record.get("record_id")),
         source="qq",
         source_type=QQ_DB_JSON_FORMAT,
@@ -335,6 +403,17 @@ def _parse_record(
         relations=relations,
         is_self=is_self,
     )
+    media_fact = None
+    if query is not None and any(element.is_custom_sticker for element in pic_elements):
+        media_fact = _qq_pic_media_fact(
+            record,
+            fields,
+            session_context,
+            self_uin,
+            tuple(pic_elements),
+            query,
+        )
+    return message, media_fact
 
 
 def _content_message_type(contents: tuple[RichContent, ...]) -> str:
@@ -435,6 +514,9 @@ def _extract_semantics(
     record: Mapping[str, Any],
     reply_targets: dict[str, list[str | None]],
     nudge_context: Mapping[str, str] | None = None,
+    *,
+    pic_elements: list[QQPicMediaElement] | None = None,
+    group: bool = False,
 ) -> tuple[tuple[RichContent, ...], tuple[MessageRelation, ...], bool, tuple[str, str] | None]:
     if record.get("blob_encoding") != "base64":
         return (), (), False, None
@@ -462,6 +544,11 @@ def _extract_semantics(
     for fields in segments:
         values = {(tag, wire): data for tag, wire, data in fields}
         content_type = values.get((45002, 0))
+        pic_element = None
+        if pic_elements is not None and content_type == 2:
+            pic_element = _qq_pic_media_element(fields, group=group, values=values)
+            if pic_element is not None:
+                pic_elements.append(pic_element)
         if content_type == 7:
             has_reply = True
             sequence = _sequence_key(values.get((47402, 0)))
@@ -484,7 +571,12 @@ def _extract_semantics(
                 )
             )
             continue
-        content = _content_from_segment(fields, expression_position)
+        content = _content_from_segment(
+            fields,
+            expression_position,
+            values=values,
+            pic_element=pic_element,
+        )
         if content is not None:
             contents.append(content)
             if isinstance(content, ExpressionContent):
@@ -611,16 +703,25 @@ def _pic_digest(fields: tuple[tuple[int, int, int | bytes], ...]) -> str | None:
 
 
 def _content_from_segment(
-    fields: tuple[tuple[int, int, int | bytes], ...], expression_position: int,
+    fields: tuple[tuple[int, int, int | bytes], ...],
+    expression_position: int,
+    *,
+    values: Mapping[tuple[int, int], int | bytes] | None = None,
+    pic_element: QQPicMediaElement | None = None,
 ) -> RichContent | None:
-    values = {(tag, wire): value for tag, wire, value in fields}
+    if values is None:
+        values = {(tag, wire): value for tag, wire, value in fields}
     content_type = values.get((45002, 0))
     if content_type == 1:
         text = _utf8_text(values.get((45101, 2)))
         return TextContent(text) if text is not None else None
     if content_type == 2:
         raw_md5 = values.get((45406, 2))
-        digest = _pic_digest(fields)
+        digest = (
+            pic_element.content_md5
+            if pic_element is not None
+            else _pic_digest(fields)
+        )
         paths = tuple(
             text for tag in (45403, 45812)
             if (text := _utf8_text(values.get((tag, 2))))

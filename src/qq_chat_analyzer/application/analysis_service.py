@@ -358,6 +358,14 @@ class AnalysisApplicationService:
                                                      cancelled=cancelled)
             stickers = replace(stickers, media=sticker_media)
         analysis_platform = outcome.result.platform
+        sticker_message_ids = {
+            send.message_id for send in sticker_sends if send.message_id is not None
+        }
+        qq_pic_media_facts = tuple(
+            fact
+            for fact in outcome.qq_pic_media_facts
+            if fact.message_id in sticker_message_ids
+        )
         source_positions = [import_positions[id(message)] for message in kept_messages]
         diagnostic_counts = AnalysisDiagnosticCounts(
             raw_message_count=outcome.processed_message_count,
@@ -426,6 +434,7 @@ class AnalysisApplicationService:
                 processed_message_count=processed_message_count,
                 valid_text_count=analyzed.valid_text_count,
                 diagnostic_counts=diagnostic_counts,
+                qq_pic_media_facts=qq_pic_media_facts,
             )
 
         conversation_type = _resolve_conversation_type(
@@ -547,6 +556,7 @@ class AnalysisApplicationService:
             reports=reports,
             echo_report_view=echo_report_view,
             stickers=stickers,
+            qq_pic_media_facts=qq_pic_media_facts,
         )
 
     def _write_legacy_artifacts(

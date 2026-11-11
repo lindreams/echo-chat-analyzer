@@ -688,14 +688,13 @@ class ChatAnalyzerFacade:
         current[media_key] = media
         return replace(data, media=tuple(current.values()))
 
-    def _prepare_qq_report_media(self, result, payload_path, session, roots, progress, cancelled, *, batch=None,
+    def _prepare_qq_report_media(self, result, _payload_path, session, roots, progress, cancelled, *, batch=None,
                                  qq_media_identity=None):
-        """Recover only this retained view's targets from its still-owned payload."""
+        """Recover targets from compact facts retained by the first parse."""
         from collections import Counter, defaultdict
         from ..analysis.stickers import StickerMedia
         from ..presentation.stickers import sticker_report_targets
         from ..media_content import StoredMedia
-        from ..qq_db_adapter import extract_qq_pic_media_facts, load_qq_db_json
         from .sticker_media import _QQMediaCacheScan, _QQMediaSendIndex, qq_media_failure
         from .qq.qq_marketface_media import MarketFaceRecovery, is_marketface
 
@@ -849,23 +848,27 @@ class ChatAnalyzerFacade:
                                  target_order[target.media_key], disposition)
                 if pending:
                     try:
-                        # Reuse exactly the payload just analyzed, never reacquire a snapshot.
+                        # Reuse only compact facts produced by the exact payload
+                        # parse above. The bound session identity replaces the
+                        # former second full-payload query check.
                         with timed_stage("sticker_report_identity"):
-                            payload = load_qq_db_json(payload_path)
-                            check_budget()
-                            query = payload.get("query", {}) if payload else {}
-                            kind, internal_key = session.session_id.split(":", 1)
-                            if query.get("session_type") != kind or query.get("internal_key") != internal_key:
-                                setup_failure = "report_scope_unconfirmed"
                             message_ids = {send.message_id for key in pending for send in sends[key]}
-                            for fact in extract_qq_pic_media_facts(payload, message_ids):
+                            retained_facts = tuple(
+                                fact for fact in result.qq_pic_media_facts
+                                if fact.message_id in message_ids
+                            )
+                            if any(
+                                fact.session_id != session.session_id
+                                for fact in retained_facts
+                            ):
+                                setup_failure = "report_scope_unconfirmed"
+                            for fact in retained_facts:
                                 facts_by_message[fact.message_id].append(fact)
-                            del payload
                             check_budget()
                     except FacadeError:
                         raise
                     except Exception:
-                        setup_failure = "report_payload_unavailable"
+                        setup_failure = "report_scope_unconfirmed"
                     if setup_failure is None:
                         try:
                             provider = self._qq_connected_provider("resolve_pic_message", "download_pic_media")

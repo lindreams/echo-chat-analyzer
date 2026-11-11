@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from ..message import ChatMessage
+from ..qq_db_adapter import QQPicMediaFact
 from ..rich_message import RichMessage
 from .import_result import ImportResult
 
@@ -52,6 +53,9 @@ class ImportOutcome:
     # Compatibility for direct internal constructors. Production imports use
     # the compact aligned/indexed representation above.
     rich_message_pairs: Sequence[tuple[ChatMessage, RichMessage]] = ()
+    # Only custom-PIC messages retain compact locating facts; no source record,
+    # message blob, text, path or URL is copied into this channel.
+    qq_pic_media_facts: tuple[QQPicMediaFact, ...] = ()
 
     def __post_init__(self):
         if self.rich_message_pairs or not self.rich_messages:

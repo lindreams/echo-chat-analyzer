@@ -11,6 +11,7 @@ from types import MappingProxyType
 from ..analysis.models import AnalysisReports
 from ..analysis.stickers import StickerData
 from ..presentation.models import EchoReportView
+from ..qq_db_adapter import QQPicMediaFact
 from .scope_filter import AnalysisScope
 
 
@@ -97,3 +98,5 @@ class AnalysisResultDTO:
     )
     echo_report_view: EchoReportView | None = field(default=None, repr=False)
     stickers: StickerData = field(default_factory=StickerData, repr=False)
+    # Private in-process recovery channel; excluded from report serialization.
+    qq_pic_media_facts: tuple[QQPicMediaFact, ...] = field(default=(), repr=False)

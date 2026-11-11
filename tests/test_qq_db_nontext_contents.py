@@ -15,6 +15,7 @@ from qq_chat_analyzer.providers.qq_database_provider import QQDatabaseProvider
 from qq_chat_analyzer.qq_db_adapter import (
     extract_qq_pic_media_facts,
     parse_qq_db_rich_messages,
+    parse_qq_db_rich_messages_with_media_facts,
 )
 from qq_chat_analyzer.rich_message import ExpressionContent, TextContent
 
@@ -134,8 +135,10 @@ def test_pic_media_facts_expose_locators_without_private_values():
     payload["self"] = {"namespace": "qq_uin", "value": "10001"}
 
     facts = extract_qq_pic_media_facts(payload, {"7000000000000000001"})
+    _, warnings, retained_facts = parse_qq_db_rich_messages_with_media_facts(payload)
 
     assert len(facts) == 1
+    assert warnings == () and retained_facts == facts
     fact = facts[0]
     assert fact.message_id == "7000000000000000001"
     assert fact.timestamp == 1760000001

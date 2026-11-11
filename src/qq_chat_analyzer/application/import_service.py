@@ -12,9 +12,10 @@ from ..rich_message import RichMessage
 from ..analysis_diagnostics import timed_stage
 from ..qq_db_adapter import (
     QQ_DB_JSON_FORMAT,
+    QQPicMediaFact,
     is_qq_db_payload,
     load_qq_db_json,
-    parse_qq_db_rich_messages,
+    parse_qq_db_rich_messages_with_media_facts,
 )
 from ..wechat_cli_adapter import (
     is_cli_payload,
@@ -64,6 +65,7 @@ class _ImportedFile:
     format: str | None
     warnings: tuple[str, ...]
     raw_count: int
+    qq_pic_media_facts: tuple[QQPicMediaFact, ...] = ()
 
 
 class ImportService:
@@ -85,6 +87,7 @@ class ImportService:
 
         messages: list[ChatMessage] = []
         rich_messages: list[RichMessage] = []
+        qq_pic_media_facts: list[QQPicMediaFact] = []
         rich_message_indexes: list[int] | None = None
         warnings: list[str] = []
         formats: set[str] = set()
@@ -113,6 +116,7 @@ class ImportService:
                 rich_messages.extend(imported.rich_messages)
             elif imported.messages and rich_message_indexes is None and rich_messages:
                 rich_message_indexes = list(range(rich_offset))
+            qq_pic_media_facts.extend(imported.qq_pic_media_facts)
             if imported.format is not None:
                 formats.add(imported.format)
             processed_message_count += imported.raw_count
@@ -131,6 +135,7 @@ class ImportService:
             messages=tuple(messages),
             rich_messages=tuple(rich_messages),
             rich_message_indexes=tuple(rich_message_indexes or ()),
+            qq_pic_media_facts=tuple(qq_pic_media_facts),
         )
 
 
@@ -277,7 +282,9 @@ def _unsupported_file(warning: str) -> _ImportedFile:
 @timed_stage("message_parse")
 def _import_qq_db_payload(payload: dict) -> _ImportedFile:
     raw_records = payload["records"]
-    rich_messages, parse_warnings = parse_qq_db_rich_messages(payload)
+    rich_messages, parse_warnings, media_facts = (
+        parse_qq_db_rich_messages_with_media_facts(payload)
+    )
     parsed_messages = tuple(project_legacy_messages(rich_messages))
     warnings = (
         *parse_warnings,
@@ -290,6 +297,7 @@ def _import_qq_db_payload(payload: dict) -> _ImportedFile:
         format=QQ_DB_JSON_FORMAT,
         warnings=warnings,
         raw_count=len(raw_records),
+        qq_pic_media_facts=media_facts,
     )
 
 
