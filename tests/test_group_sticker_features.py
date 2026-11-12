@@ -144,6 +144,29 @@ def test_many_material_trends_do_not_repeat_group_activity_scans(monkeypatch):
     assert len(activity_queries) <= 4 * len(index.members)
 
 
+def test_group_index_prepares_time_once_per_kept_message(monkeypatch):
+    from qq_chat_analyzer.analysis import sticker_index as module
+
+    rows = all_group_story_rows()
+    original = module.to_chat_datetime
+    calls = []
+
+    def counted(value):
+        calls.append(value)
+        return original(value)
+
+    monkeypatch.setattr(module, "to_chat_datetime", counted)
+    index = build_sticker_fact_index(
+        StickerData(collect_sticker_sends(rows)),
+        rows,
+        conversation_kind="group",
+        source_positions=range(len(rows)),
+    )
+
+    assert index.available
+    assert len(calls) == len(rows)
+
+
 def test_group_discovery_can_cancel_between_trend_windows(monkeypatch):
     from threading import Event
     from qq_chat_analyzer.analysis.group_stickers import analyze_group_stickers

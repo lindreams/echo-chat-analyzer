@@ -152,25 +152,32 @@ def build_sticker_fact_index(
     if len(positions) != len(messages) or any(type(p) is not int or p < 0 for p in positions) or any(a >= b for a, b in zip(positions, positions[1:])):
         raise ValueError("source positions must match ordered kept messages")
     non_sticker_messages = non_sticker_messages or {}
-    kept_positions = set(positions)
-    if non_sticker_messages and (source_positions is None or any(
-            type(p) is not int or p < 0 or p in kept_positions for p in non_sticker_messages)):
-        raise ValueError("excluded evidence requires distinct original source positions")
-    by_message = _associate_occurrences(data.sends, messages)
+    if non_sticker_messages:
+        kept_positions = set(positions)
+        if source_positions is None or any(
+                type(p) is not int or p < 0 or p in kept_positions for p in non_sticker_messages):
+            raise ValueError("excluded evidence requires distinct original source positions")
     reports = aggregate_stickers(data, messages) if reports is None else reports
     if len(reports) != 1 or (reports[0].source, reports[0].conversation_type, reports[0].conversation_id) != next(iter(scopes)) or reports[0].total_send_count != len(data.sends) or reports[0].message_count != len(messages):
         raise ValueError("sticker report does not match message scope")
     report = reports[0]
-    markers = defaultdict(set)
-    for m in messages:
-        if m.sender.identity_id:
-            markers[m.sender.identity_id].add(m.is_self)
-    if private and any(len(values) > 1 for values in markers.values()):
-        return StickerFactIndex(False, "conflicting_private_identity")
+    unavailable_reason = None
+    if private:
+        markers = defaultdict(set)
+        for m in messages:
+            if m.sender.identity_id:
+                markers[m.sender.identity_id].add(m.is_self)
+        if any(len(values) > 1 for values in markers.values()):
+            unavailable_reason = "conflicting_private_identity"
     sides = tuple(tuple(m.sender_id for m in report.members if m.is_self is own) for own in (True, False))
-    if private and any(len(side) > 1 for side in sides):
-        return StickerFactIndex(False, "ambiguous_private_members")
-    side_members = tuple(side[0] if side else None for side in sides) if private else (None, None)
+    ambiguous_private_members = private and any(len(side) > 1 for side in sides)
+    if ambiguous_private_members and unavailable_reason is None:
+        unavailable_reason = "ambiguous_private_members"
+    side_members = (
+        tuple(side[0] if len(side) == 1 else None for side in sides)
+        if private
+        else (None, None)
+    )
     reliable = (set(side_members) - {None}) if private else {m.sender_id for m in report.members}
     daily = {sender: [Counter() for _ in range(4)] for sender in reliable}
     material_sends = defaultdict(list)
@@ -183,11 +190,15 @@ def build_sticker_fact_index(
     gaps = []
     sticker_gaps = []
     previous_epoch = None
+    send_position = 0
+    sticker_message_count = 0
+    unattributed_send_count = 0
     for i, m in enumerate(messages):
         moment = to_chat_datetime(m.timestamp)
         # A numeric epoch outside datetime's calendar range is not usable time.
         # Preserve the collector's raw facts; only this index's usable time is None.
-        epoch = to_epoch_seconds(m.timestamp) if moment is not None else None
+        send_epoch = to_epoch_seconds(m.timestamp)
+        epoch = send_epoch if moment is not None else None
         day = moment.date().toordinal() if moment else None
         if day is not None:
             days.append(day)
@@ -226,9 +237,29 @@ def build_sticker_fact_index(
             reasons.append("tied_or_reversed_time")
         if m.sender.identity_id not in reliable:
             reasons.append("unknown_side")
-        ss = tuple(by_message[i])
+        chat_date = moment.date().isoformat() if moment else None
+        associated_sends = []
+        for content_index, part in enumerate(m.contents):
+            if not isinstance(part, (ExpressionContent, NonTextContent)) or part.sticker is None:
+                continue
+            if send_position >= len(data.sends):
+                raise ValueError("missing sticker occurrence for message scope")
+            send = data.sends[send_position]
+            send_position += 1
+            if (send.occurrence_id != f"{i}:{content_index}" or send.content_index != content_index
+                    or (send.source, send.conversation_type, send.conversation_id) != (m.source, m.conversation_type, m.conversation_id)
+                    or send.sender_id != m.sender.identity_id or send.is_self is not m.is_self
+                    or (send.timestamp is not m.timestamp and send.timestamp != m.timestamp)
+                    or send.chat_date != chat_date or send.epoch_seconds != send_epoch
+                    or send.identity_key != part.sticker.identity_key):
+                raise ValueError("sticker occurrence does not match ordered message scope")
+            associated_sends.append(send)
+        ss = tuple(associated_sends)
+        sticker_message_count += bool(ss)
         indexed.append(IndexedStickerMessage(i, positions[i], m, epoch, day, ss, bool(reasons), tuple(reasons)))
         sender = m.sender.identity_id
+        if sender not in reliable:
+            unattributed_send_count += len(ss)
         if sender in reliable and day is not None:
             daily[sender][0][day] += 1
             if ss:
@@ -250,6 +281,10 @@ def build_sticker_fact_index(
                 else:
                     uncertain_days[pair][day] += 1
         previous_epoch = epoch
+    if send_position != len(data.sends):
+        raise ValueError("extra sticker occurrences outside message scope")
+    if unavailable_reason is not None:
+        return StickerFactIndex(False, unavailable_reason)
     first, end = (min(days), max(days)+1) if days else (None, None)
     def bounds(ranges):
         ordered = sorted((min(a, b) if a is not None and b is not None else first,
@@ -279,39 +314,11 @@ def build_sticker_fact_index(
         uncertain_days=MappingProxyType({pair: DayCounts.from_counts(c) for pair, c in uncertain_days.items()}),
         undated_uncertainties=frozenset(undated_uncertainties),
         uncertain_material_keys=frozenset(s.identity_key for s in uncertain if s.identity_key),
-        sticker_message_count=sum(bool(ss) for ss in by_message), send_count=len(data.sends),
+        sticker_message_count=sticker_message_count, send_count=len(data.sends),
         unknown_identity_count=report.unknown_identity_count,
         unknown_sender_count=report.unknown_sender_count,
-        unattributed_send_count=sum(len(ss) for m, ss in zip(messages, by_message) if m.sender.identity_id not in reliable),
+        unattributed_send_count=unattributed_send_count,
         first_day=first, end_day=end, source_positions_supplied=source_positions is not None,
         gap_starts=gap_starts, gap_max_ends=gap_ends,
         sticker_gap_starts=sticker_starts, sticker_gap_max_ends=sticker_ends,
     )
-
-
-def _associate_occurrences(sends: tuple[StickerSend, ...], messages: tuple[RichMessage, ...]) -> list[list[StickerSend]]:
-    """Validate the existing collector's per-content sequence, not message IDs."""
-    by_message = [[] for _ in messages]
-    position = 0
-    for ordinal, message in enumerate(messages):
-        moment = to_chat_datetime(message.timestamp)
-        chat_date = moment.date().isoformat() if moment else None
-        epoch = to_epoch_seconds(message.timestamp)
-        for content_index, part in enumerate(message.contents):
-            if not isinstance(part, (ExpressionContent, NonTextContent)) or part.sticker is None:
-                continue
-            if position >= len(sends):
-                raise ValueError("missing sticker occurrence for message scope")
-            send = sends[position]
-            position += 1
-            if (send.occurrence_id != f"{ordinal}:{content_index}" or send.content_index != content_index
-                    or (send.source, send.conversation_type, send.conversation_id) != (message.source, message.conversation_type, message.conversation_id)
-                    or send.sender_id != message.sender.identity_id or send.is_self is not message.is_self
-                    or (send.timestamp is not message.timestamp and send.timestamp != message.timestamp)
-                    or send.chat_date != chat_date or send.epoch_seconds != epoch
-                    or send.identity_key != part.sticker.identity_key):
-                raise ValueError("sticker occurrence does not match ordered message scope")
-            by_message[ordinal].append(send)
-    if position != len(sends):
-        raise ValueError("extra sticker occurrences outside message scope")
-    return by_message
