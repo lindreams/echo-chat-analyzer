@@ -505,6 +505,73 @@ def test_report_batch_selects_top10_once_and_survives_failure_or_stops(
     assert historical.read_bytes() == b"fictional old report"
 
 
+def test_incomplete_local_scan_runs_once_and_native_recovery_continues(
+    tmp_path, monkeypatch,
+):
+    from PIL import Image
+    from qq_chat_analyzer.presentation.stickers import sticker_report_targets
+
+    raw = _fictional_png()
+    initial = hashlib.md5(raw).digest()
+    facade, provider, runtime = _fetch_facade(
+        tmp_path, digest=initial, content=raw, group_sender="10087")
+    by_digest = {}
+    with sqlite3.connect(tmp_path / "plaintext-qq.db") as db:
+        seed, = db.execute('SELECT "40800" FROM group_msg_table').fetchone()
+        db.execute("DELETE FROM group_msg_table")
+        for index in range(40):
+            stream = BytesIO()
+            Image.new("RGB", (3, 2), (index * 5, 50, 80)).save(stream, format="PNG")
+            content = stream.getvalue()
+            digest = hashlib.md5(content).digest()
+            by_digest[digest.hex()] = content
+            db.execute('''INSERT INTO group_msg_table
+                ("40001", "40020", "40021", "40027", "40030", "40033", "40050", "40800")
+                VALUES (?, 'u_fictionalmember000000', '12345001', 'group-partition', '12345001', ?, ?, ?)''',
+                (201 + index, str(10086 + index // 8), 1760000001 + index,
+                 seed.replace(initial, digest)))
+
+    scan_attempts = []
+
+    def incomplete_scan(data, *, media_keys, diagnostics, scan_cache, **_kwargs):
+        scan_attempts.append((tuple(media_keys), scan_cache))
+        assert scan_cache.signature is None
+        diagnostics.update(
+            traversal_complete=False,
+            budget_exhausted=True,
+            candidate_targets=0,
+        )
+        return data
+
+    downloads = []
+
+    def download(**locator):
+        downloads.append(locator["expected_md5"])
+        return by_digest[locator["expected_md5"]]
+
+    monkeypatch.setattr(facade, "associate_sticker_media", incomplete_scan)
+    monkeypatch.setattr(provider, "download_pic_media", download)
+    root = tmp_path / "authorized-media"
+    root.mkdir()
+    outcome = facade.analyze_session(
+        ChatSource.QQ,
+        "group:group-partition",
+        AnalysisConfig(
+            output_directory=tmp_path / "report",
+            sticker_media_roots=(root,),
+        ),
+    )
+
+    targets = sticker_report_targets(outcome.echo_report_view.stickers)
+    assert len(targets) == 40
+    assert len(scan_attempts) == 1
+    assert len(scan_attempts[0][0]) == 32
+    assert scan_attempts[0][1].signature is None
+    assert len(downloads) == len(targets)
+    assert sum(kind == "resolve" for kind, _ in provider.calls) == len(targets)
+    assert runtime.acquired == runtime.cleaned and len(runtime.acquired) == 1
+
+
 def test_report_missing_candidate_cache_is_bounded_to_boot_identity_and_expires(tmp_path, monkeypatch):
     from qq_chat_analyzer.application import facade as module
     from qq_chat_analyzer.providers.napcat_qq_provider import NapCatQQMediaStageError

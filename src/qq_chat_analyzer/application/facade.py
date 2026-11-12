@@ -809,6 +809,7 @@ class ChatAnalyzerFacade:
                 if roots:
                     local_started = _perf_counter()
                     scan_cache = _QQMediaCacheScan()
+                    scan_incomplete = False
                     _LOGGER.info("[sticker-media-local] batch=%s state=start main_thread=%s", batch,
                                  threading.current_thread() is threading.main_thread())
                     for offset in range(0, len(keys), 32):
@@ -822,12 +823,24 @@ class ChatAnalyzerFacade:
                             media.update((item.media_key, item) for item in data.media)
                         except FacadeError:
                             # A rejected local scope does not authorize a broader scan.
-                            # The separately verified QQ element may still be fetched.
+                            # It also must not restart the same walk for another
+                            # target batch. The separately verified QQ element
+                            # may still be fetched.
                             check_budget()
+                            scan_incomplete = True
+                            break
                         local_candidates += diagnostics.get("candidate_targets", 0)
+                        if diagnostics.get("traversal_complete") is False:
+                            # An incomplete walk is deliberately not published
+                            # to the formal cache. Do not restart it for the next
+                            # target batch; preserve the report budget for the
+                            # independently verified native QQ path below.
+                            scan_incomplete = True
+                            break
                     del scan_cache
                     local_elapsed_ms = max(0, round((_perf_counter() - local_started) * 1000))
-                    _LOGGER.info("[sticker-media-local] batch=%s state=finished elapsed_ms=%d", batch, local_elapsed_ms)
+                    _LOGGER.info("[sticker-media-local] batch=%s state=%s elapsed_ms=%d", batch,
+                                 "incomplete" if scan_incomplete else "finished", local_elapsed_ms)
                 check_budget()
                 media = {item.media_key: item for item in data.media}
                 for key, item in tuple(media.items()):
