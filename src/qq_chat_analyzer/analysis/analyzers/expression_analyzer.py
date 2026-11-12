@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 
 from ...message import ChatMessage
 from ...unicode_emoji import iter_emoji_clusters
@@ -116,6 +117,22 @@ _GH_PREFIX = "g" + "h_"
 _CHATROOM_MARKER = "@" + "chat" + "room"
 
 
+@dataclass(frozen=True, slots=True)
+class PreparedExpressionMessage:
+    """Expression facts prepared once for one projected message.
+
+    ``sender_expression_keys`` preserves the legacy Voices token source, while
+    the other fields preserve the richer expression-report source. They are
+    usually the same text, but keeping the distinction avoids changing
+    semantics for a mismatched direct caller.
+    """
+
+    text: str
+    unicode_items: tuple[str, ...]
+    face_expressions: tuple[ExpressionContent, ...]
+    sender_expression_keys: tuple[str, ...]
+
+
 class ExpressionAnalyzer:
     """Count expression occurrences without interpreting emotion."""
 
@@ -125,8 +142,11 @@ class ExpressionAnalyzer:
         rich_messages: Sequence[RichMessage] = (),
         *,
         rich_by_instance: Mapping[int, RichMessage] | None = None,
+        prepared_messages: Sequence[PreparedExpressionMessage | None] | None = None,
     ) -> ExpressionReport:
-        if rich_by_instance is None:
+        if prepared_messages is not None and len(prepared_messages) != len(messages):
+            raise ValueError("prepared expression facts must match messages")
+        if prepared_messages is None and rich_by_instance is None:
             # Compatibility for direct callers without projection pairs:
             # accept only unambiguous IDs, never choose among duplicates.
             legacy_ids = Counter(message.message_id for message in messages)
@@ -164,13 +184,20 @@ class ExpressionAnalyzer:
         expression_only_message_count = 0
         total_message_count = len(messages)
 
-        for message in messages:
-            rich_message = rich_by_instance.get(id(message))
-            text, face_expressions = self._message_expression_sources(
-                message,
-                rich_message,
+        for message_index, message in enumerate(messages):
+            prepared = (
+                prepared_messages[message_index]
+                if prepared_messages is not None
+                else prepare_expression_message(
+                    message,
+                    rich_by_instance.get(id(message)),
+                )
             )
-            unicode_items = list(iter_emoji_clusters(text))
+            if prepared is None:
+                continue
+            text = prepared.text
+            unicode_items = prepared.unicode_items
+            face_expressions = prepared.face_expressions
             items = [
                 (EXPRESSION_KIND_UNICODE, item, item)
                 for item in unicode_items
@@ -410,7 +437,7 @@ class ExpressionAnalyzer:
     @staticmethod
     def _is_expression_only_message(
         text: str,
-        unicode_items: list[str],
+        unicode_items: Sequence[str],
         face_expressions: tuple[ExpressionContent, ...],
     ) -> bool:
         if face_expressions:
@@ -433,6 +460,49 @@ class ExpressionAnalyzer:
             return False
         compact = "".join(text.split())
         return bool(compact) and "".join(unicode_items) == compact
+
+
+def prepare_expression_message(
+    message: ChatMessage,
+    rich_message: RichMessage | None = None,
+) -> PreparedExpressionMessage | None:
+    """Prepare reusable expression facts without aggregating any report."""
+    text, face_expressions = ExpressionAnalyzer._message_expression_sources(
+        message,
+        rich_message,
+    )
+    unicode_items = tuple(iter_emoji_clusters(text))
+    structured_expressions = tuple(
+        content
+        for content in rich_message.contents
+        if isinstance(content, ExpressionContent)
+    ) if rich_message is not None else ()
+    placeholder_count = len(face_expressions) - len(structured_expressions)
+    source_placeholders = (
+        face_expressions[-placeholder_count:]
+        if placeholder_count
+        else ()
+    )
+    if text == message.text:
+        sender_expression_keys = (
+            *unicode_items,
+            *(item.expression_key for item in source_placeholders),
+            *(item.expression_key for item in structured_expressions),
+        )
+    else:
+        sender_expression_keys = (
+            *iter_emoji_clusters(message.text),
+            *iter_expression_placeholders(message.text),
+            *(item.expression_key for item in structured_expressions),
+        )
+    if not unicode_items and not face_expressions and not sender_expression_keys:
+        return None
+    return PreparedExpressionMessage(
+        text=text,
+        unicode_items=unicode_items,
+        face_expressions=face_expressions,
+        sender_expression_keys=tuple(sender_expression_keys),
+    )
 
 
 def _sorted_counts(counts: Counter[str]) -> list[tuple[str, int]]:

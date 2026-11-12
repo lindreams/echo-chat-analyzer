@@ -415,6 +415,87 @@ def test_repeated_short_text_uses_only_per_analysis_token_cache(
     assert "common" not in rerun.message_tokens[0]
 
 
+def test_prepared_text_facts_preserve_expression_and_profile_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    service_module = importlib.import_module(
+        "qq_chat_analyzer.application.analysis_service"
+    )
+    expression_module = importlib.import_module(
+        "qq_chat_analyzer.analysis.analyzers.expression_analyzer"
+    )
+    profile_module = importlib.import_module(
+        "qq_chat_analyzer.analysis.analyzers.user_profile_analyzer"
+    )
+    from qq_chat_analyzer.analysis.analyzers import ExpressionAnalyzer, UserProfileAnalyzer
+    from qq_chat_analyzer.message import ChatMessage
+    from qq_chat_analyzer.rich_message import (
+        EXPRESSION_KIND_PLATFORM_FACE,
+        ExpressionContent,
+        RichMessage,
+        SenderIdentity,
+        TextContent,
+    )
+
+    messages = [
+        ChatMessage(timestamp=1, sender="A", sender_id="a", message_type="text",
+                    text="果园 😀 [表情]", platform="qq", message_id="m1",
+                    conversation_type="group"),
+        ChatMessage(timestamp=2, sender="B", sender_id="b", message_type="text",
+                    text="普通消息", platform="qq", message_id="m2",
+                    conversation_type="group"),
+    ]
+    rich = RichMessage(
+        message_id="m1", source="qq", conversation_id="fictional-group",
+        sender=SenderIdentity("a", "A"), timestamp=1, message_type="text",
+        contents=(
+            TextContent("果园 😀 [表情]"),
+            ExpressionContent(EXPRESSION_KIND_PLATFORM_FACE, "face-1", "[微笑]"),
+        ),
+        conversation_type="group",
+    )
+    rich_by_instance = {id(messages[0]): rich}
+    analyzed = service_module._analyze_kept_messages(
+        messages,
+        tmp_path / "missing-stopwords.txt",
+        rich_by_instance,
+    )
+    direct_expression = ExpressionAnalyzer().analyze(
+        messages,
+        rich_by_instance=rich_by_instance,
+    )
+    direct_profiles = UserProfileAnalyzer().analyze(
+        messages,
+        sender_tokens=service_module._text_sender_tokens(analyzed.sender_tokens),
+    )
+
+    monkeypatch.setattr(
+        expression_module,
+        "iter_emoji_clusters",
+        lambda _text: (_ for _ in ()).throw(AssertionError("emoji rescanned")),
+    )
+    monkeypatch.setattr(
+        profile_module,
+        "clean_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("text recleaned")),
+    )
+    reused_expression = ExpressionAnalyzer().analyze(
+        messages,
+        rich_by_instance=rich_by_instance,
+        prepared_messages=analyzed.prepared_expressions,
+    )
+    reused_profiles = UserProfileAnalyzer().analyze(
+        messages,
+        sender_tokens=service_module._text_sender_tokens(analyzed.sender_tokens),
+        text_lengths=analyzed.cleaned_text_lengths,
+    )
+
+    assert reused_expression == direct_expression
+    assert reused_profiles == direct_profiles
+    assert list(analyzed.cleaned_text_lengths) == [len("果园 😀 [表情]"), len("普通消息")]
+
+
 def test_weekday_period_excludes_out_of_scope_and_cleaned_records(tmp_path):
     from dataclasses import replace
     from datetime import date

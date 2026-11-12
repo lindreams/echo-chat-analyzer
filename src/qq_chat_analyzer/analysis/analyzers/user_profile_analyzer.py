@@ -32,6 +32,7 @@ class UserProfileAnalyzer:
         speaker_names: Mapping[str, str] | None = None,
         *,
         weekday_calendar_days: Sequence[int] = (),
+        text_lengths: Sequence[int] | None = None,
     ) -> UserProfileReport:
         """Return per-speaker profiles ordered by message volume.
 
@@ -44,13 +45,18 @@ class UserProfileAnalyzer:
 
         ``weekday_calendar_days`` is the conversation's shared observation
         window; it must not be replaced by each speaker's active dates.
+
+        ``text_lengths`` optionally supplies one already-cleaned length per
+        message. It is an ordered value input, not a second message identity.
         """
+        if text_lengths is not None and len(text_lengths) != len(messages):
+            raise ValueError("prepared text lengths must match messages")
         stats: dict[str, _SpeakerStats] = {}
         runs: dict[str, list[int]] = {}
         current_run_key: str | None = None
         current_run_length = 0
 
-        for message in messages:
+        for message_index, message in enumerate(messages):
             speaker_key = stable_sender_key(message)
             if current_run_key == speaker_key:
                 current_run_length += 1
@@ -64,7 +70,14 @@ class UserProfileAnalyzer:
             if not is_chat_participant(message):
                 continue
             speaker_stats = stats.setdefault(speaker_key, _SpeakerStats())
-            speaker_stats.add(message)
+            speaker_stats.add(
+                message,
+                text_length=(
+                    text_lengths[message_index]
+                    if text_lengths is not None
+                    else None
+                ),
+            )
         if current_run_key is not None and current_run_length:
             runs.setdefault(current_run_key, []).append(current_run_length)
 
@@ -151,7 +164,7 @@ class _SpeakerStats:
         self.nickname: str | None = None
         self.contextual_name: str | None = None
 
-    def add(self, message: ChatMessage) -> None:
+    def add(self, message: ChatMessage, *, text_length: int | None = None) -> None:
         self.message_count += 1
         if self.speaker is None:
             self.speaker = message.sender
@@ -167,7 +180,11 @@ class _SpeakerStats:
             message.sender_contextual_name,
         )
 
-        length = len(clean_text(message.text, platform=message.platform))
+        length = (
+            text_length
+            if text_length is not None
+            else len(clean_text(message.text, platform=message.platform))
+        )
         if length > 0:
             self.text_lengths.append(length)
             self.max_length = max(self.max_length, length)

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, replace
+from array import array
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import Protocol
@@ -21,7 +22,10 @@ from ..analysis.analyzers import (
     PrivateLanguageAnalyzer,
     UserProfileAnalyzer,
 )
-from ..analysis.analyzers.expression_analyzer import iter_emoji_clusters
+from ..analysis.analyzers.expression_analyzer import (
+    PreparedExpressionMessage,
+    prepare_expression_message,
+)
 from ..analysis.models import AnalysisReports, ExpressionReport
 from ..analysis.private_nudges import PrivateNudges, analyze_private_nudges
 from ..analysis.sticker_features import (
@@ -58,7 +62,7 @@ from ..presentation import (
     export_echo_report_json,
 )
 from ..smart_profile import run_smart_profile
-from ..tokenizer import iter_expression_placeholders, load_stopwords, tokenize
+from ..tokenizer import load_stopwords, tokenize
 from .dto import (
     AnalysisDiagnosticCounts,
     AnalysisRequestDTO,
@@ -123,6 +127,8 @@ class _AnalyzedMessages:
     tokens: list[str]
     sender_tokens: list[tuple[str, list[str]]]
     message_tokens: list[list[str]]
+    prepared_expressions: list[PreparedExpressionMessage | None] = field(default_factory=list)
+    cleaned_text_lengths: array = field(default_factory=lambda: array("I"))
 
 
 class AnalysisApplicationService:
@@ -403,7 +409,9 @@ class AnalysisApplicationService:
             expression_report = ExpressionAnalyzer().analyze(
                 kept_messages,
                 rich_by_instance=rich_by_instance,
+                prepared_messages=analyzed.prepared_expressions,
             )
+        analyzed.prepared_expressions.clear()
         check_cancelled()
         has_expression_report = expression_report.expression_message_count > 0
 
@@ -426,6 +434,7 @@ class AnalysisApplicationService:
             tokens=[],
             sender_tokens=analyzed.sender_tokens,
             message_tokens=analyzed.message_tokens,
+            cleaned_text_lengths=analyzed.cleaned_text_lengths,
         )
         if status in (AnalysisStatus.NO_VALID_TEXT, AnalysisStatus.NO_TOKENS):
             return AnalysisResultDTO(
@@ -452,6 +461,7 @@ class AnalysisApplicationService:
                     conversation_type=conversation_type,
                     rich_by_instance=rich_by_instance,
                     expression_report=expression_report,
+                    cleaned_text_lengths=analyzed.cleaned_text_lengths,
                     expression_source=analysis_platform,
                     stickers=stickers,
                     sticker_reports=sticker_reports,
@@ -459,6 +469,7 @@ class AnalysisApplicationService:
                     group_stickers=group_stickers,
                     private_nudges=private_nudges,
                 )
+            analyzed.cleaned_text_lengths = array("I")
             if self._legacy_word_artifacts is None:
                 analyzed = _AnalyzedMessages(
                     valid_text_count=analyzed.valid_text_count,
@@ -619,6 +630,7 @@ def _build_reports(
     private_stickers: PrivateStickerFeatures | None = None,
     group_stickers: GroupStickerFeatures | None = None,
     private_nudges: PrivateNudges | None = None,
+    cleaned_text_lengths: Sequence[int] | None = None,
 ) -> AnalysisReports:
     """Run every extended analyzer over the messages kept for analysis.
 
@@ -636,6 +648,7 @@ def _build_reports(
             sender_tokens=text_sender_tokens,
             speaker_names=speaker_names,
             weekday_calendar_days=tuple(point.calendar_days for point in activity.weekday_counts),
+            text_lengths=cleaned_text_lengths,
         )
     with timed_stage("ConversationAnalyzer"):
         conversations = ConversationAnalyzer().analyze(
@@ -727,16 +740,19 @@ def _analyze_kept_messages(
     tokens: list[str] = []
     sender_tokens: list[tuple[str, list[str]]] = []
     per_message_tokens: list[list[str]] = []
+    prepared_expressions: list[PreparedExpressionMessage | None] = []
+    cleaned_text_lengths = array("I")
     stopwords: set[str] | None = None
+    rich_by_instance = rich_by_instance or {}
 
-    def prepare_text(text: str, platform: str | None) -> tuple[bool, tuple[str, ...]]:
+    def prepare_text(text: str, platform: str | None) -> tuple[int, tuple[str, ...]]:
         nonlocal stopwords
         cleaned_text = clean_text(text, platform=platform)
         if cleaned_text:
             if stopwords is None:
                 stopwords = load_stopwords(str(stopwords_path))
-            return True, tuple(tokenize(cleaned_text, stopwords=stopwords))
-        return False, ()
+            return len(cleaned_text), tuple(tokenize(cleaned_text, stopwords=stopwords))
+        return 0, ()
 
     # Do not pay an LRU miss and retention cost for mostly unique exports.
     # Enable the per-run cache only after a bounded sample proves substantial
@@ -752,9 +768,9 @@ def _analyze_kept_messages(
         check_cancelled()
         eligible = isinstance(message.text, str) and len(message.text) <= 1024
         if cached_text is not None and eligible:
-            has_text, prepared_tokens = cached_text(message.text, message.platform)
+            text_length, prepared_tokens = cached_text(message.text, message.platform)
         else:
-            has_text, prepared_tokens = prepare_text(message.text, message.platform)
+            text_length, prepared_tokens = prepare_text(message.text, message.platform)
             if cached_text is None and eligible and eligible_samples < sample_size:
                 key = (message.text, message.platform)
                 sample_repeats += key in sample_seen
@@ -765,14 +781,17 @@ def _analyze_kept_messages(
                         cached_text = lru_cache(maxsize=8192)(prepare_text)
                     sample_seen.clear()
         message_tokens = list(prepared_tokens)
-        if has_text:
+        cleaned_text_lengths.append(text_length)
+        if text_length:
             valid_text_count += 1
         tokens.extend(message_tokens)
         per_message_tokens.append(message_tokens)
-        expression_tokens = _expression_tokens(
+        prepared_expression = prepare_expression_message(
             message,
-            rich_by_instance or {},
+            rich_by_instance.get(id(message)),
         )
+        prepared_expressions.append(prepared_expression)
+        expression_tokens = _expression_tokens(prepared_expression)
         combined_tokens = (
             [*message_tokens, *expression_tokens]
             if expression_tokens
@@ -798,30 +817,21 @@ def _analyze_kept_messages(
         tokens=tokens,
         sender_tokens=sender_tokens,
         message_tokens=per_message_tokens,
+        prepared_expressions=prepared_expressions,
+        cleaned_text_lengths=cleaned_text_lengths,
     )
 
 
 def _expression_tokens(
-    message: ChatMessage,
-    rich_by_instance: Mapping[int, RichMessage],
+    prepared: PreparedExpressionMessage | None,
 ) -> list[str]:
     """Return source-neutral expression tokens for the Voices pipeline."""
-    tokens = [
-        f"expression:{emoji}"
-        for emoji in iter_emoji_clusters(message.text)
+    if prepared is None:
+        return []
+    return [
+        f"expression:{expression_key}"
+        for expression_key in prepared.sender_expression_keys
     ]
-    tokens.extend(
-        f"expression:{placeholder}"
-        for placeholder in iter_expression_placeholders(message.text)
-    )
-    rich_message = rich_by_instance.get(id(message))
-    if rich_message is not None:
-        tokens.extend(
-            f"expression:{content.expression_key}"
-            for content in rich_message.contents
-            if isinstance(content, ExpressionContent)
-        )
-    return tokens
 
 
 def _text_sender_tokens(
