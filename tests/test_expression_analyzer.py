@@ -44,6 +44,22 @@ def test_all_official_emoji_spellings_survive_text_boundaries_and_masking():
     assert mask_emoji(text) == separator.join(" " for _ in spellings)
 
 
+def test_emoji_gate_only_rejects_impossible_matches():
+    """The cheap gate must never skip a spelling the pattern would recognise."""
+    from qq_chat_analyzer._unicode_emoji_data import EMOJI_CODEPOINT_SEQUENCES
+    from qq_chat_analyzer.unicode_emoji import mask_emoji
+
+    spellings = ["".join(chr(int(point, 16)) for point in line.split())
+                 for line in EMOJI_CODEPOINT_SEQUENCES.splitlines()]
+    # The ASCII fast path is sound only while no supported sequence is ASCII.
+    assert all(not spelling.isascii() for spelling in spellings)
+    for spelling in spellings:
+        assert list(iter_emoji_clusters(spelling)) == [spelling]
+        assert mask_emoji(f"文字{spelling}文字") == "文字 文字"
+    assert list(iter_emoji_clusters("plain ascii 123 #*")) == []
+    assert mask_emoji("plain ascii 123 #*") == "plain ascii 123 #*"
+
+
 def _chat(
     text: str,
     *,
