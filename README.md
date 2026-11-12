@@ -4,9 +4,11 @@
 
 Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连接聊天来源，选择一段会话，把聊天节奏、表达习惯和常用表情包整理成可以慢慢回看的 **Echo Report**。
 
-**[下载 Windows x64 安装版](https://cnb.cool/echo_mly/echo_releases/-/releases/download/v0.3.4/Echo-0.3.4-windows-x64-Setup.exe)** · [GitHub 备用下载](https://github.com/lindreams/echo-chat-analyzer/releases/download/v0.3.4/Echo-0.3.4-windows-x64-Setup.exe) · [查看版本说明](https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v0.3.4) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
+**[⬇ 国内下载 Windows 安装包（v0.3.5）](https://cnb.cool/echo_mly/echo_releases/-/releases/download/v0.3.5/Echo-0.3.5-windows-x64-Setup.exe)** · [GitHub 备用直链](https://github.com/lindreams/echo-chat-analyzer/releases/download/v0.3.5/Echo-0.3.5-windows-x64-Setup.exe) · [版本说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.5) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
 
-当前版本为 **v0.3.2**。无需安装 Python。
+**只支持 Windows 64 位电脑，暂不支持手机端。** 需要电脑端 QQ / 微信已经保存了相应的本地聊天记录；无法直接分析只存在手机里的历史记录。
+
+**免费、开源，下载安装无需编程基础。** 不需要安装 Python、下载源码或配置开发环境。
 
 ![Echo Report：交流的节奏](docs/screenshots/echo-report.png)
 
@@ -31,9 +33,11 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 
 **连接 QQ / 微信 → 选择会话与时间范围 → 生成报告 → 阅读或分享**
 
-1. 下载并运行 `Echo-0.3.2-windows-x64-Setup.exe`，完成安装。
-2. 在 Echo 中选择 QQ 或微信，按提示完成连接与授权。
-3. 选择会话和时间范围，生成回顾报告。
+1. 点击顶部的 **国内下载** 链接，下载并运行 `Echo-0.3.5-windows-x64-Setup.exe`，按照安装提示操作。
+2. 打开 Echo，选择 QQ 或微信，按界面提示完成连接与授权。
+3. 选择聊天会话和时间范围，生成报告；报告可以在本机查看，也可以自行分享。
+
+**下载哪个文件？** 普通用户只需要上面的 `Setup.exe` 安装包。发布页里的 `.nupkg`、`.json` 和 `.sha256` 不是普通用户需要安装的文件。
 
 ![选择会话与分析范围](docs/screenshots/session-analysis.png)
 
@@ -42,6 +46,15 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 首次使用或很久没有在这台电脑登录时，QQ 本机历史记录可能不完整。请先在 QQ 中确认目标会话的历史消息已加载，再回到 Echo 生成报告。
 
 开始连接后，如果 Echo 提示等待二维码，请不要自行打开 QQ；等待二维码出现在 Echo 页面，再用手机 QQ 扫码。
+
+<details>
+<summary>Windows 提示“无法识别的应用”怎么办？</summary>
+
+Echo 是较新的个人开发软件，Windows SmartScreen 可能因应用信誉不足提示“Windows 已保护你的电脑”或“无法识别的应用”。先核对安装文件名和下载来源。如果确认来自上面的项目官方链接，并且只有 SmartScreen 的未知应用提示，可以选择“更多信息”后决定是否“仍要运行”。
+
+**如果安全软件明确报告病毒或木马，或下载来源不确定，请先停止安装，不要关闭安全防护或添加白名单。** 可以通过下方反馈入口询问。
+
+</details>
 
 <details>
 <summary>查看 Echo 桌面首页</summary>
@@ -68,17 +81,15 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 
 ## 版本、更新与反馈
 
-v0.3.2 修复大型 QQ 数据库读取和退出时的快照资源释放问题，并整合表情统计、QQ 素材查找、PNG 读取与编码复用，以及报告章节和图片、GIF 按需加载优化。打印时仍显示完整内容，结束后恢复原有浏览状态。
+**当前正式版：v0.3.5（2026-11-12）**
 
-现有日志新增连接、快照、解密、校验、消息处理、分析和报告生成的阶段耗时。统计口径、素材可信校验、GIF 安全限制和离线报告能力保持不变；局部人工样本的提速不代表所有电脑的整体耗时。原有备注、昵称和群名片联合检索功能保留。
+这一版重点改善较大聊天记录的分析效率与稳定性，减少 QQ 快照校验、会话发现、重复文本处理和表情索引的额外开销，并修复 PIC 缓存不完整时的重复扫描。**它是性能与稳定性更新，没有增加新的报告分析功能。**
 
-v0.3.0 的表情包分析、词语原话查看、私聊拍一拍／戳一戳和卸载数据保留选项均保留，本次不修改报告统计算法。
+近期版本还持续完善了 QQ 数据读取、图片与表情包处理、报告按需加载以及日志管理。报告中已有的聊天节奏、语言画像和表情包分析继续保留。
 
-**群聊独立“回复关系”章节延期到 0.4.0，本版不包含该原型。** 旧报告需要重新生成，才能显示新版内容；表情章节的整体篇幅调整留到后续版本。
+**已知限制：** 个别大群分析仍可能短暂卡顿；过深的 Windows 报告输出路径仍有限制。QQ / 微信的跨版本与跨机器兼容性继续收集反馈。0.3.4 → 0.3.5 正式身份升级、自动重启及数据保留尚待真实用户验证，不能视为已经全面验收。
 
-不同电脑与 QQ / 微信版本的兼容性仍在收集反馈。
-
-[查看发布说明与所有下载文件](https://cnb.cool/echo_mly/echo_releases/-/releases/tag/v0.3.4) · [GitHub 发布页](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.4) · [查看所有版本](https://cnb.cool/echo_mly/echo_releases/-/releases) · [后续开发计划](docs/ROADMAP.md)
+[查看 v0.3.5 更新说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.5) · [查看全部版本](https://cnb.cool/echo_mly/echo_releases/-/releases) · [后续开发计划](docs/ROADMAP.md)
 
 <details>
 <summary>已安装用户如何更新？</summary>
