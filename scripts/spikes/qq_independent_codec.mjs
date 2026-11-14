@@ -23,6 +23,16 @@ function pageTag(ciphertext, iv, number, key, pageSalt, hash = 'sha1') {
   return createHmac(hash, hmacKey).update(ciphertext).update(iv).update(pgno).digest();
 }
 
+// Candidate authentication only. Reuse the same tag primitive as decode;
+// never decrypt a page or claim database completeness from this result.
+export function authenticateFirstPage(wrapped, key) {
+  if (wrapped.length !== PREFIX + PAGE || key.length !== 32) return false;
+  const start = PREFIX, end = start + PAGE - RESERVE;
+  const expected = pageTag(wrapped.subarray(start + 16, end),
+    wrapped.subarray(end, end + 16), 1, key, wrapped.subarray(start, start + 16));
+  return timingSafeEqual(expected, wrapped.subarray(end + 16, end + 36));
+}
+
 export function encode(plain, key = rawKey, pageSalt = salt) {
   assert.equal(plain.length % PAGE, 0);
   assert.ok(plain.subarray(0, 16).equals(MAGIC));
