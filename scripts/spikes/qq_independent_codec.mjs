@@ -1,10 +1,13 @@
 // Research only: a closed synthetic round trip, never a QQ process/key reader.
 // Candidate profile: 1024-byte wrapper, 4096-byte pages, AES-256-CBC,
 // PBKDF2-HMAC-SHA512 (4000), page HMAC-SHA1, 48 reserved bytes.
-// This is not an independent SQLCipher interoperability or QQ version test.
+// The standalone CLI is a self round trip; the separate reference driver
+// verifies SQLCipher interoperability. Neither establishes QQ version support.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { createCipheriv, createDecipheriv, createHmac, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto';
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { resolve } from 'node:path';
 
 const PAGE = 4096, PREFIX = 1024, RESERVE = 48;
 const MAGIC = Buffer.from('SQLite format 3\0');
@@ -20,7 +23,7 @@ function pageTag(ciphertext, iv, number, key, pageSalt, hash = 'sha1') {
   return createHmac(hash, hmacKey).update(ciphertext).update(iv).update(pgno).digest();
 }
 
-function encode(plain) {
+export function encode(plain, key = rawKey, pageSalt = salt) {
   assert.equal(plain.length % PAGE, 0);
   assert.ok(plain.subarray(0, 16).equals(MAGIC));
   assert.equal(plain.readUInt16BE(16), PAGE);
@@ -32,16 +35,16 @@ function encode(plain) {
     const first = number === 1;
     const body = plain.subarray(offset + (first ? 16 : 0), offset + PAGE - RESERVE);
     const iv = randomBytes(16);
-    const cipher = createCipheriv('aes-256-cbc', rawKey, iv);
+    const cipher = createCipheriv('aes-256-cbc', key, iv);
     cipher.setAutoPadding(false);
     const ciphertext = Buffer.concat([cipher.update(body), cipher.final()]);
-    pages.push(Buffer.concat([first ? salt : Buffer.alloc(0), ciphertext, iv,
-      pageTag(ciphertext, iv, number, rawKey, salt), Buffer.alloc(12)]));
+    pages.push(Buffer.concat([first ? pageSalt : Buffer.alloc(0), ciphertext, iv,
+      pageTag(ciphertext, iv, number, key, pageSalt), Buffer.alloc(12)]));
   }
   return Buffer.concat(pages);
 }
 
-function decode(wrapped, key, pageSalt = salt, hash = 'sha1') {
+export function decode(wrapped, key, pageSalt = wrapped.subarray(PREFIX, PREFIX + 16), hash = 'sha1') {
   if (wrapped.length <= PREFIX || (wrapped.length - PREFIX) % PAGE !== 0)
     throw new Error('invalid_size');
   if (!wrapped.subarray(PREFIX, PREFIX + 16).equals(pageSalt))
@@ -60,9 +63,18 @@ function decode(wrapped, key, pageSalt = salt, hash = 'sha1') {
     output.push(Buffer.concat([first ? MAGIC : Buffer.alloc(0),
       decipher.update(ciphertext), decipher.final(), Buffer.alloc(RESERVE)]));
   }
-  return Buffer.concat(output);
+  const plain = Buffer.concat(output);
+  // Trust a page count only when SQLite's header marks it current. This
+  // research reader rejects unknown completeness instead of inferring/repairing.
+  const declaredPages = plain.readUInt32BE(28);
+  if (declaredPages === 0 || plain.readUInt32BE(24) !== plain.readUInt32BE(92))
+    throw new Error('untrusted_page_count');
+  if (declaredPages !== plain.length / PAGE)
+    throw new Error('page_count_mismatch');
+  return plain;
 }
 
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 const [input, output] = process.argv.slice(2);
 assert.ok(input && output && process.argv.length === 4, 'synthetic driver paths required');
 const original = readFileSync(input);
@@ -83,3 +95,4 @@ writeFileSync(output, restored, { flag: 'wx' });
 console.log(JSON.stringify({ synthetic_codec: 'passed', pages: restored.length / PAGE,
   refusals: ['wrong_key', 'wrong_salt', 'wrong_hmac_profile', 'truncated_page', 'later_page_corruption'],
   sqlcipher_interoperability: 'not_tested', qq_54395: 'not_tested' }));
+}
