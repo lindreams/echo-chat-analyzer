@@ -25,13 +25,17 @@ def main():
     environment = os.environ.copy()
     environment.pop("NODE_OPTIONS", None)
     environment.pop("NODE_PATH", None)
+    session = len(sys.argv) == 4 and sys.argv[3] == "--session"
+    cases = ("delivery", "auth_refused", "parse_refused", "cancel", "timeout", "controller_exit", "host_exit", "identity_refused") if session else (
+        "delivery", "heap_delivery", "cancel", "timeout", "invalid_layout", "install_failure", "wrong_version", "busy_stop", "production_gate")
+    script = Path(__file__).with_name("session_check.mjs") if session else Path(__file__).with_suffix(".mjs")
     outcomes = []
-    for scenario in ("delivery", "heap_delivery", "cancel", "timeout", "invalid_layout", "install_failure", "wrong_version", "busy_stop", "production_gate"):
-        process = launch_owned_process([node, "--max-old-space-size=96", str(Path(__file__).with_suffix(".mjs")), str(binaries), scenario],
+    for scenario in cases:
+        process = launch_owned_process([node, "--max-old-space-size=96", str(script), str(binaries), scenario],
             cwd=root, env=environment, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", creationflags=subprocess.CREATE_NO_WINDOW)
         try:
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + (18 if session else 10)
             while process.poll() is None:
                 if time.monotonic() >= deadline:
                     raise AssertionError("owned native worker deadline")
@@ -39,10 +43,16 @@ def main():
             output, _ = process.communicate(timeout=1)
             assert process.returncode == 0 and len(output) < 2048, scenario
             result = json.loads(output)
-            assert result["scenario"] == scenario and result["source"] == "owned_native_fixture"
+            assert result["scenario"] == scenario
             assert result["real_qq_accessed"] is False and result["raw_data_or_keys_persisted"] is False
-            assert result["authenticated_event"] == (scenario in ("delivery", "heap_delivery"))
-            assert all(result[key] is True for key in ("original_entry_restored", "dll_unloaded", "native_resources_released", "host_continued"))
+            if session:
+                assert result["authenticated"] == (scenario == "delivery")
+                assert result["no_post_stop_forward"] is True
+                assert result["fixture_unloaded"] == (scenario != "host_exit")
+            else:
+                assert result["source"] == "owned_native_fixture"
+                assert result["authenticated_event"] == (scenario in ("delivery", "heap_delivery"))
+                assert all(result[key] is True for key in ("original_entry_restored", "dll_unloaded", "native_resources_released", "host_continued"))
         finally:
             process.close_with_exit_evidence(timeout=3)
         assert process.exit_verified and process.closed

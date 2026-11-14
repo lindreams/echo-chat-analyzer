@@ -38,13 +38,20 @@ $Includes = '/I"' + (Join-Path $Deps 'include') + '" /I"' + $Output + '"'
 $CFiles = @('src/buffer.c','src/hook.c','src/trampoline.c','src/hde/hde64.c') | ForEach-Object { '"' + (Join-Path $Deps $_) + '"' }
 Compile @('cl /nologo /c /O2 /MD ' + $Includes + ' ' + ($CFiles -join ' '))
 $AdapterSource = Join-Path $Source 'adapter.cpp'
+$SessionSource = Join-Path $Source 'session.cpp'
 Compile @(
-    ('cl /nologo /std:c++17 /EHsc /O2 /MD /W4 /LD ' + $Includes + ' /DECHO_FIXTURE_BUILD /Fo:adapter_fixture.obj /Fe:echo_event_fixture.dll "' + $AdapterSource + '" buffer.obj hook.obj trampoline.obj hde64.obj bcrypt.lib /link /INCREMENTAL:NO /DYNAMICBASE /NXCOMPAT'),
-    ('cl /nologo /std:c++17 /EHsc /O2 /MD /W4 /LD ' + $Includes + ' /Fo:adapter_54395.obj /Fe:echo_event_54395.dll "' + $AdapterSource + '" buffer.obj hook.obj trampoline.obj hde64.obj bcrypt.lib /link /INCREMENTAL:NO /DYNAMICBASE /NXCOMPAT')
+    ('cl /nologo /std:c++17 /EHsc /O2 /MD /W4 /c ' + $Includes + ' /DECHO_FIXTURE_BUILD /Fo:session_fixture.obj "' + $SessionSource + '"'),
+    ('cl /nologo /std:c++17 /EHsc /O2 /MD /W4 /c ' + $Includes + ' /Fo:session_54395.obj "' + $SessionSource + '"'),
+    ('cl /nologo /std:c++17 /EHsc /O2 /MD /W4 /LD ' + $Includes + ' /DECHO_FIXTURE_BUILD /Fo:adapter_fixture.obj /Fe:echo_event_fixture.dll "' + $AdapterSource + '" session_fixture.obj buffer.obj hook.obj trampoline.obj hde64.obj bcrypt.lib /link /INCREMENTAL:NO /DYNAMICBASE /NXCOMPAT'),
+    ('cl /nologo /std:c++17 /EHsc /O2 /MD /W4 /LD ' + $Includes + ' /Fo:adapter_54395.obj /Fe:echo_event_54395.dll "' + $AdapterSource + '" session_54395.obj buffer.obj hook.obj trampoline.obj hde64.obj bcrypt.lib /link /INCREMENTAL:NO /DYNAMICBASE /NXCOMPAT')
 )
+$FixtureDllHash = (Get-FileHash -LiteralPath (Join-Path $Output 'echo_event_fixture.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
+$ProductionDllHash = (Get-FileHash -LiteralPath (Join-Path $Output 'echo_event_54395.dll') -Algorithm SHA256).Hash.ToLowerInvariant()
+[IO.File]::WriteAllText((Join-Path $Output 'component_identity.h'), ('inline constexpr char echo_fixture_dll_hash[] = "' + $FixtureDllHash + '";' + [Environment]::NewLine + 'inline constexpr char echo_production_dll_hash[] = "' + $ProductionDllHash + '";'), [Text.Encoding]::ASCII)
+Compile @('cl /nologo /std:c++17 /EHsc /O2 /MD /W4 ' + $Includes + ' /Fe:echo_event_loader.exe "' + (Join-Path $Source 'loader.cpp') + '" bcrypt.lib advapi32.lib psapi.lib /link /INCREMENTAL:NO /DYNAMICBASE /NXCOMPAT')
 Copy-Item -LiteralPath (Join-Path $Deps 'LICENSE.txt') -Destination (Join-Path $Output 'MinHook.LICENSE.txt')
 $Receipt = [ordered]@{ minhook_revision=$Pins.revision; build='9.9.37-54395'; binaries=[ordered]@{} }
-foreach ($Name in @('echo_qq_event_host.exe','echo_event_fixture.dll','echo_event_54395.dll')) {
+foreach ($Name in @('echo_qq_event_host.exe','echo_event_fixture.dll','echo_event_54395.dll','echo_event_loader.exe')) {
     $Receipt.binaries[$Name] = (Get-FileHash -LiteralPath (Join-Path $Output $Name) -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 $Receipt | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $Output 'build-receipt.json') -Encoding UTF8

@@ -2,6 +2,7 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include "adapter.h"
+#include "session.h"
 #include <atomic>
 #include <cstdio>
 #include <cstring>
@@ -14,6 +15,9 @@
 
 namespace {
 std::atomic<unsigned> calls{0};
+std::atomic<bool> session_running{true}, session_joined{false};
+std::thread session_producer;
+unsigned char session_before[32]{};
 struct Work { HANDLE entered, resume; bool block; };
 struct String24 { unsigned char bytes[24]{}; };
 struct Vector { std::uintptr_t begin, end, capacity; };
@@ -49,7 +53,68 @@ bool original_exception(void** response) {
     return false;
 }
 
+// Fixture-only proof of exclusive call-site ownership. Production DLL never
+// requests or accepts this export. Stop is already complete before this join.
+extern "C" __declspec(dllexport) BOOL EchoFixtureJoin() {
+    session_running.store(false);
+    if (!session_producer.joinable()) return FALSE;
+    session_producer.join();
+    if (std::memcmp(session_before, reinterpret_cast<void*>(EchoFixtureReceive), 32)) return FALSE;
+    session_joined.store(true); return TRUE;
+}
+
+int session_host(const std::wstring& scenario) {
+    _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
+    unsigned n = 0;
+    demand(std::fread(&n, sizeof(n), 1, stdin) == 1 && n && n <= EchoEventLimit);
+    std::vector<unsigned char> input(n);
+    demand(std::fread(input.data(), 1, n, stdin) == n);
+    std::memcpy(session_before, reinterpret_cast<void*>(EchoFixtureReceive), 32);
+    const unsigned header[] = {SessionMagic, GetCurrentProcessId()};
+    const auto creation = created_at(GetCurrentProcess());
+    demand(std::fwrite(header, sizeof(header), 1, stdout) == 1 && std::fwrite(&creation, sizeof(creation), 1, stdout) == 1 && !std::fflush(stdout));
+    std::atomic<unsigned> after_stop{0};
+    session_producer = std::thread([&] {
+        Vector bytes{reinterpret_cast<std::uintptr_t>(input.data()), reinterpret_cast<std::uintptr_t>(input.data()+n), reinterpret_cast<std::uintptr_t>(input.data()+n)};
+        Response target{}, other{};
+        target.command = text("OidbSvcTrpcTcp.0xcde_2"); target.payload = &bytes;
+        other.command = text("fixture.unrelated"); other.payload = nullptr;
+        void* a = &target; void* b = &other;
+        // Wait for the actual load/install, not for a mocked callback.
+        while (session_running.load() && !std::memcmp(session_before, reinterpret_cast<void*>(EchoFixtureReceive), 32)) Sleep(1);
+        if (session_running.load()) {
+            Sleep(60);
+            if (scenario == L"session-host_exit") ExitProcess(45);
+            if (scenario == L"session-delivery" || scenario == L"session-auth_refused" || scenario == L"session-parse_refused") EchoFixtureReceive(nullptr, &a, 0);
+            while (session_running.load()) { EchoFixtureReceive(nullptr, &b, 0); Sleep(1); }
+        }
+        // Continue producing real target callbacks AFTER the hook is disabled.
+        // Bootstrap must see an empty slot and must not send another response.
+        for (unsigned i = 0; i < 128; ++i) { EchoFixtureReceive(nullptr, &a, 0); after_stop.fetch_add(1); }
+    });
+    const auto end = GetTickCount64()+15000;
+    while (!session_joined.load() && GetTickCount64() < end) {
+        DWORD available = 0;
+        if (PeekNamedPipe(GetStdHandle(STD_INPUT_HANDLE), nullptr, 0, nullptr, &available, nullptr) && available) {
+            // Owned test harness can release a host whose loader refused before installation.
+            demand(EchoFixtureJoin()); break;
+        }
+        Sleep(2);
+    }
+    demand(session_joined.load());
+    while (GetModuleHandleW(L"echo_event_fixture.dll") && GetTickCount64() < end) Sleep(2);
+    demand(!GetModuleHandleW(L"echo_event_fixture.dll") && after_stop.load() == 128);
+    demand(!std::memcmp(session_before, reinterpret_cast<void*>(EchoFixtureReceive), 32));
+    const unsigned prior = calls.load(); void* object = nullptr;
+    demand(EchoFixtureReceive(nullptr, &object, 0) == 0x12340000 && calls.load() == prior+1);
+    SecureZeroMemory(input.data(), input.size());
+    const unsigned finish[] = {SessionMagic, 1, 1, 128};
+    demand(std::fwrite(finish, sizeof(finish), 1, stdout) == 1 && !std::fflush(stdout));
+    return 0;
+}
+
 int wmain(int argc, wchar_t** argv) {
+    if (argc == 2 && !std::wcsncmp(argv[1], L"session-", 8)) return session_host(argv[1]);
     demand(argc == 3);
     _setmode(_fileno(stdin), _O_BINARY); _setmode(_fileno(stdout), _O_BINARY);
     const std::wstring scenario = argv[2];

@@ -195,6 +195,8 @@ extern "C" __declspec(dllexport) int EchoInstall(const EchoOptions* options) {
     created = MH_CreateHook(target, reinterpret_cast<void*>(receive), reinterpret_cast<void**>(&original)) == MH_OK;
     if (!created || options->fixture_fail_after_create) { rollback(); return 0; }
     deadline = GetTickCount64() + options->timeout_ms;
+    if (options->not_after && options->not_after < deadline) deadline = options->not_after;
+    if (GetTickCount64() >= deadline) { rollback(); return 0; }
     state.store(Armed);
     enabled = MH_EnableHook(target) == MH_OK;
     if (!enabled) { state.store(Rejected); rollback(); return 0; }
@@ -234,7 +236,7 @@ extern "C" __declspec(dllexport) int EchoStop() {
 }
 
 extern "C" __declspec(dllexport) EchoStatus EchoGetStatus() {
-    return {state.load(), inflight.load(), static_cast<unsigned>(arrived || initialized || created)};
+    return {state.load(), inflight.load(), static_cast<unsigned>(arrived || initialized || created), !enabled};
 }
 
 #ifdef ECHO_FIXTURE_BUILD
