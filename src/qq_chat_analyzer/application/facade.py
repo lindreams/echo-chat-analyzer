@@ -342,6 +342,7 @@ class _SessionExport:
     conversation_id: str | None = None
     sticker_media_roots: tuple[Path, ...] = field(default=(), repr=False)
     qq_media_identity: tuple[str, str, str] | None = field(default=None, repr=False)
+    recover_qq_media: bool = True
 
 
 # One fixed stage -> (facade code, public message) pair for a QQ media fetch.
@@ -1139,6 +1140,7 @@ class ChatAnalyzerFacade:
         qq_auth_bridge: Any = None,
         qq_process_registry: Any = None,
         qq_runtime_session: Any = None,
+        independent_qq: bool = False,
         wechat_service: Any = None,
         wechat_connection_service: Any = None,
         wechat_setup_service: Any = None,
@@ -1163,6 +1165,7 @@ class ChatAnalyzerFacade:
         self._qq_auth_bridge = qq_auth_bridge
         self._qq_process_registry = qq_process_registry
         self._qq_runtime_session = qq_runtime_session
+        self.independent_qq = independent_qq
         self._wechat_connection_service_value = wechat_connection_service
         self._wechat_setup_service_value = wechat_setup_service
         self._source_builders = dict(source_builders or {})
@@ -1353,7 +1356,17 @@ class ChatAnalyzerFacade:
         raises, so an unreachable service becomes a snapshot rather than an
         error the page has to interpret.
         """
+        if self.independent_qq:
+            return self._require_service(ChatSource.QQ).get_snapshot()
         return self._require_qq_connection_manager().get_snapshot()
+
+    def prepare_independent_qq(self, executable, account_directory, account, group,
+                               *, recover_media=True, cancelled=lambda: False):
+        from .qq.qq_independent_service import QQIndependentSelection
+        with _translated_errors(ChatSource.QQ):
+            return self._require_service(ChatSource.QQ).prepare(
+                QQIndependentSelection(Path(executable), Path(account_directory), account, group, recover_media),
+                cancelled=cancelled)
 
     @timed_stage("qq_connection_request")
     def start_qq_auth_flow(
@@ -1368,6 +1381,10 @@ class ChatAnalyzerFacade:
         the runtime's own login flow and the caller keeps polling
         :meth:`get_qq_connection_snapshot` until it reports ``CONNECTED``.
         """
+        if self.independent_qq:
+            with _translated_errors(ChatSource.QQ):
+                return self._require_service(ChatSource.QQ).capture(
+                    progress=progress or (lambda _: None), cancel_event=cancel_event)
         bridge = self._require_qq_auth_bridge()
         if cancel_event is None or not cancel_event.is_set():
             with _translated_errors(ChatSource.QQ):
@@ -1401,11 +1418,17 @@ class ChatAnalyzerFacade:
 
     def cancel_qq_auth_flow(self, cancel_event: threading.Event) -> None:
         """Clean the cancelled QQ attempt off the GUI thread, without touching a newer one."""
+        if self.independent_qq:
+            cancel_event.set()
+            service = self._qq_service_if_present()
+            if service is not None:
+                service.cancel()
+            return
         self._require_qq_auth_bridge().cancel_auth_flow(cancel_event)
 
     def get_qq_qrcode_path(self) -> Path | None:
         """Return the auth bridge's fresh QR path without deriving GUI paths."""
-        return self._require_qq_auth_bridge().get_qrcode_path()
+        return None if self.independent_qq else self._require_qq_auth_bridge().get_qrcode_path()
 
     def disconnect_qq(self) -> ConnectionSnapshot:
         """Log out the current QQ account and stop LCA-owned runtime sessions.
@@ -1414,6 +1437,9 @@ class ChatAnalyzerFacade:
         active login session is stopped so a different account can scan a
         fresh QR code.
         """
+        if self.independent_qq:
+            with _translated_errors(ChatSource.QQ):
+                return self._require_service(ChatSource.QQ).disconnect()
         with _translated_errors(ChatSource.QQ):
             release = getattr(self._qq_service_if_present(), "release_retained_snapshot", None)
             if callable(release):
@@ -1761,6 +1787,7 @@ class ChatAnalyzerFacade:
                         cancelled=cancelled,
                         source_media_roots=session_export.sticker_media_roots,
                         qq_media_identity=session_export.qq_media_identity,
+                        recover_qq_media=session_export.recover_qq_media,
                     )
                     completed = True
                     return result
@@ -1790,6 +1817,7 @@ class ChatAnalyzerFacade:
         direct_db_diagnostics: bool = False,
         source_media_roots: tuple[Path, ...] = (),
         qq_media_identity: tuple[str, str, str] | None = None,
+        recover_qq_media: bool = True,
         cancelled: Callable[[], bool] = lambda: False,
     ) -> AnalysisOutcome:
         """Run analysis then presentation for one local path."""
@@ -1803,7 +1831,7 @@ class ChatAnalyzerFacade:
         try:
             if cancelled():
                 raise FacadeError(code="analysis_cancelled", public_message="分析已取消。")
-            automatic_qq = source is ChatSource.QQ and session is not None
+            automatic_qq = source is ChatSource.QQ and session is not None and recover_qq_media
             automatic_wechat = source is ChatSource.WECHAT and session is not None
             media_roots = source_media_roots if config.sticker_media_roots is None else config.sticker_media_roots
             request = AnalysisRequestDTO(
@@ -2055,6 +2083,9 @@ class ChatAnalyzerFacade:
         return min(self._shutdown_step_seconds, 4.0)
 
     def _shutdown_runtime_and_credential(self) -> ShutdownStatus:
+        if self.independent_qq:
+            service = self._qq_service_if_present()
+            return service.runtime_release_status(final=True) if service is not None else ShutdownStatus.SUCCESS
         from .qq.qq_process_registry import QQProcessRegistry
         from .qq.qq_direct_database_import_service import QQDirectDatabaseImportService
 
@@ -2224,7 +2255,8 @@ class ChatAnalyzerFacade:
                 from .qq.qq_direct_database_import_service import QQDirectDatabaseImportService
                 # Only the owned implementation proves acquisition admission,
                 # drain and recover. A duck-typed return is not ownership proof.
-                if (type(service) is QQDirectDatabaseImportService
+                from .qq.qq_independent_service import QQIndependentService
+                if (type(service) in (QQDirectDatabaseImportService, QQIndependentService)
                         and isinstance(status, ShutdownStatus)):
                     return status
             except Exception:
@@ -2293,7 +2325,7 @@ class ChatAnalyzerFacade:
                     if getattr(acquisition, "self_uin", None) and getattr(acquisition, "runtime_binding", None)
                     else None
                 )
-                pic_roots = ()
+                pic_roots = tuple(getattr(acquisition, "sticker_media_roots", ()))
                 scope_started = _perf_counter()
                 if media_identity is not None:
                     try:
@@ -2311,6 +2343,7 @@ class ChatAnalyzerFacade:
                     payload_path=Path(acquisition.payload_path),
                     sticker_media_roots=pic_roots,
                     qq_media_identity=media_identity,
+                    recover_qq_media=getattr(acquisition, "recover_qq_media", True),
                     conversation_id=getattr(raw_session, "conversation_id", None),
                     session=(
                         _to_session_info(source, raw_session)
@@ -2364,6 +2397,8 @@ class ChatAnalyzerFacade:
         return self._stopwords_directory / filename
 
     def _require_service(self, source: ChatSource) -> Any:
+        if self.independent_qq and source is ChatSource.QQ and self._sources_closing.is_set():
+            raise FacadeError(code="application_closing", public_message="Echo 正在关闭。")
         service = self._services.get(source)
         if service is None:
             bundle = self._source_bundle(source)
@@ -2469,10 +2504,11 @@ class ChatAnalyzerFacade:
             builder = self._source_builders.get(source)
             if builder is None:
                 raise SourceUnavailable(source)
-            if source is ChatSource.WECHAT and self._sources_closing.is_set():
+            guarded = source is ChatSource.WECHAT or (self.independent_qq and source is ChatSource.QQ)
+            if guarded and self._sources_closing.is_set():
                 raise FacadeError(code="application_closing", public_message="Echo 正在关闭。")
             bundle = builder()
-            if source is ChatSource.WECHAT:
+            if guarded:
                 # Never hold this short publication lock while building/draining.
                 # Close takes the same boundary before its ownership snapshot.
                 with self._source_publication_lock:
@@ -2480,7 +2516,8 @@ class ChatAnalyzerFacade:
                     if not closing:
                         self._built_sources[source] = bundle
                 if closing:
-                    shutdown = getattr(getattr(bundle, "setup", None), "shutdown", None)
+                    owner = getattr(bundle, "service" if source is ChatSource.QQ else "setup", None)
+                    shutdown = getattr(owner, "shutdown", None)
                     if callable(shutdown):
                         shutdown()
                     raise FacadeError(code="application_closing", public_message="Echo 正在关闭。")

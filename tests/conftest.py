@@ -198,6 +198,7 @@ DOMAIN_MODULES = {
         "test_qq_runtime_workspace",
         "test_qq_setup_service",
         "test_qq_version_gate",
+        "test_qq_independent_gui",
         "test_qq_worker_generation",
     },
     "wechat": {

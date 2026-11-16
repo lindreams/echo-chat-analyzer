@@ -424,6 +424,27 @@ def _legacy_plan(root, *, purge):
     return actions
 
 
+def _independent_qq(root):
+    """Recover only proven independent acquisitions under the same OS lease."""
+    if not os.path.lexists(root):
+        return
+    from .qq.qq_independent_service import _remove_run
+    from .qq.qq_runtime_workspace import _lease, _LOCK_HEADER
+    with _pinned(root, delete=True) as directory:
+        if not directory.directory:
+            raise CleanupIncomplete()
+        lock = root / '.independent.lock'
+        with _lease(lock, 0):
+            for child in root.iterdir():
+                if child != lock:
+                    _remove_run(child, root)
+        with _pinned(lock, write=True, delete=True) as proof:
+            if proof.read_bytes() != _LOCK_HEADER:
+                raise CleanupIncomplete()
+            proof.remove()
+        directory.remove()
+
+
 def cleanup_local_data(root: Path, *, purge: bool) -> None:
     """Return only if all selected owned data was cleared; never log contents."""
     if type(purge) is not bool:
@@ -435,7 +456,7 @@ def cleanup_local_data(root: Path, *, purge: bool) -> None:
         with _pinned(root):
             if any(child.name not in {'config', 'runtime', 'transient', 'logs', 'reports',
                                        'update-check.json', 'data', 'history', 'diagnostics',
-                                       'validation'} for child in root.iterdir()):
+                                       'validation', 'qq-independent'} for child in root.iterdir()):
                 raise CleanupIncomplete()
             config = root / 'config'
             config_files = []
@@ -470,6 +491,7 @@ def cleanup_local_data(root: Path, *, purge: bool) -> None:
                         if not isinstance(saved, dict):
                             raise CleanupIncomplete()
                         item.write_json({key: saved[key] for key in fields if key in saved})
+            _independent_qq(root / 'qq-independent')
             _runtime(root / 'runtime' / 'qq')
             transient = root / 'transient'
             if os.path.lexists(transient):

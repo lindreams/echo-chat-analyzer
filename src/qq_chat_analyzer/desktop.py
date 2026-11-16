@@ -10,9 +10,15 @@ import sys
 
 
 def main(argv: list[str] | None = None) -> int:
-    import velopack
-
     arguments = list(sys.argv[1:] if argv is None else argv)
+    if len(arguments) == 2 and arguments[0] == '--echo-qq-independent-worker':
+        from .providers.qq_independent.worker import main as qq_worker
+        try:
+            return qq_worker(arguments[1])
+        except Exception:
+            return 2
+
+    import velopack
     from .application.setup_uninstall_service import (
         cleanup_entry, maintenance_gate, register_after_setup, register_uninstall_entry,
     )

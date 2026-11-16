@@ -54,28 +54,31 @@ def build_facade() -> ChatAnalyzerFacade:
     WeChat tooling still gets a working window with those sources disabled.
     """
     from ..application.analysis_service import AnalysisApplicationService
-    from ..application.qq.qq_runtime_session import QQRuntimeSession
     from ..application.report_package_catalog import ReportPackageCatalog
     from ..application.source_bundle_builder import SourceBundleBuilder
     from ..application.wechat.wechat_setup_service import WeChatSetupService
     from ..application.update_channel import production_update_service
 
-    # One owner for the local bridge credential of the QQ runtime Echo launches:
-    # every QQ service below is wired with the same session, and the facade keeps
-    # it to retire the credential after the runtime is stopped.
-    session = QQRuntimeSession()
+    # Construct the independent QQ owner lazily; visiting the home page must
+    # not inspect accounts, load native components or start the QQ client.
     return ChatAnalyzerFacade(
         source_builders={
-            ChatSource.QQ: SourceBundleBuilder(lambda: _qq_bundle_factory(session)),
+            ChatSource.QQ: SourceBundleBuilder(_independent_qq_bundle_factory),
             ChatSource.WECHAT: SourceBundleBuilder(
                 _wechat_bundle_factory, setup_reader=WeChatSetupService().check_setup),
         },
-        qq_runtime_session=session,
+        independent_qq=True,
         analysis_service=AnalysisApplicationService(),
         report_package_catalog=ReportPackageCatalog(),
         stopwords_directory=resources_dir(),
         installable_update_service=production_update_service(),
     )
+
+
+def _independent_qq_bundle_factory() -> Any:
+    from ..application.qq.qq_independent_service import QQIndependentService
+    service = QQIndependentService()
+    return SimpleNamespace(service=service, connection=service, setup=None)
 
 
 def _qq_bundle_factory(session: Any = None) -> Any:
