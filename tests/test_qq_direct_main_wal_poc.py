@@ -20,9 +20,9 @@ pytestmark = pytest.mark.slow_integration
 
 
 @pytest.fixture
-def fictional_source(tmp_path: Path):
+def fictional_source(tmp_path: Path, request):
     plain = tmp_path / "plain.db"
-    _reserve_48_bytes(plain)
+    _reserve_48_bytes(plain, reserved_bytes=getattr(request, 'param', 48))
     writer = sqlite3.connect(plain)
     try:
         writer.execute("PRAGMA journal_mode=WAL")
@@ -305,7 +305,7 @@ def test_wal_replacement_during_main_baseline_is_rejected(fictional_source):
     assert not fictional_source[2].exists()
 
 
-def _reserve_48_bytes(path: Path) -> None:
+def _reserve_48_bytes(path: Path, *, reserved_bytes: int = 48) -> None:
     """Set SQLite's per-page reserve before creating any fictional tables."""
     import sqlite3 as _loaded_sqlite3  # Ensure sqlite3.dll is loaded on Windows.
 
@@ -327,7 +327,8 @@ def _reserve_48_bytes(path: Path) -> None:
     database = ctypes.c_void_p()
     assert library.sqlite3_open(os.fsencode(path), ctypes.byref(database)) == 0
     try:
-        reserved = ctypes.c_int(48)
+        assert reserved_bytes in (48, 80)
+        reserved = ctypes.c_int(reserved_bytes)
         assert library.sqlite3_file_control(
             database, b"main", 38, ctypes.byref(reserved),
         ) == 0

@@ -430,3 +430,116 @@ def test_formal_cleanup_failure_is_reported_and_recovery_stays_closed(fictional_
     assert not result['recovered'] and not result['stagingCleaned']
     assert (fictional_source[2].parent / 'formal-root/staging/owner.json').is_file()
     assert not fictional_source[2].exists()
+
+
+def _independent(program):
+    """Reuse the guarded merge and production SHA1 decoder, without a QQ API.
+
+    Only the fixture encoder replaces the historical PoC's dummy page tags.
+    This does not supply a real logged-in identity or a native event source.
+    """
+    return program.replace('let fired = false;', 'let fired = false; const independentReceipt = {phases: []};').replace(
+        "const result = await fn({mainPath, walPath, outputPath, passphrase: process.env.ECHO_POC_PASSPHRASE, onPhase});",
+        r"""
+  const path = await import('node:path');
+  const {createHash, randomBytes} = await import('node:crypto');
+  const {encode} = await import('./scripts/spikes/qq_independent_codec.mjs');
+  const {acquireSourceGuard} = await import('./scripts/qq_direct_db_snapshot/source_guard.mjs');
+  const {withAuthenticatedKey, PROFILE} = await import('./src/qq_chat_analyzer/providers/qq_independent/js/qq_key_source.mjs');
+  const {decryptSnapshot, snapshotFailureReceipt} = await import('./src/qq_chat_analyzer/providers/qq_independent/js/qq_full_read.mjs');
+  const plain = fs.readFileSync(path.join(path.dirname(mainPath), '..', 'plain.db'));
+  const wal = fs.readFileSync(path.join(path.dirname(mainPath), '..', 'plain.db-wal'));
+  const salt = randomBytes(16), key = pbkdf2Sync(process.env.ECHO_POC_PASSPHRASE, salt, 4000, 32, 'sha512');
+  fs.writeFileSync(mainPath, encode(plain, key, salt));
+  const little = wal.readUInt32BE(0) === 0x377f0682;
+  let running = checksum(wal.subarray(0, 24), little);
+  for (let at = 32; at + 4120 <= wal.length; at += 4120) {
+    const number = wal.readUInt32BE(at);
+    const image = Buffer.alloc(Math.max(number * 4096, plain.length));
+    plain.copy(image);
+    wal.subarray(at + 24, at + 4120).copy(image, (number - 1) * 4096);
+    // Reuse the existing encoder's page-number authentication, including WAL
+    // pages beyond the current main. No alternate production cipher exists.
+    const page = encode(image, key, salt).subarray(1024 + (number - 1) * 4096, 1024 + number * 4096);
+    if (mode === 'corrupt-mac' && number > 1) page[4064] ^= 1;
+    page.copy(wal, at + 24);
+    running = checksum(Buffer.concat([wal.subarray(at, at + 8), page]), little, running);
+    wal.writeUInt32BE(running[0], at + 16); wal.writeUInt32BE(running[1], at + 20);
+  }
+  key.fill(0);
+  fs.writeFileSync(walPath, wal);
+  const index = fs.readFileSync(mainPath + '-shm');
+  index.writeUInt32LE(running[0], 24); index.writeUInt32LE(running[1], 28);
+  updateIndex(index);
+  const phases = independentReceipt.phases, abort = new AbortController();
+  const merged = path.join(path.dirname(outputPath), 'independent-merged.db');
+  const deadline = performance.now() + 20000;
+  const guard = await acquireSourceGuard(mainPath, walPath, {signal: abort.signal, deadline});
+  let capture;
+  try {
+    capture = await createMergedEncryptedDatabase({mainPath, walPath, outputPath: merged,
+      deadline, signal: abort.signal, readWitness: () => guard.readWitness(),
+      onPhase: phase => {
+        onPhase(phase);
+        if (mode === 'cancel' && phase === 'boundary_selected') abort.abort();
+      }});
+    phases.push('encrypted_snapshot');
+  } finally {
+    await guard.release();
+    phases.push('source_released');
+  }
+  const bytes = fs.readFileSync(merged), firstPage = bytes.subarray(0, 5120);
+  let decoded;
+  withAuthenticatedKey({
+    acquire(binding) { return {kind: 'passphrase', material: Buffer.from(process.env.ECHO_POC_PASSPHRASE),
+      binding, isCurrent: () => !abort.signal.aborted}; },
+    close() { return true; }
+  }, {version: '9.9.37-54395', profile: PROFILE, sessionGeneration: 'fictional-live-wal', firstPage}, raw => {
+    phases.push('authenticated_consumer');
+    try {
+      decoded = decryptSnapshot({path: merged, output: outputPath, size: bytes.length,
+        sha256: createHash('sha256').update(bytes).digest('hex')}, firstPage, raw);
+    } catch (error) { Object.assign(independentReceipt, snapshotFailureReceipt(error)); throw error; }
+    phases.push('decoded');
+  }, {deadline, signal: abort.signal});
+  const result = {...capture, ...decoded, phases, reservedBytes: plain[20]};
+"""
+    ).replace("code:error.code ?? 'interrupted'", "code:error.code ?? 'interrupted', independent:independentReceipt")
+
+
+@pytest.mark.parametrize('poc_source', [48, 80], indirect=True)
+def test_independent_authenticated_live_wal_keeps_boundary_and_releases_source(fictional_source, request):
+    """A concurrent append succeeds; only the previously committed image wins."""
+    import sqlite3
+    result = _interleave(fictional_source, 'appendFrame(true);', mode='merge', driver_transform=_independent)
+    assert result['ok'], result
+    assert result['reservedBytes'] == request.node.callspec.params['poc_source']
+    assert result['sourceState']['after']['committedFrame'] > result['sourceState']['before']['committedFrame']
+    assert result['all_pages_authenticated'] and result['decrypted_pages'] == result['pages']
+    assert result['phases'] == ['encrypted_snapshot', 'source_released', 'authenticated_consumer', 'decoded']
+    with sqlite3.connect(f'{fictional_source[2].as_uri()}?mode=ro', uri=True) as db:
+        assert db.execute('PRAGMA integrity_check').fetchone() == ('ok',)
+        assert db.execute('SELECT body FROM entries').fetchone() == ('fictional selected',)
+    # Neither helper nor decoder may leave a source handle that denies deletion.
+    for source in (*fictional_source[:2], Path(f'{fictional_source[0]}-shm')):
+        source.rename(source.with_suffix(source.suffix + '.released'))
+
+
+@pytest.mark.parametrize('mode', ['cancel', 'corrupt-mac'])
+@pytest.mark.parametrize('poc_source', [80], indirect=True)
+def test_independent_live_wal_cancel_or_page_mac_failure_never_publishes(fictional_source, mode):
+    result = _interleave(fictional_source, '', mode=mode, driver_transform=_independent)
+    assert not result['ok'], result
+    assert not fictional_source[2].exists()
+    if mode == 'cancel':
+        assert result['code'] in ('source_guard_failed', 'capture_cancelled')
+        assert 'authenticated_consumer' not in result['independent']['phases']
+        assert not (fictional_source[2].parent / 'independent-merged.db').exists()
+    else:
+        assert result['code'] == 'key_source_failed'
+        assert result['independent']['failure'] == 'page_hmac_mismatch'
+        assert result['independent']['authenticated_pages'] >= 1
+        assert result['independent']['provisional_output_removed']
+        assert result['independent']['phases'] == ['encrypted_snapshot', 'source_released', 'authenticated_consumer']
+    for source in (*fictional_source[:2], Path(f'{fictional_source[0]}-shm')):
+        source.rename(source.with_suffix(source.suffix + '.released'))
