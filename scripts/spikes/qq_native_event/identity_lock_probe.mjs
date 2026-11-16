@@ -18,7 +18,11 @@ try {
   const witness = await checkpointWitness(request.main, () => {}, guard.readWitness);
   result.witness_valid = true;
   result.committed_boundary_present = witness.boundary > 0;
-} catch { result.refusal = 'lock_or_witness_unavailable'; }
+} catch (error) {
+  const allowed = new Set(['source_guard_failed', 'checkpoint_witness_missing', 'checkpoint_witness_torn',
+    'checkpoint_witness_invalid', 'checkpoint_state_invalid', 'short_read']);
+  result.refusal = allowed.has(error?.code) ? error.code : 'lock_or_witness_unavailable';
+}
 finally {
   if (guard) {
     try { await guard.release(); result.released = true; }

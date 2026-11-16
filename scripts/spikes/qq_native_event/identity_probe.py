@@ -173,7 +173,10 @@ def process_candidates():
     return result[0]
 
 
-PATH_COUNTS = ('target_file_handles', 'duplicated_handles', 'disk_handles', 'resolved_paths', 'database_paths')
+PATH_COUNTS = ('target_file_handles', 'duplicated_handles', 'disk_handles', 'resolved_paths', 'database_paths',
+    'verified_raw_device_endpoints')
+PATH_NATIVE_FIELDS = {'win32_error': (0, 0xffffffff), 'file_kind': (0, 0xffff),
+    'device_type': (0, 0xffff), 'nt_status': (-0x80000000, 0x7fffffff)}
 
 
 def path_reply(raw, returncode):
@@ -184,7 +187,9 @@ def path_reply(raw, returncode):
     if not isinstance(reply, dict):
         raise SourceError('target_paths_reply_invalid')
     counts = reply.get('counts', {})
-    if not isinstance(counts, dict) or set(counts)-set(PATH_COUNTS) or any(type(v) is not int or not 0 <= v <= 16384 for v in counts.values()):
+    if not isinstance(counts, dict) or set(counts)-(set(PATH_COUNTS)|set(PATH_NATIVE_FIELDS)) or any(
+        type(v) is not int or not PATH_NATIVE_FIELDS.get(k, (0, 16384))[0] <= v <= PATH_NATIVE_FIELDS.get(k, (0, 16384))[1]
+        for k, v in counts.items()):
         raise SourceError('target_paths_reply_invalid')
     if returncode or reply.get('phase') == 'paths_refused':
         reason = reply.get('reason')
@@ -193,7 +198,7 @@ def path_reply(raw, returncode):
             'target_handle_limit', 'target_file_handle_changed_or_inaccessible', 'target_disk_path_unavailable',
             'local_database_path_required', 'database_path_limit', 'duplicate_close_unconfirmed',
             'process_read_access_unavailable', 'process_identity_unavailable', 'process_identity_mismatch',
-            'process_handle_close_failed'}
+            'process_handle_close_failed', 'unknown_device_name_unavailable', 'unknown_device_name_invalid'}
         if not isinstance(reason, str) or (reason not in allowed and not re.fullmatch(r'target_file_kind_unknown_device_[0-9]{1,10}_status_-?[0-9]{1,10}', reason)):
             reason = 'target_paths_unavailable'
         emit('path_query_refused', reason=reason, **counts)
@@ -201,6 +206,7 @@ def path_reply(raw, returncode):
     paths = reply.get('paths')
     if reply.get('phase') != 'paths' or not isinstance(paths, list) or len(paths) > 128 or any(not isinstance(p, str) or len(p) > 32768 for p in paths):
         raise SourceError('target_paths_reply_invalid')
+    emit('path_query_verified', **counts)
     return paths
 
 
@@ -217,10 +223,50 @@ def query_paths(pid, created, image):
         process.close_with_exit_evidence(timeout=3)
 
 
+def raw_device_endpoint(name):
+    # A successful native object-name query must identify the device itself,
+    # with NO file component. Such a handle is not an account's regular DB file.
+    # Never skip an unknown filesystem path, unnamed object or failed query.
+    prefix = '\\device\\'
+    if not name.casefold().startswith(prefix):
+        return False
+    leaf = name[len(prefix):]
+    return leaf not in ('.', '..') and re.fullmatch(r'[A-Za-z0-9_.{}-]{1,128}', leaf) is not None
+
+
+def file_object_name(nt, handle, counts):
+    """Metadata only, ONLY in the separately bounded file-query child.
+
+    Native name queries can block in a driver. The parent retains its existing
+    8-second budget and owned Job; failure/unknown release never becomes success.
+    The name stays on private memory and is never a public diagnostic.
+    """
+    class UnicodeString(C.Structure):
+        _fields_ = [('length', W.USHORT), ('capacity', W.USHORT), ('data', C.c_void_p)]
+    nt.NtQueryObject.argtypes = [W.HANDLE, W.ULONG, C.c_void_p, W.ULONG, C.POINTER(W.ULONG)]
+    nt.NtQueryObject.restype = W.LONG
+    data = C.create_string_buffer(65536+64); required = W.ULONG()
+    result = nt.NtQueryObject(handle, 1, data, len(data), C.byref(required))
+    counts['nt_status'] = result
+    if result != 0 or required.value > len(data):
+        raise SourceError('unknown_device_name_unavailable')
+    value = UnicodeString.from_buffer(data)
+    start, end = C.addressof(data)+C.sizeof(UnicodeString), C.addressof(data)+len(data)
+    if not value.length or value.length%2 or value.capacity%2 or value.capacity < value.length or not value.data or not start <= value.data <= end-value.capacity:
+        raise SourceError('unknown_device_name_invalid')
+    try:
+        name = C.string_at(value.data, value.length).decode('utf-16-le')
+        if '\0' in name:
+            raise SourceError('unknown_device_name_invalid')
+        return name
+    finally:
+        C.memset(C.addressof(data), 0, len(data))
+
+
 def handle_paths(pid, created, image, counts):
     """Private child: duplicate/query ONLY this exact process's DISK handles.
 
-    No ReadFile, ReadProcessMemory, NtQueryObject or file-content API. Parent
+    No ReadFile, ReadProcessMemory or file-content API. Parent
     bounds this child because a filesystem metadata query may block in a driver.
     """
     class Entry(C.Structure):
@@ -231,6 +277,7 @@ def handle_paths(pid, created, image, counts):
             raise SourceError('process_generation_changed')
         api = native_api(); source = api.OpenProcess(0x1040, False, pid)
         if not source:
+            counts['win32_error'] = C.get_last_error()
             raise SourceError('handle_query_unavailable')
         # Learn the File object type from an owned, known regular file. This
         # excludes unrelated object types WITHOUT querying their names. A failed
@@ -248,6 +295,7 @@ def handle_paths(pid, created, image, counts):
                 if status == 0:
                     break
                 if status != -1073741820 or size >= 64*1024*1024:
+                    counts['nt_status'] = status
                     raise SourceError('handle_snapshot_unavailable')
                 size = max(size*2, needed.value+65536)
                 if size > 64*1024*1024:
@@ -268,15 +316,20 @@ def handle_paths(pid, created, image, counts):
                 raise SourceError('target_handle_limit')
             paths = set()
             for value in selected:
+                for field in PATH_NATIVE_FIELDS:
+                    counts.pop(field, None)
                 duplicate = W.HANDLE()
                 # Zero access: GetFileType/name queries require no content rights.
                 # Never close/change the target's handle or duplicate WRITE rights.
                 if not api.DuplicateHandle(source, value, api.GetCurrentProcess(), C.byref(duplicate), 0, False, 0):
+                    counts['win32_error'] = C.get_last_error()
                     raise SourceError('target_file_handle_changed_or_inaccessible')
                 counts['duplicated_handles'] += 1
                 try:
                     C.set_last_error(0)
                     kind = api.GetFileType(duplicate)
+                    counts['file_kind'] = kind
+                    counts['win32_error'] = C.get_last_error()
                     if kind in (2, 3):
                         continue
                     if kind != 1:
@@ -288,16 +341,23 @@ def handle_paths(pid, created, image, counts):
                         nt.NtQueryVolumeInformationFile.argtypes = [W.HANDLE, C.POINTER(Status), C.c_void_p, W.ULONG, W.ULONG]
                         nt.NtQueryVolumeInformationFile.restype = W.LONG
                         result = nt.NtQueryVolumeInformationFile(duplicate, C.byref(status), device, C.sizeof(device), 4)
+                        counts['nt_status'] = result
+                        counts['device_type'] = device[0]
                         # SDK devioctl.h: KSEC=0x39, CRYPT_PROVIDER=0x3f.
                         # These security devices are not disk/filesystems.
                         # Both were observed in our fictional child first.
                         if kind == 0 and result == 0 and device[0] in (0x39, 0x3f):
                             continue
+                        if kind == 0 and result == 0 and device[0] == 0x22:
+                            if raw_device_endpoint(file_object_name(nt, duplicate, counts)):
+                                counts['verified_raw_device_endpoints'] += 1
+                                continue
                         raise SourceError('target_file_kind_unknown_device_'+str(device[0])+'_status_'+str(result))
                     name = C.create_unicode_buffer(32768)
                     counts['disk_handles'] += 1
                     n = api.GetFinalPathNameByHandleW(duplicate, name, len(name), 0)
                     if not n or n >= len(name) or not name.value.startswith('\\\\?\\'):
+                        counts['win32_error'] = C.get_last_error()
                         raise SourceError('target_disk_path_unavailable')
                     counts['resolved_paths'] += 1
                     if n and n < len(name) and name.value.startswith('\\\\?\\'):
@@ -433,11 +493,16 @@ def self_check(root):
     else:
         raise SourceError('fixture_path_refusal_accepted')
     checks += 1
+    if not raw_device_endpoint('\\Device\\FictionalGraphicsDevice') or any(raw_device_endpoint(name) for name in (
+        '', '\\Device\\DxgKrnl\\nt_qq\\nt_db\\nt_msg.db',
+        '\\Device\\HarddiskVolume1\\nt_qq\\nt_db\\nt_msg.db', '\\Device\\..', '\\??\\C:\\nt_qq\\nt_db')):
+        raise SourceError('fixture_graphics_classification_failed')
+    checks += 1
     emit('offline_verified', checks=checks, real_qq_accessed=False, payload_guard_page_untouched=True,
          original_function_preserved=True, fixture_components_unloaded=True)
 
 
-def fixture_file_holder(root):
+def fixture_file_holder(root, *, graphics=False):
     """Only this build's freshly created fictional files, never a user folder."""
     from contextlib import ExitStack
     import sqlite3
@@ -450,6 +515,23 @@ def fixture_file_holder(root):
     if not api.QueryFullProcessImageNameW(api.GetCurrentProcess(), 0, image, C.byref(length)):
         raise SourceError('fixture_process_identity_failed')
     with ExitStack() as resources:
+        if graphics:
+            # Owned Windows graphics device, to reproduce file-device handles
+            # used by desktop apps without launching or inspecting QQ.
+            d3d = C.WinDLL('d3d11')
+            d3d.D3D11CreateDevice.argtypes = [C.c_void_p, C.c_uint, W.HMODULE, C.c_uint,
+                C.c_void_p, C.c_uint, C.c_uint, C.POINTER(C.c_void_p), C.POINTER(C.c_uint), C.POINTER(C.c_void_p)]
+            d3d.D3D11CreateDevice.restype = W.LONG
+            device, context, level = C.c_void_p(), C.c_void_p(), C.c_uint()
+            result = d3d.D3D11CreateDevice(None, 1, None, 0, None, 0, 7,
+                C.byref(device), C.byref(level), C.byref(context))
+            def release(value):
+                if value:
+                    table = C.cast(value, C.POINTER(C.POINTER(C.c_void_p))).contents
+                    C.WINFUNCTYPE(W.ULONG, C.c_void_p)(table[2])(value)
+            resources.callback(release, device); resources.callback(release, context)
+            if result < 0 or not device or not context:
+                raise SourceError('fixture_graphics_unavailable')
         connection = sqlite3.connect(directory/'nt_msg.db')
         resources.callback(connection.close)
         connection.execute('PRAGMA page_size=4096')
@@ -462,6 +544,58 @@ def fixture_file_holder(root):
         print(json.dumps({'pid': os.getpid(), 'created': process_creation_ticks(api, api.GetCurrentProcess()),
             'image': image.value, 'main': str(directory/'nt_msg.db')}), flush=True)
         sys.stdin.buffer.read(1)
+
+
+def read_owner_reference():
+    """Operator-only masked input; never a product identity input or file."""
+    import getpass
+    import msvcrt
+    mode = W.DWORD()
+    api = native_api()
+    api.GetConsoleMode.argtypes = [W.HANDLE, C.POINTER(W.DWORD)]
+    if not api.GetConsoleMode(msvcrt.get_osfhandle(sys.stdin.fileno()), C.byref(mode)):
+        raise SourceError('private_console_required')
+    reference = getpass.getpass('Private owner reference (hidden): ')
+    if not reference.isascii() or not reference.isdigit() or reference.startswith('0') or not 5 <= len(reference) <= 20:
+        raise SourceError('independent_owner_reference_required')
+    return reference
+
+
+def probe_lock_metadata(main):
+    import shutil
+    node = shutil.which('node')
+    if not node:
+        raise SourceError('node_required')
+    probe = child([node, HERE/'identity_lock_probe.mjs'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    try:
+        lock_output, _ = probe.communicate(json.dumps({'main': str(main), 'wal': str(main)+'-wal'}).encode('utf-8'), timeout=16)
+        if len(lock_output) > 2048:
+            raise SourceError('lock_diagnostic_limit')
+        result = json.loads(lock_output)
+        allowed = {'phase', 'locks_acquired', 'witness_valid', 'released', 'database_content_read',
+            'committed_boundary_present', 'refusal'}
+        if not isinstance(result, dict) or set(result)-allowed or result.get('phase') != 'lock_probe':
+            raise SourceError('lock_diagnostic_invalid')
+        emit('live_lock_metadata', locks_acquired=result.get('locks_acquired') is True,
+             witness_valid=result.get('witness_valid') is True, released=result.get('released') is True,
+             database_content_read=False, full_snapshot_attempted=False,
+             refusal=result.get('refusal') if result.get('refusal') in {
+                 'source_guard_failed', 'checkpoint_witness_missing', 'checkpoint_witness_torn',
+                 'checkpoint_witness_invalid', 'checkpoint_state_invalid', 'short_read',
+                 'lock_or_witness_unavailable', 'source_release_unconfirmed'} else None)
+        if probe.returncode or not all(result.get(k) is True for k in ('locks_acquired', 'witness_valid', 'released')):
+            reason = result.get('refusal')
+            if reason not in {'source_guard_failed', 'checkpoint_witness_missing', 'checkpoint_witness_torn',
+                'checkpoint_witness_invalid', 'checkpoint_state_invalid', 'short_read',
+                'lock_or_witness_unavailable', 'source_release_unconfirmed'}:
+                reason = 'live_lock_validation_failed'
+            raise SourceError(reason)
+    finally:
+        if probe.poll() is None:
+            probe.terminate(); probe.wait(timeout=3) # Only our Node; guard also has its own TTL.
+        for stream in (probe.stdin, probe.stdout):
+            if stream and not stream.closed:
+                stream.close()
 
 
 def real_worker(root):
@@ -561,24 +695,7 @@ def real_worker(root):
         # The observed string is independently confirmed as THIS owner's UIN.
         # Do not invent a global enum mapping or treat every numeric task as
         # a current-user declaration. This evidence is scoped to this attempt.
-        import shutil
-        node = shutil.which('node')
-        if not node:
-            raise SourceError('node_required')
-        probe = child([node, HERE/'identity_lock_probe.mjs'], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
-        lock_output, _ = probe.communicate(json.dumps({'main': str(main), 'wal': str(main)+'-wal'}).encode('utf-8'), timeout=16)
-        if len(lock_output) > 2048:
-            raise SourceError('lock_diagnostic_limit')
-        result = json.loads(lock_output)
-        allowed = {'phase', 'locks_acquired', 'witness_valid', 'released', 'database_content_read',
-            'committed_boundary_present', 'refusal'}
-        if not isinstance(result, dict) or set(result)-allowed or result.get('phase') != 'lock_probe':
-            raise SourceError('lock_diagnostic_invalid')
-        emit('live_lock_metadata', locks_acquired=result.get('locks_acquired') is True,
-             witness_valid=result.get('witness_valid') is True, released=result.get('released') is True,
-             database_content_read=False, full_snapshot_attempted=False)
-        if probe.returncode or result.get('released') is not True:
-            raise SourceError('live_lock_validation_failed')
+        probe_lock_metadata(main)
         # Re-enumerate the same target after releasing source locks. A newly
         # opened second account or vanished source invalidates this experiment.
         if bind_paths(query_paths(pid, created, image), expected) != main:
@@ -620,6 +737,7 @@ def main():
     parser.add_argument('--self-check', action='store_true')
     parser.add_argument('--check-worker', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--fixture-file-holder', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--fixture-graphics', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--approved-single-session', action='store_true')
     parser.add_argument('--owner-reference-stdin', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--worker', action='store_true')
@@ -639,7 +757,7 @@ def main():
         return
     root = checked_build(args.build_root)
     if args.fixture_file_holder:
-        fixture_file_holder(root)
+        fixture_file_holder(root, graphics=args.fixture_graphics)
         return
     if args.worker:
         if not args.approved_single_session:
@@ -657,18 +775,9 @@ def main():
     if args.owner_reference_stdin:
         # Operator supplies the previously confirmed reference through a masked
         # console input, never a shell argument, saved file or printed prompt.
-        import getpass
-        import msvcrt
-        mode = W.DWORD()
-        api = native_api()
-        api.GetConsoleMode.argtypes = [W.HANDLE, C.POINTER(W.DWORD)]
-        if not args.approved_single_session or not api.GetConsoleMode(msvcrt.get_osfhandle(sys.stdin.fileno()), C.byref(mode)):
-            raise SourceError('private_console_required')
-        reference = getpass.getpass('Private owner reference (hidden): ')
-        if not reference.isascii() or not reference.isdigit() or reference.startswith('0') or not 5 <= len(reference) <= 20:
-            raise SourceError('independent_owner_reference_required')
-        os.environ['ECHO_METADATA_OWNER'] = reference
-        reference = ''
+        if not args.approved_single_session:
+            raise SourceError('single_session_approval_required')
+        os.environ['ECHO_METADATA_OWNER'] = read_owner_reference()
     environment = os.environ.copy()
     os.environ.pop('ECHO_METADATA_OWNER', None)
     login_event = None
