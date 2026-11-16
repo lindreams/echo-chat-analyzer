@@ -1,4 +1,7 @@
-"""Independent product flow, fictional inputs and a bounded native-capture seam."""
+"""Scoped acquisition regression and a fail-closed, passive desktop entry.
+
+The explicit account/group fixture does not prove automatic desktop discovery.
+"""
 from contextlib import closing
 import hashlib
 import json
@@ -74,9 +77,9 @@ def facade_for(service):
                               analysis_service=AnalysisApplicationService())
 
 
-def test_product_facade_names_scope_analysis_report_and_one_shot_cleanup(prepared,tmp_path):
+def test_scoped_facade_names_scope_analysis_report_and_one_shot_cleanup(prepared,tmp_path):
     service,selection,_=prepared; facade=facade_for(service)
-    facade.prepare_independent_qq(selection.executable,selection.account_directory,selection.account,selection.group,recover_media=False)
+    service.prepare(selection)
     facade.start_qq_auth_flow()
     sessions=facade.list_sessions(ChatSource.QQ)
     assert len(sessions)==1 and sessions[0].display_name=='Fictional orchard'
@@ -202,6 +205,8 @@ def test_formal_composition_selects_no_qr_workspace_and_navigation_is_passive(qt
     from qq_chat_analyzer.gui.app import build_facade
     from qq_chat_analyzer.gui.main_window import MainWindow
     from qq_chat_analyzer.gui.qq_independent_workspace import QQIndependentWorkspace
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLineEdit, QPushButton
     monkeypatch.setattr(source,'resources_identity',lambda _:pytest.fail('navigation inspected QQ'))
     monkeypatch.setattr(source,'runtime_files',lambda:pytest.fail('navigation touched runtime'))
     facade=build_facade(); window=MainWindow(facade)
@@ -209,7 +214,15 @@ def test_formal_composition_selects_no_qr_workspace_and_navigation_is_passive(qt
         assert isinstance(window.qq_workspace,QQIndependentWorkspace)
         window.show_qq_workspace()
         assert facade.get_qq_qrcode_path() is None
-        assert not window.qq_workspace._observe.isEnabled()
+        workspace = window.qq_workspace
+        assert not workspace.findChildren(QLineEdit, options=Qt.FindChildOption.FindDirectChildrenOnly)
+        assert not hasattr(workspace, '_account') and not hasattr(workspace, '_group')
+        assert not hasattr(workspace, '_account_directory') and not hasattr(workspace, '_executable')
+        assert not hasattr(facade, 'prepare_independent_qq')
+        assert not workspace._session_panel.isEnabled()
+        assert '暂不可用' in workspace._status.text()
+        assert '请勿为此重新登录' in workspace._status.text()
+        assert not any(button.isEnabled() for button in workspace.findChildren(QPushButton))
     finally:
         window.close(); window.await_shutdown(10)
 
@@ -239,6 +252,7 @@ def test_idle_expiry_releases_the_lease_and_payload(prepared,monkeypatch):
 
 def test_gui_close_during_capture_drains_and_cleans(qt_app,prepared,monkeypatch):
     import time
+    from threading import Thread
     from qq_chat_analyzer.gui.main_window import MainWindow
     service,selection,_=prepared
     entered=Event()
@@ -254,30 +268,43 @@ def test_gui_close_during_capture_drains_and_cleans(qt_app,prepared,monkeypatch)
     monkeypatch.setattr(service,'_run_capture',blocked_capture)
     service.prepare(selection)
     window=MainWindow(facade_for(service))
+    errors=[]
+    def capture():
+        try:
+            service.capture()
+        except source.QQIndependentError as error:
+            errors.append(error.code)
+    capture_thread=Thread(target=capture)
     try:
-        window.qq_workspace.observe()
+        # Existing experimental acquisition still belongs to the Facade;
+        # closing the unavailable entry must drain it safely.
+        capture_thread.start()
         deadline=time.monotonic()+3
         while not entered.is_set() and time.monotonic()<deadline:
             qt_app.processEvents();time.sleep(.01)
         assert entered.is_set()
         window.close()
         assert window.await_shutdown(10)
+        capture_thread.join(3)
+        assert not capture_thread.is_alive() and len(errors)==1
         assert service._root is None and not service._busy
     finally:
         window.close()
+        capture_thread.join(3)
 
 
-def test_late_armed_prompt_cancels_and_close_never_enqueues(qt_app,prepared):
-    from datetime import datetime, timedelta, timezone
+def test_blocked_workspace_cannot_promote_experimental_group_to_session_list(qt_app,prepared):
     from qq_chat_analyzer.gui.qq_independent_workspace import QQIndependentWorkspace
-    service,_,_=prepared
+    service,selection,_=prepared
+    service.prepare(selection)
+    service.capture()
     widget=QQIndependentWorkspace(facade_for(service),executor=lambda *_args,**_kwargs:pytest.fail('close queued work'))
-    widget._message({'phase':'armed','remaining_login_ms':100000,
-                     'login_before_utc':(datetime.now(timezone.utc)-timedelta(seconds=1)).isoformat()})
-    assert widget._cancel.is_set() and service._cancel.is_set()
-    assert 'armed：' not in widget._status.text()
+    widget.refresh_connection_status(load_sessions_on_ready=True)
+    assert not widget._session_panel.isEnabled()
+    assert '暂不可用' in widget._status.text()
     widget._closing=True
     widget.cancel_connection()
+    assert widget._cancel.is_set() and service._cancel.is_set()
     widget.close()
 
 

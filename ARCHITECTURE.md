@@ -8,7 +8,7 @@ Echo 是隐私优先的本地聊天分析工具。桌面来源为 QQ Direct DB �
 
 - Desktop：`echo-gui`、`python -m qq_chat_analyzer.gui` 与 frozen 入口共同进入 [desktop.py](src/qq_chat_analyzer/desktop.py)，再进入 GUI。
 - CLI：`echo-chat` 经应用服务分析本地文件，支持 `qq-db-json`、`wechat-db-json`、`detailed-json`、`chatlab-jsonl`、`cli-json`。它不是 GUI 的第三种来源，不直接获取 QQ/微信数据库。
-- QQ 正式 GUI 使用独立 QQ 54395 获取与 Direct DB Provider，不依赖 NapCat 或 Echo 二维码。用户正常退出 QQ 后准备只读快照，再自行打开 QQ，等待 armed 后登录。已登录后直接接入、其他 QQ 版本及私聊尚不支持。QCE、旧 QQ JSON/JSONL 和外部 miyu 实时获取已退休，不得通过 hint 或 fallback 恢复；微信 CLI 导出格式仍可本地导入。
+- QQ 正式 GUI 的独立连接暂不可用：当前账号／数据库的自动绑定及适配登录页状态的快照获取尚未接通，原手填账号／群号入口已撤下。已验证的 QQ 54395 单群获取、Direct DB Provider 和报告组件保留，不依赖 NapCat 或 Echo 二维码；不等同于完整会话列表已经可用。QCE、旧 QQ JSON/JSONL 和外部 miyu 实时获取已退休，不得通过 hint 或 fallback 恢复；微信 CLI 导出格式仍可本地导入。
 
 下图表示运行时调用／数据交接，不是 Python import 许可图：
 
@@ -100,7 +100,12 @@ QQ Direct DB 使用同一快照客户端绑定的认证与运行代际读取本�
 
 ## 4. QQ 连接、授权代际与 Snapshot 所有权
 
-### 正式独立 QQ 通路
+### 独立 QQ 获取组件与尚未完成的 GUI 接入
+
+以下是已验证的显式单群获取路径，不是当前可操作的正式 GUI 流程。正式入口只显示
+不可用状态，既不接受账号／群号／数据目录，也不发起获取或提示登录。完整会话发现前
+必须补齐可信账号绑定与登录页状态下的一致快照，不能恢复实验表单作为 fallback。
+源码证据与停止条件见 [流程纠偏记录](docs/research/2026-11-16-qq-product-flow-correction.md)。
 
 `GUI → Facade → QQIndependentService → 独占加密快照 → 自有 worker → QQDatabaseProvider`
 之后复用现有 Adapter、Analysis、媒体准备、Report Package 和 Catalog，不复制分析算法。

@@ -1360,14 +1360,6 @@ class ChatAnalyzerFacade:
             return self._require_service(ChatSource.QQ).get_snapshot()
         return self._require_qq_connection_manager().get_snapshot()
 
-    def prepare_independent_qq(self, executable, account_directory, account, group,
-                               *, recover_media=True, cancelled=lambda: False):
-        from .qq.qq_independent_service import QQIndependentSelection
-        with _translated_errors(ChatSource.QQ):
-            return self._require_service(ChatSource.QQ).prepare(
-                QQIndependentSelection(Path(executable), Path(account_directory), account, group, recover_media),
-                cancelled=cancelled)
-
     @timed_stage("qq_connection_request")
     def start_qq_auth_flow(
         self,
