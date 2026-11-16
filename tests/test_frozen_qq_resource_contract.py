@@ -38,11 +38,14 @@ def _spec_datas(project_root):
     return captured
 
 
-@pytest.mark.parametrize("filename", CONTRACT_FILES)
-def test_spec_declares_explicit_qq_contract_files_in_scripts(filename):
+def test_spec_declares_independent_assets_without_napcat():
     datas = _spec_datas(ROOT)
     declarations = [(Path(source), target) for source, target in datas]
-    assert (ROOT / "scripts" / filename, "scripts") in declarations
+    assert (ROOT / "scripts/windows_runtime_manifest.json", "scripts") in declarations
+    assert (ROOT / "scripts/qq_napcat_runtime_pins.json", "scripts") not in declarations
+    source=ROOT / 'src/qq_chat_analyzer/providers/qq_independent'
+    assert (source/'native-pins.json','qq_chat_analyzer/providers/qq_independent') in declarations
+    assert (source/'js','qq_chat_analyzer/providers/qq_independent/js') in declarations
     assert all(source != ROOT / "scripts" for source, _ in declarations)
 
 
@@ -97,12 +100,12 @@ def frozen_qq(tmp_path, monkeypatch):
 @pytest.mark.parametrize("prepare", [False, True])
 def test_spec_destinations_support_managed_frozen_resolution(frozen_qq, prepare):
     project, internal, program, assets = frozen_qq
-    for source, target in _spec_datas(project):
-        source = Path(source)
-        if source.name in CONTRACT_FILES:
-            destination = internal / target / source.name
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source, destination)
+    # Simulate the old frozen package explicitly; the current spec deliberately
+    # no longer ships these retired runtime declarations.
+    for filename in CONTRACT_FILES:
+        destination=internal/'scripts'/filename
+        destination.parent.mkdir(parents=True,exist_ok=True)
+        shutil.copyfile(project/'scripts'/filename,destination)
     for filename in CONTRACT_FILES:
         path = resources.resource_path("scripts/" + filename)
         assert path == internal / "scripts" / filename

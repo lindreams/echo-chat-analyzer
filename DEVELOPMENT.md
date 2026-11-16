@@ -246,7 +246,21 @@ The build consumes `LocalChatAnalyzer.spec` and
 `scripts/windows_runtime_manifest.json`; the manifest owns required native assets,
 WeChat binary hashes, copyright files and private-state exclusions. Provision
 those assets through the approved workflow; missing or mismatched assets must
-fail validation, not be bypassed. QQ pins/bootstrap are described in section 3.1.
+fail validation, not be bypassed. Independent QQ assets are described below;
+the older NapCat bootstrap in section 3.1 is not a product-build dependency.
+
+Independent QQ uses the verified 54395 native implementation, compiled with the
+existing MSVC x64 toolchain by `scripts/spikes/qq_native_event/build.ps1 -BuildRoot
+<new-directory-under-build>`. The source and MinHook revision remain audited;
+the script does not touch QQ. Review the resulting production DLL/loader hashes
+against `providers/qq_independent/native-pins.json` before staging. MSVC outputs
+include build-dependent identities, so a rebuild is not assumed byte-reproducible
+and pins must not be silently regenerated to make a check pass.
+
+`scripts/bootstrap_qq_independent_runtime.py --native-build <verified-build>
+--node <verified-node.exe>` stages only the two pinned production binaries, the
+receipt, MinHook license and official Node 24.16.0. No fixture host/DLL ships.
+The runtime manifest selects those files and forbids NapCat and QCE directories.
 
 From the target repository root, after confirming that generated `build` / `dist`
 outputs may be replaced:
@@ -350,13 +364,13 @@ not replaced by a successful package build. Record remaining gates in
 After the environment checks in section 3.2, use one fixed entry:
 
 ```powershell
-& .\.venv\Scripts\python.exe scripts/build_candidate_setup.py
+& .\.venv\Scripts\python.exe scripts/build_candidate_setup.py --lab
 ```
 
-Once per machine, write ignored `build/setup-tools.json` with three absolute
+Once per machine, write ignored `build/setup-tools.json` with two absolute
 local paths: `dotnet` (the verified local .NET 8 `dotnet.exe`), `vpk` (vpk
-1.2.161's `tools/net8.0/any/vpk.dll`), and `napcat_archive` (the cached official
-NapCat ZIP from section 3.1). JSON paths may use forward slashes. No system PATH
+1.2.161's `tools/net8.0/any/vpk.dll`, including its matching vendor assets).
+JSON paths may use forward slashes. No system PATH
 or global tool installation is required. Keep these paths out of Git.
 An SDK-installed `vpk.exe` can bind to .NET 9 even when DOTNET_ROOT selects 8;
 the explicit host/DLL pair avoids that mismatch. Preflight verifies the net8
@@ -369,15 +383,18 @@ selects an external location; existing directories are refused. The existing
 refused by `build/candidate-setup.lock`; after an interrupted process, verify it
 has exited before manually removing its stale lock.
 
-The cached official archive is size/hash checked, patched and bootstrapped on
-every run; existing private NapCat state causes refusal before replacement.
+The already staged independent runtime must pass fixed hash checks; no NapCat
+archive is read, patched or bootstrapped. Existing runtime state is not replaced.
 Frozen is rebuilt with `--clean` from current code and dependencies, rather than
 reusing a tree based on incomplete timestamps. This deliberately limits caching
 to the verified upstream download. Runtime, privacy, MSVC, license, feed and
 every-file package checks still run through the existing build/Setup scripts.
 There is no arbitrary version override or automatic installation/publication.
 
-The result uses `Lindreams.Echo` / `win-x64-stable` for local trial installation;
+With `--lab` the result uses `Echo.IndependentQQ.Lab` / `win-x64-lab`, avoiding the
+production installation identity. Without it, the existing production identity
+is retained. `--tools <ignored-config>` selects task-local tools without changing
+shared tool installations. The result
 it is **not release acceptance**. Building it does not run Full, prove real QQ
 connectivity, or replace the Frozen/Setup lifecycle, update and privacy acceptance
 in section 4.2. Formal releases still require the selected regression and complete

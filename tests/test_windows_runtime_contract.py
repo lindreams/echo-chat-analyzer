@@ -206,7 +206,7 @@ def test_manifest_never_names_an_install_scoped_config_file() -> None:
 # -------------------------------------------------------- required coverage
 
 
-@pytest.mark.parametrize("path", ['qq-napcat-candidate/napcat.mjs', 'qq-napcat-candidate/plugins/napcat-plugin-echo/index.mjs', 'wechat/wcdb_cli.exe', 'wechat/wx_key_helper.cjs'])
+@pytest.mark.parametrize("path", ['qq-independent/node.exe', 'qq-independent/echo_event_loader.exe', 'qq-independent/echo_event_54395.dll', 'wechat/wcdb_cli.exe', 'wechat/wx_key_helper.cjs'])
 def test_manifest_requires_every_product_hard_dependency(path: str) -> None:
     manifest = _load_manifest()
     entries = {
@@ -238,7 +238,7 @@ def test_private_paths_are_never_shipped_requirements() -> None:
 
 def test_manifest_limits_recursive_copy_to_program_payloads() -> None:
     assert _paths(_load_manifest(), "packageDirectories") == {
-        "qq-napcat-candidate/node_modules", "qq-napcat-candidate/static", "qq-napcat-candidate/native", "qq-napcat-candidate/worker", "wechat/node_modules/koffi",
+        "wechat/node_modules/koffi",
     }
 
 

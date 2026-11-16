@@ -1,299 +1,10 @@
 {
-  "qqPins": "qq_napcat_runtime_pins.json",
   "wechatPinnedAssets": {
     "wechat/WCDB.dll": "c4108e53dbe6749eb4ec2881f6d322eb160a1c5020ac959fb8ffaeac5498ecab",
     "wechat/wcdb_cli.exe": "1c2f81fa19a85052aba76662b88eaf671d89345a1c7ad1802f9074fbf3915698",
     "wechat/wx_key.dll": "aacf335bf5313133914d1ebc3789242970498b5df16237ba598550a70b1a9f36"
   },
   "requirements": [
-    {
-      "path": "qq-napcat-candidate/NapCatWinBootHook.dll",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/NapCatWinBootMain.exe",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/config/plugins.json",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/conout-wiJ7YKRd.js",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/launcher-user.bat",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/napcat.mjs",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/dpapi/win32-arm64/@primno+dpapi.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/dpapi/win32-x64/@primno+dpapi.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/ffmpeg/ffmpegAddon.darwin.arm64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/ffmpeg/ffmpegAddon.linux.arm64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/ffmpeg/ffmpegAddon.linux.x64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/ffmpeg/ffmpegAddon.win32.x64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/napi2native/ffmpeg.dll",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/napi2native/napi2native.darwin.arm64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/napi2native/napi2native.linux.arm64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/napi2native/napi2native.linux.x64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/napi2native/napi2native.win32.x64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/packet/MoeHoo.darwin.arm64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/packet/MoeHoo.linux.arm64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/packet/MoeHoo.linux.x64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/packet/MoeHoo.win32.x64.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/pty/linux.arm64/pty.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/pty/linux.x64/pty.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/pty/win32.x64/conpty.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/pty/win32.x64/conpty_console_list.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/pty/win32.x64/pty.node",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/pty/win32.x64/winpty-agent.exe",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native/pty/win32.x64/winpty.dll",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/node_modules/express/package.json",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/node_modules/ws/package.json",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/package.json",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/bridge.mjs",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/index.mjs",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/package.json",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/diagnostic_log.mjs",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/main_wal.mjs",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/snapshot.mjs",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/snapshot_guard.mjs",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo immutable snapshot handle guard."
-    },
-    {
-      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/snapshot_guard.ps1",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo immutable snapshot handle guard."
-    },
-    {
-      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/source_guard.mjs",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/source_guard.ps1",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot/workspace.mjs",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/qqnt.json",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/worker/conoutSocketWorker.mjs",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/native",
-      "source": "qq-napcat-candidate",
-      "type": "non-empty-directory",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/node_modules",
-      "source": "qq-napcat-candidate",
-      "type": "non-empty-directory",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/worker",
-      "source": "qq-napcat-candidate",
-      "type": "non-empty-directory",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/static",
-      "source": "qq-napcat-candidate",
-      "type": "non-empty-directory",
-      "description": "Echo NapCat program asset."
-    },
     {
       "path": "wechat/wcdb_cli.exe",
       "source": "wechat",
@@ -341,33 +52,39 @@
       "source": "wechat",
       "type": "non-empty-directory",
       "description": "Helper module root exposed to the helper process."
+    },
+    {
+      "path": "qq-independent/node.exe",
+      "source": "qq-independent",
+      "type": "file",
+      "description": "Independent QQ program asset."
+    },
+    {
+      "path": "qq-independent/echo_event_loader.exe",
+      "source": "qq-independent",
+      "type": "file",
+      "description": "Independent QQ program asset."
+    },
+    {
+      "path": "qq-independent/echo_event_54395.dll",
+      "source": "qq-independent",
+      "type": "file",
+      "description": "Independent QQ program asset."
+    },
+    {
+      "path": "qq-independent/build-receipt.json",
+      "source": "qq-independent",
+      "type": "file",
+      "description": "Independent QQ program asset."
+    },
+    {
+      "path": "qq-independent/MinHook.LICENSE.txt",
+      "source": "qq-independent",
+      "type": "file",
+      "description": "Independent QQ program asset."
     }
   ],
   "packageDirectories": [
-    {
-      "path": "qq-napcat-candidate/native",
-      "source": "qq-napcat-candidate",
-      "type": "directory",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/node_modules",
-      "source": "qq-napcat-candidate",
-      "type": "directory",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/worker",
-      "source": "qq-napcat-candidate",
-      "type": "directory",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/static",
-      "source": "qq-napcat-candidate",
-      "type": "directory",
-      "description": "Echo NapCat program asset."
-    },
     {
       "path": "wechat/node_modules/koffi",
       "source": "wechat",
@@ -377,65 +94,32 @@
   ],
   "privatePaths": [
     {
-      "path": "qq-napcat-candidate/cache",
-      "source": "qq-napcat-candidate",
+      "path": "qq-independent/cache",
+      "source": "qq-independent",
       "type": "directory",
-      "description": "Echo NapCat program asset."
+      "description": "Private state must never ship."
     },
     {
-      "path": "qq-napcat-candidate/logs",
-      "source": "qq-napcat-candidate",
+      "path": "qq-independent/logs",
+      "source": "qq-independent",
       "type": "directory",
-      "description": "Echo NapCat program asset."
+      "description": "Private state must never ship."
     },
     {
-      "path": "qq-napcat-candidate/config/napcat.json",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/config/plugins",
-      "source": "qq-napcat-candidate",
+      "path": "qq-independent/config",
+      "source": "qq-independent",
       "type": "directory",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/config/onebot11.json",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/loadNapCat.js",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/qqnt.echo.json",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/config/webui.json",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
-    },
-    {
-      "path": "qq-napcat-candidate/config/qq_path.txt",
-      "source": "qq-napcat-candidate",
-      "type": "file",
-      "description": "Echo NapCat program asset."
+      "description": "Private state must never ship."
     }
   ],
   "forbiddenPaths": [
     "qq",
     "qq-napcat-candidate/qce-server.exe",
     "qq-napcat-candidate/plugins/napcat-plugin-qce",
-    "qq-napcat-candidate/static/qce"
+    "qq-napcat-candidate/static/qce",
+    "qq-napcat-candidate",
+    "qq-independent/echo_event_fixture.dll",
+    "qq-independent/echo_qq_event_host.exe"
   ],
   "portableExcludedFiles": [
     "qq-napcat-candidate/native/ffmpeg/ffmpegAddon.darwin.arm64.node",
@@ -457,16 +141,12 @@
     "LICENSE",
     "NOTICE.md",
     "third_party/velopack/LICENSE",
-    "third_party/napcat/LICENSE",
-    "third_party/napcat/NOTICE.md",
-    "third_party/napcat/DPAPI-LICENSE.txt",
-    "third_party/napcat/PTY-LICENSE.txt",
-    "third_party/napcat/WINPTY-LICENSE.txt",
-    "third_party/napcat/JETBRAINS-MONO-OFL.txt",
-    "third_party/napcat/NPM-LICENSES.txt"
+    "third_party/minhook/LICENSE",
+    "third_party/node/LICENSE"
   ],
   "releaseTreePrivatePaths": [
     "logs",
     "scripts/wcdb-diagnostic.txt"
-  ]
+  ],
+  "qqIndependentPins": "../src/qq_chat_analyzer/providers/qq_independent/native-pins.json"
 }

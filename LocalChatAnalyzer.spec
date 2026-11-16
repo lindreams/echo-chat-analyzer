@@ -43,10 +43,12 @@ echo_expression_assets = project_root / "frontend/echo_report/wechat-emojis"
 echo_qq_expression_assets = project_root / "frontend/echo_report/qq-emojis"
 datas = [(str(path), ".") for path in resources]
 datas.append((str(project_root / "scripts/windows_runtime_manifest.json"), "scripts"))
-datas.append((str(project_root / "scripts/qq_napcat_runtime_pins.json"), "scripts"))
 datas.append((str(project_root / "scripts/sqlite_runtime_pins.json"), "scripts"))
 datas += copy_metadata("qq-chat-analyzer")
 datas += copy_metadata("velopack")
+independent_assets = project_root / "src/qq_chat_analyzer/providers/qq_independent"
+datas.append((str(independent_assets / "js"), "qq_chat_analyzer/providers/qq_independent/js"))
+datas.append((str(independent_assets / "native-pins.json"), "qq_chat_analyzer/providers/qq_independent"))
 
 # Original verification is a desktop capability. Keep upstream codec hooks and
 # Pillow's bundled third-party notices rather than maintaining private codecs.

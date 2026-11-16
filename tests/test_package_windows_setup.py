@@ -31,8 +31,9 @@ def release(tmp_path):
         "_internal/python.dll": b"fictional interpreter",
         "scripts/run_wechat_wcdb_diagnostic.ps1": b"fictional diagnostic",
         "LICENSE": b"fictional license",
-        "runtime/qq-napcat-candidate/napcat.mjs": b"fictional patched runtime",
-        "runtime/qq-napcat-candidate/config/plugins.json": b"fictional seed",
+        "runtime/qq-independent/node.exe": b"fictional javascript runtime",
+        "runtime/qq-independent/echo_event_loader.exe": b"fictional loader",
+        "runtime/qq-independent/echo_event_54395.dll": b"fictional observer",
         "runtime/wechat/WCDB.dll": b"fictional native library",
     }
     for name, version in [("qq-chat-analyzer", "0.1.0"), ("velopack", "1.2.161")]:
@@ -47,15 +48,14 @@ def release(tmp_path):
     metadata.mkdir()
     digest = lambda name: hashlib.sha256(files[name]).hexdigest()
     pins = {
-        "upstream": {"version": "4.18.34", "project": "NapNeko/NapCatQQ"},
-        "requiredFiles": {"napcat.mjs": "0" * 64},
-        "napcatPatch": {"path": "napcat.mjs", "patchedSha256": digest("runtime/qq-napcat-candidate/napcat.mjs")},
-        "pluginConfigSha256": digest("runtime/qq-napcat-candidate/config/plugins.json"),
-        "templates": [],
+        "build": "9.9.37-54395",
+        "node_sha256": digest("runtime/qq-independent/node.exe"),
+        "binaries": {name: digest("runtime/qq-independent/"+name) for name in
+                     ("echo_event_loader.exe", "echo_event_54395.dll")},
     }
     (metadata / "qq-pins.json").write_text(json.dumps(pins))
     contract = {
-        "qqPins": "qq-pins.json",
+        "qqIndependentPins": "qq-pins.json",
         "wechatPinnedAssets": {"wechat/WCDB.dll": digest("runtime/wechat/WCDB.dll")},
         "requirements": [dict(path=name.removeprefix("runtime/"), source=name.split("/")[1], type="file")
                          for name in files if name.startswith("runtime/")],
@@ -204,8 +204,8 @@ def test_candidate_existing_output_preserved_before_bootstrap(packager, tmp_path
     output.mkdir(parents=True)
     sentinel = output / "keep.txt"
     sentinel.write_text("fictional existing artifact")
-    monkeypatch.setattr(builder, "preflight", lambda config: (Path("dotnet"), Path("vpk"), Path("archive")))
-    monkeypatch.setattr(builder.napcat, "build_runtime", lambda *args: pytest.fail("bootstrap reached"))
+    monkeypatch.setattr(builder, "preflight", lambda config: (Path("dotnet"), Path("vpk")))
+    monkeypatch.setattr(builder.subprocess, "run", lambda *args, **kwargs: pytest.fail("build reached"))
     monkeypatch.setattr("sys.argv", ["candidate", "--tools", str(config), "--output", str(output)])
     assert builder.main() == 1
     assert sentinel.read_text() == "fictional existing artifact"

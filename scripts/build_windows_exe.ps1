@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$ProjectRootOverride = "",
     [string]$MsvcRuntimeDirectoryOverride = "",
     [switch]$RuntimeOnly,
@@ -28,7 +28,7 @@ $MsvcRuntimeNames = @(
     "vcruntime140.dll",
     "vcruntime140_1.dll"
 )
-$MsvcRuntimeTargets = @("qq-napcat-candidate", "wechat")
+$MsvcRuntimeTargets = @("qq-independent", "wechat")
 $MsvcRuntimeMinimumVersion = [Version]"14.43"
 
 # The portable runtime contract lives in one tracked manifest so the build and
@@ -75,36 +75,16 @@ function Test-PortableExcludedFile([string]$RelativePath) {
     return $RelativePath -in (Get-RuntimeContract).portableExcludedFiles
 }
 
-function Assert-NapCatArtifactPins([string]$Root, [string]$Phase) {
-    $PinsName = [string](Get-RuntimeContract).qqPins
-    if ($PinsName -ne 'qq_napcat_runtime_pins.json') {
-        throw 'Release must use the official Echo NapCat pins.'
-    }
-    $Pins = Get-Content -LiteralPath (Join-Path $PSScriptRoot $PinsName) -Raw -Encoding UTF8 | ConvertFrom-Json
-    if ($Pins.upstream.version -ne '4.18.34' -or $Pins.upstream.project -ne 'NapNeko/NapCatQQ') {
-        throw 'Unsupported release NapCat source.'
-    }
-    $Hashes = @{}
-    foreach ($Property in $Pins.requiredFiles.PSObject.Properties) {
-        $Hashes[$Property.Name] = [string]$Property.Value
-    }
-    $Hashes[[string]$Pins.napcatPatch.path] = [string]$Pins.napcatPatch.patchedSha256
-    $Hashes['config/plugins.json'] = [string]$Pins.pluginConfigSha256
-    foreach ($Template in $Pins.templates) {
-        $Hashes[[string]$Template.target] = [string]$Template.sha256
-    }
+function Assert-IndependentQQArtifactPins([string]$Root) {
+    $PinsPath = Join-Path $ProjectRoot 'src/qq_chat_analyzer/providers/qq_independent/native-pins.json'
+    $Pins = Get-Content -LiteralPath $PinsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $Hashes = @{ 'node.exe' = [string]$Pins.node_sha256 }
+    foreach ($Property in $Pins.binaries.PSObject.Properties) { $Hashes[$Property.Name] = [string]$Property.Value }
     foreach ($Name in $Hashes.Keys) {
-        if ($Name -match '(^/|\\|:|(^|/)\.\.(/|$))' -or $Hashes[$Name] -notmatch '^[0-9a-f]{64}$') {
-            throw 'Invalid NapCat artifact pin.'
-        }
-        if ($Phase -eq 'portable' -and (Test-PortableExcludedFile ("qq-napcat-candidate/" + $Name))) {
-            continue
-        }
-        $Target = Join-Path $Root ("qq-napcat-candidate/" + $Name)
+        if ($Name -notin @('node.exe','echo_event_loader.exe','echo_event_54395.dll') -or $Hashes[$Name] -notmatch '^[0-9a-f]{64}$') { throw 'Invalid independent runtime pin' }
+        $Target = Join-Path $Root ('qq-independent/' + $Name)
         Assert-ProgramPathNotLinked $Target
-        if ((Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Hashes[$Name]) {
-            throw ('NapCat artifact pin mismatch: ' + $Name)
-        }
+        if ((Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Hashes[$Name]) { throw 'Independent QQ artifact mismatch' }
     }
 }
 
@@ -214,7 +194,7 @@ function Assert-RuntimeContract {
             }
         }
     }
-    Assert-NapCatArtifactPins $Root $Phase
+    Assert-IndependentQQArtifactPins $Root
     Assert-WeChatArtifactPins $Root
     if ($Phase -eq 'portable') {
         foreach ($Relative in (Get-RuntimeContract).portableExcludedFiles) {

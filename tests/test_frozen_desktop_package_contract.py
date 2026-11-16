@@ -121,7 +121,6 @@ def test_frozen_release_excludes_deferred_reply_relations() -> None:
 
 @pytest.mark.parametrize("filename", [
     "windows_runtime_manifest.json",
-    "qq_napcat_runtime_pins.json",
     "sqlite_runtime_pins.json",
 ])
 def test_frozen_package_ships_current_qq_resource_contract(filename, monkeypatch) -> None:
@@ -138,21 +137,27 @@ def test_frozen_package_ships_current_qq_resource_contract(filename, monkeypatch
     assert resources.resource_path("scripts/" + filename) == packaged
 
 
-def test_frozen_managed_qq_resolves_from_packaged_metadata(monkeypatch, tmp_path) -> None:
+def test_frozen_independent_qq_runtime_and_assets(monkeypatch, tmp_path) -> None:
     _require_frozen_build()
     from qq_chat_analyzer import resources
-    from qq_chat_analyzer.application.qq.qq_environment_config import QQEnvironmentConfig
-    from qq_chat_analyzer.application.qq.qq_runtime_paths import resolve_runtime_paths
+    from qq_chat_analyzer.providers.qq_independent.worker import runtime_files
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "_MEIPASS", str(INTERNAL), raising=False)
     monkeypatch.setattr(sys, "executable", str(EXECUTABLE))
     monkeypatch.setattr(resources, "_PROJECT_ROOT", tmp_path / "absent-checkout")
     user = resources.user_data_root()
-    paths = resolve_runtime_paths(QQEnvironmentConfig(runtime_mode="managed"))
-    assert paths.program_root == DIST_APP / "runtime/qq-napcat-candidate"
-    assert paths.work_root.parent == user / "runtime/qq"
-    assert paths.snapshot_root == user / "transient/qq-direct-db"
+    directory, pins = runtime_files()
+    assert directory == DIST_APP / 'runtime/qq-independent'
+    assert set(pins) == {'echo_event_loader.exe', 'echo_event_54395.dll'}
+    packaged = INTERNAL / 'qq_chat_analyzer/providers/qq_independent'
+    source = PROJECT_ROOT / 'src/qq_chat_analyzer/providers/qq_independent'
+    for path in (source/'js').glob('*.mjs'):
+        assert (packaged/'js'/path.name).read_bytes() == path.read_bytes()
+    assert (packaged/'native-pins.json').read_bytes() == (source/'native-pins.json').read_bytes()
+    assert not (DIST_APP/'runtime/qq-napcat-candidate').exists()
+    assert not (directory/'echo_qq_event_host.exe').exists()
+    assert not (directory/'echo_event_fixture.dll').exists()
     assert not user.exists()
 
 

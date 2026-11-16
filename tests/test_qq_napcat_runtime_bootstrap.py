@@ -41,7 +41,11 @@ def test_official_pins_and_correctness_templates():
     assert pins["upstream"]["archiveUrl"] == "https://github.com/NapNeko/NapCatQQ/releases/download/v4.18.34/NapCat.Shell.zip"
     assert pins["upstream"]["archiveSha256"] == ARCHIVE_SHA
     assert pins["napcatPatch"]["upstreamSha256"] == "6a22c93373c8f73462658d57b00bc88164d7e5858c0fe2f178eb97d66d7cb3ba"
-    assert "upstream.version -ne '4.18.34'" in (ROOT / "scripts/build_windows_exe.ps1").read_text(encoding="utf-8-sig")
+    # Historical bootstrap pins remain valid; the product build now requires
+    # only the independent runtime and must not bootstrap NapCat.
+    build_script=(ROOT / "scripts/build_windows_exe.ps1").read_text(encoding="utf-8-sig")
+    assert 'Assert-IndependentQQArtifactPins' in build_script
+    assert 'Assert-NapCatArtifactPins' not in build_script
     assert load_builder().OFFICIAL_URL == pins["upstream"]["archiveUrl"]
     assert "core.dbPassphrase = a" in pins["napcatPatch"]["replacements"][1]["replacement"]
     whitelist = pins["napcatPatch"]["replacements"][3]

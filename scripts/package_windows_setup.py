@@ -34,14 +34,18 @@ ECHO_SETUP_ICON = ROOT / "branding/Echo.ico"
 
 
 def _validate_pins(entries: dict, contract: dict, manifest: Path) -> None:
-    pins = json.loads((manifest.parent / portable._manifest_path(contract["qqPins"])).read_text(encoding="utf-8"))
-    if pins["upstream"].get("version") != "4.18.34" or pins["upstream"].get("project") != "NapNeko/NapCatQQ":
-        raise PackageError("Unsupported NapCat source")
-    hashes = dict(pins["requiredFiles"])
-    hashes[pins["napcatPatch"]["path"]] = pins["napcatPatch"]["patchedSha256"]
-    hashes["config/plugins.json"] = pins["pluginConfigSha256"]
-    hashes.update({item["target"]: item["sha256"] for item in pins["templates"]})
-    runtime_hashes = {"qq-napcat-candidate/" + name: digest for name, digest in hashes.items()}
+    pin_path = contract["qqIndependentPins"]
+    # Repository-relative build input; runtime file paths below remain strictly
+    # package-relative. Tests supply a sibling pin file in their own sandbox.
+    if pin_path == "../src/qq_chat_analyzer/providers/qq_independent/native-pins.json":
+        pin_file = manifest.parent / pin_path
+    else:
+        pin_file = manifest.parent / portable._manifest_path(pin_path)
+    pins = json.loads(pin_file.read_text(encoding="utf-8"))
+    if pins.get("build") != "9.9.37-54395":
+        raise PackageError("Unsupported independent QQ source")
+    hashes = {**pins["binaries"], "node.exe": pins["node_sha256"]}
+    runtime_hashes = {"qq-independent/" + name: digest for name, digest in hashes.items()}
     runtime_hashes.update(contract["wechatPinnedAssets"])
     for name, expected in runtime_hashes.items():
         portable._manifest_path(name)
