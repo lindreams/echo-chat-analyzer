@@ -15,12 +15,18 @@
 namespace {
 constexpr char command[] = "OidbSvcTrpcTcp.0xcde_2";
 constexpr char qq_hash[] = "fed532ad58d2404dcedf2858554e8fa52a5f4e65b271c008d2faca4011d7d4a2";
+#ifdef ECHO_IDENTITY_METADATA
+// Research-only send metadata observer. Never built into the product runtime.
+constexpr unsigned char receive_prefix[] = {0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x08,0x01,0x00,0x00,0x48,0x8d,0xac,0x24,0x80,0x00,0x00,0x00,0x48,0xc7,0x85,0x80,0x00};
+using Receive = std::int64_t (*)(void*, void**);
+#else
 // Derived independently from this exact disk image's two semantic LEA anchors
 // and PE exception entry. This is a version-pinned FUNCTION RVA, never a key
 // address. The 32-byte prologue alone matches hundreds of unrelated functions.
 constexpr unsigned receive_rva = 0x1c39de8, receive_end = 0x1c3a274;
 constexpr unsigned char receive_prefix[] = {0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x28,0x01,0x00,0x00,0x48,0x8d,0xac,0x24,0x80,0x00,0x00,0x00,0x48,0xc7,0x85,0xa0,0x00};
 using Receive = std::int64_t (*)(void*, void**, std::uint32_t);
+#endif
 Receive original = nullptr;
 void* target = nullptr;
 std::atomic<unsigned> state{Fresh}, inflight{0};
@@ -86,6 +92,37 @@ void* select_target() {
     if (nt->Signature != IMAGE_NT_SIGNATURE || nt->FileHeader.Machine != IMAGE_FILE_MACHINE_AMD64 ||
         nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC || nt->FileHeader.NumberOfSections > 96 ||
         nt->OptionalHeader.SizeOfImage > 512u * 1024 * 1024) return nullptr;
+#ifdef ECHO_IDENTITY_METADATA
+    // Select exactly one unwind function containing BOTH semantic references.
+    // A prologue or an upstream static field guess is insufficient evidence.
+    unsigned receive_rva = 0, receive_end = 0, matches = 0;
+    const auto directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION];
+    if (!directory.VirtualAddress || directory.Size % sizeof(RUNTIME_FUNCTION) ||
+        directory.VirtualAddress > nt->OptionalHeader.SizeOfImage ||
+        directory.Size > nt->OptionalHeader.SizeOfImage-directory.VirtualAddress) return nullptr;
+    auto entries = reinterpret_cast<RUNTIME_FUNCTION*>(base+directory.VirtualAddress);
+    const char* send_anchors[] = {"InternalPushTask", "MSF task pushed seq:{} uin:{} uin_type:{} cmd:{} data_size:{} custom_sig:{}"};
+    for (unsigned e = 0; e < directory.Size/sizeof(RUNTIME_FUNCTION); ++e) {
+        const auto begin = entries[e].BeginAddress, end = entries[e].EndAddress;
+        if (end > nt->OptionalHeader.SizeOfImage || end <= begin || end-begin < sizeof(receive_prefix) ||
+            end-begin > 65536 || std::memcmp(base+begin, receive_prefix, sizeof(receive_prefix))) continue;
+        unsigned references = 0;
+        for (auto literal : send_anchors) {
+            bool referenced = false;
+            const auto n = std::strlen(literal)+1;
+            for (unsigned i = begin; i+7 <= end; ++i) {
+                if ((base[i]&0xf8) != 0x48 || base[i+1] != 0x8d || (base[i+2]&0xc7) != 5) continue;
+                std::int32_t relative; std::memcpy(&relative, base+i+3, 4);
+                const auto destination = static_cast<std::int64_t>(i)+7+relative;
+                if (destination >= 0 && static_cast<std::uint64_t>(destination)+n <= nt->OptionalHeader.SizeOfImage &&
+                    !std::memcmp(base+destination, literal, n)) referenced = true;
+            }
+            references += referenced;
+        }
+        if (references == 2) { ++matches; receive_rva = begin; receive_end = end; }
+    }
+    if (matches != 1) return nullptr;
+#endif
     if (receive_end > nt->OptionalHeader.SizeOfImage || receive_end <= receive_rva) return nullptr;
     bool executable = false;
     auto section = IMAGE_FIRST_SECTION(nt);
@@ -102,7 +139,11 @@ void* select_target() {
     if (!unwind || image_base != reinterpret_cast<DWORD64>(module) ||
         base + unwind->BeginAddress != found || unwind->EndAddress != receive_end) return nullptr;
     // Confirm both semantic references inside the same pinned unwind function.
+#ifdef ECHO_IDENTITY_METADATA
+    const char* anchors[] = {"InternalPushTask", "MSF task pushed seq:{} uin:{} uin_type:{} cmd:{} data_size:{} custom_sig:{}"};
+#else
     const char* anchors[] = {"DidRecvResponseData", "MSF recv seq:{} cmd:{} data_size:{}, error_code:{}"};
+#endif
     for (const char* literal : anchors) {
         bool referenced = false;
         const auto n = std::strlen(literal) + 1;
@@ -119,6 +160,9 @@ void* select_target() {
 #endif
 }
 
+#ifdef ECHO_IDENTITY_METADATA
+#include "identity_metadata.inc"
+#else
 // The only native business-memory reads follow the current receive callback's
 // owner -> response -> bounded command; only a matching command reaches payload.
 // This is not a process-memory search. SEH keeps a bad layout from crashing host.
@@ -154,16 +198,31 @@ void inspect_response(void** owner_ptr, unsigned error) {
         ReleaseSRWLockExclusive(&data_lock);
     }
 }
+#endif
 
+#ifdef ECHO_IDENTITY_METADATA
+std::int64_t receive(void* self, void** object) {
+#else
 std::int64_t receive(void* self, void** object, std::uint32_t error) {
+#endif
     const auto saved_error = GetLastError();
     inflight.fetch_add(1);
     if (state.load() == Armed) {
         if (GetTickCount64() >= deadline) { unsigned armed = Armed; state.compare_exchange_strong(armed, Expired); SetEvent(arrived); }
-        else inspect_response(object, error);
+        else {
+#ifdef ECHO_IDENTITY_METADATA
+            inspect_identity(object);
+#else
+            inspect_response(object, error);
+#endif
+        }
     }
     SetLastError(saved_error);
+#ifdef ECHO_IDENTITY_METADATA
+    __try { return original(self, object); }
+#else
     __try { return original(self, object, error); }
+#endif
     __finally { inflight.fetch_sub(1); }
 }
 

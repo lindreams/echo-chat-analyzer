@@ -198,7 +198,7 @@ function decryptPage(encrypted, pageNumber, key, salt) {
 
 // Windows little-endian WAL-index witness. Both header copies and their
 // checksum must agree; missing/torn/unsupported SHM is never an optional guard.
-async function checkpointWitness(mainPath, observe = () => {}, readWitness = null) {
+export async function checkpointWitness(mainPath, observe = () => {}, readWitness = null) {
   const path = `${mainPath}-shm`;
   if (!existsSync(path)) fail('checkpoint_witness_missing');
   const fd = openSync(path, 'r');
