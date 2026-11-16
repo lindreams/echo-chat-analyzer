@@ -11,7 +11,7 @@ import binascii
 import hashlib
 import json
 import logging
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 import re
@@ -64,8 +64,14 @@ def parse_qq_db_rich_messages(
 
 def parse_qq_db_rich_messages_with_media_facts(
     payload: Mapping[str, Any] | None,
+    *,
+    on_record: Callable[[Any, RichMessage | None, str, Mapping[str, Any]], None] | None = None,
 ) -> tuple[list[RichMessage], tuple[str, ...], tuple[QQPicMediaFact, ...]]:
-    """Parse messages and retain only compact custom-PIC recovery facts."""
+    """Parse messages and retain only compact custom-PIC recovery facts.
+
+    The optional in-process observer receives each actual parsing decision;
+    it must not log raw records or identities. No second decoder is involved.
+    """
     if not is_qq_db_payload(payload):
         return [], (), ()
 
@@ -91,14 +97,18 @@ def parse_qq_db_rich_messages_with_media_facts(
                 )
     for record in records:
         in_session = _record_in_session(record, query)
-        parsed_message, media_fact = _parse_record(
+        diagnostics = {} if on_record is not None else None
+        parsed_message, media_fact, disposition = _parse_record(
             record,
             session_context,
             self_uin,
             reply_targets if in_session else {},
             nudge_context if in_session else None,
             query,
+            diagnostics=diagnostics,
         )
+        if on_record is not None:
+            on_record(record, parsed_message, disposition, diagnostics)
         if parsed_message is None:
             skipped_record = True
         else:
@@ -314,30 +324,38 @@ def _parse_record(
     reply_targets: dict[str, list[str | None]],
     nudge_context: Mapping[str, str] | None = None,
     query: Mapping[str, Any] | None = None,
-) -> tuple[RichMessage | None, QQPicMediaFact | None]:
+    *,
+    diagnostics: dict[str, Any] | None = None,
+) -> tuple[RichMessage | None, QQPicMediaFact | None, str]:
     if not isinstance(record, Mapping):
-        return None, None
+        return None, None, "invalid_record"
     fields = record.get("fields")
     if not isinstance(fields, Mapping):
-        return None, None
+        return None, None, "invalid_record"
 
     # These field numbers only describe the feasibility-supported Adapter v0
     # slice; they are not stable across QQ versions.
     sender_id = _stringify_identifier(fields.get("40033"))
+    sender_value = fields.get("40033")
+    if sender_value is not None and (
+        isinstance(sender_value, bool) or not isinstance(sender_value, (int, float, str))
+    ):
+        return None, None, "invalid_sender_type"
     timestamp = fields.get("40050")
     if (
         not isinstance(timestamp, (int, float, str))
         or isinstance(timestamp, bool)
     ):
-        return None, None
+        return None, None, "invalid_timestamp_type"
 
     pic_elements: list[QQPicMediaElement] = []
-    contents, relations, has_reply, parties = _extract_semantics(
+    contents, relations, has_reply, parties, disposition = _extract_semantics(
         record,
         reply_targets,
         nudge_context,
         pic_elements=pic_elements,
         group=session_context[0] == "group",
+        diagnostics=diagnostics,
     )
     if parties is not None:
         message_id = _nonzero_identifier(record.get("record_id"))
@@ -345,7 +363,7 @@ def _parse_record(
                 or not -(1 << 63) <= int(message_id) <= (1 << 64) - 1
                 or message_id != _nonzero_identifier(fields.get("40001"))
                 or to_epoch_seconds(timestamp) is None):
-            return None, None
+            return None, None, "invalid_nudge_identity"
         actor, _ = parties
         is_self = actor == self_uin
         return RichMessage(
@@ -356,9 +374,17 @@ def _parse_record(
             timestamp=timestamp, message_type="nudge", contents=(),
             relations=relations,
             is_system=True, is_self=is_self,
-        ), None
-    if sender_id is None or (not contents and not relations and not has_reply):
-        return None, None
+        ), None, "accepted"
+    if not contents and not relations and not has_reply:
+        return None, None, disposition
+    if sender_id is None and not (relations or has_reply or any(
+        isinstance(part, (TextContent, ExpressionContent))
+        or isinstance(part, NonTextContent) and part.kind != "unknown"
+        for part in contents
+    )):
+        # Newly admitting a missing sender requires recognized chat content.
+        # An opaque segment alone does not establish a valid authored message.
+        return None, None, "unresolved_sender_content"
 
     conversation_type, conversation_id = session_context
     sender_data = record.get("sender")
@@ -379,8 +405,8 @@ def _parse_record(
         conversation_kind=conversation_type,
     )
     if canonical_qq_uin(fields.get("40033")) is None:
-        # Preserve the record, but a zero-value sender cannot identify a person.
-        # Do not let an incidental label become a fallback participant identity.
+        # Content does not require a known sender. NULL/empty/zero identities
+        # stay unknown and cannot borrow an incidental display label.
         sender_id = None
         display_name = ""
         remark = nickname = contextual_name = None
@@ -413,7 +439,7 @@ def _parse_record(
             tuple(pic_elements),
             query,
         )
-    return message, media_fact
+    return message, media_fact, "accepted"
 
 
 def _content_message_type(contents: tuple[RichContent, ...]) -> str:
@@ -517,23 +543,33 @@ def _extract_semantics(
     *,
     pic_elements: list[QQPicMediaElement] | None = None,
     group: bool = False,
-) -> tuple[tuple[RichContent, ...], tuple[MessageRelation, ...], bool, tuple[str, str] | None]:
+    diagnostics: dict[str, Any] | None = None,
+) -> tuple[tuple[RichContent, ...], tuple[MessageRelation, ...], bool, tuple[str, str] | None, str]:
     if record.get("blob_encoding") != "base64":
-        return (), (), False, None
+        return (), (), False, None, "invalid_blob"
     blob = record.get("message_blob")
     if not isinstance(blob, str):
-        return (), (), False, None
+        return (), (), False, None, "invalid_blob"
     try:
         decoded = base64.b64decode(blob, validate=True)
     except (binascii.Error, ValueError):
-        return (), (), False, None
+        return (), (), False, None, "invalid_blob"
 
-    segments = [_protobuf_fields(value) for tag, wire, value in _protobuf_fields(decoded) if tag == 40800 and wire == 2]
+    errors = [] if diagnostics is not None else None
+    segments = [_protobuf_fields(value, errors=errors)
+        for tag, wire, value in _protobuf_fields(decoded, errors=errors) if tag == 40800 and wire == 2]
+    if diagnostics is not None:
+        diagnostics["segment_count"] = len(segments)
+        diagnostics["protobuf_errors"] = tuple(sorted(set(errors)))
+        diagnostics["segment_types"] = tuple(sorted({
+            str(value) if type(value) is int and 0 <= value <= 255 else "other"
+            for fields in segments for tag, wire, value in fields if tag == 45002 and wire == 0
+        }))
     if nudge_context is not None and len(segments) == 1:
         poke = _parse_private_poke(segments[0], nudge_context)
         if poke is not None:
             actor, target, action, suffix = poke
-            return (), (NudgeRelation(target_identity_id=target, action=action, suffix=suffix),), False, (actor, target)
+            return (), (NudgeRelation(target_identity_id=target, action=action, suffix=suffix),), False, (actor, target), "accepted"
 
     # These field numbers only describe the feasibility-supported Adapter v0
     # slice; they are not stable across QQ versions.
@@ -581,7 +617,9 @@ def _extract_semantics(
             contents.append(content)
             if isinstance(content, ExpressionContent):
                 expression_position += 1
-    return tuple(contents), tuple(relations), has_reply, None
+    # This includes unsupported/incomplete content and malformed protobuf.
+    # It is deliberately NOT called a system/non-chat record without evidence.
+    return tuple(contents), tuple(relations), has_reply, None, "no_supported_semantics"
 
 
 def _private_nudge_context(payload: Mapping[str, Any], session: tuple[str, str]) -> Mapping[str, str] | None:
@@ -809,22 +847,28 @@ def _utf8_text(value: int | bytes | None) -> str | None:
         return None
 
 
-def _protobuf_fields(data: bytes) -> tuple[tuple[int, int, int | bytes], ...]:
+def _protobuf_failure(errors: list[str] | None, reason: str) -> tuple:
+    if errors is not None:
+        errors.append(reason)
+    return ()
+
+
+def _protobuf_fields(data: bytes, *, errors: list[str] | None = None) -> tuple[tuple[int, int, int | bytes], ...]:
     fields: list[tuple[int, int, int | bytes]] = []
     offset = 0
     while offset < len(data):
         tag = _read_varint(data, offset)
         if tag is None:
-            return ()
+            return _protobuf_failure(errors, "truncated_tag")
         tag_value, offset = tag
         field_number = tag_value >> 3
         wire_type = tag_value & 0x07
         if field_number == 0:
-            return ()
+            return _protobuf_failure(errors, "zero_field_number")
         if wire_type == 0:
             value = _read_varint(data, offset)
             if value is None:
-                return ()
+                return _protobuf_failure(errors, "truncated_scalar")
             scalar, offset = value
             fields.append((field_number, wire_type, scalar))
         elif wire_type in {1, 5}:
@@ -832,20 +876,20 @@ def _protobuf_fields(data: bytes) -> tuple[tuple[int, int, int | bytes], ...]:
             # Skip only a complete value; never salvage a truncated container.
             end = offset + (8 if wire_type == 1 else 4)
             if end > len(data):
-                return ()
+                return _protobuf_failure(errors, "truncated_fixed_width")
             offset = end
         elif wire_type == 2:
             length = _read_varint(data, offset)
             if length is None:
-                return ()
+                return _protobuf_failure(errors, "truncated_length")
             size, offset = length
             end = offset + size
             if end > len(data):
-                return ()
+                return _protobuf_failure(errors, "truncated_bytes")
             fields.append((field_number, wire_type, data[offset:end]))
             offset = end
         else:
-            return ()
+            return _protobuf_failure(errors, "unsupported_wire_type")
     return tuple(fields)
 
 

@@ -52,6 +52,34 @@ def write_cache(root, item):
     path.write_bytes(media.decode_cache(gif()))
 
 
+def test_formal_marketface_recovery_follows_selected_report_priority(monkeypatch):
+    from types import SimpleNamespace
+    import threading
+    from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
+    from qq_chat_analyzer.analysis.stickers import StickerData
+    from qq_chat_analyzer.presentation.models import EchoStickers, EchoStickerItem
+    older, leader = send(1), send(2)
+    captured = []
+
+    class Recovery:
+        def __init__(self, sends, **_):
+            captured.extend(s.media_key for s in sends)
+            self.done = threading.Event(); self.done.set()
+            self.stats = dict(targets=len(captured), local=0, cdn=0, requests=0, unfinished=0)
+        def start(self): return self
+        def take_results(self): return ()
+        def close(self): pass
+
+    monkeypatch.setattr(media, "MarketFaceRecovery", Recovery)
+    chapter = EchoStickers(available=True, conversation_kind="group", total_top_materials=(
+        EchoStickerItem("Leader", 2, "leader", media_key=leader.media_key),
+        EchoStickerItem("Older", 1, "older", media_key=older.media_key)))
+    result = SimpleNamespace(echo_report_view=SimpleNamespace(stickers=chapter),
+        stickers=StickerData(sends=(older, leader)), qq_pic_media_facts=())
+    ChatAnalyzerFacade()._prepare_qq_report_media(result, None, None, (), None, lambda: False)
+    assert captured == [leader.media_key, older.media_key]
+
+
 def finish(batch, timeout=10):
     assert batch.done.wait(timeout), "Recovery must finish without a real QQ/CDN"
     return batch.take_results()

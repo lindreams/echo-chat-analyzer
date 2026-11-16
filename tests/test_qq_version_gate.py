@@ -34,6 +34,39 @@ def _base_build(config, build):
     }), encoding="utf-8")
 
 
+@pytest.mark.parametrize("layout,build,code", [
+    ("base", 54395, "qq_version_unsupported"),
+    ("active", 54395, "qq_version_unsupported"),
+    ("base", 54396, "qq_version_unsupported"),
+    ("unknown", None, "qq_resources_unverified"),
+])
+def test_unsupported_resources_refused_before_daily_qq_exit_or_launch(
+    tmp_path, monkeypatch, layout, build, code,
+):
+    module = _bridge_module()
+    instance, config = _auth(tmp_path)
+    if layout == "active":
+        from test_qq_active_resources import _active
+        _active(config.qq_install_path, f"9.9.37-{build}")
+    else:
+        package = config.qq_install_path.parent / "resources/app/package.json"
+        package.write_text(json.dumps({"name": "QQ"} if layout == "unknown" else {
+            "version": f"9.9.37-{build}", "buildVersion": str(build), "main": "index.js",
+        }), encoding="utf-8")
+    before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
+    monkeypatch.setattr(module, "find_conflicting_qq_pids", lambda _: pytest.fail("must not ask daily QQ to exit"))
+    monkeypatch.setattr(*_launch_target(module), lambda *a, **k: pytest.fail("must not launch QQ"))
+    monkeypatch.setattr(instance._credential_source, "begin_launch", lambda: pytest.fail("must not mint credential"))
+    snapshot = instance.start_auth_flow()
+    assert snapshot.code == code
+    assert snapshot.state is _connection_module().ConnectionState.ERROR
+    assert not instance._auth_launch_started
+    assert {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()} == before
+    if build:
+        assert f"9.9.37-{build}" in snapshot.message
+        assert "退出" not in snapshot.action_hint and "重试" not in snapshot.action_hint
+
+
 @pytest.mark.parametrize("build,blocked", [(40767, True), (40768, False), (53644, False)])
 def test_build_gate_precedes_any_runtime_launch(tmp_path, monkeypatch, caplog, build, blocked):
     module = _bridge_module()
@@ -121,13 +154,12 @@ def test_cancel_during_version_read_never_launches_and_retry_rechecks(tmp_path, 
 def test_process_detection_failure_remains_fail_closed_not_version_failure(tmp_path, monkeypatch, caplog):
     module = _bridge_module()
     instance, config = _auth(tmp_path)
-    _base_build(config, 27597)
+    _base_build(config, 53644)
 
     def fail(_):
         raise OSError(f"{tmp_path} fictional-token")
 
     monkeypatch.setattr(module, "find_conflicting_qq_pids", fail)
-    monkeypatch.setattr(module, "read_qq_resources", lambda _: pytest.fail("must not reach resource check"))
     monkeypatch.setattr(*_launch_target(module), lambda *a, **k: pytest.fail("must not launch"))
     with caplog.at_level("DEBUG"):
         snapshot = instance.start_auth_flow()

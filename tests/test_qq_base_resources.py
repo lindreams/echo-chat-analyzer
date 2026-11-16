@@ -107,11 +107,14 @@ def test_package_appearing_after_check_cannot_skip_old_version_gate(tmp_path, mo
     (app / "package.json").unlink()
     class Credential:
         def begin_launch(self): pytest.fail("must not mint credential")
-    launcher = bridge.default_auth_window_launcher(config, credential=Credential())
+    with pytest.raises(bridge.QQAuthWindowUnavailable) as error:
+        bridge.default_auth_window_launcher(config, credential=Credential())
+    assert error.value.code == "qq_resources_unverified"
     (app / "package.json").write_text('{"version":"9.9.19-35469","buildVersion":"35469"}')
     (app / "wrapper.node").write_bytes(b"fictional old native")
     monkeypatch.setattr(*_launch_target(bridge), lambda *a, **k: pytest.fail("must not launch"))
-    with pytest.raises(bridge.QQAuthWindowUnavailable) as error: launcher()
+    with pytest.raises(bridge.QQAuthWindowUnavailable) as error:
+        bridge.default_auth_window_launcher(config, credential=Credential())
     assert error.value.code == "qq_version_too_old"
 
 

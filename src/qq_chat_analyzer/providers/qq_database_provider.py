@@ -328,7 +328,7 @@ class QQDatabaseProvider:
             conditions.append('"40050" <= ?')
             parameters.append(end_time)
 
-        locator_columns = ("40021", "40020", "40003") if table_name == _GROUP_MESSAGE_TABLE else ("40021",)
+        locator_columns = ("40021", "40020", "40003", "40011", "40012") if table_name == _GROUP_MESSAGE_TABLE else ("40021",)
         query = (
             'SELECT "40001", "40027", "40030", "40033", "40050", "40800"'
             f'{self._optional_columns(table_name, locator_columns, operation="materialize_session_payload")}'
@@ -679,6 +679,7 @@ def _session_record(row: sqlite3.Row, table_name: str) -> dict[str, Any] | None:
             **({"40003": row["40003"]} if "40003" in row.keys() else {}),
             **({"40021": row["40021"]} if "40021" in row.keys() else {}),
             **({"40020": row["40020"]} if "40020" in row.keys() else {}),
+            **({column: row[column] for column in ("40011", "40012") if column in row.keys()}),
         },
         "message_blob": base64.b64encode(blob).decode("ascii"),
         "blob_encoding": "base64",

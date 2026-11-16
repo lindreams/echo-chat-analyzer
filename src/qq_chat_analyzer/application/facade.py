@@ -778,7 +778,8 @@ class ChatAnalyzerFacade:
                             _LOGGER.info("[marketface-scope] state=unavailable")
                         check_budget()
                     marketfaces = MarketFaceRecovery(
-                        marketface_sends.values(), roots=cache_roots, deadline=deadline,
+                        (marketface_sends[target.media_key] for target in targets
+                         if target.media_key in marketface_sends), roots=cache_roots, deadline=deadline,
                         cancelled=stopped).start()
                 send_index = _QQMediaSendIndex.build(data.sends, check_cancelled=check_budget)
                 sends = {}

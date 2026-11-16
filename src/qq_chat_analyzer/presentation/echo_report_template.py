@@ -269,8 +269,11 @@ ECHO_REPORT_HTML_SKELETON = r"""
       <div class="language-original-results" tabindex="0" aria-label="匹配的原话"></div>
       <footer class="language-original-footer">
         <span class="language-original-progress" role="status"></span>
-        <button type="button" class="language-all" hidden>查看全部原话</button>
-        <button type="button" class="language-more" hidden>继续查看</button>
+        <div class="language-original-actions">
+          <button type="button" class="language-order" aria-pressed="false" aria-label="原话排序：从新到旧，点击切换为从旧到新">从新到旧 ↓</button>
+          <button type="button" class="language-all" hidden>查看全部原话</button>
+          <button type="button" class="language-more" hidden>继续查看</button>
+        </div>
       </footer>
     </dialog>
 

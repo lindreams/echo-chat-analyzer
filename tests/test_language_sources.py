@@ -167,18 +167,27 @@ window.addEventListener('load',()=>{
   if(!word)throw Error('no word lookup button');
   word.scrollIntoView({block:'center'});word.focus({preventScroll:true});
   const y=scrollY,dialog=document.getElementById('language-originals');
+  const sourceBefore=JSON.stringify(window.ECHO_DATA.language_sources);
   r.initiallyClosed=!dialog.open;
   word.dispatchEvent(new MouseEvent('mouseover',{bubbles:true}));r.hoverQuiet=!dialog.open;
   word.click();r.open=dialog.open;
   r.initialHits=dialog.querySelectorAll('.language-original-hit').length;
-  r.rawText=dialog.querySelector('.language-original-text').textContent.includes('保留换行');
-  r.inert=!window.fictionalAttack&&!document.getElementById('fictional-attack');
+  r.defaultDescending=dialog.querySelector('.language-original-text').textContent==='苹果 原话 54';
   dialog.querySelector('.language-context-toggle').click();
   r.contextRows=dialog.querySelector('.language-original-hit').querySelectorAll('.language-original-row').length;
   dialog.querySelector('.language-all').click();r.firstPage=dialog.querySelectorAll('.language-original-hit').length;
   dialog.querySelector('.language-more').click();r.secondPage=dialog.querySelectorAll('.language-original-hit').length;
+  const order=dialog.querySelector('.language-order');order.click();
+  r.oldestFirst=order.textContent.includes('从旧到新')&&order.getAttribute('aria-pressed')==='true'&&
+    dialog.querySelector('.language-original-text').textContent.includes('保留换行');
+  r.paginationPreserved=dialog.querySelectorAll('.language-original-hit').length===20&&
+    dialog.querySelector('.language-all').hidden&&!dialog.querySelector('.language-more').hidden;
+  order.click();r.descendingAgain=dialog.querySelector('.language-original-text').textContent==='苹果 原话 54';
   while(!dialog.querySelector('.language-more').hidden)dialog.querySelector('.language-more').click();
   r.allHits=dialog.querySelectorAll('.language-original-hit').length;
+  r.rawText=Array.from(dialog.querySelectorAll('.language-original-text')).some(n=>n.textContent.includes('保留换行'));
+  r.inert=!window.fictionalAttack&&!document.getElementById('fictional-attack');
+  r.sourceUnchanged=sourceBefore===JSON.stringify(window.ECHO_DATA.language_sources);
   r.summary=dialog.querySelector('.language-original-summary').textContent;
   r.noInputs=!dialog.querySelector('input,textarea,[contenteditable=true]');
   r.overflow=document.documentElement.scrollWidth>innerWidth||dialog.scrollWidth>dialog.clientWidth+1;
@@ -198,10 +207,70 @@ window.addEventListener('load',()=>{
     assert match is not None
     result = json.loads(html.unescape(match.group(1)))
     assert result == {"wordAvailable": True, "lookupHint": True, "initiallyClosed": True, "hoverQuiet": True, "open": True,
-        "initialHits": 3, "rawText": True, "inert": True, "contextRows": 3,
+        "initialHits": 3, "defaultDescending": True, "contextRows": 3,
         "firstPage": 10, "secondPage": 20, "allHits": 55,
+        "oldestFirst": True, "paginationPreserved": True, "descendingAgain": True,
+        "rawText": True, "inert": True, "sourceUnchanged": True,
         "summary": "出现 55 次，分布于 55 条消息", "noInputs": True, "overflow": False,
         "closed": True, "focusRestored": True, "scrollStable": True}
+
+
+@pytest.mark.slow_integration
+def test_word_order_keeps_equal_times_deterministic_and_legacy_unknown_time_last(tmp_path):
+    import html
+    import re
+    from test_echo_conversation_sessions_frontend import _find_chromium, _run_browser
+    from qq_chat_analyzer.presentation import export_echo_report_html
+
+    chromium = _find_chromium()
+    if chromium is None:
+        pytest.skip("no local Chromium available")
+    messages = [_message(f"苹果 · 虚构条 {ref}", index=stamp)
+                for ref, stamp in enumerate((2, 1, 2, 0, 3))]
+    view = replace(_view(), language_sources=_build(messages, [["苹果"]] * 5))
+    output = export_echo_report_html(view, tmp_path / "order-legacy.html")
+    # Older snapshots may lack optional timestamp/context fields entirely.
+    report = output.read_text(encoding="utf-8").replace("window.ECHO_ASSETS =",
+        "delete window.ECHO_DATA.language_sources.messages[3].timestamp;\n"
+        "delete window.ECHO_DATA.language_sources.messages[3].before_refs;\n"
+        "delete window.ECHO_DATA.language_sources.messages[3].after_refs;\nwindow.ECHO_ASSETS =", 1)
+    probe = r"""<script>window.addEventListener('load',()=>{
+      const r={};
+      try {
+        const before=JSON.stringify(window.ECHO_DATA.language_sources);
+        const word=document.querySelector('.language-word-button');word.click();
+        const dialog=document.getElementById('language-originals');
+        const order=dialog.querySelector('.language-order');
+        function refs(){return Array.from(dialog.querySelectorAll('.language-original-hit .is-match .language-original-text'))
+          .map(n=>Number(n.textContent.match(/\d+$/)[0])).join(',')}
+        r.latestPreview=refs()==='4,0,2';
+        dialog.querySelector('.language-all').click();
+        r.latestAll=refs()==='4,0,2,1,3';
+        order.click();r.oldestAll=refs()==='1,0,2,4,3';
+        r.unknownTimeReadable=Array.from(dialog.querySelectorAll('.is-match time')).at(-1).textContent==='时间未知';
+        order.click();r.latestAgain=refs()==='4,0,2,1,3';
+        r.pageCountPreserved=dialog.querySelector('.language-original-progress').textContent==='已显示 5 / 5 条';
+        dialog.close();word.click();
+        r.reopenDefaultsLatest=refs()==='4,0,2'&&order.getAttribute('aria-pressed')==='false';
+        r.sourceUnchanged=before===JSON.stringify(window.ECHO_DATA.language_sources);
+        r.desktopNoOverflow=dialog.scrollWidth<=dialog.clientWidth+1;
+      } catch(error) {r.error=String(error)}
+      const pre=document.createElement('pre');pre.id='order-probe';pre.hidden=true;
+      pre.textContent=JSON.stringify(r);document.body.append(pre);
+    });</script>"""
+    output.write_text(report.replace("</body>", probe + "</body>"), encoding="utf-8")
+    completed = _run_browser([chromium, "--headless=new", "--disable-gpu", "--no-first-run",
+        "--no-default-browser-check", "--disable-background-networking", "--host-resolver-rules=MAP * ~NOTFOUND",
+        f"--user-data-dir={tmp_path / 'browser'}", "--window-size=1280,1000",
+        "--virtual-time-budget=2000", "--dump-dom", output.as_uri()])
+    assert completed.returncode == 0
+    match = re.search(r'<pre id="order-probe" hidden="">(.*?)</pre>', completed.stdout.decode("utf-8"), re.S)
+    assert match is not None
+    assert json.loads(html.unescape(match.group(1))) == {
+        "latestPreview": True, "latestAll": True, "oldestAll": True,
+        "unknownTimeReadable": True, "latestAgain": True, "pageCountPreserved": True,
+        "reopenDefaultsLatest": True, "sourceUnchanged": True, "desktopNoOverflow": True,
+    }
 
 
 @pytest.mark.slow_integration
@@ -231,7 +300,8 @@ def test_expanding_originals_reveals_front_context_and_backdrop_dismisses_withou
         const list=dialog.querySelector('.language-original-results');
         const toggle=dialog.querySelector('.language-context-toggle');toggle.click();
         const first=dialog.querySelector('.language-original-row');
-        r.frontText=first.querySelector('.language-original-text').textContent.startsWith('第 0 条');
+        // The default newest match is row 57; its preceding context starts at 55.
+        r.frontText=first.querySelector('.language-original-text').textContent.startsWith('第 55 条');
         r.frontVisible=first.getBoundingClientRect().top>=list.getBoundingClientRect().top-1&&
           first.getBoundingClientRect().top<list.getBoundingClientRect().bottom;
         toggle.click();toggle.focus({preventScroll:true});

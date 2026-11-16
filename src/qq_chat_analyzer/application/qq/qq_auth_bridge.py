@@ -50,6 +50,10 @@ PROGRESS_WAITING_QQ_EXIT = "请完全退出 QQ"
 # https://github.com/NapNeko/NapCatQQ/releases/tag/v4.18.33
 # Passing this gate is not a claim of full compatibility with the pinned 4.18.34.
 _MIN_WINDOWS_QQ_BUILD = 40768
+# The pinned launcher has no verified 54395 admission. Keep this and newer
+# builds out of the legacy launch path until a separate compatibility review.
+# This is a launch policy, not a claim about their database cipher.
+_FIRST_UNVERIFIED_WINDOWS_QQ_BUILD = 54395
 # The Direct DB snapshot helper reports its failure stage and guard code only
 # through ``QCE_LOG_FILE`` (a retained historical variable name). Its lines are
 # privacy-safe by construction: fixed stage names, stable guard codes, opaque
@@ -332,8 +336,12 @@ class QQAuthBridge:
                 or not self._launcher_process_alive()
                 or previous_cancelled
             )
+            launcher = self._window_launcher
             if needs_launch:
                 self._check_cancelled(cancelled)
+                # Reject unsupported resources before asking the user to quit
+                # daily QQ or changing any existing Echo runtime session.
+                launcher = self._prepare_window_launcher(cancelled)
                 self._reset_auth_session()
                 self._launcher_event = cancelled
                 self._process_registry.terminate_all()
@@ -355,7 +363,7 @@ class QQAuthBridge:
             self._check_cancelled(cancelled)
             manager.begin_auth_waiting()
             _LOGGER.info("[qq auth] opening login window")
-            self._launch_window(cancelled)
+            self._launch_window(cancelled, launcher=launcher)
             self._check_cancelled(cancelled)
         except _AuthCancelled:
             manager.end_auth_waiting()
@@ -366,10 +374,11 @@ class QQAuthBridge:
                 "[qq auth] login window launch failed error=%s",
                 type(error).__name__,
             )
+            code = getattr(error, "code", None)
             return self._error_snapshot(
                 _public_message(error, MESSAGE_ERROR),
-                HINT_RETRY,
-                code=getattr(error, "code", None),
+                "请继续使用日常 QQ，等待 Echo 兼容更新。" if code == "qq_version_unsupported" else HINT_RETRY,
+                code=code,
             )
         _LOGGER.info("[qq auth] login window launched")
         _report_progress(progress, PROGRESS_WAITING_LOGIN)
@@ -480,7 +489,24 @@ class QQAuthBridge:
             )
         return self._manager
 
-    def _launch_window(self, cancelled: threading.Event | None = None) -> None:
+    def _prepare_window_launcher(self, cancelled: threading.Event) -> Callable[[], Any]:
+        if self._window_launcher is not None:
+            return self._window_launcher
+        try:
+            config = self._setup_service.get_environment_config()
+        except QQConfigNotFound:
+            config = self._recover_environment_config()
+        try:
+            return default_auth_window_launcher(
+                config, paths=self._runtime_paths, credential=self._credential_source
+            )
+        finally:
+            # Cancellation wins even if the completed resource read rejects.
+            self._check_cancelled(cancelled)
+
+    def _launch_window(
+        self, cancelled: threading.Event | None = None, *, launcher: Callable[[], Any] | None = None,
+    ) -> None:
         cancelled = cancelled or threading.Event()
         self._check_cancelled(cancelled)
         self._launcher_event = cancelled
@@ -490,24 +516,9 @@ class QQAuthBridge:
             _LOGGER.info("[qq auth] launcher already started; reusing")
             return
         self._auth_launch_started = False
-        if self._window_launcher is not None:
-            _LOGGER.info("[qq auth] using injected window launcher")
-            process = self._window_launcher()
-        else:
-            try:
-                config = self._setup_service.get_environment_config()
-            except QQConfigNotFound:
-                config = self._recover_environment_config()
-            _LOGGER.info("[qq auth] building default window launcher")
-            try:
-                launcher = default_auth_window_launcher(
-                    config, paths=self._runtime_paths, credential=self._credential_source
-                )
-            finally:
-                # Cancellation wins even if the completed version read would
-                # otherwise reject this attempt as too old.
-                self._check_cancelled(cancelled)
-            process = launcher()
+        if launcher is None:
+            launcher = self._prepare_window_launcher(cancelled)
+        process = launcher()
         with self._session_lock:
             if generation != self._session_generation:
                 close = getattr(process, "close", None)
@@ -718,15 +729,28 @@ def default_auth_window_launcher(config: Any, *, paths=None, credential: Any = N
 
 
 def _check_qq_version(qq_path: Path, *, resources: QQResources | None = None) -> None:
-    """Reject only a reliably identified build below the documented minimum."""
+    """Reject unknown resources and the unverified new-build launch range."""
     started = time.monotonic()
     version = _known_qq_version(qq_path, resources=resources)
     result = "unknown"
     if version is not None:
         result = "below_minimum" if version[3] < _MIN_WINDOWS_QQ_BUILD else "minimum_met"
+        if version[3] >= _FIRST_UNVERIFIED_WINDOWS_QQ_BUILD:
+            result = "unsupported"
     _LOGGER.info("[qq auth] version_check result=%s qq_version=%s elapsed_ms=%s", result,
                  ".".join(str(part) for part in version) if version is not None else "unknown",
                  max(0, int((time.monotonic() - started) * 1000)))
+    if version is None:
+        raise QQAuthWindowUnavailable(
+            "无法确认 QQ 当前启用的程序资源，已停止启动 QQ 连接。",
+            code="qq_resources_unverified",
+        )
+    if result == "unsupported":
+        major, minor, patch, build = version
+        raise QQAuthWindowUnavailable(
+            f"当前 QQ 版本（{major}.{minor}.{patch}-{build}）尚未通过 Echo 兼容验证，已停止启动 QQ 连接。",
+            code="qq_version_unsupported",
+        )
     if result == "below_minimum":
         major, minor, patch, build = version
         raise QQAuthWindowUnavailable(
@@ -1063,7 +1087,7 @@ def _launch_auth_window(
         raise QQAuthWindowUnavailable(
             "QQ 程序资源已变化，请重试连接。", code="qq_resources_changed",
         )
-    if resources is None and current is not None:
+    if current is not None:
         _check_qq_version(qq_path, resources=current)
     resources = resources if resources is not None else current
     if resources is None:

@@ -30,9 +30,10 @@ ECHO_LANGUAGE_CSS = r"""
 .language-original-meta time { font-variant-numeric: tabular-nums; }
 .language-original-text { margin: 0; font: 14px/1.9 var(--sans); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .language-original-row.is-context .language-original-text { color: var(--muted); font-size: 13px; }
-.language-context-toggle, .language-all, .language-more { border: 0; border-bottom: 1px solid var(--rule); padding: 4px 0; background: transparent; color: var(--accent); font-size: 12px; line-height: 1.6; cursor: pointer; }
+.language-context-toggle, .language-all, .language-more, .language-order { border: 0; border-bottom: 1px solid var(--rule); padding: 4px 0; background: transparent; color: var(--accent); font-size: 12px; line-height: 1.6; cursor: pointer; }
 .language-context-toggle { margin: 10px 0 0 12px; }
 .language-original-footer { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: baseline; gap: 12px; border-top: 1px solid var(--rule); padding: 16px 28px; color: var(--muted); font: 12px/1.7 var(--sans); }
+.language-original-actions { display: flex; align-items: baseline; gap: 16px; }
 .language-original-footer [hidden] { display: none !important; }
 .language-original-empty { padding: 24px 0; color: var(--muted); font: 14px/1.8 var(--sans); }
 @media(max-width: 720px) {
@@ -74,7 +75,9 @@ ECHO_LANGUAGE_APP_JS = r"""
   var allButton = dialog.querySelector(".language-all");
   var moreButton = dialog.querySelector(".language-more");
   var closeButton = dialog.querySelector(".language-original-close");
+  var orderButton = dialog.querySelector(".language-order");
   var current = null, rendered = 0, preview = true, trigger = null;
+  var currentRefs = [], oldestFirst = false;
   var backdropPress = false;
 
   function element(tag, className, text) {
@@ -127,7 +130,7 @@ ECHO_LANGUAGE_APP_JS = r"""
     return article;
   }
   function appendUntil(limit) {
-    var refs = current.message_refs || [];
+    var refs = currentRefs;
     var end = Math.min(limit, refs.length);
     for (; rendered < end; rendered++) {
       var message = originals.get(refs[rendered]);
@@ -138,6 +141,39 @@ ECHO_LANGUAGE_APP_JS = r"""
     allButton.hidden = !preview || rendered >= refs.length;
     moreButton.hidden = preview || rendered >= refs.length;
   }
+  function orderRefs() {
+    // Sort a display copy. Serialized refs, counts and context stay intact.
+    currentRefs = (current.message_refs || []).map(function (ref, index) {
+      var message = originals.get(ref), stamp = message && message.timestamp;
+      return {ref: ref, index: index, time: typeof stamp === "string" &&
+        /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(stamp) ? stamp : ""};
+    }).sort(function (a, b) {
+      if (a.time !== b.time) {
+        // Legacy records without usable time remain last in either direction.
+        if (!a.time) return 1;
+        if (!b.time) return -1;
+        return (a.time < b.time ? -1 : 1) * (oldestFirst ? 1 : -1);
+      }
+      // Import refs disambiguate equal times without borrowing source IDs.
+      return typeof a.ref === "number" && typeof b.ref === "number" ?
+        a.ref - b.ref || a.index - b.index : a.index - b.index;
+    }).map(function (item) { return item.ref; });
+    if (orderButton) {
+      orderButton.textContent = oldestFirst ? "从旧到新 ↑" : "从新到旧 ↓";
+      orderButton.setAttribute("aria-pressed", String(oldestFirst));
+      orderButton.setAttribute("aria-label", "原话排序：" + (oldestFirst ? "从旧到新，点击切换为从新到旧" : "从新到旧，点击切换为从旧到新"));
+    }
+  }
+  if (orderButton) orderButton.addEventListener("click", function () {
+    if (!current) return;
+    oldestFirst = !oldestFirst;
+    orderRefs();
+    var limit = rendered;
+    rendered = 0;
+    results.textContent = "";
+    appendUntil(limit);
+    results.scrollTop = 0;
+  });
   chapter.addEventListener("click", function (event) {
     var button = event.target.closest(".language-word-button");
     if (!button || !chapter.contains(button)) return;
@@ -145,6 +181,8 @@ ECHO_LANGUAGE_APP_JS = r"""
     var term = terms.get(JSON.stringify([memberIndex, button.dataset.languageWord]));
     if (!term) return;
     current = term;
+    oldestFirst = false;
+    orderRefs();
     trigger = button;
     rendered = 0;
     preview = true;

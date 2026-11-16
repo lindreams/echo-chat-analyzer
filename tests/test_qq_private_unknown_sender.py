@@ -61,7 +61,7 @@ def _analyze(tmp_path, *, sender=0, session_type="private", unknown_text=False, 
     return imported, result
 
 
-@pytest.mark.parametrize("sender", [0, "0", " 0 "])
+@pytest.mark.parametrize("sender", [0, "0", " 0 ", None])
 def test_zero_private_sender_preserves_message_without_creating_participant(tmp_path, sender):
     imported, result = _analyze(tmp_path, sender=sender)
     assert len(imported.messages) == len(imported.rich_messages) == 5
