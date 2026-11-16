@@ -196,6 +196,7 @@ def path_reply(raw, returncode):
         allowed = {'process_generation_changed', 'handle_query_unavailable', 'handle_snapshot_unavailable',
             'handle_snapshot_limit', 'handle_snapshot_invalid', 'file_handle_type_unavailable',
             'target_handle_limit', 'target_file_handle_changed_or_inaccessible', 'target_disk_path_unavailable',
+            'target_file_kind_query_failed',
             'local_database_path_required', 'database_path_limit', 'duplicate_close_unconfirmed',
             'process_read_access_unavailable', 'process_identity_unavailable', 'process_identity_mismatch',
             'process_handle_close_failed', 'unknown_device_name_unavailable', 'unknown_device_name_invalid'}
@@ -338,17 +339,17 @@ def handle_paths(pid, created, image, counts):
                         class Status(C.Structure):
                             _fields_ = [('status', C.c_void_p), ('information', C.c_size_t)]
                         status = Status(); device = (W.ULONG*2)()
+                        if kind != 0 or counts['win32_error'] != 0:
+                            raise SourceError('target_file_kind_query_failed')
                         nt.NtQueryVolumeInformationFile.argtypes = [W.HANDLE, C.POINTER(Status), C.c_void_p, W.ULONG, W.ULONG]
                         nt.NtQueryVolumeInformationFile.restype = W.LONG
                         result = nt.NtQueryVolumeInformationFile(duplicate, C.byref(status), device, C.sizeof(device), 4)
                         counts['nt_status'] = result
                         counts['device_type'] = device[0]
-                        # SDK devioctl.h: KSEC=0x39, CRYPT_PROVIDER=0x3f.
-                        # These security devices are not disk/filesystems.
-                        # Both were observed in our fictional child first.
-                        if kind == 0 and result == 0 and device[0] in (0x39, 0x3f):
-                            continue
-                        if kind == 0 and result == 0 and device[0] == 0x22:
+                        # Classify the object, not a list of driver type codes.
+                        # A valid UNKNOWN still needs independent successful
+                        # device metadata AND a bounded exact endpoint name.
+                        if result == 0:
                             if raw_device_endpoint(file_object_name(nt, duplicate, counts)):
                                 counts['verified_raw_device_endpoints'] += 1
                                 continue
@@ -502,7 +503,7 @@ def self_check(root):
          original_function_preserved=True, fixture_components_unloaded=True)
 
 
-def fixture_file_holder(root, *, graphics=False):
+def fixture_file_holder(root, *, graphics=False, network_device=False):
     """Only this build's freshly created fictional files, never a user folder."""
     from contextlib import ExitStack
     import sqlite3
@@ -515,6 +516,26 @@ def fixture_file_holder(root, *, graphics=False):
     if not api.QueryFullProcessImageNameW(api.GetCurrentProcess(), 0, image, C.byref(length)):
         raise SourceError('fixture_process_identity_failed')
     with ExitStack() as resources:
+        if network_device:
+            # Open an owned zero-access NSI device handle, without querying
+            # adapters, addresses, network configuration or sending traffic.
+            api.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, C.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
+            api.CreateFileW.restype = W.HANDLE
+            device = api.CreateFileW('\\\\.\\Nsi', 0, 7, None, 3, 0, None)
+            if device == W.HANDLE(-1).value:
+                raise SourceError('fixture_network_device_unavailable')
+            resources.callback(api.CloseHandle, device)
+            # Ensure this fixture actually reproduces the observed network
+            # class, rather than merely passing with some unrelated handle.
+            class IoStatus(C.Structure):
+                _fields_ = [('status', C.c_void_p), ('information', C.c_size_t)]
+            nt = C.WinDLL('ntdll')
+            nt.NtQueryVolumeInformationFile.argtypes = [W.HANDLE, C.POINTER(IoStatus), C.c_void_p, W.ULONG, W.ULONG]
+            nt.NtQueryVolumeInformationFile.restype = W.LONG
+            info = (W.ULONG*2)(); status = IoStatus()
+            result = nt.NtQueryVolumeInformationFile(device, C.byref(status), info, C.sizeof(info), 4)
+            if api.GetFileType(device) != 0 or result != 0 or info[0] != 18:
+                raise SourceError('fixture_network_device_class_not_reproduced')
         if graphics:
             # Owned Windows graphics device, to reproduce file-device handles
             # used by desktop apps without launching or inspecting QQ.
@@ -738,6 +759,7 @@ def main():
     parser.add_argument('--check-worker', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--fixture-file-holder', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--fixture-graphics', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--fixture-network-device', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--approved-single-session', action='store_true')
     parser.add_argument('--owner-reference-stdin', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--worker', action='store_true')
@@ -757,7 +779,7 @@ def main():
         return
     root = checked_build(args.build_root)
     if args.fixture_file_holder:
-        fixture_file_holder(root, graphics=args.fixture_graphics)
+        fixture_file_holder(root, graphics=args.fixture_graphics, network_device=args.fixture_network_device)
         return
     if args.worker:
         if not args.approved_single_session:

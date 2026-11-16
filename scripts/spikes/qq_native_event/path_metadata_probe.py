@@ -43,11 +43,13 @@ def validate_paths(pid, created, image, expected, *, locks):
          production_prerequisites_complete=False)
 
 
-def self_check(root, fixture_build, *, graphics):
+def self_check(root, fixture_build, *, graphics, network_device):
     # Only an owned fictional process, using the existing fixture file holder.
     command = [sys.executable, HERE/'identity_probe.py', '--build-root', fixture_build, '--fixture-file-holder']
     if graphics:
         command += ['--fixture-graphics']
+    if network_device:
+        command += ['--fixture-network-device']
     holder = child(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE)
     try:
         identity = json.loads(holder.stdout.readline(4096))
@@ -86,7 +88,8 @@ def self_check(root, fixture_build, *, graphics):
 
 def worker(args):
     if args.self_check:
-        self_check(args.attempt_root, args.fixture_build_root.resolve(strict=True), graphics=args.fixture_graphics)
+        self_check(args.attempt_root, args.fixture_build_root.resolve(strict=True),
+            graphics=args.fixture_graphics, network_device=args.fixture_network_device)
         return
     expected = os.environ.pop('ECHO_METADATA_OWNER', '').encode('ascii')
     if not expected.isdigit() or expected.startswith(b'0') or not 5 <= len(expected) <= 20:
@@ -111,6 +114,7 @@ def main():
     parser.add_argument('--self-check', action='store_true')
     parser.add_argument('--fixture-build-root', type=Path)
     parser.add_argument('--fixture-graphics', action='store_true')
+    parser.add_argument('--fixture-network-device', action='store_true')
     parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
     root = args.attempt_root.resolve(strict=True)
@@ -127,6 +131,8 @@ def main():
         command += ['--self-check', '--fixture-build-root', str(args.fixture_build_root.resolve(strict=True))]
         if args.fixture_graphics:
             command += ['--fixture-graphics']
+        if args.fixture_network_device:
+            command += ['--fixture-network-device']
     else:
         command += ['--approved-single-run']
         if args.probe_locks:
