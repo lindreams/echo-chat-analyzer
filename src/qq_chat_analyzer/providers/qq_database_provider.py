@@ -14,6 +14,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
+from ..rich_message import SenderIdentity
 from ..qq_db_identity import QQ_DB_SELF_NAMESPACE, canonical_qq_uin
 from ..diagnostics import qq_session_stage
 from .qq_sqlite_reader import configure_read_connection, iter_row_batches, needs_qq_layout, read_rows
@@ -719,3 +720,43 @@ def _message_blob_or_warn(row: sqlite3.Row) -> bytes | None:
         stacklevel=2,
     )
     return None
+
+
+def attach_sender_names(
+    payload_path: Path,
+    payload: Any,
+    friend_names: dict[str, SenderIdentity],
+    self_uin: str | None,
+) -> None:
+    """Add known QQ names to the transient payload after DB cleanup."""
+    for record in payload.get("records", ()):
+        fields = record.get("fields", {})
+        sender_uin = canonical_qq_uin(fields.get("40033"))
+        if sender_uin is None or sender_uin == self_uin:
+            continue
+        identity = friend_names.get(sender_uin)
+        if identity:
+            record["sender"] = {
+                "displayName": identity.display_name, "remark": identity.remark,
+                "nickname": identity.nickname, "groupCard": identity.contextual_name,
+            }
+    # ASCII escapes keep the temporary document narrow even with emoji names.
+    # Bound each C encoder call so the worker can release the GIL between
+    # batches, without building another string for the complete payload.
+    with payload_path.open("w", encoding="utf-8") as file:
+        file.write("{")
+        for index, (name, value) in enumerate(payload.items()):
+            if index:
+                file.write(", ")
+            file.write(json.dumps(name, ensure_ascii=True))
+            file.write(": ")
+            if name != "records":
+                file.write(json.dumps(value, ensure_ascii=True))
+                continue
+            file.write("[")
+            for offset in range(0, len(value), 1024):
+                if offset:
+                    file.write(", ")
+                file.write(json.dumps(value[offset:offset + 1024], ensure_ascii=True)[1:-1])
+            file.write("]")
+        file.write("}")

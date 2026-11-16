@@ -1,0 +1,9 @@
+{
+  "build": "9.9.37-54395",
+  "minhook_revision": "c3fcafdc10146beb5919319d0683e44e3c30d537",
+  "node_sha256": "b3094d0b49f9ad602262a9921551737bb97637c05dd357a06ae98188d7290aa3",
+  "binaries": {
+    "echo_event_loader.exe": "3e06683e165a839ec49ba37fb5ec10cb1e6e31a2fc732af944dfe357dc453d5e",
+    "echo_event_54395.dll": "e15f3a29977ae7edab91f001ae7779bc55f4227dc5cf2a9945e8f33f8e7194c4"
+  }
+}

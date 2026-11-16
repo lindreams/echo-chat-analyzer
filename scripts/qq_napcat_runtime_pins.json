@@ -93,7 +93,7 @@
     {
       "source": "qq_direct_db_snapshot/main_wal.mjs",
       "target": "plugins/napcat-plugin-echo/snapshot/main_wal.mjs",
-      "sha256": "82bfc68ebcd596abd0ca188baf36006a7d1b00c507d5a8672f216dd78fda230d"
+      "sha256": "b04d3091e828ebd2a3144c178345703e7aa9958704a4f45fa9c24d3bdb2031a4"
     },
     {
       "source": "qq_direct_db_snapshot/workspace.mjs",

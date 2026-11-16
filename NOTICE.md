@@ -15,7 +15,9 @@ https://www.mozilla.org/en-US/MPL/2.0/FAQ/
 
 此声明不对 NapCat、第三方源码、依赖包、字体及其他第三方资产重新授权，
 包括 `runtime/`、`third_party/` 内第三方材料及脚本内保留的上游代码。
-它们仍受各自许可证和版权声明约束；NapCat 材料见 `third_party/napcat/NOTICE.md`。
+它们仍受各自许可证和版权声明约束；历史 NapCat 材料见 `third_party/napcat/NOTICE.md`。
+独立 QQ 候选包不包含 NapCat runtime。其原生组件使用固定修订的 MinHook，
+许可见 `third_party/minhook/LICENSE`；随包 Node.js 的第三方声明见 `third_party/node/LICENSE`。
 官方 Echo 免费、非商业运营；MPL 2.0 本身允许商业使用。
 Echo 的运营方式不限制 MPL 覆盖源码的商业使用权，也不替代第三方许可条件。
 
