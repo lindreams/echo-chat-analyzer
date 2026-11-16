@@ -51,7 +51,7 @@ function fields(bytes, schema) {
  * Non-target traffic is rejected before accessing its payload.
  * Result scope is one encrypted main page; no decrypted SQLite/messages.
  */
-export function observeCdeResponse(event, request, control) {
+export function observeCdeResponse(event, request, control, consume) {
   if (event.command !== COMMAND || event.direction !== 'receive') return {state: 'ignored'};
   let material;
   try {
@@ -75,7 +75,7 @@ export function observeCdeResponse(event, request, control) {
         return {kind: 'passphrase', material, binding, isCurrent: () => !control?.signal?.aborted};
       },
       close() { material.fill(0); return true; },
-    }, request, undefined, control);
+    }, request, consume, control);
     return {state: 'authenticated_event', authentication_scope: result.scope};
   } finally {
     material?.fill(0);

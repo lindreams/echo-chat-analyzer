@@ -25,7 +25,10 @@ const synchronous = value => {
  * Provider MUST independently establish that binding; echoing this request is
  * not evidence of provenance. Authentication proves page/key agreement only.
  * Material ownership transfers to this call. No secret may be cached/logged.
- * consume(raw32) is scoped to this synchronous call, never a returned key.
+ * consume(raw32, withDatabaseKey) is scoped to this synchronous call.
+ * withDatabaseKey(firstPage, consumeDatabase) authenticates a separately salted
+ * DB using this same passphrase lease; it never returns raw material. Raw-key
+ * leases cannot derive other DB keys. All calls share the original deadline.
  */
 export function withAuthenticatedKey(source, request, consume = () => {}, {
   signal, deadline = performance.now() + 1000, now = () => performance.now(),
@@ -34,7 +37,7 @@ export function withAuthenticatedKey(source, request, consume = () => {}, {
   if (typeof source.acquire !== 'function' || typeof source.close !== 'function') refuse('invalid_source');
   if (used.has(source)) refuse('source_already_used');
   used.add(source); // No retry or concurrent/reentrant acquisition of this source.
-  let lease, page, raw;
+  let lease, page, raw, consuming = false;
   const guard = () => {
     if (signal?.aborted) refuse('cancelled');
     const current = now();
@@ -66,7 +69,24 @@ export function withAuthenticatedKey(source, request, consume = () => {}, {
     if (!authenticateFirstPage(page, raw)) refuse('key_not_authenticated');
     guard();
     if (synchronous(lease.isCurrent()) !== true) refuse('source_expired');
-    synchronous(consume(raw));
+    const withDatabaseKey = (firstPage, consumeDatabase) => {
+      if (!consuming) refuse('source_expired');
+      guard();
+      if (lease.kind !== 'passphrase') refuse('passphrase_required');
+      if (synchronous(lease.isCurrent()) !== true) refuse('source_expired');
+      // Reuse the same derivation, page binding, MAC and finally-wipe contract.
+      // Only a child lease copy crosses into it; the event material stays here.
+      return withAuthenticatedKey({
+        acquire(binding) {
+          return {kind: 'passphrase', material: Buffer.from(lease.material), binding,
+            isCurrent: () => consuming && synchronous(lease.isCurrent()) === true};
+        },
+        close() { return true; },
+      }, {...request, firstPage}, consumeDatabase, {signal, deadline, now});
+    };
+    consuming = true;
+    try { synchronous(consume(raw, withDatabaseKey)); }
+    finally { consuming = false; }
     guard();
     if (synchronous(lease.isCurrent()) !== true) refuse('source_expired');
     return {state: 'authenticated', scope: 'first_page_only', source_released: true};
@@ -75,6 +95,7 @@ export function withAuthenticatedKey(source, request, consume = () => {}, {
     if (error instanceof KeySourceError) throw error;
     refuse('key_source_failed');
   } finally {
+    consuming = false;
     raw?.fill(0);
     page?.fill(0);
     if (Buffer.isBuffer(lease?.material)) lease.material.fill(0);

@@ -72,6 +72,57 @@ try {
     () => { throw Error('private fixture detail'); }));
   rejected('source_cleanup_failed', fixture({close: () => false}));
   checks.push('partial_acquisition_consumer_failure_and_cleanup_failure');
+  const databaseSalt = Buffer.alloc(16, 71);
+  const databaseKey = pbkdf2Sync(password, databaseSalt, 4000, 32, 'sha512');
+  const databasePage = encode(plain, databaseKey, databaseSalt);
+  try {
+    const source = fixture({kind: 'passphrase', secret: password});
+    let scoped, borrowedAnchor, borrowedDatabase;
+    withAuthenticatedKey(source, request, (raw, withDatabaseKey) => {
+      scoped = withDatabaseKey; borrowedAnchor = raw;
+      assert.notDeepEqual(raw, databaseKey);
+      const result = withDatabaseKey(databasePage, derived => {
+        borrowedDatabase = derived;
+        assert.deepEqual(derived, databaseKey);
+        assert.ok(source.material.some(b => b !== 0));
+      });
+      assert.equal(result.state, 'authenticated');
+      assert.ok(borrowedDatabase.every(b => b === 0));
+      assert.deepEqual(raw, key); // Child cleanup does not destroy the anchor lease.
+    });
+    assert.ok(source.material.every(b => b === 0) && borrowedAnchor.every(b => b === 0));
+    assert.throws(() => scoped(databasePage, () => assert.fail('expired scope consumed')),
+      error => error.code === 'source_expired');
+    assert.equal(source.closed, 1);
+
+    const bad = Buffer.from(databasePage); bad[1050] ^= 1;
+    try {
+      const unverified = fixture({kind: 'passphrase', secret: password});
+      rejected('key_not_authenticated', unverified, () => withAuthenticatedKey(unverified, request,
+        (_raw, withDatabaseKey) => withDatabaseKey(bad, () => assert.fail('bad DB consumed'))));
+    } finally { bad.fill(0); }
+    const rawSource = fixture();
+    rejected('passphrase_required', rawSource, () => withAuthenticatedKey(rawSource, request,
+      (_raw, withDatabaseKey) => withDatabaseKey(databasePage, () => assert.fail('raw lease derived'))));
+    const broken = fixture({kind: 'passphrase', secret: password});
+    let failedBorrow;
+    rejected('key_source_failed', broken, () => withAuthenticatedKey(broken, request,
+      (_raw, withDatabaseKey) => withDatabaseKey(databasePage, derived => {
+        failedBorrow = derived; throw Error('PRIVATE_SENTINEL');
+      })));
+    assert.ok(failedBorrow.every(b => b === 0));
+    const abort = new AbortController();
+    const stopped = fixture({kind: 'passphrase', secret: password});
+    rejected('cancelled', stopped, () => withAuthenticatedKey(stopped, request, (_raw, withDatabaseKey) => {
+      abort.abort(); withDatabaseKey(databasePage, () => assert.fail('cancelled DB consumed'));
+    }, {signal: abort.signal}));
+    let clock = 0;
+    const late = fixture({kind: 'passphrase', secret: password});
+    rejected('deadline_reached', late, () => withAuthenticatedKey(late, request, (_raw, withDatabaseKey) => {
+      clock = 2; withDatabaseKey(databasePage, () => assert.fail('expired DB consumed'));
+    }, {now: () => clock, deadline: 1}));
+    checks.push('per_database_derivation_authentication_lifetime_and_child_failure_cleanup');
+  } finally { databaseKey.fill(0); databaseSalt.fill(0); databasePage.fill(0); }
   console.log(JSON.stringify({checks, real_qq_accessed: false, key_material_persisted: false,
     qq_54395_key_acquisition: 'not_implemented'}, null, 2));
 } finally {

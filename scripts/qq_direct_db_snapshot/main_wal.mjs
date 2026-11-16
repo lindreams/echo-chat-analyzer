@@ -315,6 +315,7 @@ export function finalizeStandaloneSnapshot(path, pageCount, onDiagnostic = () =>
     fail('plaintext_snapshot_invalid');
   }
   const fd = openSync(path, 'r+');
+  let failed = false;
   try {
     const header = readExactly(fd, 100, 0);
     const fileBytes = fstatSync(fd).size;
@@ -347,9 +348,21 @@ export function finalizeStandaloneSnapshot(path, pageCount, onDiagnostic = () =>
     const versions = Buffer.from([1, 1]);
     let written = 0;
     while (written < versions.length) {
-      written += writeSync(fd, versions, written, versions.length - written, 18 + written);
+      const count = writeSync(fd, versions, written, versions.length - written, 18 + written);
+      if (count === 0) fail('short_write');
+      written += count;
     }
-  } finally { closeSync(fd); }
+  } catch (error) {
+    failed = true;
+    throw error;
+  } finally {
+    try { closeSync(fd); }
+    catch (error) {
+      observe({close_failed: true, close_error_code: ['EIO', 'EBADF', 'EINVAL', 'ENOSPC', 'EINTR'].includes(error.code)
+        ? error.code : 'close_failed'});
+      if (!failed) throw error;
+    }
+  }
 }
 
 // These two PoC entry points share exactly the same capture/verification window.

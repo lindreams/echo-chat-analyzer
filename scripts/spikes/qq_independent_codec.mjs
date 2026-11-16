@@ -1,6 +1,8 @@
 // Research only: a closed synthetic round trip, never a QQ process/key reader.
 // Candidate profile: 1024-byte wrapper, 4096-byte pages, AES-256-CBC,
-// PBKDF2-HMAC-SHA512 (4000), page HMAC-SHA1, 48 reserved bytes.
+// PBKDF2-HMAC-SHA512 (4000), page HMAC-SHA1, 48-byte cipher footer.
+// SQLite's B-tree reserve can independently be 48 or 80 bytes. With 80,
+// offsets 4016..4047 are encrypted/authenticated reserved bytes, NOT an IV.
 // The standalone CLI is a self round trip; the separate reference driver
 // verifies SQLCipher interoperability. Neither establishes QQ version support.
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -9,7 +11,7 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import { resolve } from 'node:path';
 
-const PAGE = 4096, PREFIX = 1024, RESERVE = 48;
+const PAGE = 4096, PREFIX = 1024, CIPHER_RESERVE = 48;
 const MAGIC = Buffer.from('SQLite format 3\0');
 const passphrase = 'echo-fictional-spike-only';
 const salt = randomBytes(16);
@@ -27,7 +29,7 @@ function pageTag(ciphertext, iv, number, key, pageSalt, hash = 'sha1') {
 // never decrypt a page or claim database completeness from this result.
 export function authenticateFirstPage(wrapped, key) {
   if (wrapped.length !== PREFIX + PAGE || key.length !== 32) return false;
-  const start = PREFIX, end = start + PAGE - RESERVE;
+  const start = PREFIX, end = start + PAGE - CIPHER_RESERVE;
   const expected = pageTag(wrapped.subarray(start + 16, end),
     wrapped.subarray(end, end + 16), 1, key, wrapped.subarray(start, start + 16));
   return timingSafeEqual(expected, wrapped.subarray(end + 16, end + 36));
@@ -37,13 +39,13 @@ export function encode(plain, key = rawKey, pageSalt = salt) {
   assert.equal(plain.length % PAGE, 0);
   assert.ok(plain.subarray(0, 16).equals(MAGIC));
   assert.equal(plain.readUInt16BE(16), PAGE);
-  assert.equal(plain[20], RESERVE);
+  assert.ok([48, 80].includes(plain[20]));
   const prefix = Buffer.alloc(PREFIX);
   Buffer.from('SQLite header 3\0').copy(prefix);
   const pages = [prefix];
   for (let offset = 0, number = 1; offset < plain.length; offset += PAGE, number++) {
     const first = number === 1;
-    const body = plain.subarray(offset + (first ? 16 : 0), offset + PAGE - RESERVE);
+    const body = plain.subarray(offset + (first ? 16 : 0), offset + PAGE - CIPHER_RESERVE);
     const iv = randomBytes(16);
     const cipher = createCipheriv('aes-256-cbc', key, iv);
     cipher.setAutoPadding(false);
@@ -54,34 +56,84 @@ export function encode(plain, key = rawKey, pageSalt = salt) {
   return Buffer.concat(pages);
 }
 
-export function decode(wrapped, key, pageSalt = wrapped.subarray(PREFIX, PREFIX + 16), hash = 'sha1') {
+// A bounded random-access reader may supply length/subarray instead of Buffer.
+// Optional synchronous sink avoids retaining a second whole database in RAM.
+// Both paths use exactly the same page authentication/decryption below.
+export function decode(wrapped, key, pageSalt = wrapped.subarray(PREFIX, PREFIX + 16), hash = 'sha1', writePage, options = {}) {
+  if (writePage !== undefined && typeof writePage !== 'function') throw new Error('invalid_sink');
   if (wrapped.length <= PREFIX || (wrapped.length - PREFIX) % PAGE !== 0)
     throw new Error('invalid_size');
   if (!wrapped.subarray(PREFIX, PREFIX + 16).equals(pageSalt))
     throw new Error('salt_mismatch');
   const output = [];
-  for (let offset = PREFIX, number = 1; offset < wrapped.length; offset += PAGE, number++) {
+  let header;
+  let decodedBytes = 0;
+  let limit = wrapped.length;
+  const physicalPages = (wrapped.length-PREFIX)/PAGE;
+  let capacityPages = 0;
+  for (let offset = PREFIX, number = 1; offset < limit; offset += PAGE, number++) {
+    options.onProgress?.('page_authentication', number - 1);
     const first = number === 1;
-    const ciphertext = wrapped.subarray(offset + (first ? 16 : 0), offset + PAGE - RESERVE);
-    const iv = wrapped.subarray(offset + PAGE - RESERVE, offset + PAGE - RESERVE + 16);
-    const stored = wrapped.subarray(offset + PAGE - RESERVE + 16, offset + PAGE - RESERVE + 36);
+    const ciphertext = wrapped.subarray(offset + (first ? 16 : 0), offset + PAGE - CIPHER_RESERVE);
+    const iv = wrapped.subarray(offset + PAGE - CIPHER_RESERVE, offset + PAGE - CIPHER_RESERVE + 16);
+    const stored = wrapped.subarray(offset + PAGE - CIPHER_RESERVE + 16, offset + PAGE - CIPHER_RESERVE + 36);
     const expected = pageTag(ciphertext, iv, number, key, pageSalt, hash);
-    if (expected.length !== stored.length || !timingSafeEqual(expected, stored))
-      throw new Error('page_hmac_mismatch');
+    if (expected.length !== stored.length || !timingSafeEqual(expected, stored)) {
+      const error = new Error('page_hmac_mismatch');
+      error.page = number;
+      error.pageAllZero = wrapped.subarray(offset, offset + PAGE).equals(Buffer.alloc(PAGE));
+      throw error;
+    }
+    options.onProgress?.('page_decryption', number);
     const decipher = createDecipheriv('aes-256-cbc', key, iv);
     decipher.setAutoPadding(false);
-    output.push(Buffer.concat([first ? MAGIC : Buffer.alloc(0),
-      decipher.update(ciphertext), decipher.final(), Buffer.alloc(RESERVE)]));
+    const page = Buffer.concat([first ? MAGIC : Buffer.alloc(0),
+      decipher.update(ciphertext), decipher.final(), Buffer.alloc(CIPHER_RESERVE)]);
+    try {
+      if (first) {
+        options.onProgress?.('header_validation', number);
+        const declared = page.readUInt32BE(28), current = declared !== 0 && page.readUInt32BE(24) === page.readUInt32BE(92);
+        options.onHeader?.({header_pages: declared, physical_pages: physicalPages, header_counters_current: current,
+          freelist_first_trunk: page.readUInt32BE(32), freelist_pages: page.readUInt32BE(36),
+          page_size: page.readUInt16BE(16), reserved_bytes: page[20],
+          write_version: page[18], read_version: page[19]});
+        options.onProgress?.('header_validation', number);
+        if (page.readUInt16BE(16) !== PAGE || ![48, 80].includes(page[20]))
+          throw new Error('invalid_sqlite_header');
+        if (options.allowZeroCapacity === true) {
+          if (!current) throw new Error('untrusted_page_count');
+          if (declared > physicalPages) throw new Error('page_count_mismatch');
+          // Only an authenticated, current header establishes the logical end.
+          // Every byte outside it must be zero; never drop encrypted/damaged data.
+          limit = PREFIX + declared*PAGE;
+          options.onProgress?.('capacity_validation', number);
+          for (let at = limit; at < wrapped.length; at += 1024*1024) {
+            const tail = wrapped.subarray(at, Math.min(wrapped.length, at+1024*1024));
+            if (!tail.equals(Buffer.alloc(tail.length))) throw new Error('nonzero_capacity_tail');
+          }
+          capacityPages = physicalPages-declared;
+        }
+      }
+    } catch (error) { page.fill(0); throw error; }
+    decodedBytes += page.length;
+    if (writePage) {
+      if (first) header = Buffer.from(page.subarray(0, 100));
+      try {
+        options.onProgress?.('output_write', number);
+        writePage(page);
+      } finally { page.fill(0); }
+    } else output.push(page);
   }
-  const plain = Buffer.concat(output);
+  const plain = writePage ? header : Buffer.concat(output);
+  options.onProgress?.('page_count_validation', decodedBytes / PAGE);
   // Trust a page count only when SQLite's header marks it current. This
   // research reader rejects unknown completeness instead of inferring/repairing.
   const declaredPages = plain.readUInt32BE(28);
   if (declaredPages === 0 || plain.readUInt32BE(24) !== plain.readUInt32BE(92))
     throw new Error('untrusted_page_count');
-  if (declaredPages !== plain.length / PAGE)
+  if (declaredPages !== decodedBytes / PAGE)
     throw new Error('page_count_mismatch');
-  return plain;
+  return writePage ? {pages: decodedBytes / PAGE, physical_pages: physicalPages, zero_capacity_pages: capacityPages} : plain;
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
