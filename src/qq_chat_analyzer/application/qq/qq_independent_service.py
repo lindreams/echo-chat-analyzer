@@ -66,6 +66,8 @@ class QQIndependentAcquisition:
 class QQIndependentDiscovery:
     accounts: tuple[Path, ...]
     executables: tuple[Path, ...]
+    incompatible_executables: tuple[Path, ...] = ()
+    unverified_executables: tuple[Path, ...] = ()
 
 
 def _discovery_locations():
@@ -79,10 +81,10 @@ def _discovery_locations():
         None,0x28,None,0,windows_profile)==0 and Path(windows_profile.value)==Path.home())
     if native_profile:
         import winreg
+        from .qq_auth_bridge import _qq_install_candidates
+        images.extend(_qq_install_candidates())
         for hive,key,value in (
             (winreg.HKEY_CURRENT_USER,r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders','Personal'),
-            (winreg.HKEY_CURRENT_USER,r'Software\Microsoft\Windows\CurrentVersion\App Paths\QQ.exe',''),
-            (winreg.HKEY_LOCAL_MACHINE,r'Software\Microsoft\Windows\CurrentVersion\App Paths\QQ.exe',''),
         ):
             try:
                 with winreg.OpenKey(hive,key) as handle:text,_=winreg.QueryValueEx(handle,value)
@@ -91,9 +93,9 @@ def _discovery_locations():
                 if value=='Personal':documents=path
                 else:images.append(path)
             except OSError:pass
-    for variable in ('ProgramFiles','ProgramFiles(x86)','LOCALAPPDATA'):
+    for variable in ('ProgramFiles','ProgramFiles(x86)','ProgramW6432','LOCALAPPDATA'):
         if base:=os.environ.get(variable):
-            for relative in ('Tencent/QQNT/QQ.exe','Tencent/QQ/QQ.exe','Tencent/QQ/Bin/QQ.exe'):
+            for relative in ('Tencent/QQNT/QQ.exe','Tencent/QQNT/Bin/QQ.exe','Tencent/QQ/QQ.exe','Tencent/QQ/Bin/QQ.exe'):
                 images.append(Path(base)/relative)
     roots=[documents/'Tencent Files']
     if appdata:=os.environ.get('APPDATA'):roots.append(Path(appdata)/'Tencent/QQ')
@@ -170,7 +172,7 @@ class QQIndependentService:
         """
         roots,images=_discovery_locations()
         if data_root is not None:roots=[Path(data_root)]
-        accounts=[];executables=[]
+        accounts=[];executables=[];incompatible=[];unverified=[]
         def stopped():
             if self._closing or cancelled():raise QQIndependentError('analysis_cancelled','已取消资料发现。')
         for root in dict.fromkeys(roots):
@@ -195,10 +197,26 @@ class QQIndependentService:
             except (OSError,SourceError):continue
         for image in dict.fromkeys(images):
             stopped()
-            try:_file(image)
+            try:
+                image=_safe(image)
+                _file(image)
             except (OSError,SourceError):continue
-            if image.name.lower()=='qq.exe':executables.append(image)
-        return QQIndependentDiscovery(tuple(accounts),tuple(executables))
+            if image.name.lower()!='qq.exe':continue
+            try:
+                resources_identity(image)
+            except SourceError as error:
+                if error.code=='exact_active_version_required':
+                    from .qq_version import read_qq_resources
+                    from ...providers.qq_independent.worker import VERSION
+                    try:resource=read_qq_resources(image)
+                    except (OSError,ValueError):resource=None
+                    (incompatible if resource and resource.version and resource.version!=VERSION
+                     else unverified).append(image)
+                else:unverified.append(image)
+            except (OSError,ValueError):unverified.append(image)
+            else:
+                if image not in executables:executables.append(image)
+        return QQIndependentDiscovery(tuple(accounts),tuple(executables),tuple(incompatible),tuple(unverified))
 
     def prepare(self, selection: QQIndependentSelection, *, cancelled=lambda:False):
         with self._lock:

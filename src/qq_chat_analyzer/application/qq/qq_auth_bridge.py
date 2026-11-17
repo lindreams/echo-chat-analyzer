@@ -908,10 +908,10 @@ def _registry_qq_install_candidates(winreg: Any) -> list[Path]:
             candidates.append(Path(os.path.expandvars(display)))
         location = _registry_text(values.get("InstallLocation"))
         if location:
-            candidates.append(Path(os.path.expandvars(location)) / "QQ.exe")
+            candidates.append(Path(os.path.expandvars(location.strip('"'))) / "QQ.exe")
         uninstall = _registry_text(values.get("UninstallString"))
         if uninstall:
-            command = uninstall.strip('"')
+            command = _command_executable(uninstall)
             if command:
                 candidates.append(
                     Path(os.path.expandvars(command)).parent / "QQ.exe"
@@ -931,7 +931,9 @@ def _registry_qq_install_candidates(winreg: Any) -> list[Path]:
         if values:
             default = _registry_text(values.get(""))
             if default:
-                candidates.append(Path(os.path.expandvars(default)))
+                command = _command_executable(default)
+                if command:
+                    candidates.append(Path(os.path.expandvars(command)))
 
     values = _registry_values(
         winreg,
@@ -972,6 +974,12 @@ def _registry_values(winreg: Any, root: Any, subkey: str) -> dict[str, str]:
         return {}
 
 
+def _command_executable(text: str) -> str | None:
+    """Parse installation metadata as data; never run its command."""
+    match = re.match(r'^\s*(?:"([^"]+\.exe)"|(.+?\.exe))(?=\s|$)', text, re.IGNORECASE)
+    return (match[1] or match[2]) if match else None
+
+
 def _registry_text(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
@@ -983,7 +991,7 @@ def _strip_icon_index(value: Any) -> str | None:
     text = _registry_text(value)
     if text is None:
         return None
-    match = re.match(r"^(.*?),\s*\d+$", text)
+    match = re.match(r"^(.*?),\s*-?\d+$", text)
     if match:
         return match.group(1).strip().strip('"') or None
     return text.strip('"') or None

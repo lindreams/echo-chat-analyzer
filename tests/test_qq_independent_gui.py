@@ -137,11 +137,47 @@ def test_profile_discovery_lists_metadata_only_and_requires_explicit_scope(prepa
     assert refused.value.code=='analysis_cancelled'
 
 
+def test_installation_metadata_reuses_registry_paths_without_running_commands(monkeypatch,tmp_path):
+    from types import SimpleNamespace
+    from qq_chat_analyzer.application.qq import qq_auth_bridge as bridge
+    registry=SimpleNamespace(HKEY_LOCAL_MACHINE=1,HKEY_CURRENT_USER=2,HKEY_CLASSES_ROOT=3)
+    location=tmp_path/'Non default QQ'
+    def values(_registry,_hive,key):
+        if key.endswith('Uninstall\\QQ'):
+            return {'InstallLocation':f'"{location}"',
+                    'UninstallString':f'"{location / "Uninstall.exe"}" /silent',
+                    'DisplayIcon':f'"{location / "QQ.exe"}",-1'}
+        if key.endswith('App Paths\\QQ.exe'):
+            return {'':f'"{location / "QQ.exe"}" --argument'}
+        return {}
+    monkeypatch.setattr(bridge,'_registry_values',values)
+    assert set(bridge._registry_qq_install_candidates(registry))=={location/'QQ.exe'}
+
+
+def test_program_discovery_filters_versions_and_broken_resources(prepared,tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from qq_chat_analyzer.application.qq import qq_version
+    service,selection,_=prepared
+    old=tmp_path/'old/QQ.exe';old.parent.mkdir();old.write_bytes(b'old')
+    broken=tmp_path/'broken/QQ.exe';broken.parent.mkdir();broken.write_bytes(b'broken')
+    monkeypatch.setattr(source,'_discovery_locations',lambda:([],[selection.executable,old,broken,selection.executable]))
+    def validate(path):
+        if path==old:raise SourceError('exact_active_version_required')
+        if path==broken:raise SourceError('module_identity_refused')
+    monkeypatch.setattr(source,'resources_identity',validate)
+    monkeypatch.setattr(qq_version,'read_qq_resources',lambda _:SimpleNamespace(version=(9,9,31,49738)))
+    found=service.discover_local_profiles()
+    assert found.executables==(selection.executable,)
+    assert found.incompatible_executables==(old,)
+    assert found.unverified_executables==(broken,)
+    assert found.accounts==() and service._root is None
+
+
 def test_discovery_respects_isolated_profile_instead_of_hkcu(monkeypatch,tmp_path):
     import os
     import winreg
     monkeypatch.setattr(winreg,'OpenKey',lambda *_args:pytest.fail('isolated discovery read native HKCU'))
-    for name in ('ProgramFiles','ProgramFiles(x86)','LOCALAPPDATA'):
+    for name in ('ProgramFiles','ProgramFiles(x86)','ProgramW6432','LOCALAPPDATA'):
         monkeypatch.setenv(name,str(tmp_path/name))
     roots,images=source._discovery_locations()
     assert roots==[Path.home()/'Documents/Tencent Files',Path(os.environ['APPDATA'])/'Tencent/QQ']

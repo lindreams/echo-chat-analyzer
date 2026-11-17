@@ -142,11 +142,26 @@ class QQIndependentConnection:
         else:
             account = accounts[0]
         if self._image is None:
-            if len(discovery.executables) != 1:
+            if not discovery.executables:
                 self._recovery = 'program'
-                self._idle('未能确定可用的 QQ 程序，请通过连接设置选择 QQ。', recovery=True)
+                if discovery.incompatible_executables:
+                    message = '已找到 QQ，但当前版本不受支持。请使用 QQ 9.9.37（54395）后重新连接。'
+                elif discovery.unverified_executables:
+                    message = '已找到 QQ，但无法验证程序完整性或活动版本。请修复 QQ 安装后重新连接。'
+                else:
+                    message = '没有找到已安装的 QQ。请安装 QQ 9.9.37（54395）后重新连接。'
+                self._idle(message, recovery=True)
                 return
-            self._image = discovery.executables[0]
+            if len(discovery.executables) == 1:
+                self._image = discovery.executables[0]
+            else:
+                choices = [f'QQ 9.9.37（54395） · {path.parent}' for path in discovery.executables]
+                choice, accepted = QInputDialog.getItem(self.view, '选择 QQ',
+                    '发现多个兼容的 QQ，请选择本次使用的程序', choices, 0, False)
+                if not accepted:
+                    self.release('已取消选择 QQ。')
+                    return
+                self._image = discovery.executables[choices.index(choice)]
         if not self._authorize(account):
             self.release('尚未授权读取，可以重新选择账号。')
             return
@@ -281,11 +296,12 @@ class QQIndependentConnection:
         if self.running or self.view._closing:
             return
         if self._recovery == 'program':
-            value, _ = QFileDialog.getOpenFileName(self.view, '选择 QQ 程序', '', 'QQ 程序 (QQ.exe)')
+            value, _ = QFileDialog.getOpenFileName(self.view, '选择 QQ 程序',
+                str(self._image.parent if self._image else Path.home()), 'QQ 程序 (QQ.exe)')
             if value:
                 self._image = Path(value)
         else:
-            value = QFileDialog.getExistingDirectory(self.view, '选择 QQ 资料位置')
+            value = QFileDialog.getExistingDirectory(self.view, '选择 QQ 资料位置', str(Path.home() / 'Documents'))
             if value:
                 self._data_root = Path(value)
         if value:
