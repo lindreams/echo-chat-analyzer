@@ -6,6 +6,7 @@ import {
 } from 'node:fs';
 import { createCipheriv, createDecipheriv, createHash, createHmac, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { setImmediate as yieldRead } from 'node:timers/promises';
+import { acquireSourceGuard } from './source_guard.mjs';
 
 // Capture the module bytes at evaluation, never a database fingerprint.
 export const captureCodeHash = createHash('sha256').update(readFileSync(new URL(import.meta.url))).digest('hex');
@@ -369,6 +370,30 @@ export function finalizeStandaloneSnapshot(path, pageCount, onDiagnostic = () =>
 export function createMergedEncryptedDatabase(options) {
   return capture(options, false);
 }
+
+// Independent callers need no database API or passphrase for this stage.
+// The caller owns an isolated output path and must discard it on ANY error,
+// including unconfirmed source release. Never decrypt/publish on rejection.
+// A trusted current-login binding must be checked by the caller before/after;
+// neither these locks nor the resulting image establish that identity.
+export async function createLockedMergedEncryptedDatabase(options) {
+  if (!Number.isFinite(options.deadline)) fail('capture_deadline_required');
+  const guard = await acquireSourceGuard(options.mainPath, options.walPath,
+    { signal: options.signal, deadline: options.deadline });
+  let result;
+  try {
+    result = await createMergedEncryptedDatabase({
+      ...options, readWitness: () => guard.readWitness(),
+    });
+  } finally {
+    // Success is not observable until helper exit and lock release are proven.
+    // Keep the same overall remaining deadline; never restart capture's budget.
+    await guard.release();
+  }
+  if (options.signal?.aborted || performance.now() >= options.deadline) fail('capture_cancelled');
+  return { ...result, sourceLocksReleased: true };
+}
+
 export function createSnapshot(options) {
   if (!options.passphrase) fail('passphrase_unavailable');
   return capture(options, true);

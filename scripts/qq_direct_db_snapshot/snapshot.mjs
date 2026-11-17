@@ -22,9 +22,8 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, createHash } from 'node:crypto';
 import { unlinkSync, readFileSync } from 'node:fs';
-import { createMergedEncryptedDatabase, finalizeStandaloneSnapshot, captureCodeHash, fileState as strongFileState } from './main_wal.mjs';
+import { createLockedMergedEncryptedDatabase, finalizeStandaloneSnapshot, captureCodeHash, fileState as strongFileState } from './main_wal.mjs';
 import { createWorkspace, workspaceCodeHash } from './workspace.mjs';
-import { acquireSourceGuard } from './source_guard.mjs';
 import { pinSnapshot } from './snapshot_guard.mjs';
 import { appendDiagnostic } from './diagnostic_log.mjs';
 
@@ -540,24 +539,15 @@ export function createEchoSnapshotApi(core, options = {}) {
         failureStage = 'workspace_isolation';
         workspace.assertSourceSeparate(mainPath);
         failureStage = 'source_guard';
-        const sourceGuard = await acquireSourceGuard(mainPath, `${mainPath}-wal`, { signal, deadline });
-        let capture;
-        try {
-          capture = await createMergedEncryptedDatabase({
-            mainPath, walPath: `${mainPath}-wal`, outputPath: stagingMerged,
-            signal, deadline, readWitness: () => sourceGuard.readWitness(),
-            onPhase: onCapturePhase,
-            onDiagnostic: ({ failureStage: stage, ...witness }) => {
-              failureStage = stage;
-              Object.assign(captureWitness, witness);
-              traceAcquisitionDiagnostic(stage, null, generationId, witness, false);
-            },
-          });
-        } finally {
-          // No merge may reach decryption without proof that our source locks
-          // and helper handles were released. This also covers cancellation.
-          await sourceGuard.release();
-        }
+        const capture = await createLockedMergedEncryptedDatabase({
+          mainPath, walPath: `${mainPath}-wal`, outputPath: stagingMerged,
+          signal, deadline, onPhase: onCapturePhase,
+          onDiagnostic: ({ failureStage: stage, ...witness }) => {
+            failureStage = stage;
+            Object.assign(captureWitness, witness);
+            traceAcquisitionDiagnostic(stage, null, generationId, witness, false);
+          },
+        });
         capturedPages = capture.pages;
         traceStage('main_wal_boundary_verified', generationId);
         traceStage('main_wal_capture_complete', generationId, captureStarted, 'success');

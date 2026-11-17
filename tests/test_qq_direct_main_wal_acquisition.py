@@ -439,12 +439,23 @@ def _independent(program):
     This does not supply a real logged-in identity or a native event source.
     """
     return program.replace('let fired = false;', 'let fired = false; const independentReceipt = {phases: []};').replace(
+        'fs.appendFileSync(walPath,next);', r"""
+  // A separate fictional writer appends while the capture's source locks are
+  // held. The existing barrier fixes the commit after B without timing sleeps;
+  // updateIndex below already publishes SHM through a separate mapped writer.
+  const writer = spawnSync(process.env.ECHO_TEST_PYTHON, ['-c',
+    'import sys,base64;f=open(sys.argv[1],"ab");f.write(base64.b64decode(sys.stdin.read()));f.close()',
+    walPath], {input: next.toString('base64'), encoding: 'utf8', timeout: 5000, windowsHide: true});
+  if (writer.error || writer.status !== 0) throw Error('fictional_writer_failed');
+  independentReceipt.writerProcesses = (independentReceipt.writerProcesses ?? 0) + 1;
+"""
+    ).replace(
         "const result = await fn({mainPath, walPath, outputPath, passphrase: process.env.ECHO_POC_PASSPHRASE, onPhase});",
         r"""
   const path = await import('node:path');
   const {createHash, randomBytes} = await import('node:crypto');
   const {encode} = await import('./scripts/spikes/qq_independent_codec.mjs');
-  const {acquireSourceGuard} = await import('./scripts/qq_direct_db_snapshot/source_guard.mjs');
+  const {createLockedMergedEncryptedDatabase} = await import('./scripts/qq_direct_db_snapshot/main_wal.mjs');
   const {withAuthenticatedKey, PROFILE} = await import('./src/qq_chat_analyzer/providers/qq_independent/js/qq_key_source.mjs');
   const {decryptSnapshot, snapshotFailureReceipt} = await import('./src/qq_chat_analyzer/providers/qq_independent/js/qq_full_read.mjs');
   const plain = fs.readFileSync(path.join(path.dirname(mainPath), '..', 'plain.db'));
@@ -473,21 +484,15 @@ def _independent(program):
   updateIndex(index);
   const phases = independentReceipt.phases, abort = new AbortController();
   const merged = path.join(path.dirname(outputPath), 'independent-merged.db');
-  const deadline = performance.now() + 20000;
-  const guard = await acquireSourceGuard(mainPath, walPath, {signal: abort.signal, deadline});
-  let capture;
-  try {
-    capture = await createMergedEncryptedDatabase({mainPath, walPath, outputPath: merged,
-      deadline, signal: abort.signal, readWitness: () => guard.readWitness(),
-      onPhase: phase => {
-        onPhase(phase);
-        if (mode === 'cancel' && phase === 'boundary_selected') abort.abort();
-      }});
-    phases.push('encrypted_snapshot');
-  } finally {
-    await guard.release();
-    phases.push('source_released');
-  }
+  const deadline = performance.now() + (mode === 'expired' ? -1 : 20000);
+  const capture = await createLockedMergedEncryptedDatabase({mainPath, walPath, outputPath: merged,
+    deadline, signal: abort.signal,
+    onPhase: phase => {
+      onPhase(phase);
+      if (mode === 'cancel' && phase === 'boundary_selected') abort.abort();
+    }});
+  if (capture.sourceLocksReleased !== true) throw Error('source_release_unconfirmed');
+  phases.push('encrypted_snapshot', 'source_released');
   const bytes = fs.readFileSync(merged), firstPage = bytes.subarray(0, 5120);
   let decoded;
   withAuthenticatedKey({
@@ -502,7 +507,8 @@ def _independent(program):
     } catch (error) { Object.assign(independentReceipt, snapshotFailureReceipt(error)); throw error; }
     phases.push('decoded');
   }, {deadline, signal: abort.signal});
-  const result = {...capture, ...decoded, phases, reservedBytes: plain[20]};
+  const result = {...capture, ...decoded, phases, reservedBytes: plain[20],
+    writerProcesses: independentReceipt.writerProcesses ?? 0};
 """
     ).replace("code:error.code ?? 'interrupted'", "code:error.code ?? 'interrupted', independent:independentReceipt")
 
@@ -514,6 +520,7 @@ def test_independent_authenticated_live_wal_keeps_boundary_and_releases_source(f
     result = _interleave(fictional_source, 'appendFrame(true);', mode='merge', driver_transform=_independent)
     assert result['ok'], result
     assert result['reservedBytes'] == request.node.callspec.params['poc_source']
+    assert result['writerProcesses'] == 1 and result['sourceLocksReleased'] is True
     assert result['sourceState']['after']['committedFrame'] > result['sourceState']['before']['committedFrame']
     assert result['all_pages_authenticated'] and result['decrypted_pages'] == result['pages']
     assert result['phases'] == ['encrypted_snapshot', 'source_released', 'authenticated_consumer', 'decoded']
@@ -525,13 +532,13 @@ def test_independent_authenticated_live_wal_keeps_boundary_and_releases_source(f
         source.rename(source.with_suffix(source.suffix + '.released'))
 
 
-@pytest.mark.parametrize('mode', ['cancel', 'corrupt-mac'])
+@pytest.mark.parametrize('mode', ['cancel', 'expired', 'corrupt-mac'])
 @pytest.mark.parametrize('poc_source', [80], indirect=True)
 def test_independent_live_wal_cancel_or_page_mac_failure_never_publishes(fictional_source, mode):
     result = _interleave(fictional_source, '', mode=mode, driver_transform=_independent)
     assert not result['ok'], result
     assert not fictional_source[2].exists()
-    if mode == 'cancel':
+    if mode in ('cancel', 'expired'):
         assert result['code'] in ('source_guard_failed', 'capture_cancelled')
         assert 'authenticated_consumer' not in result['independent']['phases']
         assert not (fictional_source[2].parent / 'independent-merged.db').exists()
