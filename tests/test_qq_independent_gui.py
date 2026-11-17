@@ -173,6 +173,31 @@ def test_program_discovery_filters_versions_and_broken_resources(prepared,tmp_pa
     assert found.accounts==() and service._root is None
 
 
+def test_unique_compatible_program_advances_without_file_picker(qt_app,prepared,monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
+    service,selection,_=prepared;tasks=[];authorized=[]
+    widget=QQWorkspace(facade_for(service),executor=lambda operation,**callbacks:tasks.append(operation))
+    flow=widget._independent
+    monkeypatch.setattr(QFileDialog,'getOpenFileName',lambda *a:pytest.fail('normal connection opened file picker'))
+    monkeypatch.setattr(flow,'_authorize',lambda account:authorized.append(account) or False)
+    flow._discovered(source.QQIndependentDiscovery((selection.account_directory,),(selection.executable,)))
+    assert flow._image==selection.executable and authorized==[selection.account_directory]
+    assert service._root is None
+    widget.close()
+
+
+def test_program_recovery_picker_starts_at_home_instead_of_working_directory(qt_app,prepared,monkeypatch):
+    from PySide6.QtWidgets import QFileDialog
+    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
+    service,_,_=prepared;starts=[]
+    widget=QQWorkspace(facade_for(service))
+    monkeypatch.setattr(QFileDialog,'getOpenFileName',lambda _parent,_title,start,_filter: starts.append(start) or ('',''))
+    widget._independent._recovery='program';widget._independent._settings()
+    assert starts==[str(Path.home())] and Path(starts[0])!=Path.cwd()
+    widget.close()
+
+
 def test_discovery_respects_isolated_profile_instead_of_hkcu(monkeypatch,tmp_path):
     import os
     import winreg
