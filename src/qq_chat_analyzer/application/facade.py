@@ -1361,6 +1361,13 @@ class ChatAnalyzerFacade:
             return self._require_service(ChatSource.QQ).get_snapshot()
         return self._require_qq_connection_manager().get_snapshot()
 
+    def discover_independent_qq_profiles(self, data_root=None, *, cancelled=lambda:False):
+        """Discover metadata candidates; this never authorizes chat reads."""
+        if not self.independent_qq:
+            raise SourceUnavailable(ChatSource.QQ)
+        with _translated_errors(ChatSource.QQ):
+            return self._require_service(ChatSource.QQ).discover_local_profiles(data_root,cancelled=cancelled)
+
     def prepare_independent_qq(self, executable: Path, account_directory: Path, *, recover_media=False, cancelled=lambda:False):
         """Authorize exactly the selected local profile; navigation never calls this."""
         if not self.independent_qq:

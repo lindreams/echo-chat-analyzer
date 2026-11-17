@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import ctypes
 from ctypes import wintypes
 import json
+from itertools import islice
 import os
 from pathlib import Path
 import queue
@@ -59,6 +60,44 @@ class QQIndependentAcquisition:
     sticker_media_roots: tuple[Path, ...] = ()
     recover_qq_media: bool = True
     self_identity_basis: str = "user_declared"
+
+
+@dataclass(frozen=True)
+class QQIndependentDiscovery:
+    accounts: tuple[Path, ...]
+    executables: tuple[Path, ...]
+
+
+def _discovery_locations():
+    """Fixed local metadata locations only; no drive search or process probe."""
+    documents=Path.home()/'Documents'
+    images=[]
+    # Honor a redirected HOME/USERPROFILE (including isolated acceptance runs).
+    # HKCU belongs to the Windows profile, not an arbitrary environment profile.
+    windows_profile=ctypes.create_unicode_buffer(32768)
+    native_profile=(os.name=='nt' and ctypes.windll.shell32.SHGetFolderPathW(
+        None,0x28,None,0,windows_profile)==0 and Path(windows_profile.value)==Path.home())
+    if native_profile:
+        import winreg
+        for hive,key,value in (
+            (winreg.HKEY_CURRENT_USER,r'Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders','Personal'),
+            (winreg.HKEY_CURRENT_USER,r'Software\Microsoft\Windows\CurrentVersion\App Paths\QQ.exe',''),
+            (winreg.HKEY_LOCAL_MACHINE,r'Software\Microsoft\Windows\CurrentVersion\App Paths\QQ.exe',''),
+        ):
+            try:
+                with winreg.OpenKey(hive,key) as handle:text,_=winreg.QueryValueEx(handle,value)
+                if not isinstance(text,str):continue
+                path=Path(os.path.expandvars(text.strip('"')))
+                if value=='Personal':documents=path
+                else:images.append(path)
+            except OSError:pass
+    for variable in ('ProgramFiles','ProgramFiles(x86)','LOCALAPPDATA'):
+        if base:=os.environ.get(variable):
+            for relative in ('Tencent/QQNT/QQ.exe','Tencent/QQ/QQ.exe','Tencent/QQ/Bin/QQ.exe'):
+                images.append(Path(base)/relative)
+    roots=[documents/'Tencent Files']
+    if appdata:=os.environ.get('APPDATA'):roots.append(Path(appdata)/'Tencent/QQ')
+    return roots,images
 
 
 def _positive(value):
@@ -122,6 +161,44 @@ class QQIndependentService:
 
     def _cancelled(self, external=lambda:False):
         return self._cancel.is_set() or self._closing or external()
+
+    def discover_local_profiles(self, data_root=None, *, cancelled=lambda:False):
+        """List profile labels and file presence, never read database contents.
+
+        Discovery is not authorization, account attestation or key matching.
+        A custom root is expanded one level, without following linked paths.
+        """
+        roots,images=_discovery_locations()
+        if data_root is not None:roots=[Path(data_root)]
+        accounts=[];executables=[]
+        def stopped():
+            if self._closing or cancelled():raise QQIndependentError('analysis_cancelled','已取消资料发现。')
+        for root in dict.fromkeys(roots):
+            stopped()
+            try:
+                root=_safe(root)
+                if _positive(root.name):candidates=[root]
+                else:
+                    with os.scandir(root) as entries:
+                        entries=list(islice(entries,1025))
+                        if len(entries)>1024:raise QQIndependentError('qq_discovery_limit','资料候选过多，请直接选择一个账号目录。')
+                        candidates=[root/entry.name for entry in entries if _positive(entry.name)]
+                        if len(candidates)>256:raise QQIndependentError('qq_discovery_limit','资料候选过多，请直接选择一个账号目录。')
+                for candidate in sorted(candidates):
+                    stopped()
+                    try:
+                        _safe(candidate)
+                        for name in ('nt_msg.db','group_info.db','profile_info.db'):
+                            _file(candidate/'nt_qq/nt_db'/name)
+                    except (OSError,SourceError):continue
+                    if candidate not in accounts:accounts.append(candidate)
+            except (OSError,SourceError):continue
+        for image in dict.fromkeys(images):
+            stopped()
+            try:_file(image)
+            except (OSError,SourceError):continue
+            if image.name.lower()=='qq.exe':executables.append(image)
+        return QQIndependentDiscovery(tuple(accounts),tuple(executables))
 
     def prepare(self, selection: QQIndependentSelection, *, cancelled=lambda:False):
         with self._lock:
@@ -187,7 +264,7 @@ class QQIndependentService:
             if self._cancelled(external.is_set): raise QQIndependentError('analysis_cancelled','已取消 QQ 获取。')
             self._run_capture(progress,external)
             if self._cancelled(external.is_set): raise QQIndependentError('analysis_cancelled','QQ 读取已取消。')
-            progress('正在校验授权数据库…')
+            progress({'phase':'authenticating','message':'正在校验授权数据库…'})
             self._validate_databases(external.is_set)
             self._state=ConnectionState.CONNECTED; self._expire_later()
             return self.get_snapshot()
@@ -276,9 +353,9 @@ class QQIndependentService:
                             raise SourceError('login_window_elapsed')
                         progress({'phase':'armed','login_before_utc':value['login_before_utc'],
                                   'remaining_login_ms':remaining})
-                    elif phase=='stopped': progress('登录捕获已停止。')
-                    elif phase=='awaiting_exit': progress('已捕获短期凭据，请在 110 秒内从托盘完全退出 QQ；Echo 不会自动退出 QQ。')
-                    elif phase=='authenticating': progress('QQ 已退出，正在认证并解密授权资料…')
+                    elif phase=='stopped': progress({'phase':phase,'message':'登录捕获已停止。'})
+                    elif phase=='awaiting_exit': progress({'phase':phase,'message':'已收到登录信息，请在 110 秒内从托盘完全退出 QQ；Echo 不会自动退出 QQ。'})
+                    elif phase=='authenticating': progress({'phase':phase,'message':'QQ 已退出，正在校验并读取授权资料…'})
                     elif phase=='completed': completed=value.get('verified') is True
                     elif phase not in ('failed','stop_unconfirmed'): raise SourceError('invalid_capture_status')
                 except queue.Empty: pass

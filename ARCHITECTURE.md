@@ -106,7 +106,8 @@ QQ Direct DB 使用同一快照客户端绑定的认证与运行代际读取本�
 之后复用 QQDatabaseProvider、Adapter、Analysis、媒体准备、Report Package 和 Catalog。
 GUI 使用既有 SessionAnalysisPanel，不提供手填群号、二维码或 NapCat fallback。
 
-- 用户通过文件选择授权 QQ.exe 和单个数字账号目录。只支持固定 54395 版本、wrapper 及生产组件哈希；不扫描其他账号，不启动或结束 QQ。
+- QQ 页经 Facade 在常用资料位置发现账号目录及 QQ 程序候选，只检查目录和固定三库是否存在，不读取库内容。用户选择单个资料并明确授权；自定义位置只展开一层，不遍历磁盘或链接。发现不等于账号认证。
+- 用户授权后只处理所选 QQ.exe 与账号目录。只支持固定 54395 版本、wrapper 及生产组件哈希；不尝试其他账号的数据库，不启动或结束 QQ。
 - 准备阶段验证位置与组件。用户打开 QQ 停留登录页；worker 校验所选进程的镜像、创建时间和已加载 wrapper。只有尚有效的 armed 才提示登录；已登录且没有新目标事件时有界失败。
 - 原生捕获停止且 helper 退出后，Node 最多短暂保留一个凭据事件，尚不创建 raw key 租约。用户须在有界窗口内完全退出 QQ；保持所选代际句柄证据，不将 Stop 当作 DLL 卸载。
 - QQ 全部退出且源库无 WAL/SHM/journal 后，同时持有 message/group_info/profile_info 三库的禁止写入句柄，再逐库复制。ACL 保护先于敏感数据写入，保留源身份、大小、摘要与后验一致性检查，不修改原库。

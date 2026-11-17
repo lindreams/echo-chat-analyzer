@@ -84,6 +84,7 @@ def prepared(tmp_path,monkeypatch):
         db.commit()
     monkeypatch.setattr(source,'resources_identity',lambda _:None)
     monkeypatch.setattr(source,'runtime_files',lambda:None)
+    monkeypatch.setattr(source,'_discovery_locations',lambda:([tmp_path],[image]))
     def freeze(path,parent):
         child=parent/('qq-authorized-full-'+hashlib.sha256(path.name.encode()).hexdigest()[:32]); child.mkdir()
         (child/'owner.json').write_text(json.dumps({'kind':'echo-qq-full-read','version':1}))
@@ -110,6 +111,40 @@ def prepared(tmp_path,monkeypatch):
 def facade_for(service):
     return ChatAnalyzerFacade(qq_service=service,qq_connection_service=service,independent_qq=True,
                               analysis_service=AnalysisApplicationService())
+
+
+def test_profile_discovery_lists_metadata_only_and_requires_explicit_scope(prepared,tmp_path,monkeypatch):
+    service,selection,dbroot=prepared;facade=facade_for(service)
+    other=tmp_path/'100000002';shutil.copytree(dbroot,other/'nt_qq/nt_db')
+    incomplete=tmp_path/'100000003'/'nt_qq/nt_db';incomplete.mkdir(parents=True)
+    (incomplete/'nt_msg.db').write_bytes(b'fictional incomplete profile')
+    original_open=Path.open;original_builtin_open=builtins.open
+    def guard(path):
+        if isinstance(path,(str,Path)):
+            assert not any(Path(path).is_relative_to(account) for account in
+                           (selection.account_directory,other,incomplete.parents[1])), 'discovery read account content'
+    def path_open(path,*args,**kwargs):guard(path);return original_open(path,*args,**kwargs)
+    def file_open(path,*args,**kwargs):guard(path);return original_builtin_open(path,*args,**kwargs)
+    monkeypatch.setattr(Path,'open',path_open);monkeypatch.setattr(builtins,'open',file_open)
+    result=facade.discover_independent_qq_profiles()
+    assert result.accounts==(selection.account_directory,other)
+    assert result.executables==(selection.executable,)
+    assert service._root is None and not service.list_sessions()
+    assert facade.discover_independent_qq_profiles(other).accounts==(other,)
+    with pytest.raises(FacadeError) as refused:
+        facade.discover_independent_qq_profiles(cancelled=lambda:True)
+    assert refused.value.code=='analysis_cancelled'
+
+
+def test_discovery_respects_isolated_profile_instead_of_hkcu(monkeypatch,tmp_path):
+    import os
+    import winreg
+    monkeypatch.setattr(winreg,'OpenKey',lambda *_args:pytest.fail('isolated discovery read native HKCU'))
+    for name in ('ProgramFiles','ProgramFiles(x86)','LOCALAPPDATA'):
+        monkeypatch.setenv(name,str(tmp_path/name))
+    roots,images=source._discovery_locations()
+    assert roots==[Path.home()/'Documents/Tencent Files',Path(os.environ['APPDATA'])/'Tencent/QQ']
+    assert all(image.is_relative_to(tmp_path) for image in images)
 
 
 def test_facade_complete_list_scoped_analysis_report_and_reuse(prepared,tmp_path):
@@ -253,6 +288,7 @@ def test_formal_composition_and_navigation_are_passive(qt_app,monkeypatch):
     from qq_chat_analyzer.gui.qq_independent_workspace import QQIndependentWorkspace
     monkeypatch.setattr(source,'resources_identity',lambda _:pytest.fail('navigation inspected QQ'))
     monkeypatch.setattr(source,'runtime_files',lambda:pytest.fail('navigation touched runtime'))
+    monkeypatch.setattr(source,'_discovery_locations',lambda:([],[]))
     facade=build_facade();window=MainWindow(facade)
     try:
         window.show_qq_workspace()
@@ -261,7 +297,7 @@ def test_formal_composition_and_navigation_are_passive(qt_app,monkeypatch):
         assert facade.get_qq_qrcode_path() is None
         assert not hasattr(workspace,'_group')
         assert not workspace._session_panel.isEnabled()
-        assert workspace._prepare_button.isEnabled() and not workspace._capture_button.isEnabled()
+        assert not workspace._capture_button.isEnabled()
         assert not workspace._authorization.isChecked()
     finally:
         window.close();window.await_shutdown(10)
@@ -316,8 +352,7 @@ def test_gui_close_during_capture_drains_and_cleans(qt_app,prepared,monkeypatch)
             errors.append(error.code)
     capture_thread=Thread(target=capture)
     try:
-        # Existing experimental acquisition still belongs to the Facade;
-        # closing the unavailable entry must drain it safely.
+        # The source remains owned by the Facade even while a worker is pending.
         capture_thread.start()
         deadline=time.monotonic()+3
         while not entered.is_set() and time.monotonic()<deadline:
@@ -338,7 +373,26 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
     from qq_chat_analyzer.gui.main_window import MainWindow
     from PySide6.QtCore import QDate
     from dataclasses import replace
-    service,selection,_=prepared
+    service,selection,dbroot=prepared
+    other=tmp_path/'100000003';other_db=other/'nt_qq/nt_db'
+    shutil.copytree(dbroot,other_db)
+    with closing(sqlite3.connect(other_db/'nt_msg.db')) as db:
+        for table in ('group_msg_table','c2c_msg_table'):
+            db.execute(f'UPDATE {table} SET "40033"=CASE "40033" WHEN 100000001 THEN 100000003 WHEN 100000002 THEN 100000004 ELSE "40033" END')
+            db.execute(f'UPDATE {table} SET "40800"=? WHERE "40800" IS NOT NULL',
+                       (synthetic_text_message_blob('SECOND_ACCOUNT_SENTINEL walking beside the orchard today'),))
+        db.commit()
+    with closing(sqlite3.connect(other_db/'group_info.db')) as db:
+        for table in ('group_list','group_detail_info_ver1'):
+            db.execute(f'UPDATE {table} SET "60007"=?',('Second account orchard',))
+        db.commit()
+    original_capture=service._run_capture
+    progress_phases=[]
+    def capture(report,external):
+        original_capture(lambda value:(progress_phases.append(value['phase']),report(value)),external)
+        report({'phase':'awaiting_exit','message':'Fictional QQ exit required'})
+        report({'phase':'authenticating','message':'Fictional QQ has exited'})
+    monkeypatch.setattr(service,'_run_capture',capture)
     def wait_for(predicate):
         end=time.monotonic()+10
         while not predicate() and time.monotonic()<end:
@@ -346,18 +400,28 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
         assert predicate()
     window=MainWindow(facade_for(service))
     opened=[]
+    window.show();qt_app.processEvents()
     window._report_opener=lambda path:opened.append(path) or True
     outcomes=[];window.qq_workspace.analysis_succeeded.connect(outcomes.append)
+    statuses=[];window.qq_workspace.status_changed.connect(statuses.append)
     try:
-        window.navigate_to_qq();w=window.qq_workspace
-        w._executable.setText(str(selection.executable));w._account_directory.setText(str(selection.account_directory))
+        assert window.stack.currentWidget() is window.home_page
+        window.home_page._qq_btn.click();w=window.qq_workspace
+        wait_for(lambda:not w._running)
+        assert w._progress_track.mapTo(w,w._progress_track.rect().topLeft()).y()<120
+        assert w._accounts.count()==2 and w._executable.text()==str(selection.executable)
+        w._accounts.setCurrentIndex(w._accounts.findData(str(other)))
+        assert w._account_directory.text()==str(other) and not w._authorization.isChecked()
         w._prepare_button.click();assert service._root is None  # Consent required.
         w._authorization.setChecked(True);w._prepare_button.click()
         wait_for(lambda:not w._running)
         assert w._capture_button.isEnabled() and not list(service._root.glob('*.db'))
+        assert not any('Echo 已就绪' in text for text in statuses)
         w._capture_button.click();wait_for(lambda:not w._running)
         assert w._phase=='confirm' and not w._session_panel.isEnabled()
-        assert w._declared_account.text()==selection.account
+        assert progress_phases==['armed'] and any('Echo 已就绪' in text for text in statuses)
+        assert 'Fictional QQ exit required' in statuses and w._progress_track.stage==5
+        assert w._declared_account.text()==other.name
         w._confirm_button.click();wait_for(lambda:not w._running);assert w._phase=='ready'
         panel=w._session_panel
         assert panel._session_list.count()==3
@@ -375,10 +439,27 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
             wait_for(lambda:not panel._analysis_running)
             assert outcomes and outcomes[-1].report_path.is_file()
             assert outcomes[-1].echo_report_view.self_identity_basis=='user_declared'
+            report=json.loads((outcomes[-1].report_path.parent/'echo-report.json').read_text(encoding='utf-8'))
+            assert report['conversation']['kind']==('private' if session_id.startswith('private') else 'group')
+            assert report['self_identity']=={'basis':'user_declared','system_authenticated':False}
+            with service.acquired_session(session_id) as acquired:
+                raw=acquired.payload_path.read_text()
+                assert json.loads(raw)['self']['value']==other.name
+                from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
+                messages,_=parse_qq_db_rich_messages(json.loads(raw))
+                assert all('SECOND_ACCOUNT_SENTINEL' in m.contents[0].text for m in messages)
         assert len(outcomes)==2 and outcomes[-1].echo_report_view.total_message_count==2
         assert opened==[outcome.report_path.resolve() for outcome in outcomes]
         w._cancel_button.click();wait_for(lambda:not w._running)
         assert service._root is None and w._phase=='select'
+        assert not w._authorization.isChecked()
+        w._accounts.setCurrentIndex(w._accounts.findData(str(selection.account_directory)))
+        w._authorization.setChecked(True);w._prepare_button.click();wait_for(lambda:not w._running)
+        w._capture_button.click();wait_for(lambda:not w._running)
+        w._confirm_button.click();wait_for(lambda:not w._running)
+        assert w._phase=='ready' and service._selection.account==selection.account
+        with service.acquired_session('group:partition-a') as acquired:
+            assert 'SECOND_ACCOUNT_SENTINEL' not in acquired.payload_path.read_text()
     finally:
         window.close();assert window.await_shutdown(10)
 
@@ -403,6 +484,41 @@ def test_gui_cancel_queued_or_completed_prepare_cannot_publish_stale_state(qt_ap
     callbacks['on_success'](cleanup());callbacks['on_finished']()
     assert service._root is None and widget._phase=='select' and not widget._session_panel.isEnabled()
     widget.close()
+
+
+@pytest.mark.parametrize('fault',['normal_qq_exit_required','capture_refused','capture_deadline','cancel'])
+def test_gui_failed_or_cancelled_capture_returns_to_selection_without_sessions(qt_app,prepared,monkeypatch,fault):
+    import time
+    from qq_chat_analyzer.gui.main_window import MainWindow
+    service,selection,_=prepared;entered=Event()
+    def capture(report,external):
+        report({'phase':'awaiting_exit','message':'Fictional exit is pending'})
+        entered.set()
+        if fault=='cancel':
+            end=time.monotonic()+5
+            while not service._cancelled(external.is_set) and time.monotonic()<end:time.sleep(.005)
+            assert service._cancelled(external.is_set)
+        raise SourceError(fault)
+    monkeypatch.setattr(service,'_run_capture',capture)
+    def wait_for(predicate):
+        end=time.monotonic()+10
+        while not predicate() and time.monotonic()<end:qt_app.processEvents();time.sleep(.005)
+        assert predicate()
+    window=MainWindow(facade_for(service))
+    try:
+        window.home_page._qq_btn.click();w=window.qq_workspace;wait_for(lambda:not w._running)
+        w._authorization.setChecked(True);w._prepare_button.click();wait_for(lambda:not w._running)
+        w._capture_button.click()
+        if fault=='cancel':wait_for(entered.is_set);w._cancel_button.click()
+        wait_for(lambda:not w._running)
+        assert w._phase=='select' and service._root is None and not service.check_status().available
+        from qq_chat_analyzer.gui.session_analysis_panel import SESSION_ID_ROLE
+        listing=w._session_panel._session_list
+        assert not any(listing.item(index).data(SESSION_ID_ROLE) for index in range(listing.count()))
+        assert not w._session_panel.isEnabled()
+        assert 'Traceback' not in w._status.text()
+    finally:
+        window.close();assert window.await_shutdown(10)
 
 
 def test_wrong_declaration_and_private_ambiguity_refuse_before_list(prepared):
