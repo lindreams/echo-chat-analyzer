@@ -104,11 +104,15 @@ QQ Direct DB 使用同一快照客户端绑定的认证与运行代际读取本�
 
 `GUI → Facade → QQIndependentService → owned worker → 退出后一致快照 → 认证解密 → 会话列表`
 之后复用 QQDatabaseProvider、Adapter、Analysis、媒体准备、Report Package 和 Catalog。
-GUI 使用既有 SessionAnalysisPanel，不提供手填群号、二维码或 NapCat fallback。
+正式首页始终进入原有 QQWorkspace；独立获取只控制该工作区已有的连接区，复用微信的布局、
+当前操作反馈、进度轨道及 SessionAnalysisPanel。不存在面向普通用户的独立工程页，
+不提供手填群号、二维码或 NapCat fallback。点击连接才发现账号；路径选择只在异常恢复时出现。
 
 - QQ 页经 Facade 在常用资料位置发现账号目录及 QQ 程序候选，只检查目录和固定三库是否存在，不读取库内容。用户选择单个资料并明确授权；自定义位置只展开一层，不遍历磁盘或链接。发现不等于账号认证。
 - 用户授权后只处理所选 QQ.exe 与账号目录。只支持固定 54395 版本、wrapper 及生产组件哈希；不尝试其他账号的数据库，不启动或结束 QQ。
-- 准备阶段验证位置与组件。用户打开 QQ 停留登录页；worker 校验所选进程的镜像、创建时间和已加载 wrapper。只有尚有效的 armed 才提示登录；已登录且没有新目标事件时有界失败。
+- 准备阶段验证位置与组件，自动有界等待用户打开所选 QQ，用户无需另点等待按钮。
+  用户停留登录页；worker 校验所选进程的镜像、创建时间和已加载 wrapper。
+  只有尚有效的 armed 才提示登录；过期立即取消；已登录且没有新目标事件时有界失败。
 - 原生捕获停止且 helper 退出后，Node 最多短暂保留一个凭据事件，尚不创建 raw key 租约。用户须在有界窗口内完全退出 QQ；保持所选代际句柄证据，不将 Stop 当作 DLL 卸载。
 - QQ 全部退出且源库无 WAL/SHM/journal 后，同时持有 message/group_info/profile_info 三库的禁止写入句柄，再逐库复制。ACL 保护先于敏感数据写入，保留源身份、大小、摘要与后验一致性检查，不修改原库。
 - 只将该授权资料的固定快照交给 Node；同一凭据分别派生每库密钥，逐页认证解密及最终化，再检查 SQLite integrity。任一库不匹配均清理并拒绝发布，不试其他账号或旧凭据。
