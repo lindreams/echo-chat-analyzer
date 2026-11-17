@@ -389,6 +389,37 @@ def test_formal_composition_and_navigation_are_passive(qt_app,monkeypatch):
         window.close();window.await_shutdown(10)
 
 
+@pytest.mark.parametrize('missing',['tables','columns'])
+def test_missing_optional_name_tables_keep_authenticated_conversations_available(prepared,missing):
+    service,selection,dbroot=prepared
+    for filename,tables in (
+        ('profile_info.db',('profile_info_v2','profile_info_v6')),
+        ('group_info.db',('group_list','group_detail_info_ver1','group_member3')),
+    ):
+        with closing(sqlite3.connect(dbroot/filename)) as db:
+            for table in tables:
+                if missing=='tables':db.execute(f'DROP TABLE "{table}"')
+                elif table.startswith('profile_info') or table=='group_member3':
+                    db.execute(f'ALTER TABLE "{table}" DROP COLUMN "20002"')
+            db.commit()
+    service.prepare(selection);service.capture();service.confirm_account(selection.account)
+    sessions=service.list_sessions()
+    assert len(sessions)==3 and {s.session_type for s in sessions}=={'group','private'}
+    with service.acquired_session('group:partition-a') as acquired:
+        payload=json.loads(acquired.payload_path.read_text(encoding='utf-8'))
+        assert 'Profile A' not in json.dumps(payload) and 'Card A' not in json.dumps(payload)
+
+
+def test_sqlite_failure_diagnostics_keep_query_values_private(prepared,monkeypatch,caplog):
+    service,selection,_=prepared;service.prepare(selection);service.capture()
+    def failed(*_args):raise sqlite3.OperationalError('PRIVATE_SQL_FIELD_SENTINEL')
+    monkeypatch.setattr(service,'_discover_sessions',failed)
+    with pytest.raises(source.QQIndependentError) as refused:service.confirm_account(selection.account)
+    assert refused.value.code=='qq_session_validation_failed' and service._root is None
+    assert 'sqlite_code=' in caplog.text and 'site=failed' in caplog.text
+    assert 'PRIVATE_SQL_FIELD_SENTINEL' not in caplog.text
+
+
 def test_unclassified_null_body_is_not_silently_excluded(prepared):
     service,selection,dbroot=prepared
     with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:

@@ -489,6 +489,12 @@ class QQIndependentService:
             _LOGGER.warning('[qq independent] stage=confirm failure_code=%s error_type=%s',
                 error.code if isinstance(error,(SourceError,QQIndependentError)) else 'unexpected_error',
                 type(error).__name__)
+            if isinstance(error,sqlite3.Error):
+                trace=error.__traceback__
+                while trace and trace.tb_next:trace=trace.tb_next
+                _LOGGER.warning('[qq independent] stage=confirm sqlite_code=%d site=%s line=%d',
+                    getattr(error,'sqlite_errorcode',0),
+                    trace.tb_frame.f_code.co_name if trace else 'unknown', trace.tb_lineno if trace else 0)
             self._clear()
             if isinstance(error,QQIndependentError): raise
             raise QQIndependentError('qq_session_validation_failed','会话身份存在冲突或资料无法读取，请重新选择账号资料。') from None

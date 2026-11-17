@@ -27,12 +27,17 @@ def scoped_names(group_database, profile_database, group, member_keys):
     for path in paths:
         _file(path)
 
-    def query(path, sql, values):
+    def query(path, sql, values, *, table, columns):
         with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
             db.execute("PRAGMA query_only=ON")
             db.execute("PRAGMA trusted_schema=OFF")
             end = time.monotonic() + 10
             db.set_progress_handler(lambda: int(time.monotonic() >= end), 10000)
+            # Name caches are optional. Inspect only the fixed requested table;
+            # absent fields must never become SQLite quoted string literals.
+            present = {row[1] for row in db.execute(f'PRAGMA table_info("{table}")')}
+            if not set(columns) <= present:
+                return []
             rows = db.execute(sql + " LIMIT 20001", values).fetchall()
             if len(rows) > 20000:
                 raise SourceError("metadata_scoped_row_limit")
@@ -42,7 +47,8 @@ def scoped_names(group_database, profile_database, group, member_keys):
     uid_uins, uin_uids, profile_nicks = {}, {}, {}
     for table in ("profile_info_v2", "profile_info_v6"):
         rows = query(paths[1], f'SELECT "1002","1000","20002" FROM "{table}" '
-                     f'WHERE CAST("1002" AS TEXT) IN ({marks})', keys)
+                     f'WHERE CAST("1002" AS TEXT) IN ({marks})', keys,
+                     table=table, columns=('1002','1000','20002'))
         profile_rows[table] = len(rows)
         for raw, uid, nickname in rows:
             uin = str(raw)
@@ -60,7 +66,8 @@ def scoped_names(group_database, profile_database, group, member_keys):
         predicate += ' OR "1000" IN (' + ",".join("?" for _ in safe_uids) + ")"
     identity_rows = query(paths[0], 'SELECT "60001","1002","1000" '
                  'FROM group_member3 WHERE "60001"=? AND (' + predicate + ")",
-                 [int(group), *keys, *safe_uids]) if group is not None and members else []
+                 [int(group), *keys, *safe_uids], table='group_member3',
+                 columns=('60001','1002','1000')) if group is not None and members else []
     # First collect all witnesses; never accept a row before later conflicts
     # in this same scoped selection have been considered.
     for selected_group, raw, uid in identity_rows:
@@ -89,7 +96,8 @@ def scoped_names(group_database, profile_database, group, member_keys):
                        + ','.join('?' for _ in proven_uids) + '))')
         parameters.extend(proven_uids)
     rows = query(paths[0], 'SELECT "60001","1002","1000","64003","20002" '
-                 'FROM group_member3 WHERE "60001"=? AND (' + ' OR '.join(clauses) + ')', parameters) if clauses else []
+                 'FROM group_member3 WHERE "60001"=? AND (' + ' OR '.join(clauses) + ')', parameters,
+                 table='group_member3', columns=('60001','1002','1000','64003','20002')) if clauses else []
     cards, nicks, linked, direct, witnessed = {}, {}, set(), set(), set()
     refused = len(identity_rows) - len(rows)
     for selected_group, raw, uid, card, nickname in rows:
@@ -141,7 +149,8 @@ def scoped_names(group_database, profile_database, group, member_keys):
     titles = set()
     title_rows = []
     for table in (("group_list", "group_detail_info_ver1") if group is not None else ()):
-        selected = query(paths[0], f'SELECT "60001","60007" FROM "{table}" WHERE "60001"=?', [int(group)])
+        selected = query(paths[0], f'SELECT "60001","60007" FROM "{table}" WHERE "60001"=?', [int(group)],
+                         table=table, columns=('60001','60007'))
         if len(selected) > 1 or any(str(row[0]) != group for row in selected):
             raise SourceError("metadata_group_identity_ambiguous")
         title_rows.append(len(selected))
