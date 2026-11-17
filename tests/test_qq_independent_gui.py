@@ -102,7 +102,7 @@ def prepared(tmp_path,monkeypatch):
             service._frozen.append({'path':frozen['snapshot']})
             shutil.copyfile(frozen['snapshot'],service._root/(role+'.db'))
     monkeypatch.setattr(service,'_run_capture',capture)
-    monkeypatch.setattr(service,'_process_candidates',lambda:[{'ProcessId':123,'ExecutablePath':str(image)}])
+    monkeypatch.setattr(service,'_process_candidates',lambda **options:[] if options.get('include_children') else [{'ProcessId':123,'ExecutablePath':str(image)}])
     selection=source.QQIndependentSelection(image,account,'100000001',False)
     yield service,selection,dbroot
     assert service.shutdown() is ShutdownStatus.SUCCESS
@@ -452,6 +452,14 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
             db.execute(f'UPDATE {table} SET "60007"=?',('Second account orchard',))
         db.commit()
     original_capture=service._run_capture
+    # QQ was already open (including a remaining child). Only a fully absent
+    # generation permits the guide to ask for a fresh launch.
+    existing=iter([True,False,True,False])
+    def processes(**options):
+        if options.get('include_children'):
+            return [{'ProcessId':122}] if next(existing) else []
+        return [{'ProcessId':123}]
+    monkeypatch.setattr(service,'_process_candidates',processes)
     progress_phases=[]
     def capture(report,external):
         original_capture(lambda value:(progress_phases.append(value['phase']),report(value)),external)
@@ -501,6 +509,8 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
         wait_for(lambda:w._sessions_loaded and not w._independent.running)
         assert dialogs==['account','consent','identity']
         assert progress_phases==['armed'] and '现在可以登录 QQ' in statuses
+        assert '请先完全退出 QQ' in statuses
+        assert statuses.index('请先完全退出 QQ')<statuses.index('请打开 QQ，先不要登录')<statuses.index('现在可以登录 QQ')
         assert '请完全退出 QQ' in statuses and '正在读取聊天记录' in statuses
         assert w._progress_track.isHidden() and w._qq_qrcode_label.isHidden()
         assert w._qq_guide_label.isHidden() and w._connection_bar.isVisible()
@@ -616,7 +626,8 @@ def test_automatic_process_wait_never_opens_databases_or_starts_capture(prepared
     service,selection,_=prepared
     service.prepare(selection)
     event=Event();progress=[];calls=[]
-    def candidates():
+    def candidates(**options):
+        if options.get('include_children'):return []
         calls.append(True)
         assert not list(service._root.glob('*.db'))
         if outcome=='cancel':event.set()
@@ -635,6 +646,32 @@ def test_automatic_process_wait_never_opens_databases_or_starts_capture(prepared
             'cancel':'analysis_cancelled','timeout':'qq_process_timeout'}[outcome]
     assert calls and progress==[{'phase':'waiting_for_qq'}]
     assert service._generation_handle is None and service._worker is None
+
+
+@pytest.mark.parametrize('outcome',['exit_then_open','cancel','timeout'])
+def test_already_running_qq_requires_manual_exit_before_fresh_launch(prepared,monkeypatch,outcome):
+    from types import SimpleNamespace
+    service,selection,_=prepared;service.prepare(selection)
+    progress=[];event=Event();checks=[]
+    def candidates(**options):
+        checks.append(options.get('include_children',False))
+        assert service._worker is None and service._generation_handle is None
+        if not options.get('include_children'):return [{'ProcessId':456}]
+        if outcome=='cancel':event.set()
+        return [{}] if outcome!='exit_then_open' or len(checks)==1 else []
+    monkeypatch.setattr(service,'_process_candidates',candidates)
+    clock=iter([0,121])
+    if outcome=='timeout':monkeypatch.setattr(source,'time',SimpleNamespace(monotonic=lambda:next(clock,121)))
+    if outcome=='exit_then_open':
+        service._wait_for_process(progress.append,event)
+        assert progress==[{'phase':'preparation_exit'},{'phase':'waiting_for_qq'}]
+        assert checks==[True,True,False]
+    else:
+        with pytest.raises(source.QQIndependentError) as refused:
+            service._wait_for_process(progress.append,event)
+        assert refused.value.code==('analysis_cancelled' if outcome=='cancel' else 'qq_preparation_exit_timeout')
+        assert progress==[{'phase':'preparation_exit'}] and all(checks)
+    assert not list(service._root.glob('*.db'))
 
 
 @pytest.mark.parametrize('stop',['missing','consent','identity','wrong_identity'])

@@ -296,9 +296,10 @@ class QQIndependentService:
         finally:
             with self._lock: self._busy=False
 
-    def _process_candidates(self):
+    def _process_candidates(self, *, include_children=False):
         """Inspect process metadata only for the explicitly selected image."""
-        raw=_powershell("Get-CimInstance Win32_Process -Filter \"Name='QQ.exe'\" | Where-Object { $_.CommandLine -notmatch '--type=' } | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress")
+        parents="" if include_children else " | Where-Object { $_.CommandLine -notmatch '--type=' }"
+        raw=_powershell("Get-CimInstance Win32_Process -Filter \"Name='QQ.exe'\""+parents+" | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress")
         rows=json.loads(raw) if raw else []
         if isinstance(rows,dict): rows=[rows]
         rows=[row for row in rows if row.get('ExecutablePath') and
@@ -306,6 +307,19 @@ class QQIndependentService:
         return rows
 
     def _wait_for_process(self, progress, external):
+        # Existing QQ may already be logged in. Require a clean manual exit;
+        # process presence is not evidence of login state or a fresh login.
+        if self._process_candidates(include_children=True):
+            progress({'phase':'preparation_exit'})
+            deadline=time.monotonic()+120
+            while self._process_candidates(include_children=True):
+                if self._cancelled(external.is_set):
+                    raise QQIndependentError('analysis_cancelled','已取消 QQ 获取。')
+                if time.monotonic()>=deadline:
+                    raise QQIndependentError('qq_preparation_exit_timeout','等待退出 QQ 已超时。请从系统托盘完全退出 QQ 后重新连接。')
+                external.wait(.5)
+        if self._cancelled(external.is_set):
+            raise QQIndependentError('analysis_cancelled','已取消 QQ 获取。')
         progress({'phase':'waiting_for_qq'})
         deadline=time.monotonic()+120
         while not self._cancelled(external.is_set):
@@ -549,7 +563,7 @@ class QQIndependentService:
 
     def get_snapshot(self):
         message={ConnectionState.DISCONNECTED:'QQ 尚未准备。',
-            ConnectionState.STARTING:'账号资料已授权。请打开所选 QQ 并停留在登录页，暂不登录；点击等待登录。',
+            ConnectionState.STARTING:'正在准备连接 QQ，请按 Echo 的当前提示操作，等待允许登录的提示。',
             ConnectionState.CONNECTED:('授权资料已认证，请确认本人 QQ 号（用户声明，非 QQ 系统认证）。' if not self._confirmed else '会话已就绪；本人身份由用户声明，非 QQ 系统认证。'),
             ConnectionState.ERROR:'QQ 读取未完成，请重新准备。'}.get(self._state,'正在读取 QQ 本地快照…')
         return ConnectionSnapshot(self._state,'qq',message,version='9.9.37-54395')

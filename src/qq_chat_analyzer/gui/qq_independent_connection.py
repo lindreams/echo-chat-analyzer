@@ -199,7 +199,10 @@ class QQIndependentConnection:
         self._timer.stop()
         self._login_deadline = None
         phase = value.get('phase')
-        if phase == 'waiting_for_qq':
+        if phase == 'preparation_exit':
+            self._action('请先完全退出 QQ',
+                '检测到 QQ 正在运行。本次连接需要重新登录；请从系统托盘退出 QQ，Echo 会自动继续。')
+        elif phase == 'waiting_for_qq':
             self._action('请打开 QQ，先不要登录', '停留在登录界面，Echo 会自动检测并提示下一步。')
         elif phase == 'armed':
             remaining = min(value['remaining_login_ms'] / 1000,
