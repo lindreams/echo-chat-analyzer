@@ -3,14 +3,15 @@
 struct LoginPoint { unsigned begin, end; unsigned char prefix[32]; const char* hash; const char* fixture; };
 #include "login_lifecycle_points.h"
 constexpr unsigned LoginLimit = 64, LoginMagic = 0x314c5145;
+constexpr unsigned LoginPointCount = sizeof(login_points)/sizeof(login_points[0]);
 struct LoginRecord { unsigned magic, version, sequence, kind; std::uint64_t value, tick; };
 static_assert(sizeof(LoginRecord) == 32);
 LoginRecord records[LoginLimit]{};
 unsigned written = 0, consumed = 0;
 void* listener = nullptr;
-void* login_targets[5]{};
-void* login_originals[5]{};
-bool login_created[5]{}, login_enabled[5]{};
+void* login_targets[LoginPointCount]{};
+void* login_originals[LoginPointCount]{};
+bool login_created[LoginPointCount]{}, login_enabled[LoginPointCount]{};
 std::atomic<unsigned> login_failure{0};
 bool failure_reported = false;
 
@@ -18,7 +19,7 @@ void fail_login(unsigned reason) {
     unsigned empty = 0; login_failure.compare_exchange_strong(empty, reason);
     state.store(Rejected); if (arrived) SetEvent(arrived);
 }
-void capture_login(unsigned kind, void* self, std::uint64_t value) {
+void capture_login(unsigned kind, void* self, std::uint64_t value, const void* success = nullptr) {
     if (state.load() != Armed) return;
     if (!TryAcquireSRWLockExclusive(&data_lock)) { fail_login(4); return; }
     __try {
@@ -35,11 +36,25 @@ void capture_login(unsigned kind, void* self, std::uint64_t value) {
             if (listener && listener != self) { fail_login(2); __leave; }
             listener = self;
             if (written == LoginLimit) { fail_login(3); __leave; }
+            // Object ABI, not the old User scalar. Read exactly eight bytes;
+            // no account/uid/nickname, strings or object copy. SEH fails closed.
+            if (kind == 1) {
+                if (!success) { fail_login(1); __leave; }
+                value = *reinterpret_cast<const volatile std::uint64_t*>(
+                    static_cast<const unsigned char*>(success)+0x30);
+            }
             if (kind == 1 && !value) { fail_login(5); __leave; }
             records[written] = {LoginMagic, 1, written+1, kind, value, GetTickCount64()};
             ++written; SetEvent(arrived);
         } __except (EXCEPTION_EXECUTE_HANDLER) { fail_login(1); }
     } __finally { ReleaseSRWLockExclusive(&data_lock); }
+}
+
+void login_success(void* self, void* value) {
+    const auto error = GetLastError(); inflight.fetch_add(1);
+    capture_login(1, self, 0, value); SetLastError(error);
+    __try { reinterpret_cast<void (*)(void*, void*)>(login_originals[0])(self, value); }
+    __finally { inflight.fetch_sub(1); }
 }
 template<unsigned Index, typename Value> void login_value(void* self, Value value) {
     const auto error = GetLastError(); inflight.fetch_add(1);
@@ -71,7 +86,7 @@ bool select_login_targets() {
 #ifdef ECHO_FIXTURE_BUILD
     const auto module = GetModuleHandleW(nullptr);
     if (!file_hash(module, echo_fixture_hash)) return false;
-    for (unsigned i=0; i<5; ++i) {
+    for (unsigned i=0; i<LoginPointCount; ++i) {
         login_targets[i] = reinterpret_cast<void*>(GetProcAddress(module, login_points[i].fixture));
         if (!login_targets[i]) return false;
     }
@@ -79,7 +94,7 @@ bool select_login_targets() {
     const auto module = GetModuleHandleW(L"wrapper.node");
     if (!module || !file_hash(module, qq_hash)) return false;
     const auto base = reinterpret_cast<unsigned char*>(module);
-    for (unsigned i=0; i<5; ++i) {
+    for (unsigned i=0; i<LoginPointCount; ++i) {
         const auto& p = login_points[i]; DWORD64 image = 0;
         auto address = base+p.begin;
         auto unwind = RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(address), &image, nullptr);
@@ -93,7 +108,7 @@ bool select_login_targets() {
 }
 bool disable_login_hooks() {
     bool ok = true;
-    for (unsigned i=0; i<5; ++i) if (login_enabled[i]) {
+    for (unsigned i=0; i<LoginPointCount; ++i) if (login_enabled[i]) {
         if (MH_DisableHook(login_targets[i]) == MH_OK) login_enabled[i] = false;
         else ok = false;
     }
@@ -101,7 +116,7 @@ bool disable_login_hooks() {
 }
 bool remove_login_hooks() { // Only never-enabled install or joined fictional host.
     if (!disable_login_hooks() || inflight.load()) return false;
-    for (unsigned i=0; i<5; ++i) if (login_created[i]) {
+    for (unsigned i=0; i<LoginPointCount; ++i) if (login_created[i]) {
         if (MH_RemoveHook(login_targets[i]) != MH_OK) return false;
         login_created[i] = false;
     }
@@ -123,17 +138,19 @@ extern "C" __declspec(dllexport) int EchoInstall(const EchoOptions* options) {
     arrived = CreateEventW(nullptr, TRUE, FALSE, nullptr); if (!arrived) return 0;
     initialized = MH_Initialize() == MH_OK;
     if (!initialized) { CloseHandle(arrived); arrived = nullptr; return 0; }
-    void* detours[] = {reinterpret_cast<void*>(login_value<0, std::uint64_t>),
+    void* detours[] = {reinterpret_cast<void*>(login_success),
         reinterpret_cast<void*>(login_value<1, std::uint32_t>), reinterpret_cast<void*>(login_empty<2>),
-        reinterpret_cast<void*>(login_empty<3>), reinterpret_cast<void*>(login_empty<4>)};
-    for (unsigned i=0; i<5; ++i) {
+        reinterpret_cast<void*>(login_empty<3>), reinterpret_cast<void*>(login_empty<4>),
+        reinterpret_cast<void*>(login_empty<5>)};
+    static_assert(sizeof(detours)/sizeof(detours[0]) == LoginPointCount);
+    for (unsigned i=0; i<LoginPointCount; ++i) {
         login_created[i] = MH_CreateHook(login_targets[i], detours[i], &login_originals[i]) == MH_OK;
         if (!login_created[i] || options->fixture_fail_after_create) { remove_login_hooks(); return 0; }
     }
     deadline = GetTickCount64()+options->timeout_ms;
     if (options->not_after && options->not_after < deadline) deadline = options->not_after;
     if (GetTickCount64() >= deadline) { remove_login_hooks(); return 0; }
-    for (unsigned i=0; i<5; ++i) {
+    for (unsigned i=0; i<LoginPointCount; ++i) {
         login_enabled[i] = MH_EnableHook(login_targets[i]) == MH_OK;
         if (!login_enabled[i]) {
             // Some hooks may have run. Disable, retain trampoline/DLL until
@@ -142,7 +159,7 @@ extern "C" __declspec(dllexport) int EchoInstall(const EchoOptions* options) {
         }
     }
     if (GetTickCount64() >= deadline) { disable_login_hooks(); return 0; }
-    // All five observation points must be active before Ready can be emitted.
+    // Every observation point must be active before Ready can be emitted.
     state.store(Armed);
     return 1;
 }

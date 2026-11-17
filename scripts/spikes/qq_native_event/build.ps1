@@ -9,6 +9,8 @@ if (-not $Output.StartsWith((Join-Path $Repo 'build') + '\', [StringComparison]:
 }
 New-Item -ItemType Directory -Force -Path $Output | Out-Null
 if ($LoginLifecycle) {
+    & (Join-Path $Repo '.venv/Scripts/python.exe') (Join-Path $Source 'login_lifecycle_source_check.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Pinned success object and dispatch chain required' }
     & (Join-Path $Repo '.venv/Scripts/python.exe') (Join-Path $Source 'login_lifecycle_layout.py') --header (Join-Path $Output 'login_lifecycle_points.h')
     if ($LASTEXITCODE -ne 0) { throw 'Pinned login listener ABI required' }
 }
@@ -58,7 +60,7 @@ $ProductionDllHash = (Get-FileHash -LiteralPath (Join-Path $Output 'echo_event_5
 Compile @('cl /nologo /std:c++17 /EHsc /O2 /MD /W4 ' + $Includes + ' /Fe:echo_event_loader.exe "' + (Join-Path $Source 'loader.cpp') + '" bcrypt.lib advapi32.lib psapi.lib /link /INCREMENTAL:NO /DYNAMICBASE /NXCOMPAT')
 Copy-Item -LiteralPath (Join-Path $Deps 'LICENSE.txt') -Destination (Join-Path $Output 'MinHook.LICENSE.txt')
 $Receipt = [ordered]@{ minhook_revision=$Pins.revision; build='9.9.37-54395'; identity_metadata_only=[bool]$IdentityMetadata; binaries=[ordered]@{} }
-if ($LoginLifecycle) { $Receipt['login_lifecycle_metadata_only'] = $true }
+if ($LoginLifecycle) { $Receipt['login_lifecycle_metadata_only'] = $true; $Receipt['login_success_object_observer'] = 1 }
 foreach ($Name in @('echo_qq_event_host.exe','echo_event_fixture.dll','echo_event_54395.dll','echo_event_loader.exe')) {
     $Receipt.binaries[$Name] = (Get-FileHash -LiteralPath (Join-Path $Output $Name) -Algorithm SHA256).Hash.ToLowerInvariant()
 }

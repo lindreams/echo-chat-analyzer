@@ -9,15 +9,16 @@ import pefile
 
 from identity_layout_check import inspect
 
-# Native listener entries, BEFORE asynchronous JS dispatch. The first two
-# scalar arguments flow into their named JS callbacks as uint64/string and
-# int32 respectively. Names/widths alone do NOT attest live account semantics.
+# Native listener entries before asynchronous JS dispatch. Success takes an
+# object pointer; only its uint64 UIN at +0x30 is observed. State is int32.
+# Static ABI evidence does not attest runtime login/lifecycle semantics.
 POINTS = (
-    ('User', 13, 0x22aa276, 0x22aa2fd, 0x22ae399, 0x22ae51e, b'onUserLoggedIn', b'\x48\x89\x50\x18'),
+    ('Success', 8, 0x22a9cc8, 0x22a9d5c, 0x22acc31, 0x22acd7e, b'onQRCodeLoginSucceed', b'\x48\x89\x48\xf8'),
     ('State', 7, 0x22a9bfa, 0x22a9c80, 0x22ac86d, 0x22ac9c5, b'onLoginState', b'\x89\x50\x18'),
     ('Logout', 11, 0x22aa106, 0x22aa17d, 0x22add19, 0x22ade4c, b'onLogoutSucceed', b'\x48\x89\x4a\x10'),
     ('Disconnected', 2, 0x22a97be, 0x22a9835, 0x22ab573, 0x22ab6a0, b'onLoginDisConnected', b'\x48\x89\x4a\x10'),
     ('Connecting', 3, 0x22a9876, 0x22a98ed, 0x22ab8ad, 0x22ab9da, b'onLoginConnecting', b'\x48\x89\x4a\x10'),
+    ('Connected', 1, 0x22a9706, 0x22a977d, 0x22ab239, 0x22ab366, b'onLoginConnected', b'\x48\x89\x4a\x10'),
 )
 VTABLE = 0x4436218
 

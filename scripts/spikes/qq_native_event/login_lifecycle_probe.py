@@ -25,8 +25,8 @@ from qq_chat_analyzer.runtime.windows_job import launch_owned_process
 
 HERE = Path(__file__).resolve().parent
 MAGIC, RECORD_MAGIC = 0x32535145, 0x314c5145
-NAMES = {1: 'user_logged_in', 2: 'login_state', 3: 'logout_succeeded',
-         4: 'disconnected', 5: 'connecting'}
+NAMES = {1: 'login_succeeded', 2: 'login_state', 3: 'logout_succeeded',
+         4: 'disconnected', 5: 'connecting', 6: 'connected'}
 FAILURES = {1: 'listener_role_or_pointer_invalid', 2: 'listener_source_changed',
             3: 'listener_record_limit', 4: 'listener_event_contention', 5: 'listener_identity_missing'}
 
@@ -37,7 +37,8 @@ def checked_build(root):
         raise SourceError('isolated_build_required')
     receipt = json.loads((root/'build-receipt.json').read_text(encoding='utf-8-sig'))
     if (receipt.get('login_lifecycle_metadata_only') is not True or receipt.get('identity_metadata_only') is not False
-            or receipt.get('build') != '9.9.37-54395'):
+            or receipt.get('build') != '9.9.37-54395'
+            or receipt.get('login_success_object_observer') != 1):
         raise SourceError('lifecycle_component_required')
     for name in ('echo_qq_event_host.exe', 'echo_event_fixture.dll', 'echo_event_54395.dll', 'echo_event_loader.exe'):
         if digest(root/name) != receipt['binaries'].get(name):
@@ -49,16 +50,16 @@ class Evidence:
     """Experimental, conservative invalidation; no production identity issuer.
 
     Every state/transport/logout event invalidates the previous candidate. No
-    guessed enum or directory can revalidate it; only a fresh user callback can.
+    guessed enum or directory can revalidate it; only a fresh success callback can.
     Operator annotations corroborate observed events and never create them.
     """
     def __init__(self, expected):
         self.expected = int(expected)
-        self.sequence = self.tick = self.user_sequence = self.logout_sequence = self.logout_tick = 0
+        self.sequence = self.tick = self.success_sequence = self.logout_sequence = self.logout_tick = 0
         self.current = False
         self.counts = dict.fromkeys(NAMES.values(), 0)
         self.states = {}
-        self.stage = self.cut_sequence = self.cut_tick = self.first_user = 0
+        self.stage = self.cut_sequence = self.cut_tick = self.first_success = 0
 
     def accept(self, payload):
         self.current = False
@@ -75,12 +76,12 @@ class Evidence:
         if kind not in NAMES or sequence > 64 or (kind == 2 and value > 0xffffffff) or (kind >= 3 and value):
             raise SourceError('lifecycle_record_invalid')
         self.counts[NAMES[kind]] += 1
-        # Invalidate BEFORE interpreting every event, including duplicate users.
+        # Invalidate BEFORE interpreting every event, including duplicate successes.
         self.current = False
         if kind == 1:
             if value != self.expected:
                 raise SourceError('runtime_owner_mismatch')
-            self.user_sequence = sequence
+            self.success_sequence = sequence
             self.current = True
         elif kind == 2:
             self.states[value] = self.states.get(value, 0)+1
@@ -88,11 +89,12 @@ class Evidence:
             self.logout_sequence, self.logout_tick = sequence, tick
         return {'event': NAMES[kind], 'sequence': sequence,
                 'current_candidate': self.current,
+                **({'owner_reference_matches': True} if kind == 1 else {}),
                 **({'raw_state_code': value} if kind == 2 else {})}
 
     def annotate(self, command, tick):
         if command == '1' and self.stage == 0 and self.current:
-            self.first_user = self.user_sequence; self.stage = 1
+            self.first_success = self.success_sequence; self.stage = 1
             return 'first_login_corroborated'
         if command == '2' and self.stage == 1:
             self.cut_sequence, self.cut_tick = self.sequence, tick; self.stage = 2
@@ -102,7 +104,7 @@ class Evidence:
             self.stage = 3
             return 'logout_invalidation_corroborated'
         if (command == '4' and self.stage == 3 and self.current
-                and self.user_sequence > self.logout_sequence > self.first_user):
+                and self.success_sequence > self.logout_sequence > self.first_success):
             self.stage = 4
             return 'relogin_new_candidate_corroborated'
         self.current = False
@@ -159,7 +161,8 @@ def close_loader(process, reader):
 def self_check(root):
     checks = 0
     finish = struct.pack('<4I', MAGIC, 1, 1, 0)
-    for scenario in ('delivery', 'conflict', 'overflow', 'cancel', 'timeout', 'install_failure', 'production_gate'):
+    for scenario in ('delivery', 'conflict', 'overflow', 'cancel', 'timeout', 'install_failure', 'production_gate',
+                     'object_null', 'object_unreadable', 'object_zero', 'object_partial'):
         dll = 'echo_event_54395.dll' if scenario == 'production_gate' else 'echo_event_fixture.dll'
         result = subprocess.run([root/'echo_qq_event_host.exe', root/dll, scenario], env=private_environment(),
             capture_output=True, timeout=5, creationflags=subprocess.CREATE_NO_WINDOW)
@@ -189,11 +192,11 @@ def self_check(root):
                     if scenario == 'session-cancel': loader.stdin.write(b'X'); loader.stdin.flush()
                 elif kind == 2 and ready:
                     evidence.accept(payload); count += 1
-                    if count == 6: loader.stdin.write(b'X'); loader.stdin.flush()
+                    if count == 7: loader.stdin.write(b'X'); loader.stdin.flush()
                 elif kind == 3:
                     complete = struct.unpack('<4I', payload) == (1, 1, 0, 1)
             loader.wait(timeout=3)
-            if loader.returncode or not ready or not complete or count != (6 if scenario == 'session-delivery' else 0):
+            if loader.returncode or not ready or not complete or count != (7 if scenario == 'session-delivery' else 0):
                 emit('fixture_transport_refused', scenario=scenario, ready=ready, complete=complete,
                      record_count=count, event_counts=evidence.counts, loader_returncode=loader.returncode)
                 raise SourceError('lifecycle_transport_fixture_refused')
@@ -211,8 +214,8 @@ def self_check(root):
     evidence.accept(record(1, 1, 100000001)); evidence.annotate('1', 10); evidence.annotate('2', 15)
     evidence.accept(record(2, 3)); assert not evidence.current
     evidence.annotate('3', 20); evidence.accept(record(3, 1, 100000001)); evidence.annotate('4', 30)
-    assert evidence.stage == 4 and evidence.user_sequence != evidence.first_user
-    for kind, value in ((2, 999), (3, 0), (4, 0), (5, 0)):
+    assert evidence.stage == 4 and evidence.success_sequence != evidence.first_success
+    for kind, value in ((2, 999), (3, 0), (4, 0), (5, 0), (6, 0)):
         evidence = Evidence(b'100000001'); evidence.accept(record(1, 1, 100000001))
         evidence.accept(record(2, kind, value)); assert not evidence.current
     for payload in (record(1, 1, 100000002), record(2, 1, 100000001), record(1, 0, 2)):
@@ -277,11 +280,11 @@ def observe_generation(root, controls, evidence, pid, created, image, api, gener
                     remaining = max(0, int((end-time.monotonic())*1000))
                     if not remaining: raise SourceError('armed_window_elapsed')
                     emit('armed', remaining_observation_ms=remaining, login_prompt='login_now',
-                         hook_profile='login_metadata_only', directory_scan=False, key_capture=False)
+                         hook_profile='login_success_object_metadata_only', directory_scan=False, key_capture=False)
                 elif kind == 2 and ready:
                     try:
                         value = evidence.accept(payload)
-                        if value['event'] == 'user_logged_in' and evidence.tick <= armed_tick:
+                        if value['event'] == 'login_succeeded' and evidence.tick <= armed_tick:
                             raise SourceError('login_callback_preceded_armed_confirmation')
                         emit('login_metadata', **value, callback_since_armed_ms=evidence.tick-armed_tick)
                     finally:
@@ -425,11 +428,6 @@ def main():
     parser.add_argument('--approved-single-run', action='store_true')
     parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
-    if args.approved_single_run:
-        # The old User callback is an already-logged-in notice, not the normal
-        # success declaration. Preserve this failed experiment for reproduction,
-        # but never authorize another real run of this observation profile.
-        raise SourceError('login_success_observer_required')
     root = checked_build(args.build_root)
     if not (args.self_check ^ args.approved_single_run):
         raise SourceError('separate_login_metadata_approval_required')

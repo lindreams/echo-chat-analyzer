@@ -37,10 +37,8 @@ def check():
                      'Disconnected': 0x22ab43c, 'Connecting': 0x22ab776,
                      'Success': 0x22acb0c, 'Connected': 0x22ab102}
         points = (*POINTS,
-            ('Success', 8, 0x22a9cc8, 0x22a9d5c, 0x22acc31, 0x22acd7e,
-             b'onQRCodeLoginSucceed', bytes.fromhex('48 89 48 f8')),
-            ('Connected', 1, 0x22a9706, 0x22a977d, 0x22ab239, 0x22ab366,
-             b'onLoginConnected', bytes.fromhex('48 89 4a 10')))
+            ('User', 13, 0x22aa276, 0x22aa2fd, 0x22ae399, 0x22ae51e,
+             b'onUserLoggedIn', bytes.fromhex('48 89 50 18')))
         records = []
         for label, slot, begin, end, proxy, proxy_end, name, flow in points:
             assert (begin, end) in functions and image[begin:end].count(flow) == 1
