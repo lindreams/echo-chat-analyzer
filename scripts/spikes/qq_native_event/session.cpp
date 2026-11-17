@@ -60,16 +60,28 @@ extern "C" __declspec(dllexport) DWORD WINAPI EchoSessionRun(void* parameter) {
         DWORD available = 0;
         if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr)) { cancelled = true; break; }
         if (available) { cancelled = true; break; } // Any command cancels; no restart/reconfiguration.
-        if (EchoRead(&event, 10)) break;
+        if (EchoRead(&event, 10)) {
+#ifdef ECHO_LOGIN_LIFECYCLE
+            // Bounded metadata records only; no commands can reconfigure it.
+            if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr) || available) { cancelled = true; break; }
+            ok = event.length == 32 && frame_write(pipe, Target, event.payload, event.length, end);
+            SecureZeroMemory(event.payload, sizeof(event.payload)); event.length = 0;
+            if (!ok || event.state != Armed) break;
+#else
+            break;
+#endif
+        }
         if (event.state != Armed) break;
     }
-    // EchoRead has consumed and wiped the sole slot; no second capture is
-    // possible. Deliver this final response BEFORE the stop barrier. Explicit
-    // cancellation discards it instead. No payload may be sent after EchoStop.
+    // Single-capture profiles deliver their final slot before the stop barrier;
+    // the lifecycle profile has already forwarded its bounded records above.
+    // Cancellation discards pending data. No payload is sent after EchoStop.
     DWORD available = 0;
     if (ok && (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr) || available)) cancelled = true;
+#ifndef ECHO_LOGIN_LIFECYCLE
     if (ok && !cancelled && event.length && GetTickCount64() < end)
         ok = frame_write(pipe, Target, event.payload, event.length, end);
+#endif
     SecureZeroMemory(&event, sizeof(event));
     if (installed) EchoStop();
     const auto status = EchoGetStatus();

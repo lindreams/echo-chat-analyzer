@@ -253,6 +253,9 @@ int wmain(int argc, wchar_t** argv) {
         }
     });
     bool ok = true, ready = false, delivered = false, finished = false, stopping = false;
+#ifdef ECHO_LOGIN_LIFECYCLE
+    unsigned metadata_records = 0;
+#endif
     unsigned char payload[EchoEventLimit]{};
     while (ok && !finished && GetTickCount64() < deadline+1000) {
         if (cancelled(stop.h) && !stopping) {
@@ -268,7 +271,11 @@ int wmain(int argc, wchar_t** argv) {
         if (!pipe_io(pipe.h, &h, sizeof(h), false, deadline+1000) || h.magic != SessionMagic || h.reserved || h.length > EchoEventLimit) { ok = false; break; }
         if (h.length && !pipe_io(pipe.h, payload, h.length, false, deadline+1000)) { ok = false; break; }
         if (h.type == Ready && !ready && !h.length) ready = true;
+#ifdef ECHO_LOGIN_LIFECYCLE
+        else if (h.type == Target && ready && h.length == 32 && ++metadata_records <= 65) delivered = true;
+#else
         else if (h.type == Target && ready && !delivered && h.length) delivered = true;
+#endif
         else if (h.type == Finished && h.length == sizeof(Finish)) {
             const auto* f = reinterpret_cast<const Finish*>(payload);
             ok = f->reads_stopped == 1 && f->hook_disabled == 1; finished = true;

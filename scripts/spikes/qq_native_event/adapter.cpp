@@ -15,7 +15,9 @@
 namespace {
 constexpr char command[] = "OidbSvcTrpcTcp.0xcde_2";
 constexpr char qq_hash[] = "fed532ad58d2404dcedf2858554e8fa52a5f4e65b271c008d2faca4011d7d4a2";
-#ifdef ECHO_IDENTITY_METADATA
+#ifdef ECHO_LOGIN_LIFECYCLE
+using Receive = void (*)(void*);
+#elif defined(ECHO_IDENTITY_METADATA)
 // Research-only send metadata observer. Never built into the product runtime.
 constexpr unsigned char receive_prefix[] = {0x55,0x41,0x57,0x41,0x56,0x41,0x55,0x41,0x54,0x56,0x57,0x53,0x48,0x81,0xec,0x08,0x01,0x00,0x00,0x48,0x8d,0xac,0x24,0x80,0x00,0x00,0x00,0x48,0xc7,0x85,0x80,0x00};
 using Receive = std::int64_t (*)(void*, void**);
@@ -77,6 +79,9 @@ bool file_hash(HMODULE module, const char* expected) {
     return ok;
 }
 
+#ifdef ECHO_LOGIN_LIFECYCLE
+#include "login_lifecycle.inc"
+#else
 void* select_target() {
 #ifdef ECHO_FIXTURE_BUILD
     const auto module = GetModuleHandleW(nullptr);
@@ -308,3 +313,5 @@ extern "C" __declspec(dllexport) int EchoReleaseAfterHostJoined() {
     return 1;
 }
 #endif
+
+#endif // ECHO_LOGIN_LIFECYCLE alternative research implementation
