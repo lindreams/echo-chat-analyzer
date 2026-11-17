@@ -425,6 +425,11 @@ def main():
     parser.add_argument('--approved-single-run', action='store_true')
     parser.add_argument('--worker', action='store_true', help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if args.approved_single_run:
+        # The old User callback is an already-logged-in notice, not the normal
+        # success declaration. Preserve this failed experiment for reproduction,
+        # but never authorize another real run of this observation profile.
+        raise SourceError('login_success_observer_required')
     root = checked_build(args.build_root)
     if not (args.self_check ^ args.approved_single_run):
         raise SourceError('separate_login_metadata_approval_required')
