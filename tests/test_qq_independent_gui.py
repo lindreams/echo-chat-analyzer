@@ -668,10 +668,11 @@ def test_already_running_qq_requires_manual_exit_before_fresh_launch(prepared,mo
         assert checks==[True,True,False]
     else:
         with pytest.raises(source.QQIndependentError) as refused:
-            service._wait_for_process(progress.append,event)
+            service.capture(progress=progress.append,cancel_event=event,wait_for_process=True)
         assert refused.value.code==('analysis_cancelled' if outcome=='cancel' else 'qq_preparation_exit_timeout')
         assert progress==[{'phase':'preparation_exit'}] and all(checks)
-    assert not list(service._root.glob('*.db'))
+        assert service._root is None and not service._busy
+    if service._root:assert not list(service._root.glob('*.db'))
 
 
 @pytest.mark.parametrize('stop',['missing','consent','identity','wrong_identity'])
