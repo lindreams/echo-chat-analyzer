@@ -1,4 +1,5 @@
 """Fictional guided account acquisition, conversation analysis and ownership."""
+import builtins
 from contextlib import closing, contextmanager
 import hashlib
 import json
@@ -94,8 +95,9 @@ def prepared(tmp_path,monkeypatch):
         if external.is_set(): raise SourceError('cancelled')
         from datetime import datetime,timedelta,timezone
         progress({'phase':'armed','remaining_login_ms':10000,'login_before_utc':(datetime.now(timezone.utc)+timedelta(seconds=10)).isoformat()})
+        selected=service._selection.account_directory/'nt_qq/nt_db'
         for role in ('message','group_info','profile_info'):
-            frozen=freeze(dbroot/('nt_msg.db' if role=='message' else role+'.db'),service._root)
+            frozen=freeze(selected/('nt_msg.db' if role=='message' else role+'.db'),service._root)
             service._frozen.append({'path':frozen['snapshot']})
             shutil.copyfile(frozen['snapshot'],service._root/(role+'.db'))
     monkeypatch.setattr(service,'_run_capture',capture)
@@ -415,6 +417,93 @@ def test_wrong_declaration_and_private_ambiguity_refuse_before_list(prepared):
     assert service._root is None and not service.list_sessions()
 
 
+def test_explicit_account_switch_replaces_snapshot_without_reading_siblings(prepared,tmp_path,monkeypatch):
+    service,selection,dbroot=prepared;facade=facade_for(service)
+    other=tmp_path/'100000003';other_db=other/'nt_qq/nt_db'
+    shutil.copytree(dbroot,other_db)
+    with closing(sqlite3.connect(other_db/'nt_msg.db')) as db:
+        for table in ('group_msg_table','c2c_msg_table'):
+            db.execute(f'UPDATE {table} SET "40033"=CASE "40033" WHEN 100000001 THEN 100000003 WHEN 100000002 THEN 100000004 ELSE "40033" END')
+            db.execute(f'UPDATE {table} SET "40800"=? WHERE "40800" IS NOT NULL',
+                       (synthetic_text_message_blob('SECOND_ACCOUNT_SENTINEL'),))
+        db.commit()
+    # A third, unusable candidate must not affect either explicit selection.
+    forbidden=tmp_path/'100000005';forbidden.mkdir()
+    (forbidden/'unreadable.db').write_bytes(b'not a database')
+    selected=selection.account_directory
+    opened=[];original_open=Path.open;original_iterdir=Path.iterdir;original_builtin_open=builtins.open
+    def guard(path):
+        assert not path.is_relative_to(forbidden)
+        for candidate in (selection.account_directory,other):
+            if candidate!=selected:assert not path.is_relative_to(candidate)
+    def open_selected(path,*args,**kwargs):
+        guard(path);opened.append(path);return original_open(path,*args,**kwargs)
+    def open_file(path,*args,**kwargs):
+        if isinstance(path,(str,Path)):
+            guard(Path(path));opened.append(Path(path))
+        return original_builtin_open(path,*args,**kwargs)
+    def list_selected(path):
+        guard(path)
+        assert path!=tmp_path, 'account discovery must not scan the accounts parent'
+        return original_iterdir(path)
+    monkeypatch.setattr(Path,'open',open_selected);monkeypatch.setattr(Path,'iterdir',list_selected)
+    monkeypatch.setattr(builtins,'open',open_file)
+    # A common parent is not authorization for all its account candidates.
+    with pytest.raises(FacadeError):facade.prepare_independent_qq(selection.executable,tmp_path)
+    facade.prepare_independent_qq(selection.executable,selected)
+    facade.start_qq_auth_flow();facade.confirm_independent_qq_account(selection.account)
+    first_root=service._root
+    with service.acquired_session('group:partition-a') as acquired:
+        assert 'SECOND_ACCOUNT_SENTINEL' not in acquired.payload_path.read_text()
+    selected=other
+    facade.prepare_independent_qq(selection.executable,selected)
+    assert not first_root.exists() and facade.list_sessions(ChatSource.QQ)==[]
+    facade.start_qq_auth_flow()
+    assert facade.list_sessions(ChatSource.QQ)==[]
+    facade.confirm_independent_qq_account(other.name)
+    assert len(facade.list_sessions(ChatSource.QQ))==3
+    from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
+    from qq_chat_analyzer.rich_message import TextContent
+    for session_id in ('group:partition-a','private:private-a'):
+        with service.acquired_session(session_id) as acquired:
+            payload=json.loads(acquired.payload_path.read_text())
+            assert payload['self']=={'namespace':'qq_uin','value':other.name,'basis':'user_declared'}
+            messages,_=parse_qq_db_rich_messages(payload)
+            assert len(messages)==4 and {m.is_self for m in messages}=={True,False}
+            assert all(m.contents==(TextContent('SECOND_ACCOUNT_SENTINEL'),) for m in messages)
+            assert {m.sender.identity_id for m in messages}=={'100000003','100000004'}
+    assert any(path.is_relative_to(selection.account_directory) for path in opened)
+    assert any(path.is_relative_to(other) for path in opened)
+
+
+def test_declaration_gate_keeps_unknown_sender_and_names_unknown(prepared):
+    service,selection,dbroot=prepared
+    with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:
+        db.execute('UPDATE group_msg_table SET "40033"=0 WHERE "40001"=0');db.commit()
+    with closing(sqlite3.connect(dbroot/'group_info.db')) as db:
+        db.execute('DELETE FROM group_member3');db.commit()
+    with closing(sqlite3.connect(dbroot/'profile_info.db')) as db:
+        db.executescript('DELETE FROM profile_info_v2; DELETE FROM profile_info_v6;');db.commit()
+    service.prepare(selection)
+    with pytest.raises(source.QQIndependentError):service.confirm_account(selection.account)
+    assert not service.list_sessions()
+    service.capture()
+    assert not service.list_sessions() and not service.check_status().available
+    with pytest.raises(source.QQIndependentError):
+        with service.acquired_session('group:partition-a'):pytest.fail('declaration required')
+    # Authentication and a directory label alone cannot authorize self statistics.
+    service.confirm_account(selection.account)
+    from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
+    with service.acquired_session('group:partition-a') as acquired:
+        payload=json.loads(acquired.payload_path.read_text())
+        assert payload['self']['basis']=='user_declared'
+        messages,_=parse_qq_db_rich_messages(payload)
+        assert [m.is_self for m in messages]==[None,False,True,False]
+        assert messages[0].sender.identity_id is None and messages[0].sender.display_name==''
+        assert service.names_summary['named_members']==0
+        assert all(m.sender.nickname is None for m in messages)
+
+
 def test_snapshot_cleanup_preserves_consumer_facade_error(prepared):
     service,selection,_=prepared
     service.prepare(selection);service.capture();service.confirm_account(selection.account)
@@ -442,7 +531,7 @@ def test_payload_cleanup_failure_blocks_reuse_and_retains_owner(prepared,monkeyp
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize('fault',['none','metadata_key','cancel','sidecar'])
+@pytest.mark.parametrize('fault',['none','metadata_key','account_key','shared_key','cancel','sidecar'])
 def test_offline_worker_protocol_authenticates_only_after_exit(prepared,monkeypatch,tmp_path,fault):
     """Real Node protocol/codec and Windows locks; only QQ/native transport is fictional."""
     from types import SimpleNamespace
@@ -454,6 +543,7 @@ def test_offline_worker_protocol_authenticates_only_after_exit(prepared,monkeypa
         destination=seed/name;_reserve_48_bytes(destination)
         with closing(sqlite3.connect(dbroot/name)) as original, closing(sqlite3.connect(destination)) as db:
             db.executescript('\n'.join(original.iterdump()))
+    other=tmp_path/'100000002'/'nt_qq/nt_db';other.mkdir(parents=True)
     runtime=tmp_path/'fixture-runtime';runtime.mkdir()
     pins={}
     for name in ('echo_event_loader.exe','echo_event_54395.dll'):
@@ -474,10 +564,17 @@ import {encode} from ENCODER;
 const secret=randomBytes(24).map(b=>97+b%26),buffers=[secret];
 for(const name of ['nt_msg.db','group_info.db','profile_info.db']){
   const plain=readFileSync(join(SEED,name)),salt=randomBytes(16);
-  const pass=FAULT==='metadata_key'&&name==='profile_info.db'?randomBytes(24):secret;
+  const pass=FAULT==='account_key'||FAULT==='metadata_key'&&name==='profile_info.db'?randomBytes(24):secret;
   const key=pbkdf2Sync(pass,salt,4000,32,'sha512'),encrypted=encode(plain,key,salt);
-  writeFileSync(join(SOURCE,name),encrypted);plain.fill(0);key.fill(0);encrypted.fill(0);salt.fill(0);
+  writeFileSync(join(SOURCE,name),encrypted);key.fill(0);encrypted.fill(0);
   if(pass!==secret)pass.fill(0);
+  // Another account matches the captured credential, even when the selected
+  // account does not. The product must never discover or try this sibling.
+  const otherPass=['account_key','shared_key'].includes(FAULT)?secret:randomBytes(24);
+  const otherKey=pbkdf2Sync(otherPass,salt,4000,32,'sha512'),otherEncrypted=encode(plain,otherKey,salt);
+  writeFileSync(join(OTHER,name),otherEncrypted);
+  plain.fill(0);otherKey.fill(0);otherEncrypted.fill(0);salt.fill(0);
+  if(otherPass!==secret)otherPass.fill(0);
 }
 function field(n,b){return Buffer.concat([Buffer.from([n*8+2,b.length]),b]);}
 const inner=field(1,secret),body=field(2,inner);
@@ -496,7 +593,28 @@ childProcess.spawn=()=>{
 syncBuiltinESMExports();
 process.once('exit',()=>{for(const b of buffers)b.fill(0);});
 '''.replace('ENCODER',json.dumps(encoder)).replace('SEED',json.dumps(str(seed)))
-        .replace('SOURCE',json.dumps(str(dbroot))).replace('FAULT',json.dumps(fault)),encoding='utf-8')
+        .replace('SOURCE',json.dumps(str(dbroot))).replace('OTHER',json.dumps(str(other)))
+        .replace('FAULT',json.dumps(fault)),encoding='utf-8')
+    original_open=Path.open;original_iterdir=Path.iterdir;original_prepare=snapshot.prepare
+    frozen_sources=[];outside_scope=[]
+    def assert_scope(path):
+        if path==tmp_path or path.is_relative_to(other.parents[1]):
+            outside_scope.append(path)
+            raise AssertionError('unauthorized account access')
+    def scoped_open(path,*args,**kwargs):
+        assert_scope(path)
+        return original_open(path,*args,**kwargs)
+    def scoped_iterdir(path):
+        assert_scope(path)
+        return original_iterdir(path)
+    def scoped_prepare(path,parent):
+        if path.parent!=dbroot:
+            outside_scope.append(path)
+            raise AssertionError('unauthorized snapshot')
+        frozen_sources.append(path.name)
+        return original_prepare(path,parent)
+    monkeypatch.setattr(Path,'open',scoped_open);monkeypatch.setattr(Path,'iterdir',scoped_iterdir)
+    monkeypatch.setattr(snapshot,'prepare',scoped_prepare)
     exited=False;statuses=[];cancel=Event()
     def assert_exited():
         assert exited, 'snapshot attempted before fictional QQ exit'
@@ -532,12 +650,12 @@ process.once('exit',()=>{for(const b of buffers)b.fill(0);});
             worker.capture({'image':str(selection.executable),'pid':7,'created':7,
                 'account_directory':str(selection.account_directory),'root':str(service._root)},cancel.is_set,observe)
         except Exception as error:
-            if fault=='none':pytest.fail(f"worker={type(error).__name__}, code={getattr(error,'code',None)}, phases={statuses}, node={children[-1].stderr.read().decode('utf-8',errors='replace')[-1500:]}")
+            if fault in ('none','shared_key'):pytest.fail(f"worker={type(error).__name__}, code={getattr(error,'code',None)}, phases={statuses}, node={children[-1].stderr.read().decode('utf-8',errors='replace')[-1500:]}")
             raise
     monkeypatch.setattr(service,'_run_capture',capture)
     service.prepare(selection)
     try:
-        if fault=='none':
+        if fault in ('none','shared_key'):
             service.capture();service.confirm_account(selection.account)
             assert len(service.list_sessions())==3
             assert statuses.index('stopped')<statuses.index('awaiting_exit')<statuses.index('authenticating')
@@ -546,6 +664,9 @@ process.once('exit',()=>{for(const b of buffers)b.fill(0);});
         else:
             with pytest.raises(source.QQIndependentError):service.capture()
             assert service._root is None and not service.list_sessions()
+        if fault not in ('cancel','sidecar'):
+            assert frozen_sources==['nt_msg.db','group_info.db','profile_info.db']
+        assert not outside_scope
         assert children and all(child.poll() is not None for child in children)
     finally:
         for child in children:
