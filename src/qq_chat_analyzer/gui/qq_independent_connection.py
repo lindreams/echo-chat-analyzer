@@ -42,7 +42,7 @@ class QQIndependentConnection:
         v._show_qq_guide(action, note)
         v.status_changed.emit(action)
 
-    def _idle(self, message=None, *, recovery=False):
+    def _idle(self, message=None, *, recovery=False, blocked=False):
         v = self.view
         self._journey = False
         v._sessions_loaded = False
@@ -51,12 +51,12 @@ class QQIndependentConnection:
         v.session_panel.show_unconnected_placeholder()
         v.session_panel.setEnabled(False)
         v._set_stage(None)
-        v._status_label.setText('QQ 未连接')
+        v._status_label.setText('QQ 连接已停止' if blocked else 'QQ 未连接')
         v._status_label.show()
         v._show_qq_guide('连接 QQ', message or
-            '点击下方按钮，Echo 会一步一步提示你完成连接。\n聊天记录仅在本机处理。')
-        v._qq_connect_button.setText('重新连接' if message else '连接 QQ')
-        v._qq_connect_button.setEnabled(True)
+            '连接期间需要你按提示登录并完全退出 QQ，读取完成后可重新打开。\n聊天记录仅在本机处理。')
+        v._qq_connect_button.setText('连接已停止' if blocked else '重新连接' if message else '连接 QQ')
+        v._qq_connect_button.setEnabled(not blocked)
         v._qq_connect_button.show()
         v._qq_disconnect_button.hide()
         v._qq_settings_button.setVisible(recovery)
@@ -84,13 +84,12 @@ class QQIndependentConnection:
             if cleanup and self.cancelled.is_set():
                 self.release('已取消连接，可以重新开始。')
             elif failure:
-                code, message = failure[0]
-                if code in {'qq_independent_failed', 'qq_process_selection_required'}:
-                    self._recovery = 'program'
+                _code, message = failure[0]
                 if cleanup:
-                    self.release(message, recovery=True)
+                    self._image = None
+                    self.release(message)
                 else:
-                    self._idle(message, recovery=True)
+                    self._idle('本次资料未能安全释放，已停止连接。请关闭 Echo，暂勿重复连接。', blocked=True)
             elif result:
                 success(result[0])
 
@@ -187,7 +186,9 @@ class QQIndependentConnection:
             '请只授权你本人有权分析的资料。',
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self.view)
         dialog.setDefaultButton(QMessageBox.StandardButton.No)
-        media = QCheckBox('恢复报告图片（使用本地缓存；缺失表情可能访问素材 CDN）', dialog)
+        dialog.button(QMessageBox.StandardButton.Yes).setText('允许读取')
+        dialog.button(QMessageBox.StandardButton.No).setText('暂不连接')
+        media = QCheckBox('恢复报告图片（可能联网获取缺失表情）', dialog)
         dialog.setCheckBox(media)
         accepted = dialog.exec() == QMessageBox.StandardButton.Yes
         self._recover_media = accepted and media.isChecked()
@@ -201,9 +202,10 @@ class QQIndependentConnection:
         phase = value.get('phase')
         if phase == 'preparation_exit':
             self._action('请先完全退出 QQ',
-                '检测到 QQ 正在运行。本次连接需要重新登录；请从系统托盘退出 QQ，Echo 会自动继续。')
+                '检测到 QQ 正在运行，本次连接需要重新登录。若开启了自动登录，请先关闭；然后从系统托盘退出 QQ，Echo 会自动继续。')
         elif phase == 'waiting_for_qq':
-            self._action('请打开 QQ，先不要登录', '停留在登录界面，Echo 会自动检测并提示下一步。')
+            self._action('请打开 QQ，先不要登录',
+                '请停留在登录界面，等待 Echo 提示。如果 QQ 自动进入聊天界面，请取消本次连接并先关闭自动登录。')
         elif phase == 'armed':
             remaining = min(value['remaining_login_ms'] / 1000,
                 (datetime.fromisoformat(value['login_before_utc']) - datetime.now(timezone.utc)).total_seconds())
@@ -212,7 +214,7 @@ class QQIndependentConnection:
             self._login_tick()
         elif phase == 'awaiting_exit':
             self._action('请完全退出 QQ',
-                '请从系统托盘退出 QQ。Echo 检测到退出后会自动继续，请勿重新打开。', 2)
+                '请从系统托盘退出 QQ，以便读取完整记录。Echo 会自动继续；聊天列表出现前请勿重新打开。', 2)
         elif phase == 'authenticating':
             self._action('正在读取聊天记录', '请稍候，无需操作。', 2)
         elif phase == 'stopped':
@@ -232,7 +234,7 @@ class QQIndependentConnection:
     def _confirm_identity(self, _snapshot):
         self._action('确认本人 QQ 号', '该号码用于区分报告中的本人消息。', 3)
         account, accepted = QInputDialog.getText(self.view, '确认本人 QQ 号',
-            '请核对本人 QQ 号。此身份由你声明，并非 QQ 系统认证。', text=self._account.name)
+            '下方号码来自所选资料标签，请核对是否为本人 QQ 号。\n此身份由你声明，并非 QQ 系统认证。', text=self._account.name)
         if not accepted:
             self.release('已取消本人身份确认。')
             return
@@ -250,7 +252,7 @@ class QQIndependentConnection:
         self._journey = False
         v.session_panel.setEnabled(True)
         v._handle_sessions_loaded(sessions)
-        v._status_label.setText('QQ 已连接 · 本人身份由你确认')
+        v._status_label.setText('QQ 聊天记录已就绪 · 本人身份由你确认\n现在可以重新打开 QQ。')
         v._qq_connect_button.hide()
         v._qq_settings_button.hide()
         v._qq_disconnect_button.setEnabled(True)
@@ -293,7 +295,7 @@ class QQIndependentConnection:
 
     def _refreshed(self, snapshot):
         if snapshot.state is not ConnectionState.CONNECTED:
-            self.release('本次连接已结束，请重新连接 QQ。')
+            self.release('临时聊天记录已释放。如需继续分析，请重新连接 QQ。')
 
     def _settings(self):
         if self.running or self.view._closing:

@@ -535,6 +535,7 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
         assert '请完全退出 QQ' in statuses and '正在读取聊天记录' in statuses
         assert w._progress_track.isHidden() and w._qq_qrcode_label.isHidden()
         assert w._qq_guide_label.isHidden() and w._connection_bar.isVisible()
+        assert '现在可以重新打开 QQ' in w._status_label.text()
         panel=w.session_panel
         assert panel._session_list.count()==3
         original=panel.build_config
@@ -715,10 +716,31 @@ def test_formal_connection_recovers_without_publishing_sessions(qt_app,prepared,
         assert not widget._independent.running and not widget._sessions_loaded
         assert service._root is None and widget._qq_connect_button.isEnabled()
         assert not widget.session_panel.isEnabled()
-        assert widget._qq_settings_button.isHidden()==(stop in {'consent','identity'})
+        assert widget._qq_settings_button.isHidden()==(stop!='missing')
         if stop=='missing':assert service._selection is None
     finally:
         widget._closing=True;widget.cancel_connection();widget.close()
+
+
+def test_gui_cleanup_failure_stops_retries_without_suggesting_another_path(qt_app,prepared):
+    import time
+    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
+    service,selection,_=prepared;service.prepare(selection)
+    unknown=service._root/'unknown.txt';unknown.write_text('fictional protected asset')
+    widget=QQWorkspace(facade_for(service))
+    try:
+        widget._independent.release()
+        end=time.monotonic()+5
+        while widget._independent.running and time.monotonic()<end:
+            qt_app.processEvents();time.sleep(.005)
+        assert not widget._independent.running
+        assert not widget._qq_connect_button.isEnabled()
+        assert widget._qq_settings_button.isHidden() and not widget.session_panel.isEnabled()
+        assert '暂勿重复连接' in widget._qq_login_guide_label.text()
+        assert unknown.read_text()=='fictional protected asset'
+    finally:
+        unknown.unlink()  # Only this test's explicitly created fault.
+        widget.close()
 
 
 def test_wrong_declaration_and_private_ambiguity_refuse_before_list(prepared):
