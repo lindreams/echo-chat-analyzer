@@ -287,6 +287,13 @@ QFrame#qqConnectionSurface QPushButton:focus {{
 QFrame#qqConnectionSurface QPushButton:disabled {{
     color: {COLOR_FAINT}; border-color: {COLOR_RULE_SOFT}; background: transparent;
 }}
+QFrame#qqConnectionSurface QPushButton#qqSettings {{
+    border: none; padding: 8px 0; color: {COLOR_MUTED};
+}}
+QFrame#qqConnectionSurface QPushButton#qqSettings:hover,
+QFrame#qqConnectionSurface QPushButton#qqSettings:focus {{
+    color: {HOME_COLOR_ACCENT}; background: transparent;
+}}
 """
 
 WINDOW_CLIENT_SEPARATOR_STYLE = (

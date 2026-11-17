@@ -1391,6 +1391,7 @@ class ChatAnalyzerFacade:
         progress: Callable[[str], None] | None = None,
         *,
         cancel_event: threading.Event | None = None,
+        wait_for_process: bool = False,
     ) -> ConnectionSnapshot:
         """Start QQ authorization and return the resulting lifecycle state.
 
@@ -1401,7 +1402,8 @@ class ChatAnalyzerFacade:
         if self.independent_qq:
             with _translated_errors(ChatSource.QQ):
                 return self._require_service(ChatSource.QQ).capture(
-                    progress=progress or (lambda _: None), cancel_event=cancel_event)
+                    progress=progress or (lambda _: None), cancel_event=cancel_event,
+                    **({'wait_for_process': True} if wait_for_process else {}))
         bridge = self._require_qq_auth_bridge()
         if cancel_event is None or not cancel_event.is_set():
             with _translated_errors(ChatSource.QQ):

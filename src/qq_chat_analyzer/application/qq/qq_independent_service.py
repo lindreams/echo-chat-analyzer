@@ -254,7 +254,7 @@ class QQIndependentService:
                 except Exception: self._state=ConnectionState.ERROR
         self._timer=threading.Timer(_TTL,expire); self._timer.daemon=True; self._timer.start()
 
-    def capture(self, *, progress=lambda value:None, cancel_event=None):
+    def capture(self, *, progress=lambda value:None, cancel_event=None, wait_for_process=False):
         with self._lock:
             if self._busy or self._closing or not self._root or self._state is not ConnectionState.STARTING:
                 raise QQIndependentError('qq_independent_not_prepared')
@@ -262,6 +262,8 @@ class QQIndependentService:
         external=cancel_event or threading.Event()
         try:
             if self._cancelled(external.is_set): raise QQIndependentError('analysis_cancelled','已取消 QQ 获取。')
+            if wait_for_process:
+                self._wait_for_process(progress,external)
             self._run_capture(progress,external)
             if self._cancelled(external.is_set): raise QQIndependentError('analysis_cancelled','QQ 读取已取消。')
             progress({'phase':'authenticating','message':'正在校验授权数据库…'})
@@ -276,15 +278,33 @@ class QQIndependentService:
         finally:
             with self._lock: self._busy=False
 
-    def _select_process(self):
-        """Explicit installed image only; no login-state or arbitrary memory scan."""
+    def _process_candidates(self):
+        """Inspect process metadata only for the explicitly selected image."""
         raw=_powershell("Get-CimInstance Win32_Process -Filter \"Name='QQ.exe'\" | Where-Object { $_.CommandLine -notmatch '--type=' } | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress")
         rows=json.loads(raw) if raw else []
         if isinstance(rows,dict): rows=[rows]
         rows=[row for row in rows if row.get('ExecutablePath') and
               os.path.normcase(row['ExecutablePath'])==os.path.normcase(str(self._selection.executable))]
+        return rows
+
+    def _wait_for_process(self, progress, external):
+        progress({'phase':'waiting_for_qq'})
+        deadline=time.monotonic()+120
+        while not self._cancelled(external.is_set):
+            rows=self._process_candidates()
+            if len(rows)==1:return
+            if len(rows)>1:
+                raise QQIndependentError('qq_process_selection_required','检测到多个 QQ 窗口，请完全退出多余的 QQ 后重新连接。')
+            if time.monotonic()>=deadline:
+                raise QQIndependentError('qq_process_timeout','等待打开 QQ 已超时，请重新连接。')
+            external.wait(.5)
+        raise QQIndependentError('analysis_cancelled','已取消 QQ 获取。')
+
+    def _select_process(self):
+        """Explicit installed image only; no login-state or arbitrary memory scan."""
+        rows=self._process_candidates()
         if len(rows)!=1:
-            raise QQIndependentError('qq_process_selection_required','请打开所选 QQ，停留在登录页面，再点击等待登录。')
+            raise QQIndependentError('qq_process_selection_required','QQ 状态已变化，请重新连接并停留在登录页面。')
         pid=int(rows[0]['ProcessId'])
         with verified_process(pid,self._selection.executable) as (api,handle):
             created=process_creation_ticks(api,handle)

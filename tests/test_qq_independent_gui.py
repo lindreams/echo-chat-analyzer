@@ -102,6 +102,7 @@ def prepared(tmp_path,monkeypatch):
             service._frozen.append({'path':frozen['snapshot']})
             shutil.copyfile(frozen['snapshot'],service._root/(role+'.db'))
     monkeypatch.setattr(service,'_run_capture',capture)
+    monkeypatch.setattr(service,'_process_candidates',lambda:[{'ProcessId':123,'ExecutablePath':str(image)}])
     selection=source.QQIndependentSelection(image,account,'100000001',False)
     yield service,selection,dbroot
     assert service.shutdown() is ShutdownStatus.SUCCESS
@@ -285,20 +286,23 @@ def test_shutdown_blocks_new_facade_acquisition(prepared):
 def test_formal_composition_and_navigation_are_passive(qt_app,monkeypatch):
     from qq_chat_analyzer.gui.app import build_facade
     from qq_chat_analyzer.gui.main_window import MainWindow
-    from qq_chat_analyzer.gui.qq_independent_workspace import QQIndependentWorkspace
+    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
     monkeypatch.setattr(source,'resources_identity',lambda _:pytest.fail('navigation inspected QQ'))
     monkeypatch.setattr(source,'runtime_files',lambda:pytest.fail('navigation touched runtime'))
-    monkeypatch.setattr(source,'_discovery_locations',lambda:([],[]))
+    monkeypatch.setattr(source,'_discovery_locations',lambda:pytest.fail('passive navigation discovered profiles'))
     facade=build_facade();window=MainWindow(facade)
     try:
         window.show_qq_workspace()
         workspace=window.qq_workspace
-        assert isinstance(workspace,QQIndependentWorkspace)
+        assert isinstance(workspace,QQWorkspace)
         assert facade.get_qq_qrcode_path() is None
         assert not hasattr(workspace,'_group')
-        assert not workspace._session_panel.isEnabled()
-        assert not workspace._capture_button.isEnabled()
-        assert not workspace._authorization.isChecked()
+        assert not workspace.session_panel.isEnabled()
+        assert workspace._qq_connect_button.text()=='连接 QQ'
+        assert workspace._qq_settings_button.isHidden()
+        assert workspace._qq_qrcode_label.isHidden()
+        from PySide6.QtWidgets import QLineEdit
+        assert not workspace._connection_surface.findChildren(QLineEdit)
     finally:
         window.close();window.await_shutdown(10)
 
@@ -397,7 +401,7 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
         end=time.monotonic()+10
         while not predicate() and time.monotonic()<end:
             qt_app.processEvents();time.sleep(.005)
-        assert predicate()
+        assert predicate(), (statuses, dialogs, window.qq_workspace._qq_login_guide_label.text())
     window=MainWindow(facade_for(service))
     opened=[]
     window.show();qt_app.processEvents()
@@ -407,23 +411,39 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
     try:
         assert window.stack.currentWidget() is window.home_page
         window.home_page._qq_btn.click();w=window.qq_workspace
-        wait_for(lambda:not w._running)
-        assert w._progress_track.mapTo(w,w._progress_track.rect().topLeft()).y()<120
-        assert w._accounts.count()==2 and w._executable.text()==str(selection.executable)
-        w._accounts.setCurrentIndex(w._accounts.findData(str(other)))
-        assert w._account_directory.text()==str(other) and not w._authorization.isChecked()
-        w._prepare_button.click();assert service._root is None  # Consent required.
-        w._authorization.setChecked(True);w._prepare_button.click()
-        wait_for(lambda:not w._running)
-        assert w._capture_button.isEnabled() and not list(service._root.glob('*.db'))
-        assert not any('Echo 已就绪' in text for text in statuses)
-        w._capture_button.click();wait_for(lambda:not w._running)
-        assert w._phase=='confirm' and not w._session_panel.isEnabled()
-        assert progress_phases==['armed'] and any('Echo 已就绪' in text for text in statuses)
-        assert 'Fictional QQ exit required' in statuses and w._progress_track.stage==5
-        assert w._declared_account.text()==other.name
-        w._confirm_button.click();wait_for(lambda:not w._running);assert w._phase=='ready'
-        panel=w._session_panel
+        assert w._qq_connect_button.isVisible() and service._root is None
+        assert not statuses or '现在可以登录 QQ' not in statuses
+        # Drive the actual standard account, consent and identity dialogs.
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QInputDialog,QMessageBox,QComboBox
+        dialogs=[];selected=[other.name]
+        def answer():
+            modal=qt_app.activeModalWidget()
+            if isinstance(modal,QInputDialog):
+                combo=modal.findChild(QComboBox)
+                if combo is not None:
+                    assert combo.count()==2
+                    combo.setCurrentText(selected[0])
+                    dialogs.append('account')
+                else:
+                    assert '并非 QQ 系统认证' in modal.labelText()
+                    assert modal.textValue()==selected[0]
+                    assert 'armed' in progress_phases
+                    dialogs.append('identity')
+                modal.accept()
+            elif isinstance(modal,QMessageBox):
+                assert selected[0] in modal.text()
+                dialogs.append('consent')
+                modal.button(QMessageBox.StandardButton.Yes).click()
+        dialog_timer=QTimer(window);dialog_timer.setInterval(5);dialog_timer.timeout.connect(answer);dialog_timer.start()
+        w._qq_connect_button.click()
+        wait_for(lambda:w._sessions_loaded and not w._independent.running)
+        assert dialogs==['account','consent','identity']
+        assert progress_phases==['armed'] and '现在可以登录 QQ' in statuses
+        assert '请完全退出 QQ' in statuses and '正在读取聊天记录' in statuses
+        assert w._progress_track.isHidden() and w._qq_qrcode_label.isHidden()
+        assert w._qq_guide_label.isHidden() and w._connection_bar.isVisible()
+        panel=w.session_panel
         assert panel._session_list.count()==3
         original=panel.build_config
         monkeypatch.setattr(panel,'build_config',lambda:replace(original(),output_directory=tmp_path/'gui-report'))
@@ -450,14 +470,15 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
                 assert all('SECOND_ACCOUNT_SENTINEL' in m.contents[0].text for m in messages)
         assert len(outcomes)==2 and outcomes[-1].echo_report_view.total_message_count==2
         assert opened==[outcome.report_path.resolve() for outcome in outcomes]
-        w._cancel_button.click();wait_for(lambda:not w._running)
-        assert service._root is None and w._phase=='select'
-        assert not w._authorization.isChecked()
-        w._accounts.setCurrentIndex(w._accounts.findData(str(selection.account_directory)))
-        w._authorization.setChecked(True);w._prepare_button.click();wait_for(lambda:not w._running)
-        w._capture_button.click();wait_for(lambda:not w._running)
-        w._confirm_button.click();wait_for(lambda:not w._running)
-        assert w._phase=='ready' and service._selection.account==selection.account
+        window.show_qq_workspace()
+        w._qq_disconnect_button.click();wait_for(lambda:not w._independent.running)
+        assert service._root is None and not w._sessions_loaded
+        selected[0]=selection.account
+        w._qq_connect_button.click()
+        wait_for(lambda:w._sessions_loaded and not w._independent.running)
+        assert service._selection.account==selection.account
+        assert dialogs==['account','consent','identity']*2
+        dialog_timer.stop()
         with service.acquired_session('group:partition-a') as acquired:
             assert 'SECOND_ACCOUNT_SENTINEL' not in acquired.payload_path.read_text()
     finally:
@@ -465,24 +486,29 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
 
 
 @pytest.mark.parametrize('completed',[False,True])
-def test_gui_cancel_queued_or_completed_prepare_cannot_publish_stale_state(qt_app,prepared,completed):
-    from qq_chat_analyzer.gui.qq_independent_workspace import QQIndependentWorkspace
+def test_gui_cancel_queued_or_completed_acquisition_cannot_publish_stale_state(qt_app,prepared,monkeypatch,completed):
+    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
+    from PySide6.QtWidgets import QMessageBox
     service,selection,_=prepared;tasks=[]
+    from qq_chat_analyzer.gui.qq_independent_connection import QQIndependentConnection
+    monkeypatch.setattr(QQIndependentConnection,'_authorize',lambda *a:True)
     def queued(operation,**callbacks):tasks.append((operation,callbacks))
-    widget=QQIndependentWorkspace(facade_for(service),executor=queued)
-    widget._executable.setText(str(selection.executable));widget._account_directory.setText(str(selection.account_directory))
-    widget._authorization.setChecked(True);widget._prepare_button.click()
+    widget=QQWorkspace(facade_for(service),executor=queued)
+    widget._qq_connect_button.click()
     operation,callbacks=tasks.pop(0)
-    result=operation() if completed else None
-    widget._cancel_button.click()
+    callbacks['on_success'](operation());callbacks['on_finished']()
+    operation,callbacks=tasks.pop(0)
+    result=operation(lambda _:None) if completed else None
+    widget._qq_connect_button.click()
     if completed:callbacks['on_success'](result)
     else:
-        with pytest.raises(FacadeError) as refused:operation()
+        with pytest.raises(FacadeError) as refused:operation(lambda _:None)
         callbacks['on_error'](refused.value.code,refused.value.public_message)
     callbacks['on_finished']()
     cleanup,callbacks=tasks.pop(0)
     callbacks['on_success'](cleanup());callbacks['on_finished']()
-    assert service._root is None and widget._phase=='select' and not widget._session_panel.isEnabled()
+    assert service._root is None and not widget._sessions_loaded and not widget.session_panel.isEnabled()
+    assert widget._qq_connect_button.isEnabled() and not tasks
     widget.close()
 
 
@@ -491,6 +517,9 @@ def test_gui_failed_or_cancelled_capture_returns_to_selection_without_sessions(q
     import time
     from qq_chat_analyzer.gui.main_window import MainWindow
     service,selection,_=prepared;entered=Event()
+    from PySide6.QtWidgets import QMessageBox
+    from qq_chat_analyzer.gui.qq_independent_connection import QQIndependentConnection
+    monkeypatch.setattr(QQIndependentConnection,'_authorize',lambda *a:True)
     def capture(report,external):
         report({'phase':'awaiting_exit','message':'Fictional exit is pending'})
         entered.set()
@@ -506,19 +535,70 @@ def test_gui_failed_or_cancelled_capture_returns_to_selection_without_sessions(q
         assert predicate()
     window=MainWindow(facade_for(service))
     try:
-        window.home_page._qq_btn.click();w=window.qq_workspace;wait_for(lambda:not w._running)
-        w._authorization.setChecked(True);w._prepare_button.click();wait_for(lambda:not w._running)
-        w._capture_button.click()
-        if fault=='cancel':wait_for(entered.is_set);w._cancel_button.click()
-        wait_for(lambda:not w._running)
-        assert w._phase=='select' and service._root is None and not service.check_status().available
+        window.home_page._qq_btn.click();w=window.qq_workspace
+        w._qq_connect_button.click()
+        if fault=='cancel':wait_for(entered.is_set);w._qq_connect_button.click()
+        wait_for(lambda:not w._independent.running)
+        assert not w._sessions_loaded and service._root is None and not service.check_status().available
         from qq_chat_analyzer.gui.session_analysis_panel import SESSION_ID_ROLE
-        listing=w._session_panel._session_list
+        listing=w.session_panel._session_list
         assert not any(listing.item(index).data(SESSION_ID_ROLE) for index in range(listing.count()))
-        assert not w._session_panel.isEnabled()
-        assert 'Traceback' not in w._status.text()
+        assert not w.session_panel.isEnabled()
+        assert w._qq_connect_button.isEnabled()
+        assert 'Traceback' not in w._qq_login_guide_label.text()
     finally:
         window.close();assert window.await_shutdown(10)
+
+
+@pytest.mark.parametrize('outcome',['appears','ambiguous','cancel','timeout'])
+def test_automatic_process_wait_never_opens_databases_or_starts_capture(prepared,monkeypatch,outcome):
+    service,selection,_=prepared
+    service.prepare(selection)
+    event=Event();progress=[];calls=[]
+    def candidates():
+        calls.append(True)
+        assert not list(service._root.glob('*.db'))
+        if outcome=='cancel':event.set()
+        return ([{},{}] if outcome=='ambiguous' else [{}] if outcome=='appears' else [])
+    monkeypatch.setattr(service,'_process_candidates',candidates)
+    clock=iter([0,121])
+    if outcome=='timeout':
+        from types import SimpleNamespace
+        monkeypatch.setattr(source,'time',SimpleNamespace(monotonic=lambda:next(clock,121)))
+    if outcome=='appears':
+        service._wait_for_process(progress.append,event)
+    else:
+        with pytest.raises(source.QQIndependentError) as refused:
+            service._wait_for_process(progress.append,event)
+        assert refused.value.code=={'ambiguous':'qq_process_selection_required',
+            'cancel':'analysis_cancelled','timeout':'qq_process_timeout'}[outcome]
+    assert calls and progress==[{'phase':'waiting_for_qq'}]
+    assert service._generation_handle is None and service._worker is None
+
+
+@pytest.mark.parametrize('stop',['missing','consent','identity','wrong_identity'])
+def test_formal_connection_recovers_without_publishing_sessions(qt_app,prepared,monkeypatch,stop):
+    import time
+    from PySide6.QtWidgets import QInputDialog
+    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
+    from qq_chat_analyzer.gui.qq_independent_connection import QQIndependentConnection
+    service,selection,_=prepared
+    if stop=='missing':monkeypatch.setattr(source,'_discovery_locations',lambda:([],[]))
+    monkeypatch.setattr(QQIndependentConnection,'_authorize',lambda *a:stop!='consent')
+    monkeypatch.setattr(QInputDialog,'getText',lambda *a,**k:('999999999',stop=='wrong_identity'))
+    widget=QQWorkspace(facade_for(service))
+    try:
+        widget._qq_connect_button.click()
+        end=time.monotonic()+5
+        while widget._independent.running and time.monotonic()<end:
+            qt_app.processEvents();time.sleep(.005)
+        assert not widget._independent.running and not widget._sessions_loaded
+        assert service._root is None and widget._qq_connect_button.isEnabled()
+        assert not widget.session_panel.isEnabled()
+        assert widget._qq_settings_button.isHidden()==(stop in {'consent','identity'})
+        if stop=='missing':assert service._selection is None
+    finally:
+        widget._closing=True;widget.cancel_connection();widget.close()
 
 
 def test_wrong_declaration_and_private_ambiguity_refuse_before_list(prepared):

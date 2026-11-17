@@ -133,11 +133,7 @@ class MainWindow(QMainWindow):
 
         # Create pages (order matters for stack indices)
         self.home_page = HomePage()
-        if getattr(facade, 'independent_qq', False):
-            from .qq_independent_workspace import QQIndependentWorkspace
-            self.qq_workspace = QQIndependentWorkspace(facade, executor=executor)
-        else:
-            self.qq_workspace = QQWorkspace(facade, executor=executor)
+        self.qq_workspace = QQWorkspace(facade, executor=executor)
         self.wechat_workspace = WeChatWorkspace(facade, executor=executor)
         self.processing_page = ProcessingPage()
         self.processing_status_label = self.processing_page.status_label

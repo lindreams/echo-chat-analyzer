@@ -296,6 +296,8 @@ class QQWorkspace(QWidget):
         self.setStyleSheet(QQ_SETUP_QSS)
         self._facade = facade
         self._executor = executor or submit
+        self._closing = False
+        self._independent = None
         self._qq_connect_in_flight = False
         self._connection_task: Any = None
         self._qq_install_prompt_active = False
@@ -384,6 +386,10 @@ class QQWorkspace(QWidget):
         actions = QHBoxLayout()
         actions.setSpacing(16)
         actions.addWidget(self._qq_connect_button)
+        self._qq_settings_button = QPushButton("连接设置…")
+        self._qq_settings_button.setObjectName("qqSettings")
+        self._qq_settings_button.hide()
+        actions.addWidget(self._qq_settings_button)
         actions.addStretch(1)
         self._connection_layout.addLayout(actions)
         for button in (self._qq_connect_button, self._qq_disconnect_button):
@@ -444,6 +450,9 @@ class QQWorkspace(QWidget):
         self._qq_qr_wait_timer.timeout.connect(self._on_qq_qr_wait_elapsed)
 
         self.session_panel.show_unconnected_placeholder()
+        if getattr(facade, 'independent_qq', False):
+            from .qq_independent_connection import QQIndependentConnection
+            self._independent = QQIndependentConnection(self)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -473,6 +482,9 @@ class QQWorkspace(QWidget):
 
     def select_source(self, source: Any) -> None:
         """Configure the panel for QQ and reset transient state."""
+        if self._independent is not None:
+            self._independent.refresh()
+            return
         self.session_panel.configure(self._facade, ChatSource.QQ, executor=self._executor)
         self._invalidate_session_request()
         self._sessions_loaded = False
@@ -493,6 +505,9 @@ class QQWorkspace(QWidget):
 
     def refresh_qq_status(self, *, load_sessions_on_ready: bool = False) -> None:
         """Ask the connection manager, through the facade, for QQ state."""
+        if self._independent is not None:
+            self._independent.refresh()
+            return
         generation = self._qq_attempt_generation
         self._set_stage(None)
         self._hide_qq_guide()
@@ -635,6 +650,9 @@ class QQWorkspace(QWidget):
 
     def _poll_qq_status(self) -> None:
         """Refresh the QQ snapshot while the user is waiting to log in."""
+        if self._independent is not None:
+            self._independent.refresh()
+            return
         if self._qq_auth_waiting_expired():
             self._handle_qq_auth_timeout()
             return
@@ -829,6 +847,9 @@ class QQWorkspace(QWidget):
 
     def connect_qq(self) -> None:
         """Start the QQ authorization flow in one click."""
+        if self._independent is not None:
+            self._independent.connect()
+            return
         if self._qq_connect_in_flight:
             self.cancel_connection()
             return
@@ -1020,6 +1041,9 @@ class QQWorkspace(QWidget):
 
     def disconnect_qq(self) -> None:
         """Stop the current QQ session and return to a reconnectable page."""
+        if self._independent is not None:
+            self._independent.release()
+            return
         if self._qq_connect_in_flight:
             self.cancel_connection()
             return
@@ -1054,6 +1078,9 @@ class QQWorkspace(QWidget):
 
     def cancel_connection(self) -> None:
         """Cancel the active source task and return to a reconnectable page."""
+        if self._independent is not None:
+            self._independent.cancel()
+            return
         task = self._connection_task
         if task is None and not self._qq_connect_in_flight:
             return
@@ -1194,6 +1221,10 @@ class QQWorkspace(QWidget):
         )
 
     def _handle_analysis_error(self, code: str, message: str) -> None:
+        if self._independent is not None:
+            self.analysis_failed.emit(code, message)
+            self._independent.refresh()
+            return
         if code == "qq_reconnect_required":
             self._require_qq_reconnect(message)
         else:
