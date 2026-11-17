@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import closing
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -104,12 +105,25 @@ def worker(root):
     assert Path(qq_chat_analyzer.__file__).resolve() == REPO/'src/qq_chat_analyzer/__init__.py'
     sys.path.insert(0, str(REPO/'tests'))
     from test_qq_direct_main_wal_poc import _reserve_48_bytes
+    from qq_db_test_data import synthetic_text_message_blob
+    from qq_chat_analyzer.providers.qq_database_provider import QQDatabaseProvider, QQSession
+    from qq_chat_analyzer.qq_db_adapter import parse_qq_db_rich_messages
     from qq_chat_analyzer.providers.qq_independent import snapshot
     from qq_chat_analyzer.providers.qq_independent.files import SourceError
     seed=root/'seed.db'; _reserve_48_bytes(seed)
     with closing(sqlite3.connect(seed)) as db:
         db.execute('CREATE TABLE evidence(value TEXT)')
         db.execute("INSERT INTO evidence VALUES ('fictional offline import')")
+        for table in ('group_msg_table', 'c2c_msg_table'):
+            db.execute(f'''CREATE TABLE {table} (
+                "40001" INTEGER PRIMARY KEY, "40027" TEXT NOT NULL,
+                "40030" TEXT NOT NULL, "40033" TEXT NOT NULL,
+                "40050" INTEGER NOT NULL, "40800" BLOB NOT NULL)''')
+            db.executemany(f'INSERT INTO {table} VALUES (?,?,?,?,?,?)', [
+                (index, '17', '100000002', account, 1760000000 + index,
+                 synthetic_text_message_blob('fictional identity evidence'))
+                for index, account in enumerate(('100000001', '100000002'), 1)
+            ])
         db.commit()
     program=PROGRAM
     for name, path in (
@@ -156,13 +170,40 @@ def worker(root):
         assert results[-1]=={'phase':'fixture_event_released','event_buffer_wiped':True}
         assert results[0]['different_account_labels_both_authenticate'] is True
         for account in ('100000001','100000002'):
-            with closing(sqlite3.connect(root/(account+'.sqlite'))) as db:
+            database=root/(account+'.sqlite')
+            with closing(sqlite3.connect(database)) as db:
                 assert db.execute('PRAGMA integrity_check').fetchall()==[('ok',)]
                 assert db.execute('SELECT value FROM evidence').fetchall()==[('fictional offline import',)]
+            # Exercise the real Provider -> Adapter on the authenticated output.
+            # No owner role is invented in the fixture: these are two senders.
+            before=hashlib.sha256(database.read_bytes()).digest()
+            provider=QQDatabaseProvider(database)
+            for kind in ('group', 'private'):
+                session=QQSession('17', '100000002', 'fictional session', kind)
+                for supplied, expected in (
+                    ('100000001', [True, False]),
+                    ('100000002', [False, True]),
+                    ('100000003', [False, False]),
+                    (None, [None, None]),
+                ):
+                    payload=provider.read_session_payload(session, self_uin=supplied)
+                    messages, warnings=parse_qq_db_rich_messages(payload)
+                    assert not warnings and len(messages)==2
+                    assert [message.is_self for message in messages]==expected
+                    assert payload['self']==(None if supplied is None else
+                        {'namespace':'qq_uin', 'value':supplied})
+            assert hashlib.sha256(database.read_bytes()).digest()==before
         print(json.dumps({'exit_before_snapshot':True,'live_writer_refused':True,
             'retained_event_authenticated_after_exit':True,'sqlite_integrity_verified':True,
             'credential_account_binding_proven':False,'raw_keys_persisted':False,
-            'real_qq_accessed':False,'crypto':results[0]}),flush=True)
+            'real_qq_accessed':False,'crypto':results[0],
+            'post_decryption_identity':{
+                'group_and_private_checked':True,
+                'same_database_self_changes_with_argument':True,
+                'absent_context_remains_unknown':True,
+                'absent_sender_account_not_rejected':True,
+                'database_bytes_unchanged':True,
+                'internal_owner_evidence':False}}),flush=True)
     finally:
         snapshot.assert_qq_exited=original
         for child in (writer,node):
