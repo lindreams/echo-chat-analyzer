@@ -7,6 +7,36 @@ from .files import SourceError,_safe,_file,_identity,_no_sidecars,_format
 MAX_BYTES=1024**3
 OWNER={"kind":"echo-qq-full-read","version":1}
 
+def bind_live_database_paths(paths, expected_uin):
+    """Bind process-owned paths to an independently established canonical UIN.
+
+    The caller must verify the process generation and provenance of all paths.
+    This check neither discovers the current user nor proves a login epoch or
+    snapshot consistency. It only checks directory scope and file metadata.
+    No directory enumeration or database content read is performed.
+    """
+    if (not isinstance(expected_uin, bytes) or not expected_uin.isdigit()
+            or expected_uin.startswith(b'0') or not 5 <= len(expected_uin) <= 20):
+        raise SourceError('independent_owner_reference_required')
+    accounts, main = set(), set()
+    for raw in paths:
+        path = Path(raw)
+        if (not path.is_absolute() or path.parent.name.casefold() != 'nt_db'
+                or path.parent.parent.name.casefold() != 'nt_qq'):
+            raise SourceError('database_path_shape_unknown')
+        accounts.add(path.parent.parent.parent)
+        if path.name.casefold() == 'nt_msg.db':
+            main.add(path)
+    if len(accounts) != 1 or len(main) != 1:
+        raise SourceError('database_binding_not_unique')
+    if next(iter(accounts)).name.encode('ascii', errors='replace') != expected_uin:
+        raise SourceError('database_account_mismatch')
+    main = next(iter(main))
+    for path in (main, Path(str(main)+'-wal'), Path(str(main)+'-shm')):
+        _file(path)
+    return main
+
+
 def _powershell(program, *, env=None):
     executable = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
     result = subprocess.run([str(executable), "-NoProfile", "-NonInteractive", "-Command", program],

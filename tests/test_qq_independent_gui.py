@@ -19,6 +19,33 @@ from qq_chat_analyzer.application.facade import ChatAnalyzerFacade, ChatSource, 
 from qq_chat_analyzer.application.qq import qq_independent_service as source
 from qq_chat_analyzer.application.shutdown_models import ShutdownStatus
 from qq_chat_analyzer.providers.qq_independent.files import SourceError
+from qq_chat_analyzer.providers.qq_independent.snapshot import bind_live_database_paths
+
+
+def test_live_database_path_binding_requires_independent_owner_and_unique_scope(tmp_path):
+    root = tmp_path/'100000001'/'nt_qq'/'nt_db'
+    root.mkdir(parents=True)
+    main = root/'nt_msg.db'
+    paths = [main, Path(str(main)+'-wal'), Path(str(main)+'-shm')]
+    for path in paths:
+        path.touch()
+    assert bind_live_database_paths(paths, b'100000001') == main
+    # Reject conflicts before probing a second account's filesystem.
+    other = tmp_path/'100000002'/'nt_qq'/'nt_db'/'nt_msg.db'
+    for evidence, owner, reason in (
+        (paths, b'100000002', 'database_account_mismatch'),
+        (paths+[other], b'100000001', 'database_binding_not_unique'),
+        ([], b'100000001', 'database_binding_not_unique'),
+        (paths, b'0100000001', 'independent_owner_reference_required'),
+        (paths, b'unknown', 'independent_owner_reference_required'),
+        ([Path('100000001/nt_qq/nt_db/nt_msg.db')], b'100000001', 'database_path_shape_unknown'),
+    ):
+        with pytest.raises(SourceError) as refused:
+            bind_live_database_paths(evidence, owner)
+        assert refused.value.code == reason
+    paths[-1].unlink()
+    with pytest.raises(FileNotFoundError):
+        bind_live_database_paths(paths, b'100000001')
 
 
 @pytest.fixture

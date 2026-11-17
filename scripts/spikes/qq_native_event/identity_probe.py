@@ -24,6 +24,7 @@ import time
 
 from qq_chat_analyzer.providers.qq_independent.files import SourceError, _file
 from qq_chat_analyzer.providers.qq_independent.process import verified_process, process_creation_ticks, loaded_module
+from qq_chat_analyzer.providers.qq_independent.snapshot import bind_live_database_paths as bind_paths
 from qq_chat_analyzer.runtime.windows_job import launch_owned_process
 
 MAGIC = 0x32535145
@@ -379,27 +380,6 @@ def handle_paths(pid, created, image, counts):
         finally:
             reference_file.close()
             api.CloseHandle(source)
-
-
-def bind_paths(paths, expected):
-    """Process ownership plus independently authorized canonical UIN; no search."""
-    accounts, main = set(), set()
-    for raw in paths:
-        path = Path(raw)
-        if path.parent.name.casefold() != 'nt_db' or path.parent.parent.name.casefold() != 'nt_qq':
-            raise SourceError('database_path_shape_unknown')
-        account = path.parent.parent.parent
-        accounts.add(account)
-        if path.name.casefold() == 'nt_msg.db':
-            main.add(path)
-    if len(accounts) != 1 or len(main) != 1:
-        raise SourceError('database_binding_not_unique')
-    if next(iter(accounts)).name.encode('ascii', errors='replace') != expected:
-        raise SourceError('database_account_mismatch')
-    main = next(iter(main))
-    for path in (main, Path(str(main)+'-wal'), Path(str(main)+'-shm')):
-        _file(path)
-    return main
 
 
 def self_check(root):
