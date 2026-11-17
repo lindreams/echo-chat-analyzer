@@ -277,6 +277,27 @@ def test_scope_rejection_and_cleanup_never_adopt_unknown_directory(prepared,tmp_
     unknown.unlink()  # Remove only this test's own fault injection.
 
 
+@pytest.mark.parametrize('extra',[None,'file','directory','link'])
+def test_cleanup_accepts_only_empty_windows_profile_scaffolding(prepared,tmp_path,extra):
+    service,selection,_=prepared;service.prepare(selection);service.capture()
+    root=service._root;roaming=root/'USERPROFILE/AppData/Roaming';roaming.mkdir(parents=True)
+    if extra:
+        unexpected=roaming/'unexpected'
+        if extra=='file':unexpected.write_bytes(b'fictional unknown asset')
+        elif extra=='directory':unexpected.mkdir()
+        else:
+            import subprocess
+            target=tmp_path/'protected';target.mkdir();(target/'keep.txt').write_text('fictional protected')
+            subprocess.run(['cmd','/c','mklink','/J',str(unexpected),str(target)],check=True,capture_output=True)
+        with pytest.raises(SourceError):service.disconnect()
+        assert service._root==root and (root/'owner.json').is_file() and (root/'message.db').is_file()
+        if extra=='file':unexpected.unlink()
+        else:unexpected.rmdir()  # Only this test's injected empty dir/junction.
+        if extra=='link':assert (target/'keep.txt').read_text()=='fictional protected'
+    service.disconnect()
+    assert service._root is None and not root.exists()
+
+
 def test_cleanup_failure_retains_proof_until_sensitive_files_are_removed(prepared,monkeypatch):
     service,selection,_=prepared
     service.prepare(selection)

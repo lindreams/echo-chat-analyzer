@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import ctypes
 from ctypes import wintypes
 import json
+import logging
 from itertools import islice
 import os
 from pathlib import Path
@@ -36,6 +37,7 @@ from .qq_runtime_workspace import _lease
 
 _ENV = ('HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP','MPLCONFIGDIR','XDG_CONFIG_HOME','XDG_CACHE_HOME')
 _TTL = 600
+_LOGGER = logging.getLogger('qq_chat_analyzer.desktop.qq.independent')
 
 
 class QQIndependentError(ApplicationServiceError):
@@ -106,6 +108,20 @@ def _positive(value):
     return isinstance(value,str) and re.fullmatch(r'[1-9][0-9]{4,19}',value) is not None
 
 
+def _environment_directories(directory):
+    """Only empty, fixed Windows profile scaffolding may join our empty roots."""
+    allowed={'AppData','AppData/Roaming'} if directory.name=='USERPROFILE' else set()
+    directories=[directory]
+    for current in directories:
+        _safe(current)
+        for child in current.iterdir():
+            _safe(child)
+            if child.relative_to(directory).as_posix() not in allowed or not child.is_dir():
+                raise SourceError('workspace_unknown_file')
+            directories.append(child)
+    return sorted(directories,key=lambda p:len(p.parts),reverse=True)
+
+
 def _remove_run(root, parent):
     """Only our marker-bound tree and fixed files may be recovered/deleted."""
     _safe(parent); _safe(root)
@@ -123,7 +139,7 @@ def _remove_run(root, parent):
             _file(child)
             if child.name not in allowed: raise SourceError('workspace_unknown_file')
         elif child.is_dir() and child.name in _ENV:
-            if any(child.iterdir()): raise SourceError('workspace_unknown_file')
+            _environment_directories(child)
         elif child.is_dir() and re.fullmatch(r'qq-authorized-full-[a-f0-9]{32}',child.name):
             if json.loads((child/'owner.json').read_text()) != {'kind':'echo-qq-full-read','version':1}:
                 raise SourceError('workspace_owner_mismatch')
@@ -135,7 +151,11 @@ def _remove_run(root, parent):
     # Keep identity proofs until all their sensitive data has been removed.
     # A failed unlink must remain recoverable on the next owned attempt.
     for child in root.iterdir():
-        if child.is_dir():
+        if child.is_dir() and child.name in _ENV:
+            for directory in _environment_directories(child):
+                _safe(directory)
+                directory.rmdir()
+        elif child.is_dir():
             for item in sorted(child.iterdir(),key=lambda p:p.name=='owner.json'):
                 _file(item)
                 item.unlink()
@@ -289,6 +309,9 @@ class QQIndependentService:
             self._state=ConnectionState.CONNECTED; self._expire_later()
             return self.get_snapshot()
         except Exception as error:
+            _LOGGER.warning('[qq independent] stage=capture failure_code=%s error_type=%s',
+                error.code if isinstance(error,(SourceError,QQIndependentError)) else 'unexpected_error',
+                type(error).__name__)
             self._state=ConnectionState.ERROR
             self._clear()
             if isinstance(error,QQIndependentError): raise
@@ -463,6 +486,9 @@ class QQIndependentService:
             self._expire_later()
             return self.get_snapshot()
         except Exception as error:
+            _LOGGER.warning('[qq independent] stage=confirm failure_code=%s error_type=%s',
+                error.code if isinstance(error,(SourceError,QQIndependentError)) else 'unexpected_error',
+                type(error).__name__)
             self._clear()
             if isinstance(error,QQIndependentError): raise
             raise QQIndependentError('qq_session_validation_failed','会话身份存在冲突或资料无法读取，请重新选择账号资料。') from None
