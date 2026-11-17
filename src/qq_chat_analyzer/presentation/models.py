@@ -387,3 +387,4 @@ class EchoReportView:
     average_messages_per_active_day: float = 0.0
     calendar_day_count: int = 0
     weekday_average_activity: tuple[ChartPoint, ...] = ()
+    self_identity_basis: str = ""

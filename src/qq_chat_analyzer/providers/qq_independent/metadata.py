@@ -19,7 +19,7 @@ def scoped_names(group_database, profile_database, group, member_keys):
                 and str(int(value)) == value and int(value) > 0)
 
     members = frozenset(member_keys)
-    if not positive(group) or not 0 < len(members) <= 10000 or not all(map(positive, members)):
+    if (group is not None and not positive(group)) or len(members) > 10000 or not all(map(positive, members)):
         raise SourceError("metadata_identity_scope_required")
     keys = sorted(members)
     marks = ",".join("?" for _ in keys)
@@ -60,7 +60,7 @@ def scoped_names(group_database, profile_database, group, member_keys):
         predicate += ' OR "1000" IN (' + ",".join("?" for _ in safe_uids) + ")"
     identity_rows = query(paths[0], 'SELECT "60001","1002","1000" '
                  'FROM group_member3 WHERE "60001"=? AND (' + predicate + ")",
-                 [int(group), *keys, *safe_uids])
+                 [int(group), *keys, *safe_uids]) if group is not None and members else []
     # First collect all witnesses; never accept a row before later conflicts
     # in this same scoped selection have been considered.
     for selected_group, raw, uid in identity_rows:
@@ -80,11 +80,11 @@ def scoped_names(group_database, profile_database, group, member_keys):
     eligible = sorted(members - conflicts)
     proven_uids = sorted(uid for uid, values in uid_uins.items()
                          if len(values) == 1 and values <= members - conflicts)
-    clauses, parameters = [], [int(group)]
-    if eligible:
+    clauses, parameters = [], [int(group)] if group is not None else []
+    if eligible and group is not None:
         clauses.append('CAST("1002" AS TEXT) IN (' + ','.join('?' for _ in eligible) + ')')
         parameters.extend(eligible)
-    if proven_uids:
+    if proven_uids and group is not None:
         clauses.append('(("1002" IS NULL OR "1002"=0) AND "1000" IN ('
                        + ','.join('?' for _ in proven_uids) + '))')
         parameters.extend(proven_uids)
@@ -140,7 +140,7 @@ def scoped_names(group_database, profile_database, group, member_keys):
 
     titles = set()
     title_rows = []
-    for table in ("group_list", "group_detail_info_ver1"):
+    for table in (("group_list", "group_detail_info_ver1") if group is not None else ()):
         selected = query(paths[0], f'SELECT "60001","60007" FROM "{table}" WHERE "60001"=?', [int(group)])
         if len(selected) > 1 or any(str(row[0]) != group for row in selected):
             raise SourceError("metadata_group_identity_ambiguous")

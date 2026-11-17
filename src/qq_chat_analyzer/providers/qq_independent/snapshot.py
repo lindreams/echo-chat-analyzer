@@ -166,8 +166,10 @@ def authorized_group_partition(connection, group, on_status):
     A zero 40030 is not an identity. It needs the same row's 40021 witness;
     neither partition membership nor the Provider's MAX object proves this.
     """
+    columns = {row[1] for row in connection.execute("PRAGMA table_info(group_msg_table)")}
+    has_object = "40021" in columns
     keys = connection.execute('''SELECT DISTINCT CAST("40027" AS TEXT)
-        FROM group_msg_table WHERE CAST("40030" AS TEXT)=? LIMIT 2''', (group,)).fetchall()
+        FROM group_msg_table WHERE CAST("40030" AS TEXT)=? OR (CAST("40030" AS TEXT)='0' AND CAST("40021" AS TEXT)=?) LIMIT 2''' if has_object else 'SELECT DISTINCT CAST("40027" AS TEXT) FROM group_msg_table WHERE CAST("40030" AS TEXT)=? LIMIT 2', (group,group) if has_object else (group,)).fetchall()
     if len(keys) != 1 or not keys[0][0] or keys[0][0].strip() in ("", "0"):
         on_status({"phase": "group_partition_mapping", "state": "refused", "candidate_partitions": len(keys)})
         raise SourceError("authorized_session_missing_or_ambiguous")

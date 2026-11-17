@@ -19,7 +19,7 @@ from .files import SourceError, _file, _local_path
 
 
 @contextmanager
-def verified_process(pid: int, expected_executable: Path):
+def verified_process(pid: int, expected_executable: Path, *, synchronize: bool = False):
     """One read/query handle, verified image, one owner, unconditional close."""
     if os.name != "nt" or ctypes.sizeof(ctypes.c_void_p) != 8:
         raise SourceError("windows_x64_required")
@@ -39,7 +39,7 @@ def verified_process(pid: int, expected_executable: Path):
     native.K32GetModuleFileNameExW.argtypes = [wintypes.HANDLE, wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
     native.K32GetModuleFileNameExW.restype = wintypes.DWORD
     # PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, never ALL_ACCESS.
-    handle = native.OpenProcess(0x0410, False, pid)
+    handle = native.OpenProcess(0x0410 | (0x100000 if synchronize else 0), False, pid)
     if not handle:
         raise SourceError("process_read_access_unavailable")
     try:

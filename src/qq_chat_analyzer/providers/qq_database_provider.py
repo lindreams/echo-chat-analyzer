@@ -245,8 +245,9 @@ class QQDatabaseProvider:
         Uses the session internal_key (column 40027) as the query
         predicate, and routes to the correct table based on session_type.
 
-        ``self_uin`` is the acquisition-time self identity bound to the same
-        plaintext snapshot (``core.selfInfo.uin``), or ``None`` when unknown.
+        ``self_uin`` is the source's self context for the same plaintext
+        snapshot, or ``None`` when unknown. Independent offline acquisition
+        explicitly records its user-declared provenance in the payload/report.
         It is passed through verbatim as source metadata; the adapter decides
         how to use it.
 

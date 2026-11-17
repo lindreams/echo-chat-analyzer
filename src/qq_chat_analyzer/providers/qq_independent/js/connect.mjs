@@ -26,14 +26,15 @@ export function verifiedBuild(directory, productionPins) {
  * The caller owns firstPage and must wipe it after this Promise settles.
  */
 export async function connectOnce({directory, productionPins, target, firstPage, timeoutMs = 120000, signal, onStatus = () => {}, onHelper = () => {},
-  consumeAuthenticatedKey, consumerTimeoutMs = 1000}) {
+  consumeAuthenticatedKey, consumerTimeoutMs = 1000, prepareAuthentication}) {
   const {root} = verifiedBuild(directory, productionPins);
   if (!['fixture', 'approved-qq'].includes(target?.mode) || target.version !== BUILD ||
       !Number.isInteger(target.pid) || target.pid < 1 || target.pid > 0xffffffff ||
       typeof target.created !== 'bigint' || target.created < 1n || target.created > 0xffffffffffffffffn ||
       typeof target.image !== 'string' || !/^[a-f0-9]{64}$/.test(target.sha256 ?? '') ||
       !Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000 ||
-      !Buffer.isBuffer(firstPage) || firstPage.length !== 5120 || signal?.aborted ||
+      (!(Buffer.isBuffer(firstPage) && firstPage.length === 5120) &&
+        !(firstPage === undefined && typeof prepareAuthentication === 'function' && typeof consumeAuthenticatedKey === 'function')) || signal?.aborted ||
       (consumeAuthenticatedKey !== undefined && typeof consumeAuthenticatedKey !== 'function') ||
       !Number.isInteger(consumerTimeoutMs) || consumerTimeoutMs < 1 || consumerTimeoutMs > 120000) throw Error('session_refused');
   const header = Buffer.alloc(48);
@@ -130,8 +131,17 @@ export async function connectOnce({directory, productionPins, target, firstPage,
   try {
     child.stdin.write(header); onHelper(child); // Test harness may fault only this owned helper.
     const code = await completed;
+    clearTimeout(timer);
     const clean = code === 0 && !transportFailed && stopped && !pending.length && phase === 3;
-    if (clean && !aborted && !signal?.aborted && deferredPayload) authenticate(deferredPayload);
+    if (clean && !aborted && !signal?.aborted && deferredPayload) {
+      // Only the bounded event is retained while the caller proves QQ exit
+      // and freezes the explicitly authorized inputs. No raw key lease exists.
+      if (prepareAuthentication) {
+        firstPage = await prepareAuthentication();
+        if (!Buffer.isBuffer(firstPage) || firstPage.length !== 5120 || signal?.aborted) throw Error('session_refused');
+      }
+      authenticate(deferredPayload);
+    }
     return {state: clean ? (aborted ? 'cancelled' : authenticated ? 'authenticated_event' : eventSeen ? (parsed === false ? 'parse_refused' : 'authentication_refused') : 'no_target_event') : 'transport_refused',
       event_seen: eventSeen, event_parsed: parsed, authenticated: clean && authenticated && !aborted,
       observation_timing: {request_started_utc: new Date(requestStartedUtc).toISOString(),

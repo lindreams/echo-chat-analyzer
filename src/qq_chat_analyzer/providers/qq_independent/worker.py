@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+from contextlib import ExitStack
 from ctypes import wintypes
 import hashlib
 import json
@@ -78,8 +79,9 @@ def capture(request, cancelled, status):
     directory, pins = runtime_files()
     image = _safe(Path(request['image']))
     resources, before = resources_identity(image)
-    page, _ = _read_unchanged(Path(request['snapshot']['path']), prefix_bytes=5120)
-    with verified_process(request['pid'], image) as (api, handle):
+    with verified_process(request['pid'], image, synchronize=True) as (api, handle):
+        api.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]
+        api.WaitForSingleObject.restype=wintypes.DWORD
         if (process_creation_ticks(api, handle) != request['created'] or
                 not loaded_module(api, handle, resources.wrapper_path)[1]):
             raise SourceError('selected_process_changed')
@@ -87,8 +89,8 @@ def capture(request, cancelled, status):
                   'created':str(request['created']), 'pid':request['pid'],
                   'sha256':next(digest for path,digest in before if Path(path) == image)}
         body = json.dumps({'directory':str(directory),'productionPins':pins,'target':target,
-                           'snapshot':request['snapshot'],'metadata':request['metadata']}, ensure_ascii=True).encode('ascii')
-        if len(body) > 131072 or len(page) != 5120 or cancelled():
+                           }, ensure_ascii=True).encode('ascii')
+        if len(body) > 131072 or cancelled():
             raise SourceError('selection_refused')
         env = os.environ.copy()
         env.pop('NODE_OPTIONS', None); env.pop('NODE_PATH', None)
@@ -108,13 +110,49 @@ def capture(request, cancelled, status):
         reader = threading.Thread(target=read, daemon=True); reader.start()
         result = None
         try:
-            process.stdin.write(struct.pack('<I',len(body))+body+page); process.stdin.flush()
-            end, stopping = time.monotonic()+265, False
+            process.stdin.write(struct.pack('<I',len(body))+body); process.stdin.flush()
+            end, stopping = time.monotonic()+380, False
+            frozen_sent = False
             while True:
                 try:
                     message = messages.get(timeout=.05)
                     if message is None: break
                     if message.get('phase') == 'result': result = message
+                    elif message.get('phase') == 'awaiting_exit':
+                        if frozen_sent: raise SourceError('unexpected_snapshot_request')
+                        status(message)
+                        # Retain only the event in Node. Wait for this exact
+                        # QQ process generation; never signal or terminate it.
+                        exit_end = time.monotonic()+110
+                        while True:
+                            wait=api.WaitForSingleObject(handle,50)
+                            if wait==0: break
+                            if wait!=258: raise SourceError('process_exit_unconfirmed')
+                            if cancelled() or time.monotonic()>=exit_end:
+                                raise SourceError('normal_qq_exit_required')
+                        from .snapshot import prepare, assert_qq_exited, _read_locked, _no_sidecars
+                        assert_qq_exited()
+                        selections=[]
+                        sources={role:Path(request['account_directory'])/'nt_qq/nt_db'/('nt_msg.db' if role=='message' else role+'.db')
+                            for role in ('message','group_info','profile_info')}
+                        with ExitStack() as locks:
+                            for source in sources.values():
+                                _no_sidecars(source);locks.enter_context(_read_locked(source))
+                            for role,source in sources.items():
+                                if cancelled(): raise SourceError('cancelled')
+                                frozen=prepare(source,Path(request['root']))
+                                if role!='message' and frozen['size']>32*1024**2: raise SourceError('metadata_snapshot_limit')
+                                selections.append({'role':role,'path':frozen['snapshot'],'sha256':frozen['sha256'],
+                                    'size':frozen['size'],'output':str(Path(request['root'])/(role+'.db'))})
+                            for source in sources.values(): _no_sidecars(source)
+                            assert_qq_exited()
+                        assert_qq_exited()
+                        if cancelled(): raise SourceError('cancelled')
+                        packet=json.dumps({'snapshot':selections[0],'metadata':selections[1:]},ensure_ascii=True).encode('ascii')
+                        if time.monotonic()>=exit_end: raise SourceError('snapshot_deadline')
+                        process.stdin.write(struct.pack('<I',len(packet))+packet);process.stdin.flush()
+                        frozen_sent=True
+                        status({'phase':'authenticating'})
                     elif message.get('phase') in ('armed','stopped','stop_unconfirmed'): status(message)
                     else: raise SourceError('invalid_capture_status')
                 except queue.Empty: pass
@@ -128,10 +166,11 @@ def capture(request, cancelled, status):
                     ('authenticated','complete','observation_stopped','reads_stopped','hook_disabled'))
                     or result.get('inflight') != 0):
                 raise SourceError('capture_refused')
-            if (resources_identity(image)[1] != before or
-                    process_creation_ticks(api,handle) != request['created'] or
-                    not loaded_module(api,handle,resources.wrapper_path)[1]):
+            if (not frozen_sent or resources_identity(image)[1] != before or
+                    process_creation_ticks(api,handle) != request['created'] or api.WaitForSingleObject(handle,0)!=0):
                 raise SourceError('input_or_generation_changed')
+            for selection in selections:
+                path=Path(selection['path']);_file(path);path.unlink()
         finally:
             if process.poll() is None: process.kill()  # Our Node; never QQ.
             process.wait(timeout=3); process.stdin.close(); reader.join(timeout=2)
@@ -153,15 +192,10 @@ def main(root_text):
            'directory':[root.stat().st_dev,root.stat().st_ino]}
     if json.loads(marker.read_text(encoding='ascii')) != proof: return 2
     if not re.fullmatch(r'Local\\EchoQQIndependentStop-[a-f0-9]{32}',request.get('cancel_event','')): return 2
-    from .snapshot import validate_prepared
-    selections=[request['snapshot'],*request['metadata']]
-    if len(selections)!=3: return 2
-    for item,role in zip(selections,('message','group_info','profile_info'),strict=True):
-        path=_safe(Path(item['path']))
-        if (item.get('role')!=role or path.parent.parent!=root or
-                Path(item['output'])!=root/(role+'.db')): return 2
-        manifest=validate_prepared(path,item['sha256'])
-        if manifest['size']!=item['size'] or role!='message' and item['size']>32*1024**2: return 2
+    if Path(request.get('root',''))!=root: return 2
+    account=_safe(Path(request['account_directory']))
+    if not account.is_absolute() or not re.fullmatch(r'[1-9][0-9]{4,19}',account.name): return 2
+    if account.is_relative_to(root.parent) or root.parent.is_relative_to(account): return 2
     api = event_api()
     handle = api.OpenEventW(0x00100000,False,request['cancel_event'])
     if not handle: return 2

@@ -1,8 +1,5 @@
-"""Scoped acquisition regression and a fail-closed, passive desktop entry.
-
-The explicit account/group fixture does not prove automatic desktop discovery.
-"""
-from contextlib import closing
+"""Fictional guided account acquisition, conversation analysis and ownership."""
+from contextlib import closing, contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -65,6 +62,11 @@ def prepared(tmp_path,monkeypatch):
         # An unrelated partition must never reach the payload or name query.
         db.execute('INSERT INTO group_msg_table VALUES (?,?,?,?,?,?,?,?,?)',(42,'partition-b',900000002,900000002,100000003,1760003000,
                    synthetic_text_message_blob('OTHER_GROUP_SENTINEL'),1,0))
+        db.execute('CREATE TABLE c2c_msg_table ("40001" INTEGER,"40027" TEXT,"40030" INTEGER,"40021" INTEGER,"40033" INTEGER,"40050" INTEGER,"40800" BLOB)')
+        for index,text in enumerate(texts):
+            db.execute('INSERT INTO c2c_msg_table VALUES (?,?,?,?,?,?,?)',
+                (100+index,'private-a',100000002,100000002,100000001+index%2,1760000000+index*86400,
+                 synthetic_text_message_blob(text)))
         db.commit()
     with closing(sqlite3.connect(dbroot/'group_info.db')) as db:
         db.executescript('CREATE TABLE group_list ("60001" INTEGER,"60007" TEXT);'
@@ -90,10 +92,14 @@ def prepared(tmp_path,monkeypatch):
     service=source.QQIndependentService(workspace=tmp_path/'owned')
     def capture(progress,external):
         if external.is_set(): raise SourceError('cancelled')
-        progress('armed')
-        for frozen in service._frozen: shutil.copyfile(frozen['path'],frozen['output'])
+        from datetime import datetime,timedelta,timezone
+        progress({'phase':'armed','remaining_login_ms':10000,'login_before_utc':(datetime.now(timezone.utc)+timedelta(seconds=10)).isoformat()})
+        for role in ('message','group_info','profile_info'):
+            frozen=freeze(dbroot/('nt_msg.db' if role=='message' else role+'.db'),service._root)
+            service._frozen.append({'path':frozen['snapshot']})
+            shutil.copyfile(frozen['snapshot'],service._root/(role+'.db'))
     monkeypatch.setattr(service,'_run_capture',capture)
-    selection=source.QQIndependentSelection(image,account,'100000001','900000001',False)
+    selection=source.QQIndependentSelection(image,account,'100000001',False)
     yield service,selection,dbroot
     assert service.shutdown() is ShutdownStatus.SUCCESS
     assert not list((tmp_path/'owned').glob('run-*')) if (tmp_path/'owned').exists() else True
@@ -104,29 +110,38 @@ def facade_for(service):
                               analysis_service=AnalysisApplicationService())
 
 
-def test_scoped_facade_names_scope_analysis_report_and_one_shot_cleanup(prepared,tmp_path):
+def test_facade_complete_list_scoped_analysis_report_and_reuse(prepared,tmp_path):
     service,selection,_=prepared; facade=facade_for(service)
-    service.prepare(selection)
+    facade.prepare_independent_qq(selection.executable,selection.account_directory)
     facade.start_qq_auth_flow()
+    assert facade.list_sessions(ChatSource.QQ)==[]  # Declaration is a separate explicit gate.
+    facade.confirm_independent_qq_account(selection.account)
     sessions=facade.list_sessions(ChatSource.QQ)
-    assert len(sessions)==1 and sessions[0].display_name=='Fictional orchard'
-    assert sessions[0].message_count==5
-    raw=json.loads(service._payload.read_text())
-    assert len(raw['records'])==4  # The NULL-body native record is not a chat.
-    assert 'SENTINEL' not in json.dumps(raw)
-    assert {r.get('sender',{}).get('groupCard') for r in raw['records']}=={None,'Card B'}
-    assert service.names_summary['named_members']==2
-    assert service.read_counts=={'database_rows':5,'provider_messages':4,
-                                 'verified_missing_body_rows':1,'unclassified_exclusions':0}
-    assert not list(service._root.glob('*.db'))
-    outcome=facade.analyze_session(ChatSource.QQ,sessions[0].session_id,AnalysisConfig(output_directory=tmp_path/'report'))
-    assert outcome is not None
-    assert outcome.report_path is not None, (outcome.result.status,outcome.result.diagnostic_counts)
-    report=outcome.report_path.parent/'echo-report.json'
-    assert report.is_file() and 'Card B' in report.read_text(encoding='utf-8')
-    assert not service.list_sessions() and service._root is None
+    assert len(sessions)==3
+    group=next(s for s in sessions if s.session_id=='group:partition-a')
+    private=next(s for s in sessions if s.session_id=='private:private-a')
+    assert group.display_name=='Fictional orchard' and group.message_count==5
+    assert private.display_name=='Profile B'
+    assert facade.get_session_message_range(ChatSource.QQ,private.session_id)==(1760000000,1760259200)
+    with service.acquired_session(group.session_id) as acquired:
+        raw=json.loads(acquired.payload_path.read_text())
+        assert len(raw['records'])==4 and 'SENTINEL' not in json.dumps(raw)
+        assert raw['self']['basis']=='user_declared'
+        assert service.names_summary['named_members']==2
+        assert service.read_counts=={'database_rows':5,'provider_messages':4,
+            'verified_missing_body_rows':1,'unclassified_exclusions':0}
+    assert service._payload is None and list(service._root.glob('*.db'))
+    for session in (group,private):
+        outcome=facade.analyze_session(ChatSource.QQ,session.session_id,AnalysisConfig(output_directory=tmp_path/session.session_id.split(':')[0]))
+        assert outcome.report_path is not None
+        report=json.loads((outcome.report_path.parent/'echo-report.json').read_text(encoding='utf-8'))
+        assert report['self_identity']=={'basis':'user_declared','system_authenticated':False}
+        assert report['conversation']['kind']==session.session_type
+        assert len(service.list_sessions())==3 and service._payload is None
+    facade.disconnect_qq()
+    assert service._root is None
     with pytest.raises(FacadeError):
-        facade.analyze_session(ChatSource.QQ,sessions[0].session_id,AnalysisConfig(output_directory=tmp_path/'repeat'))
+        facade.analyze_session(ChatSource.QQ,group.session_id,AnalysisConfig(output_directory=tmp_path/'repeat'))
 
 
 @pytest.mark.parametrize('bad_number,bad_object',[(900000002,900000001),(0,900000002),(None,900000001)])
@@ -135,7 +150,8 @@ def test_conflicting_or_unknown_partition_rows_refuse_and_clean(prepared,bad_num
     with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:
         db.execute('UPDATE group_msg_table SET "40030"=?,"40021"=? WHERE "40001"=1',(bad_number,bad_object));db.commit()
     service.prepare(selection)
-    with pytest.raises(source.QQIndependentError): service.capture()
+    service.capture()
+    with pytest.raises(source.QQIndependentError): service.confirm_account(selection.account)
     assert service._root is None and not service.list_sessions()
 
 
@@ -154,7 +170,7 @@ def test_cancel_during_capture_and_failed_integrity_remove_all_private_files(pre
 def test_scope_rejection_and_cleanup_never_adopt_unknown_directory(prepared,tmp_path):
     service,selection,_=prepared
     with pytest.raises(source.QQIndependentError):
-        service.prepare(source.QQIndependentSelection(selection.executable,selection.account_directory,'100000009',selection.group))
+        service.prepare(source.QQIndependentSelection(selection.executable,selection.account_directory,'100000009'))
     service.prepare(selection)
     unknown=service._root/'do-not-delete.txt'; unknown.write_text('fictional unrelated asset')
     with pytest.raises(SourceError): service.disconnect()
@@ -166,6 +182,7 @@ def test_cleanup_failure_retains_proof_until_sensitive_files_are_removed(prepare
     service,selection,_=prepared
     service.prepare(selection)
     root=service._root
+    service.capture()
     encrypted=Path(service._frozen[0]['path'])
     unlink=Path.unlink
 
@@ -228,30 +245,24 @@ def test_shutdown_blocks_new_facade_acquisition(prepared):
     with pytest.raises(FacadeError):facade.list_sessions(ChatSource.QQ)
 
 
-def test_formal_composition_selects_no_qr_workspace_and_navigation_is_passive(qt_app,monkeypatch):
+def test_formal_composition_and_navigation_are_passive(qt_app,monkeypatch):
     from qq_chat_analyzer.gui.app import build_facade
     from qq_chat_analyzer.gui.main_window import MainWindow
     from qq_chat_analyzer.gui.qq_independent_workspace import QQIndependentWorkspace
-    from PySide6.QtCore import Qt
-    from PySide6.QtWidgets import QLineEdit, QPushButton
     monkeypatch.setattr(source,'resources_identity',lambda _:pytest.fail('navigation inspected QQ'))
     monkeypatch.setattr(source,'runtime_files',lambda:pytest.fail('navigation touched runtime'))
-    facade=build_facade(); window=MainWindow(facade)
+    facade=build_facade();window=MainWindow(facade)
     try:
-        assert isinstance(window.qq_workspace,QQIndependentWorkspace)
         window.show_qq_workspace()
+        workspace=window.qq_workspace
+        assert isinstance(workspace,QQIndependentWorkspace)
         assert facade.get_qq_qrcode_path() is None
-        workspace = window.qq_workspace
-        assert not workspace.findChildren(QLineEdit, options=Qt.FindChildOption.FindDirectChildrenOnly)
-        assert not hasattr(workspace, '_account') and not hasattr(workspace, '_group')
-        assert not hasattr(workspace, '_account_directory') and not hasattr(workspace, '_executable')
-        assert not hasattr(facade, 'prepare_independent_qq')
+        assert not hasattr(workspace,'_group')
         assert not workspace._session_panel.isEnabled()
-        assert '暂不可用' in workspace._status.text()
-        assert '请勿为此重新登录' in workspace._status.text()
-        assert not any(button.isEnabled() for button in workspace.findChildren(QPushButton))
+        assert workspace._prepare_button.isEnabled() and not workspace._capture_button.isEnabled()
+        assert not workspace._authorization.isChecked()
     finally:
-        window.close(); window.await_shutdown(10)
+        window.close();window.await_shutdown(10)
 
 
 def test_unclassified_null_body_is_not_silently_excluded(prepared):
@@ -259,10 +270,10 @@ def test_unclassified_null_body_is_not_silently_excluded(prepared):
     with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:
         db.execute('UPDATE group_msg_table SET "40012"=99 WHERE "40001"=41')
         db.commit()
-    service.prepare(selection)
+    service.prepare(selection);service.capture();service.confirm_account(selection.account)
     with pytest.raises(source.QQIndependentError):
-        service.capture()
-    assert service._root is None
+        with service.acquired_session('group:partition-a'):pytest.fail('unclassified row published')
+    assert service._payload is None
 
 
 def test_idle_expiry_releases_the_lease_and_payload(prepared,monkeypatch):
@@ -320,19 +331,226 @@ def test_gui_close_during_capture_drains_and_cleans(qt_app,prepared,monkeypatch)
         capture_thread.join(3)
 
 
-def test_blocked_workspace_cannot_promote_experimental_group_to_session_list(qt_app,prepared):
-    from qq_chat_analyzer.gui.qq_independent_workspace import QQIndependentWorkspace
+def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared,monkeypatch,tmp_path):
+    import time
+    from qq_chat_analyzer.gui.main_window import MainWindow
+    from PySide6.QtCore import QDate
+    from dataclasses import replace
     service,selection,_=prepared
-    service.prepare(selection)
-    service.capture()
-    widget=QQIndependentWorkspace(facade_for(service),executor=lambda *_args,**_kwargs:pytest.fail('close queued work'))
-    widget.refresh_connection_status(load_sessions_on_ready=True)
-    assert not widget._session_panel.isEnabled()
-    assert '暂不可用' in widget._status.text()
-    widget._closing=True
-    widget.cancel_connection()
-    assert widget._cancel.is_set() and service._cancel.is_set()
+    def wait_for(predicate):
+        end=time.monotonic()+10
+        while not predicate() and time.monotonic()<end:
+            qt_app.processEvents();time.sleep(.005)
+        assert predicate()
+    window=MainWindow(facade_for(service))
+    opened=[]
+    window._report_opener=lambda path:opened.append(path) or True
+    outcomes=[];window.qq_workspace.analysis_succeeded.connect(outcomes.append)
+    try:
+        window.navigate_to_qq();w=window.qq_workspace
+        w._executable.setText(str(selection.executable));w._account_directory.setText(str(selection.account_directory))
+        w._prepare_button.click();assert service._root is None  # Consent required.
+        w._authorization.setChecked(True);w._prepare_button.click()
+        wait_for(lambda:not w._running)
+        assert w._capture_button.isEnabled() and not list(service._root.glob('*.db'))
+        w._capture_button.click();wait_for(lambda:not w._running)
+        assert w._phase=='confirm' and not w._session_panel.isEnabled()
+        assert w._declared_account.text()==selection.account
+        w._confirm_button.click();wait_for(lambda:not w._running);assert w._phase=='ready'
+        panel=w._session_panel
+        assert panel._session_list.count()==3
+        original=panel.build_config
+        monkeypatch.setattr(panel,'build_config',lambda:replace(original(),output_directory=tmp_path/'gui-report'))
+        from qq_chat_analyzer.gui.session_analysis_panel import SESSION_ID_ROLE
+        for session_id in ('group:partition-a','private:private-a'):
+            for index in range(panel._session_list.count()):
+                if panel._session_list.item(index).data(SESSION_ID_ROLE)==session_id:panel._session_list.setCurrentRow(index);break
+            wait_for(lambda:panel._message_range is not None)
+            if session_id.startswith('private'):
+                panel._scope_custom.setChecked(True)
+                panel._start_date.setDate(QDate(2025,10,10));panel._end_date.setDate(QDate(2025,10,11))
+            panel._analyze_button.click()
+            wait_for(lambda:not panel._analysis_running)
+            assert outcomes and outcomes[-1].report_path.is_file()
+            assert outcomes[-1].echo_report_view.self_identity_basis=='user_declared'
+        assert len(outcomes)==2 and outcomes[-1].echo_report_view.total_message_count==2
+        assert opened==[outcome.report_path.resolve() for outcome in outcomes]
+        w._cancel_button.click();wait_for(lambda:not w._running)
+        assert service._root is None and w._phase=='select'
+    finally:
+        window.close();assert window.await_shutdown(10)
+
+
+@pytest.mark.parametrize('completed',[False,True])
+def test_gui_cancel_queued_or_completed_prepare_cannot_publish_stale_state(qt_app,prepared,completed):
+    from qq_chat_analyzer.gui.qq_independent_workspace import QQIndependentWorkspace
+    service,selection,_=prepared;tasks=[]
+    def queued(operation,**callbacks):tasks.append((operation,callbacks))
+    widget=QQIndependentWorkspace(facade_for(service),executor=queued)
+    widget._executable.setText(str(selection.executable));widget._account_directory.setText(str(selection.account_directory))
+    widget._authorization.setChecked(True);widget._prepare_button.click()
+    operation,callbacks=tasks.pop(0)
+    result=operation() if completed else None
+    widget._cancel_button.click()
+    if completed:callbacks['on_success'](result)
+    else:
+        with pytest.raises(FacadeError) as refused:operation()
+        callbacks['on_error'](refused.value.code,refused.value.public_message)
+    callbacks['on_finished']()
+    cleanup,callbacks=tasks.pop(0)
+    callbacks['on_success'](cleanup());callbacks['on_finished']()
+    assert service._root is None and widget._phase=='select' and not widget._session_panel.isEnabled()
     widget.close()
+
+
+def test_wrong_declaration_and_private_ambiguity_refuse_before_list(prepared):
+    service,selection,dbroot=prepared
+    service.prepare(selection);service.capture()
+    with pytest.raises(source.QQIndependentError):service.confirm_account('100000009')
+    assert service._root is None and not service.list_sessions()
+    with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:
+        db.execute('UPDATE c2c_msg_table SET "40033"=100000003 WHERE "40001"=100');db.commit()
+    service.prepare(selection);service.capture()
+    with pytest.raises(source.QQIndependentError):service.confirm_account(selection.account)
+    assert service._root is None and not service.list_sessions()
+
+
+def test_snapshot_cleanup_preserves_consumer_facade_error(prepared):
+    service,selection,_=prepared
+    service.prepare(selection);service.capture();service.confirm_account(selection.account)
+    error=FacadeError(code='analysis_cancelled',public_message='Fictional cancellation')
+    with pytest.raises(FacadeError) as refused:
+        with service.acquired_session('group:partition-a'):
+            raise error
+    assert refused.value is error and service._root is None
+
+
+def test_payload_cleanup_failure_blocks_reuse_and_retains_owner(prepared,monkeypatch):
+    service,selection,_=prepared
+    service.prepare(selection);service.capture();service.confirm_account(selection.account)
+    root=service._root;unlink=Path.unlink
+    def fail_payload(path,*args,**kwargs):
+        if path==root/'payload.json':raise OSError('fictional payload cleanup failure')
+        return unlink(path,*args,**kwargs)
+    monkeypatch.setattr(Path,'unlink',fail_payload)
+    with pytest.raises(OSError):
+        with service.acquired_session('group:partition-a'):pass
+    assert (root/'owner.json').exists() and service._lease is not None
+    with pytest.raises(source.QQIndependentError):service.list_sessions()
+    monkeypatch.setattr(Path,'unlink',unlink)
+    service.disconnect();assert not root.exists()
+
+
+@pytest.mark.slow_integration
+@pytest.mark.parametrize('fault',['none','metadata_key','cancel','sidecar'])
+def test_offline_worker_protocol_authenticates_only_after_exit(prepared,monkeypatch,tmp_path,fault):
+    """Real Node protocol/codec and Windows locks; only QQ/native transport is fictional."""
+    from types import SimpleNamespace
+    from qq_chat_analyzer.providers.qq_independent import worker,snapshot
+    from test_qq_direct_main_wal_poc import _reserve_48_bytes
+    service,selection,dbroot=prepared
+    seed=tmp_path/'seed';seed.mkdir()
+    for name in ('nt_msg.db','group_info.db','profile_info.db'):
+        destination=seed/name;_reserve_48_bytes(destination)
+        with closing(sqlite3.connect(dbroot/name)) as original, closing(sqlite3.connect(destination)) as db:
+            db.executescript('\n'.join(original.iterdump()))
+    runtime=tmp_path/'fixture-runtime';runtime.mkdir()
+    pins={}
+    for name in ('echo_event_loader.exe','echo_event_54395.dll'):
+        (runtime/name).write_bytes(b'fictional transport only')
+        pins[name]=hashlib.sha256((runtime/name).read_bytes()).hexdigest()
+    (runtime/'build-receipt.json').write_text(json.dumps({'build':'9.9.37-54395',
+        'minhook_revision':'c3fcafdc10146beb5919319d0683e44e3c30d537','binaries':pins}))
+    encoder=(Path(__file__).resolve().parents[1]/'scripts/spikes/qq_independent_codec.mjs').as_uri()
+    shim=tmp_path/'native-fixture.mjs'
+    shim.write_text('''import childProcess from 'node:child_process';
+import {syncBuiltinESMExports} from 'node:module';
+import {EventEmitter} from 'node:events';
+import {PassThrough,Writable} from 'node:stream';
+import {readFileSync,writeFileSync} from 'node:fs';
+import {join} from 'node:path';
+import {randomBytes,pbkdf2Sync} from 'node:crypto';
+import {encode} from ENCODER;
+const secret=randomBytes(24).map(b=>97+b%26),buffers=[secret];
+for(const name of ['nt_msg.db','group_info.db','profile_info.db']){
+  const plain=readFileSync(join(SEED,name)),salt=randomBytes(16);
+  const pass=FAULT==='metadata_key'&&name==='profile_info.db'?randomBytes(24):secret;
+  const key=pbkdf2Sync(pass,salt,4000,32,'sha512'),encrypted=encode(plain,key,salt);
+  writeFileSync(join(SOURCE,name),encrypted);plain.fill(0);key.fill(0);encrypted.fill(0);salt.fill(0);
+  if(pass!==secret)pass.fill(0);
+}
+function field(n,b){return Buffer.concat([Buffer.from([n*8+2,b.length]),b]);}
+const inner=field(1,secret),body=field(2,inner);
+const packet=Buffer.concat([Buffer.from([8,0xde,0x19,16,2,24,0]),field(4,body)]);
+buffers.push(inner,body,packet);secret.fill(0);
+childProcess.spawn=()=>{
+  const child=new EventEmitter();child.stdout=new PassThrough();
+  child.kill=()=>{};child.stdin=new Writable({write(_data,_encoding,done){done();}});
+  function emit(kind,payload){const head=Buffer.alloc(16);head.writeUInt32LE(0x32535145);head.writeUInt32LE(kind,4);head.writeUInt32LE(payload.length,8);child.stdout.write(Buffer.concat([head,payload]));}
+  setImmediate(()=>{
+    emit(1,Buffer.alloc(0));emit(2,packet);
+    const stopped=Buffer.alloc(16);stopped.writeUInt32LE(1);stopped.writeUInt32LE(1,4);stopped.writeUInt32LE(1,12);
+    emit(3,stopped);child.stdout.end();child.exitCode=0;child.emit('close',0);
+  });return child;
+};
+syncBuiltinESMExports();
+process.once('exit',()=>{for(const b of buffers)b.fill(0);});
+'''.replace('ENCODER',json.dumps(encoder)).replace('SEED',json.dumps(str(seed)))
+        .replace('SOURCE',json.dumps(str(dbroot))).replace('FAULT',json.dumps(fault)),encoding='utf-8')
+    exited=False;statuses=[];cancel=Event()
+    def assert_exited():
+        assert exited, 'snapshot attempted before fictional QQ exit'
+    monkeypatch.setattr(snapshot,'assert_qq_exited',assert_exited)
+    api=SimpleNamespace(WaitForSingleObject=lambda _handle,_timeout:0 if exited else 258)
+    @contextmanager
+    def process(*_args,**_kwargs):yield api,7
+    monkeypatch.setattr(worker,'verified_process',process)
+    monkeypatch.setattr(worker,'process_creation_ticks',lambda *_:7)
+    monkeypatch.setattr(worker,'loaded_module',lambda *_:(1,True))
+    monkeypatch.setattr(worker,'runtime_files',lambda:(runtime,pins))
+    monkeypatch.setattr(worker,'resources_identity',lambda image:(SimpleNamespace(wrapper_path=image),((str(image),'a'*64),)))
+    popen=worker.subprocess.Popen;node=shutil.which('node')
+    assert node
+    children=[]
+    def launch(command,**options):
+        # No native executable or real QQ can be launched by this test.
+        assert str(command[0])==str(runtime/'node.exe')
+        options['stderr']=worker.subprocess.PIPE
+        child=popen([node,'--import',shim.as_uri(),*command[1:]],**options);children.append(child);return child
+    monkeypatch.setattr(worker,'subprocess',SimpleNamespace(Popen=launch,PIPE=worker.subprocess.PIPE,
+        DEVNULL=worker.subprocess.DEVNULL,CREATE_NO_WINDOW=worker.subprocess.CREATE_NO_WINDOW))
+    def observe(value):
+        nonlocal exited
+        statuses.append(value['phase'])
+        if value['phase']=='awaiting_exit':
+            assert not list(service._root.glob('*.db'))
+            if fault=='cancel':cancel.set()
+            else:exited=True
+            if fault=='sidecar':Path(str(dbroot/'nt_msg.db')+'-wal').write_bytes(b'fictional sidecar')
+    def capture(_progress,_external):
+        try:
+            worker.capture({'image':str(selection.executable),'pid':7,'created':7,
+                'account_directory':str(selection.account_directory),'root':str(service._root)},cancel.is_set,observe)
+        except Exception as error:
+            if fault=='none':pytest.fail(f"worker={type(error).__name__}, code={getattr(error,'code',None)}, phases={statuses}, node={children[-1].stderr.read().decode('utf-8',errors='replace')[-1500:]}")
+            raise
+    monkeypatch.setattr(service,'_run_capture',capture)
+    service.prepare(selection)
+    try:
+        if fault=='none':
+            service.capture();service.confirm_account(selection.account)
+            assert len(service.list_sessions())==3
+            assert statuses.index('stopped')<statuses.index('awaiting_exit')<statuses.index('authenticating')
+            with service.acquired_session('private:private-a') as acquired:
+                assert len(json.loads(acquired.payload_path.read_text())['records'])==4
+        else:
+            with pytest.raises(source.QQIndependentError):service.capture()
+            assert service._root is None and not service.list_sessions()
+        assert children and all(child.poll() is not None for child in children)
+    finally:
+        for child in children:
+            if child.poll() is None:child.kill();child.wait(timeout=3)
+            child.stderr.close()
 
 
 @pytest.mark.parametrize('unknown',[False,True])
@@ -383,8 +601,8 @@ def test_independent_account_media_reaches_final_html_with_animation(prepared,tm
     monkeypatch.setattr(media,'_worker',local_only_worker)
     facade=facade_for(service)
     service.prepare(selection)
-    service.capture()
-    session=facade.list_sessions(ChatSource.QQ)[0]
+    service.capture();service.confirm_account(selection.account)
+    session=next(s for s in facade.list_sessions(ChatSource.QQ) if s.session_id=='group:partition-a')
     outcome=facade.analyze_session(ChatSource.QQ,session.session_id,
                                  AnalysisConfig(output_directory=tmp_path/'animated-report'))
     assert outcome.report_path is not None
@@ -397,4 +615,4 @@ def test_independent_account_media_reaches_final_html_with_animation(prepared,tm
     from PIL import Image
     with Image.open(outcome.report_path.parent/reference) as animation:
         assert animation.n_frames==2
-    assert service._root is None
+    assert service._payload is None and service._root is not None

@@ -8,7 +8,7 @@ Echo 是隐私优先的本地聊天分析工具。桌面来源为 QQ Direct DB �
 
 - Desktop：`echo-gui`、`python -m qq_chat_analyzer.gui` 与 frozen 入口共同进入 [desktop.py](src/qq_chat_analyzer/desktop.py)，再进入 GUI。
 - CLI：`echo-chat` 经应用服务分析本地文件，支持 `qq-db-json`、`wechat-db-json`、`detailed-json`、`chatlab-jsonl`、`cli-json`。它不是 GUI 的第三种来源，不直接获取 QQ/微信数据库。
-- QQ 正式 GUI 的独立连接暂不可用：当前账号／数据库的自动绑定及适配登录页状态的快照获取尚未接通，原手填账号／群号入口已撤下。已验证的 QQ 54395 单群获取、Direct DB Provider 和报告组件保留，不依赖 NapCat 或 Echo 二维码；不等同于完整会话列表已经可用。QCE、旧 QQ JSON/JSONL 和外部 miyu 实时获取已退休，不得通过 hint 或 fallback 恢复；微信 CLI 导出格式仍可本地导入。
+- QQ 正式 GUI 使用独立离线获取：用户授权一个本地账号资料，Echo armed 后正常登录捕获短期凭据，用户完全退出 QQ 后冻结三库并认证，用户声明本人 QQ 号，再列出完整群聊／私聊、选择时间并分析。声明不代表 QQ 系统认证；第一版不要求自动证明在线本人 UIN。QCE、旧 QQ JSON/JSONL 和外部 miyu 实时获取保持退休。源码虚构流程与真实 QQ 验收分开记录。
 
 下图表示运行时调用／数据交接，不是 Python import 许可图：
 
@@ -100,28 +100,26 @@ QQ Direct DB 使用同一快照客户端绑定的认证与运行代际读取本�
 
 ## 4. QQ 连接、授权代际与 Snapshot 所有权
 
-### 独立 QQ 获取组件与尚未完成的 GUI 接入
+### 独立 QQ 离线获取与正式 GUI
 
-以下是已验证的显式单群获取路径，不是当前可操作的正式 GUI 流程。正式入口只显示
-不可用状态，既不接受账号／群号／数据目录，也不发起获取或提示登录。完整会话发现前
-必须补齐可信账号绑定与登录页状态下的一致快照，不能恢复实验表单作为 fallback。
-源码证据与停止条件见 [流程纠偏记录](docs/research/2026-11-16-qq-product-flow-correction.md)。
+`GUI → Facade → QQIndependentService → owned worker → 退出后一致快照 → 认证解密 → 会话列表`
+之后复用 QQDatabaseProvider、Adapter、Analysis、媒体准备、Report Package 和 Catalog。
+GUI 使用既有 SessionAnalysisPanel，不提供手填群号、二维码或 NapCat fallback。
 
-`GUI → Facade → QQIndependentService → 独占加密快照 → 自有 worker → QQDatabaseProvider`
-之后复用现有 Adapter、Analysis、媒体准备、Report Package 和 Catalog，不复制分析算法。
-
-- 用户明确选择 QQ.exe、数字账号目录及单个授权群。只支持固定版本和 wrapper 哈希；不扫描其他账号、不自动启动或结束 QQ。
-- QQ 完全退出且无 WAL/SHM 时，以禁止写入的句柄复制本账号 message/group_info/profile_info 三库。权限保护先于敏感数据写入；不修改原库。只允许固定文件及可验证 owner 的残留恢复。
-- 用户自行打开 QQ，点击等待登录；worker 校验进程镜像、创建时间、已加载 wrapper，GUI 收到尚有效的 armed 才提示登录。已登录场景要求正常退出重走流程，失败不自动重试。
-- 取钥仅在内存认证与消费；每库独立派生，逐页认证、解密、SQLite integrity_check。保留 48/80 字节布局及逻辑边界校验。自有 Job 只包含 worker/Node/loader，不包含 QQ。
-- 分区由群身份证据发现，不把分区名当群号；每行 40030 明确匹配，或仅在其为 0 且同一行 40021 匹配时接纳。非零冲突、空值、混群均拒绝。
-- 名称只查授权群与其稳定 UIN，UID/UIN 无可靠关联或冲突时不猜。复用名称优先级、本人回退和展示别名。
-- Provider 排除项须与已验证的 NULL-body 原生记录形态对账。报告消息数由 Adapter 及统一过滤决定，不要求等于数据库原始记录数。
-- SQLite 和加密副本在 payload 物化后删除；payload 持有 OS lease，闲置十分钟或一次消费后清理。取消、失败、关闭封闭准入并清理；未知目录成员拒删并保留失败证据。
-- 停止 Hook 不等于卸载 DLL。保留所选进程的代际句柄，只有正常退出后的句柄退出证据才能确认完全释放；QQ 仍运行时保持 UNKNOWN，不能授予安装更新。
+- 用户通过文件选择授权 QQ.exe 和单个数字账号目录。只支持固定 54395 版本、wrapper 及生产组件哈希；不扫描其他账号，不启动或结束 QQ。
+- 准备阶段验证位置与组件。用户打开 QQ 停留登录页；worker 校验所选进程的镜像、创建时间和已加载 wrapper。只有尚有效的 armed 才提示登录；已登录且没有新目标事件时有界失败。
+- 原生捕获停止且 helper 退出后，Node 最多短暂保留一个凭据事件，尚不创建 raw key 租约。用户须在有界窗口内完全退出 QQ；保持所选代际句柄证据，不将 Stop 当作 DLL 卸载。
+- QQ 全部退出且源库无 WAL/SHM/journal 后，同时持有 message/group_info/profile_info 三库的禁止写入句柄，再逐库复制。ACL 保护先于敏感数据写入，保留源身份、大小、摘要与后验一致性检查，不修改原库。
+- 只将该授权资料的固定快照交给 Node；同一凭据分别派生每库密钥，逐页认证解密及最终化，再检查 SQLite integrity。任一库不匹配均清理并拒绝发布，不试其他账号或旧凭据。
+- 认证成功后仍不发布会话。用户明确确认与授权资料标签一致的本人 QQ 号，作为 `user_declared` 上下文；不将目录名、MAC 或声明冒充 QQ 本人认证。来源 payload、报告 JSON 与 HTML 保留声明性质。发送者仍来自 40033，不按昵称猜测。
+- Provider 自动发现群聊与私聊。群分区复用逐行群号／对象见证与冲突拒绝；私聊出现多个非本人作者时拒绝歧义。名称沿用范围化元数据查询，缺失名称使用标识显示。
+- 三库明文由同一个受保护、持有 OS lease 的任务保存，以供同次多个会话分析；payload 在单次消费后删除。闲置十分钟、释放、取消、失败与关闭清理快照；未知成员或清理失败保留 owner 并封闭准入，不递归删除未知内容。
+- 媒体由用户单独选择，默认关闭。启用时只读取授权账号的窄缓存根，沿用已有摘要／可信预览校验和固定 CDN；不恢复旧原生桥接下载。
+- QQ 未完全退出、退出证据未知或自有 worker 未确认释放时，安装更新准入继续失败关闭。
 
 实现位于 `application/qq/qq_independent_service.py` 和 `providers/qq_independent/`。
-研究脚本委托同一实现；正式包只携带固定哈希的生产 DLL/loader/Node 与许可证，不携带 fixture host、实验 DLL、账号快照或 NapCat runtime。
+正式包只携带固定哈希的生产 DLL/loader/Node 与许可证，不携带 fixture host、实验 DLL、账号快照或 NapCat runtime。
+虚构 GUI／协议验证、候选构建与真实验收状态分别见 [HARDENING](docs/HARDENING.md)。
 
 ### 旧 Direct DB 链路的保留合同
 

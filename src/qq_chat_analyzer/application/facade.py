@@ -343,6 +343,7 @@ class _SessionExport:
     sticker_media_roots: tuple[Path, ...] = field(default=(), repr=False)
     qq_media_identity: tuple[str, str, str] | None = field(default=None, repr=False)
     recover_qq_media: bool = True
+    self_identity_basis: str = ""
 
 
 # One fixed stage -> (facade code, public message) pair for a QQ media fetch.
@@ -1360,6 +1361,23 @@ class ChatAnalyzerFacade:
             return self._require_service(ChatSource.QQ).get_snapshot()
         return self._require_qq_connection_manager().get_snapshot()
 
+    def prepare_independent_qq(self, executable: Path, account_directory: Path, *, recover_media=False, cancelled=lambda:False):
+        """Authorize exactly the selected local profile; navigation never calls this."""
+        if not self.independent_qq:
+            raise SourceUnavailable(ChatSource.QQ)
+        from .qq.qq_independent_service import QQIndependentSelection
+        with _translated_errors(ChatSource.QQ):
+            return self._require_service(ChatSource.QQ).prepare(
+                QQIndependentSelection(Path(executable),Path(account_directory),Path(account_directory).name,recover_media),
+                cancelled=cancelled)
+
+    def confirm_independent_qq_account(self, account: str, *, cancelled=lambda:False):
+        """Record the user's declaration only after database authentication."""
+        if not self.independent_qq:
+            raise SourceUnavailable(ChatSource.QQ)
+        with _translated_errors(ChatSource.QQ):
+            return self._require_service(ChatSource.QQ).confirm_account(account,cancelled=cancelled)
+
     @timed_stage("qq_connection_request")
     def start_qq_auth_flow(
         self,
@@ -1780,6 +1798,7 @@ class ChatAnalyzerFacade:
                         source_media_roots=session_export.sticker_media_roots,
                         qq_media_identity=session_export.qq_media_identity,
                         recover_qq_media=session_export.recover_qq_media,
+                        self_identity_basis=session_export.self_identity_basis,
                     )
                     completed = True
                     return result
@@ -1810,6 +1829,7 @@ class ChatAnalyzerFacade:
         source_media_roots: tuple[Path, ...] = (),
         qq_media_identity: tuple[str, str, str] | None = None,
         recover_qq_media: bool = True,
+        self_identity_basis: str = "",
         cancelled: Callable[[], bool] = lambda: False,
     ) -> AnalysisOutcome:
         """Run analysis then presentation for one local path."""
@@ -1839,6 +1859,7 @@ class ChatAnalyzerFacade:
                 viewer_speaker_key=viewer_speaker_key,
                 sticker_media_roots=() if automatic_qq else media_roots,
                 export_echo_report=not (automatic_qq or automatic_wechat),
+                self_identity_basis=self_identity_basis,
             )
             with _translated_errors(source):
                 _report_progress(progress, "正在处理消息...")
@@ -2336,6 +2357,7 @@ class ChatAnalyzerFacade:
                     sticker_media_roots=pic_roots,
                     qq_media_identity=media_identity,
                     recover_qq_media=getattr(acquisition, "recover_qq_media", True),
+                    self_identity_basis=getattr(acquisition, "self_identity_basis", ""),
                     conversation_id=getattr(raw_session, "conversation_id", None),
                     session=(
                         _to_session_info(source, raw_session)

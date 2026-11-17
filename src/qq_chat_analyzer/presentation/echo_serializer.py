@@ -41,6 +41,8 @@ def echo_report_to_dict(view: EchoReportView) -> dict[str, object]:
     return {
         "schema_version": ECHO_REPORT_SCHEMA_VERSION,
         "title": view.title,
+        **({"self_identity": {"basis": "user_declared", "system_authenticated": False}}
+           if view.self_identity_basis == "user_declared" else {}),
         "conversation": {
             "kind": view.conversation_kind,
             "name": view.conversation_name,

@@ -53,6 +53,7 @@ class AnalysisRequestDTO:
     sticker_media_roots: tuple[Path, ...] = field(default=(), repr=False)
     # QQ generation prepares its view first, then writes once after media recovery.
     export_echo_report: bool = True
+    self_identity_basis: str = ""
 
 
 @dataclass(frozen=True, slots=True)

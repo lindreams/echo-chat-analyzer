@@ -954,7 +954,7 @@ def _export_echo_artifacts(
             expression_source=expression_source,
             sticker_media=sticker_media,
         )
-        view = replace(view, language_sources=build_language_sources(
+        view = replace(view, self_identity_basis=request.self_identity_basis, language_sources=build_language_sources(
             view, messages, message_tokens, source_positions=source_positions,
         ))
     if write:

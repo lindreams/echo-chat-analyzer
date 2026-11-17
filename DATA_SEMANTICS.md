@@ -18,7 +18,7 @@ RichMessage 保存来源提取的结构化内容和关系；ChatMessage 是它�
 
 | 来源 | 现役身份合同 |
 | --- | --- |
-| QQ Direct DB | 发送者来自原生字段 `40033`，不是任意 uid/uin 二选一。本人上下文为 `self.namespace="qq_uin"`、`self.value`，绑定快照账号的 NapCat selfInfo.uin；Adapter 用 canonical_qq_uin 比较。命名空间不匹配或本人值不可靠时 is_self=None。sender_id 保留来源标识字符串，不附加 namespace 前缀，也不把账号值变成显示名。 |
+| QQ Direct DB | 发送者来自原生字段 `40033`，不是任意 uid/uin 二选一。本人上下文为 `self.namespace="qq_uin"`、`self.value`，旧桥接来源绑定快照账号的 NapCat selfInfo.uin；独立离线来源在三库认证后使用用户明确确认的 QQ 号，并标为 `basis="user_declared"`，不宣称 QQ 系统认证。Adapter 用 canonical_qq_uin 比较。命名空间不匹配或本人值不可靠时 is_self=None。sender_id 保留来源标识字符串，不附加 namespace 前缀，也不把账号值变成显示名。 |
 | 微信数据库 | 发送者来自 Name2Id.user_name；本人身份使用同一 username 命名空间，不能拿目录显示名或昵称比较。 |
 
 QQ 显示名由 remark、群名片、nickname 和安全 fallback 按会话上下文解析；名称改变不应拆分已有稳定 ID，同名不同 ID 不应合并。展示名缺失不能成为猜测账号的理由。
@@ -29,8 +29,8 @@ QQ Direct DB 私聊与群聊的零值、NULL、缺失或空白发送者，在内
 
 conversation_type 为 private / group / unknown。`is_self` 是三态事实：
 
-- True：可靠确认由本人发送。
-- False：本人身份与发送者均可靠，且发送者不是本人。
+- True：按来源本人上下文归为本人发送；独立 QQ 的上下文来自用户声明。
+- False：来源本人上下文与发送者均可用，且发送者不是本人；独立 QQ 保留声明性质。
 - None：无法可靠判断，不能当作 False 或 peer。
 
 未知发送者与未知本人身份不同：有稳定发送者但无本人上下文时，仍可按成员统计，却不能推断 self / peer。混合 private / group 或没有可靠会话类型时，核心会话报告类型为 unknown。

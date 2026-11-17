@@ -1,8 +1,10 @@
 """Canonical self identity for the QQ Direct DB source.
 
 The Direct DB path supports exactly one self-identity namespace: ``qq_uin``,
-whose value is NapCat's ``core.selfInfo.uin`` for the account that produced
-the plaintext snapshot.  This module is intentionally tiny: it owns the
+whose value is the source's self context: legacy NapCat ``core.selfInfo.uin``
+or the explicitly confirmed user declaration for an independently authenticated
+offline profile. The latter retains ``user_declared`` provenance in reports.
+This module is intentionally tiny: it owns the
 namespace constant and the canonicalization used to compare a message's
 sender field (``40033``) against the bound self identity.
 

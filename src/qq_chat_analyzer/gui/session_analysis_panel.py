@@ -831,7 +831,9 @@ class SessionAnalysisPanel(QWidget):
     def _on_session_selection_changed(self) -> None:
         self._update_analyze_enabled()
         self._reset_time_range()
-        if self._selected_source is ChatSource.WECHAT:
+        if self._selected_source is ChatSource.WECHAT or (
+            self._selected_source is ChatSource.QQ and getattr(self._facade, 'independent_qq', False)
+        ):
             session_id = self.selected_session_id()
             if session_id:
                 self._request_session_time_range(session_id)
