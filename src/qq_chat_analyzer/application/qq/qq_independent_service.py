@@ -492,9 +492,23 @@ class QQIndependentService:
             if isinstance(error,sqlite3.Error):
                 trace=error.__traceback__
                 while trace and trace.tb_next:trace=trace.tb_next
-                _LOGGER.warning('[qq independent] stage=confirm sqlite_code=%d site=%s line=%d',
+                detail=str(error).casefold()
+                reason=next((category for prefix,category in (
+                    ('no such table:','missing_table'),('no such column:','missing_column'),
+                    ('no such collation sequence:','missing_collation'),('no such function:','missing_function'),
+                    ('interrupted','interrupted'),('database is locked','locked'),
+                    ('unable to open database file','open_failed'),('too many sql variables','variable_limit'),
+                    ('database disk image is malformed','malformed'),
+                ) if detail.startswith(prefix)),'other')
+                # Fixed source filenames and categories only, never SQLite's
+                # message (which may contain identifiers or query values).
+                filename=Path(trace.tb_frame.f_code.co_filename).name if trace else 'unknown'
+                if filename not in {'qq_independent_service.py','metadata.py','snapshot.py',
+                                    'qq_database_provider.py','qq_sqlite_reader.py'}:filename='other'
+                _LOGGER.warning('[qq independent] stage=confirm sqlite_code=%d file=%s site=%s line=%d reason=%s',
                     getattr(error,'sqlite_errorcode',0),
-                    trace.tb_frame.f_code.co_name if trace else 'unknown', trace.tb_lineno if trace else 0)
+                    filename, trace.tb_frame.f_code.co_name if trace else 'unknown',
+                    trace.tb_lineno if trace else 0, reason)
             self._clear()
             if isinstance(error,QQIndependentError): raise
             raise QQIndependentError('qq_session_validation_failed','会话身份存在冲突或资料无法读取，请重新选择账号资料。') from None

@@ -420,6 +420,50 @@ def test_sqlite_failure_diagnostics_keep_query_values_private(prepared,monkeypat
     assert 'PRIVATE_SQL_FIELD_SENTINEL' not in caplog.text
 
 
+def test_real_sqlite_metadata_failure_identifies_query_without_private_values(prepared,caplog):
+    service,selection,dbroot=prepared
+    with closing(sqlite3.connect(dbroot/'profile_info.db')) as db:
+        db.create_collation('PRIVATE_COLLATION_SENTINEL',lambda a,b:(a>b)-(a<b))
+        db.execute('ALTER TABLE profile_info_v2 RENAME TO original_profile')
+        db.execute('CREATE TABLE profile_info_v2 ("1002" TEXT COLLATE PRIVATE_COLLATION_SENTINEL,"1000" TEXT,"20002" TEXT)')
+        db.execute('INSERT INTO profile_info_v2 SELECT * FROM original_profile')
+        db.execute('DROP TABLE original_profile');db.commit()
+    service.prepare(selection);service.capture()
+    with pytest.raises(source.QQIndependentError) as refused:service.confirm_account(selection.account)
+    assert refused.value.code=='qq_session_validation_failed' and service._root is None
+    assert 'database=profile_info table=profile_info_v2 fields=1002,1000,20002' in caplog.text
+    assert 'file=metadata.py site=query' in caplog.text and 'reason=missing_collation' in caplog.text
+    for private in ('PRIVATE_COLLATION_SENTINEL',selection.account,'Profile A','uid-a'):
+        assert private not in caplog.text
+
+
+def test_session_sqlite_failure_keeps_formal_window_open(qt_app,prepared,monkeypatch):
+    import time
+    from PySide6.QtWidgets import QInputDialog
+    from qq_chat_analyzer.gui.main_window import MainWindow
+    from qq_chat_analyzer.gui.qq_independent_connection import QQIndependentConnection
+    service,selection,_=prepared
+    monkeypatch.setattr(QQIndependentConnection,'_authorize',lambda *a:True)
+    monkeypatch.setattr(QInputDialog,'getText',lambda *a,**k:(selection.account,True))
+    def failed(*_args):raise sqlite3.OperationalError('PRIVATE_SQL_SENTINEL')
+    monkeypatch.setattr(service,'_discover_sessions',failed)
+    window=MainWindow(facade_for(service));window.show()
+    try:
+        window.home_page._qq_btn.click();workspace=window.qq_workspace
+        workspace._qq_connect_button.click()
+        end=time.monotonic()+10
+        while workspace._independent.running and time.monotonic()<end:
+            qt_app.processEvents();time.sleep(.005)
+        assert not workspace._independent.running and window.isVisible()
+        assert window.stack.currentWidget() is workspace and not workspace._sessions_loaded
+        assert service._root is None and workspace._qq_connect_button.isEnabled()
+        text=workspace._qq_login_guide_label.text()
+        assert '会话身份存在冲突或资料无法读取' in text
+        assert 'PRIVATE_SQL_SENTINEL' not in text and 'Traceback' not in text
+    finally:
+        window.close();assert window.await_shutdown(10)
+
+
 def test_unclassified_null_body_is_not_silently_excluded(prepared):
     service,selection,dbroot=prepared
     with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:

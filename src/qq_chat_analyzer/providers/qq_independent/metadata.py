@@ -1,8 +1,10 @@
 """Names from authenticated, account-scoped QQ metadata databases."""
 from contextlib import closing
 from pathlib import Path
-import sqlite3,time
+import logging,sqlite3,time
 from .files import SourceError,_safe,_file
+
+_LOGGER = logging.getLogger('qq_chat_analyzer.desktop.qq.independent')
 
 def scoped_names(group_database, profile_database, group, member_keys):
     """Read only the authorized group and explicit report UINs, never messages.
@@ -28,20 +30,29 @@ def scoped_names(group_database, profile_database, group, member_keys):
         _file(path)
 
     def query(path, sql, values, *, table, columns):
-        with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
-            db.execute("PRAGMA query_only=ON")
-            db.execute("PRAGMA trusted_schema=OFF")
-            end = time.monotonic() + 10
-            db.set_progress_handler(lambda: int(time.monotonic() >= end), 10000)
-            # Name caches are optional. Inspect only the fixed requested table;
-            # absent fields must never become SQLite quoted string literals.
-            present = {row[1] for row in db.execute(f'PRAGMA table_info("{table}")')}
-            if not set(columns) <= present:
-                return []
-            rows = db.execute(sql + " LIMIT 20001", values).fetchall()
-            if len(rows) > 20000:
-                raise SourceError("metadata_scoped_row_limit")
-            return rows
+        # These identifiers are fixed at the call sites below, not read from
+        # account data. Together with the source location they identify the
+        # parameterized query without retaining SQL values or database paths.
+        role='group_info' if path==paths[0] else 'profile_info'
+        try:
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
+                db.execute("PRAGMA query_only=ON")
+                db.execute("PRAGMA trusted_schema=OFF")
+                end = time.monotonic() + 10
+                db.set_progress_handler(lambda: int(time.monotonic() >= end), 10000)
+                # Name caches are optional. Missing fields must not become
+                # SQLite quoted string literals.
+                present = {row[1] for row in db.execute(f'PRAGMA table_info("{table}")')}
+                if not set(columns) <= present:
+                    return []
+                rows = db.execute(sql + " LIMIT 20001", values).fetchall()
+                if len(rows) > 20000:
+                    raise SourceError("metadata_scoped_row_limit")
+                return rows
+        except sqlite3.Error:
+            _LOGGER.warning('[qq independent] stage=metadata_query database=%s table=%s fields=%s',
+                            role,table,','.join(columns))
+            raise
 
     profile_rows = {}
     uid_uins, uin_uids, profile_nicks = {}, {}, {}
