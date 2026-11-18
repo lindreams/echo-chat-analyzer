@@ -348,10 +348,19 @@ class QQIndependentService:
             if self._cancelled(external.is_set): raise QQIndependentError('analysis_cancelled','已取消 QQ 获取。')
             if wait_for_process:
                 self._wait_for_process(progress,external)
-            self._run_capture(progress,external)
+            offline_started=None
+            def report(value):
+                nonlocal offline_started
+                if value.get('phase')=='authenticating' and offline_started is None:
+                    offline_started=time.perf_counter()
+                progress(value)
+            self._run_capture(report,external)
+            if offline_started is not None:
+                _LOGGER.info('[qq independent] stage=qq_offline_read elapsed_ms=%d',int((time.perf_counter()-offline_started)*1000))
             if self._cancelled(external.is_set): raise QQIndependentError('analysis_cancelled','QQ 读取已取消。')
             progress({'phase':'authenticating','message':'正在校验授权数据库…'})
-            self._validate_databases(external.is_set)
+            with qq_session_stage(_LOGGER,'qq_database_validation'):
+                self._validate_databases(external.is_set)
             self._state=ConnectionState.CONNECTED; self._expire_later()
             return self.get_snapshot()
         except Exception as error:
@@ -664,7 +673,7 @@ class QQIndependentService:
                 for row in excluded:
                     columns=[d[1] for d in db.execute(f'PRAGMA table_info({table})')]
                     raw=dict(zip(columns,row))
-                    if (session.session_type!='group' or raw.get('40800') is not None or raw.get('40033')!=0
+                    if (raw.get('40800') is not None or raw.get('40033')!=0
                         or type(raw.get('40011')) is not int or raw['40011']!=1
                         or type(raw.get('40012')) is not int or raw['40012'] not in (0,1)):
                         body=raw.get('40800')
@@ -677,8 +686,11 @@ class QQIndependentService:
                             value=raw.get(field)
                             flags.append('missing' if field not in raw else 'null' if value is None
                                          else value if type(value) is int and 0<=value<=255 else 'other')
-                        _LOGGER.warning('[qq independent] stage=analysis_exclusions session_kind=%s body_kind=%s flag_40011=%s flag_40012=%s',
-                            session.session_type,body_kind,*flags)
+                        sender=raw.get('40033')
+                        sender_kind=('zero' if type(sender) is int and sender==0 else 'null' if sender is None
+                                     else 'nonzero' if canonical_qq_uin(sender) not in (None,'0') else 'other')
+                        _LOGGER.warning('[qq independent] stage=analysis_exclusions session_kind=%s body_kind=%s flag_40011=%s flag_40012=%s sender_kind=%s',
+                            session.session_type,body_kind,*flags,sender_kind)
                         raise SourceError('unclassified_provider_exclusions')
                     missing+=1
             if len(payload['records'])+missing!=count:

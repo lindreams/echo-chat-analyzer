@@ -261,7 +261,7 @@ class QQIndependentConnection:
         self._timer.stop()
         v.session_panel.setEnabled(True)
         v._handle_sessions_loaded(sessions)
-        v._status_label.setText('QQ 聊天记录已就绪 · 本人消息按所选账号区分（非 QQ 系统认证）\n现在可以重新打开 QQ。')
+        v._status_label.setText('可以重新打开 QQ')
         v._qq_connect_button.hide()
         v._qq_settings_button.hide()
         v._qq_disconnect_button.setEnabled(True)

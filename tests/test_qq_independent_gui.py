@@ -345,7 +345,7 @@ def test_single_account_connects_without_consent_or_identity_prompts(qt_app,prep
             qt_app.processEvents();time.sleep(.005)
         assert w._sessions_loaded and w.session_panel._session_list.count()==3
         assert service._confirmed==selection.account and service._selection.recover_media is True
-        assert '非 QQ 系统认证' in w._status_label.text() and '由你确认' not in w._status_label.text()
+        assert w._status_label.text()=='可以重新打开 QQ'
     finally:
         window.close();assert window.await_shutdown(10)
 
@@ -669,6 +669,45 @@ def test_session_sqlite_failure_keeps_formal_window_open(qt_app,prepared,monkeyp
         window.close();assert window.await_shutdown(10)
 
 
+@pytest.mark.parametrize('subtype',[0,1])
+def test_private_verified_unavailable_body_keeps_valid_messages_and_report(prepared,tmp_path,subtype):
+    service,selection,dbroot=prepared
+    with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:
+        db.execute('ALTER TABLE c2c_msg_table ADD COLUMN "40011" INTEGER')
+        db.execute('ALTER TABLE c2c_msg_table ADD COLUMN "40012" INTEGER')
+        db.execute('INSERT INTO c2c_msg_table ("40001","40027","40030","40021","40033","40050","40800","40011","40012") VALUES (?,?,?,?,?,?,?,?,?)',
+                   (999,'private-a',100000002,100000002,0,1760000060,None,1,subtype))
+        db.commit()
+    facade=facade_for(service)
+    service.prepare(selection);service.capture();service.confirm_account(selection.account)
+    with service.acquired_session('private:private-a') as acquired:
+        payload=json.loads(acquired.payload_path.read_text(encoding='utf-8'))
+        assert len(payload['records'])==4
+        assert service.read_counts=={'database_rows':5,'provider_messages':4,
+            'verified_missing_body_rows':1,'unclassified_exclusions':0}
+    outcome=facade.analyze_session(ChatSource.QQ,'private:private-a',AnalysisConfig(output_directory=tmp_path/'report'))
+    assert outcome.report_path.is_file() and outcome.echo_report_view.total_message_count==4
+    assert outcome.echo_report_view.self_identity_basis=='user_declared'
+    assert json.loads((outcome.report_path.parent/'echo-report.json').read_text(encoding='utf-8'))['conversation']['kind']=='private'
+
+
+@pytest.mark.parametrize('sender,body,native_type,subtype',[
+    (100000001,None,1,0),(None,None,1,0),(0,b'',1,0),(0,'PRIVATE_BODY_SENTINEL',1,0),
+    (0,None,2,0),(0,None,1,99),(0,None,None,0),
+])
+def test_private_unknown_body_shapes_still_refuse(prepared,sender,body,native_type,subtype):
+    service,selection,dbroot=prepared
+    with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:
+        db.execute('ALTER TABLE c2c_msg_table ADD COLUMN "40011" INTEGER')
+        db.execute('ALTER TABLE c2c_msg_table ADD COLUMN "40012" INTEGER')
+        db.execute('UPDATE c2c_msg_table SET "40033"=?,"40800"=?,"40011"=?,"40012"=? WHERE "40001"=100',
+                   (sender,body,native_type,subtype));db.commit()
+    service.prepare(selection);service.capture();service.confirm_account(selection.account)
+    with pytest.raises(source.QQIndependentError) as refused:
+        with service.acquired_session('private:private-a'):pytest.fail('unknown exclusion published')
+    assert refused.value.code=='qq_analysis_unclassified_provider_exclusions' and service._root is None
+
+
 def test_unclassified_null_body_is_not_silently_excluded(prepared):
     service,selection,dbroot=prepared
     with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:
@@ -811,7 +850,7 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
         assert '请完全退出 QQ' in statuses and '正在读取聊天记录' in statuses
         assert w._progress_track.isHidden() and w._qq_qrcode_label.isHidden()
         assert w._qq_guide_label.isHidden() and w._connection_bar.isVisible()
-        assert '现在可以重新打开 QQ' in w._status_label.text()
+        assert w._status_label.text()=='可以重新打开 QQ'
         panel=w.session_panel
         assert panel._session_list.count()==3
         original=panel.build_config
