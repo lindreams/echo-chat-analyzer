@@ -326,8 +326,7 @@ def test_unique_compatible_program_advances_without_file_picker(qt_app,prepared,
     widget.close()
 
 
-@pytest.mark.parametrize('recover_media',[False,True])
-def test_single_account_connects_without_consent_or_identity_prompts(qt_app,prepared,monkeypatch,recover_media):
+def test_single_account_connects_without_consent_or_identity_prompts(qt_app,prepared,monkeypatch):
     import time
     from PySide6.QtWidgets import QInputDialog,QMessageBox
     from qq_chat_analyzer.gui.main_window import MainWindow
@@ -339,18 +338,60 @@ def test_single_account_connects_without_consent_or_identity_prompts(qt_app,prep
     window=MainWindow(facade_for(service));window.show()
     try:
         window.home_page._qq_btn.click();w=window.qq_workspace
-        assert not w._qq_media_option.isChecked()
-        w._qq_media_option.setChecked(recover_media)
+        assert not hasattr(w,'_qq_media_option')
         w._qq_connect_button.click()
         end=time.monotonic()+10
         while not w._sessions_loaded and time.monotonic()<end:
             qt_app.processEvents();time.sleep(.005)
         assert w._sessions_loaded and w.session_panel._session_list.count()==3
-        assert service._confirmed==selection.account and service._selection.recover_media is recover_media
-        assert w._qq_media_option.isHidden()
+        assert service._confirmed==selection.account and service._selection.recover_media is True
         assert '非 QQ 系统认证' in w._status_label.text() and '由你确认' not in w._status_label.text()
     finally:
         window.close();assert window.await_shutdown(10)
+
+
+def test_connection_guidance_replaces_old_phases_and_ignores_late_events(qt_app,prepared):
+    from datetime import datetime,timedelta,timezone
+    from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
+    service,_,_=prepared;tasks=[]
+    widget=QQWorkspace(facade_for(service),executor=lambda operation,**callbacks:tasks.append((operation,callbacks)))
+    widget.show();flow=widget._independent
+    try:
+        widget._qq_connect_button.click()
+        operation,callbacks=tasks.pop(0)
+        callbacks['on_success'](operation());callbacks['on_finished']()
+        _,capture=tasks.pop(0)
+        report=capture['on_progress']
+        armed={'phase':'armed','remaining_login_ms':10000,
+               'login_before_utc':(datetime.now(timezone.utc)+timedelta(seconds=10)).isoformat()}
+        for phase,action in [('preparation_exit','请先完全退出 QQ'),('waiting_for_qq','请打开 QQ，先不要登录')]:
+            report({'phase':phase});assert widget._qq_guide_label.text()==action
+        report(armed)
+        assert widget._qq_guide_label.text()=='现在可以登录 QQ' and flow._timer.isActive()
+        report({'phase':'unknown'})
+        assert flow._timer.isActive()
+        report({'phase':'stopped'})
+        assert widget._qq_guide_label.text()=='已收到登录信息' and not flow._timer.isActive()
+        report({'phase':'awaiting_exit'})
+        note=widget._qq_login_guide_label.text()
+        report(armed);report({'phase':'stopped'});flow._login_tick()
+        assert widget._qq_guide_label.text()=='请完全退出 QQ' and widget._qq_login_guide_label.text()==note
+        report({'phase':'authenticating'})
+        report({'phase':'awaiting_exit'})
+        assert widget._qq_guide_label.text()=='正在读取聊天记录'
+        assert widget._qq_login_guide_label.text()=='请稍候，无需操作。'
+        assert '未连接' not in widget.session_panel._session_list.item(0).text()
+        capture['on_success'](service.get_snapshot());capture['on_finished']()
+        assert widget._qq_guide_label.text()=='正在加载聊天列表'
+        report(armed)
+        assert widget._qq_guide_label.text()=='正在加载聊天列表' and not flow._timer.isActive()
+        _,listing=tasks.pop(0)
+        listing['on_success']([]);listing['on_finished']()
+        assert widget._qq_guide_label.isHidden() and widget._qq_login_guide_label.isHidden()
+        assert not widget._qq_guide_label.text() and not widget._qq_login_guide_label.text()
+        assert widget._session_loading.isHidden() and widget._qq_qrcode_label.isHidden()
+    finally:
+        widget._closing=True;widget.cancel_connection();widget.close()
 
 
 def test_program_recovery_picker_starts_at_home_instead_of_working_directory(qt_app,prepared,monkeypatch):
@@ -1218,6 +1259,7 @@ process.once('exit',()=>{for(const b of buffers)b.fill(0);});
         assert_scope(path)
         return original_iterdir(path)
     def scoped_prepare(path,parent):
+        assert statuses[-1]=='authenticating', 'exit instruction leaked into snapshot copying'
         if path.parent!=dbroot:
             outside_scope.append(path)
             raise AssertionError('unauthorized snapshot')
@@ -1255,6 +1297,8 @@ process.once('exit',()=>{for(const b of buffers)b.fill(0);});
             if fault=='cancel':cancel.set()
             else:exited=True
             if fault=='sidecar':Path(str(dbroot/'nt_msg.db')+'-wal').write_bytes(b'fictional sidecar')
+        elif value['phase']=='authenticating':
+            assert exited and not frozen_sources
     def capture(_progress,_external):
         try:
             worker.capture({'image':str(selection.executable),'pid':7,'created':7,
@@ -1416,36 +1460,53 @@ def test_uninstaller_reuses_ownership_and_refuses_active_or_unknown_data(prepare
 
 
 def test_independent_account_media_reaches_final_html_with_animation(prepared,tmp_path,monkeypatch):
-    from dataclasses import replace
     from test_qq_db_rich_contents import _body,_scalar,_bytes
     from test_qq_marketface_media import send,write_cache,local_only_worker
+    from test_sticker_data import image_bytes
     from qq_chat_analyzer.application.qq import qq_marketface_media as media
     service,selection,dbroot=prepared
-    selection=replace(selection,recover_media=True)
     cache=selection.account_directory/'nt_qq/nt_data/Emoji/marketface'
     item=send()
     write_cache(cache,item)
     segment=_scalar(45002,11)+_scalar(80810,item.resource_pack_id)+_bytes(80903,bytes.fromhex(item.resource_id))
+    original=image_bytes('GIF',animated=True);digest=hashlib.md5(original).hexdigest()
+    pic=selection.account_directory/'nt_qq/nt_data/Pic/2026-01/Ori';pic.mkdir(parents=True)
+    (pic/(digest+'.gif')).write_bytes(original)
+    missing=image_bytes('PNG');missing_digest=hashlib.md5(missing).hexdigest()
+    # An original in another account is not authorized as a fallback.
+    sibling=selection.account_directory.parent/'100000003/nt_qq/nt_data/Pic/2026-01/Ori'
+    sibling.mkdir(parents=True);(sibling/(missing_digest+'.png')).write_bytes(missing)
     with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:
         db.execute('UPDATE group_msg_table SET "40800"=? WHERE "40001"=0',
                    (synthetic_text_message_blob('Orchard seedlings need gentle rain tomorrow')+_body(segment),))
+        for index,md5 in ((1,digest),(2,missing_digest)):
+            custom=_scalar(45002,2)+_scalar(45003,1)+_bytes(45406,bytes.fromhex(md5))+_scalar(45418,1)
+            db.execute('UPDATE group_msg_table SET "40800"=? WHERE "40001"=?',
+                       (synthetic_text_message_blob('Fictional custom picture in this conversation')+_body(custom),index))
         db.commit()
     # Spawn the existing local-only seam; no real CDN or QQ can be contacted.
     monkeypatch.setattr(media,'_worker',local_only_worker)
     facade=facade_for(service)
-    service.prepare(selection)
+    monkeypatch.setattr(facade,'_qq_connected_provider',lambda *a:pytest.fail('offline media tried the live QQ API'))
+    facade.prepare_independent_qq(selection.executable,selection.account_directory)
+    assert service._selection.recover_media is True
     service.capture();service.confirm_account(selection.account)
     session=next(s for s in facade.list_sessions(ChatSource.QQ) if s.session_id=='group:partition-a')
     outcome=facade.analyze_session(ChatSource.QQ,session.session_id,
                                  AnalysisConfig(output_directory=tmp_path/'animated-report'))
     assert outcome.report_path is not None
-    assert len(outcome.result.stickers.sends)==1
+    assert len(outcome.result.stickers.sends)==3
     assets=outcome.echo_report_view.stickers.assets
-    assert len(assets)==1 and assets[0].status in ('available','preview')
-    reference=assets[0].data_uri
-    assert reference.startswith('media/') and reference.endswith('.gif')
-    assert reference in outcome.report_path.read_text(encoding='utf-8')
+    assert len(assets)==3
+    ready=[a for a in assets if a.status in ('available','preview')]
+    absent=[a for a in assets if a.status=='missing']
+    assert len(ready)==2 and len(absent)==1 and not absent[0].data_uri
+    assert all(a.reason!='report_media_source_unavailable' for a in assets)
     from PIL import Image
-    with Image.open(outcome.report_path.parent/reference) as animation:
-        assert animation.n_frames==2
+    for asset in ready:
+        reference=asset.data_uri
+        assert reference.startswith('media/') and reference.endswith('.gif')
+        assert reference in outcome.report_path.read_text(encoding='utf-8')
+        with Image.open(outcome.report_path.parent/reference) as animation:
+            assert animation.n_frames==2
     assert service._payload is None and service._root is not None

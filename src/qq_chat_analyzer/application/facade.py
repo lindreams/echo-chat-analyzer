@@ -854,6 +854,15 @@ class ChatAnalyzerFacade:
                 pending = tuple(key for key in keys if not (
                     key in media and media[key].status in {"available", "preview"} and (media[key].original_bytes or media[key].stored)))
                 local_hits, qq_targets = len(keys) - len(pending), len(pending)
+                if self.independent_qq:
+                    # The account-scoped cache and the MFACE worker above are
+                    # the offline sources. QQ has exited: missing originals
+                    # cannot authorize a connection to its retired live API.
+                    # Preserve missing/invalid/limited local results as-is.
+                    for key in pending:
+                        media.setdefault(key, qq_media_failure(key, "qq_media_file_missing"))
+                    pending = ()
+                    qq_targets = 0
                 facts_by_message = defaultdict(list)
                 pending_keys = set(pending)
                 provider, setup_failure = None, None
@@ -1368,7 +1377,7 @@ class ChatAnalyzerFacade:
         with _translated_errors(ChatSource.QQ):
             return self._require_service(ChatSource.QQ).discover_local_profiles(data_root,cancelled=cancelled)
 
-    def prepare_independent_qq(self, executable: Path, account_directory: Path, *, recover_media=False, cancelled=lambda:False):
+    def prepare_independent_qq(self, executable: Path, account_directory: Path, *, recover_media=True, cancelled=lambda:False):
         """Authorize exactly the selected local profile; navigation never calls this."""
         if not self.independent_qq:
             raise SourceUnavailable(ChatSource.QQ)

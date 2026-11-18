@@ -141,6 +141,9 @@ def capture(request, cancelled, status):
                             if time.monotonic()>=exit_end:raise SourceError('normal_qq_exit_required')
                         from .snapshot import prepare, assert_qq_exited, _read_locked, _no_sidecars
                         assert_qq_exited()
+                        # Replace the exit instruction before copying a large
+                        # snapshot; the user has already completed that step.
+                        status({'phase':'authenticating'})
                         selections=[]
                         sources={role:Path(request['account_directory'])/'nt_qq/nt_db'/('nt_msg.db' if role=='message' else role+'.db')
                             for role in ('message','group_info','profile_info')}
@@ -161,7 +164,6 @@ def capture(request, cancelled, status):
                         if time.monotonic()>=exit_end: raise SourceError('snapshot_deadline')
                         process.stdin.write(struct.pack('<I',len(packet))+packet);process.stdin.flush()
                         frozen_sent=True
-                        status({'phase':'authenticating'})
                     elif message.get('phase') in ('armed','stopped','stop_unconfirmed'): status(message)
                     else: raise SourceError('invalid_capture_status')
                 except queue.Empty: pass

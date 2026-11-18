@@ -12,7 +12,6 @@ from typing import Any
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -452,8 +451,6 @@ class QQWorkspace(QWidget):
 
         self.session_panel.show_unconnected_placeholder()
         if getattr(facade, 'independent_qq', False):
-            self._qq_media_option = QCheckBox('恢复报告图片（可能联网获取缺失表情）')
-            self._connection_layout.insertWidget(self._connection_layout.count()-1, self._qq_media_option)
             from .qq_independent_connection import QQIndependentConnection
             self._independent = QQIndependentConnection(self)
 

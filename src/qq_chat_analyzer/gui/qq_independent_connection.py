@@ -27,6 +27,7 @@ class QQIndependentConnection:
         self._image = None
         self._data_root = None
         self._recovery = 'data'
+        self._phase = 'idle'
         self._login_deadline = None
         self._timer = QTimer(workspace)
         self._timer.setInterval(250)
@@ -37,6 +38,13 @@ class QQIndependentConnection:
 
     def _action(self, action, note, stage=0):
         v = self.view
+        v._hide_qq_guide()
+        v._hide_qq_qrcode()
+        v._session_loading.hide()
+        if stage == 3:
+            v.session_panel.show_reading_placeholder()
+        else:
+            v.session_panel.show_connecting_placeholder()
         v._set_stage(stage)
         v._show_qq_guide(action, note)
         v.status_changed.emit(action)
@@ -44,6 +52,11 @@ class QQIndependentConnection:
     def _idle(self, message=None, *, recovery=False, blocked=False):
         v = self.view
         self._journey = False
+        self._phase = 'idle'
+        self._login_deadline = None
+        self._timer.stop()
+        v._hide_qq_qrcode()
+        v._session_loading.hide()
         v._sessions_loaded = False
         v._qq_status_timer.stop()
         v.session_panel.clear()
@@ -59,7 +72,6 @@ class QQIndependentConnection:
         v._qq_connect_button.show()
         v._qq_disconnect_button.hide()
         v._qq_settings_button.setVisible(recovery)
-        v._qq_media_option.show()
         v._update_setup_spacing()
         v.status_changed.emit(message or 'QQ 未连接')
 
@@ -111,11 +123,11 @@ class QQIndependentConnection:
         self.cancelled = Event()
         cancel = self.cancelled
         self._journey = True
+        self._phase = 'preparing'
         v = self.view
         v.session_panel.clear()
         v.session_panel.setEnabled(False)
         v._qq_settings_button.hide()
-        v._qq_media_option.hide()
         v._qq_disconnect_button.hide()
         v._qq_connect_button.setText('取消连接')
         v._qq_connect_button.setEnabled(True)
@@ -169,29 +181,36 @@ class QQIndependentConnection:
         self._account = account
         cancel = self.cancelled
         image = self._image
-        recover_media = self.view._qq_media_option.isChecked()
         self._action('正在准备连接 QQ', f'当前账号：{account.name}。请先不要登录，等待 Echo 的下一步提示。')
 
         def acquire(report):
             self.facade.prepare_independent_qq(image, account,
-                recover_media=recover_media, cancelled=cancel.is_set)
+                cancelled=cancel.is_set)
             return self.facade.start_qq_auth_flow(progress=report, cancel_event=cancel,
                 wait_for_process=True)
 
         self._submit(acquire, self._load_sessions, progress=True)
 
     def _progress(self, value):
-        if not isinstance(value, dict):
+        if not isinstance(value, dict) or not self._journey or self.cancelled.is_set():
             return
+        order = {'preparing':0,'preparation_exit':1,'waiting_for_qq':2,'armed':3,
+                 'stopped':4,'awaiting_exit':5,'authenticating':6,'listing':7,
+                 'ready':8,'cancelling':9,'releasing':10}
+        phase = value.get('phase')
+        if phase not in ('preparation_exit','waiting_for_qq','armed','stopped','awaiting_exit','authenticating'):
+            return
+        if order[phase] <= order.get(self._phase,0):
+            return
+        self._phase = phase
         self._timer.stop()
         self._login_deadline = None
-        phase = value.get('phase')
         if phase == 'preparation_exit':
             self._action('请先完全退出 QQ',
                 '检测到 QQ 正在运行，本次连接需要重新登录。若开启了自动登录，请先关闭；然后从系统托盘退出 QQ，Echo 会自动继续。')
         elif phase == 'waiting_for_qq':
             self._action('请打开 QQ，先不要登录',
-                '请停留在登录界面，等待 Echo 提示。如果 QQ 自动进入聊天界面，请取消本次连接并先关闭自动登录。')
+                '请停留在登录界面，等待 Echo 提示。如果 QQ 自动进入聊天界面，请取消本次连接并先关闭自动登录。', 1)
         elif phase == 'armed':
             remaining = min(value['remaining_login_ms'] / 1000,
                 (datetime.fromisoformat(value['login_before_utc']) - datetime.now(timezone.utc)).total_seconds())
@@ -204,16 +223,16 @@ class QQIndependentConnection:
         elif phase == 'authenticating':
             self._action('正在读取聊天记录', '请稍候，无需操作。', 2)
         elif phase == 'stopped':
-            self._action('正在连接 QQ', '请稍候，等待下一步提示。', 1)
+            self._action('已收到登录信息', '请稍候，正在准备读取记录。', 1)
 
     def _login_tick(self):
-        if self.view._closing or self.cancelled.is_set() or self._login_deadline is None:
+        if self.view._closing or self.cancelled.is_set() or self._phase != 'armed' or self._login_deadline is None:
             self._timer.stop()
             return
         remaining = int(self._login_deadline - time.monotonic())
         if remaining <= 0:
             self.cancel()
-            self._action('本次登录等待已结束', '请勿继续登录，清理完成后可重新连接。', 1)
+            self._action('本次登录等待已结束', '请勿继续登录，清理完成后可重新连接。', None)
         else:
             self._action('现在可以登录 QQ', f'请在 {remaining} 秒内正常登录所选账号。', 1)
 
@@ -223,6 +242,9 @@ class QQIndependentConnection:
         # this context is never promoted to a QQ-authenticated online identity.
         account = self._account.name
         cancel = self.cancelled
+        self._phase = 'listing'
+        self._login_deadline = None
+        self._timer.stop()
         self._action('正在加载聊天列表', '请稍候，无需操作。', 3)
 
         def load():
@@ -234,6 +256,9 @@ class QQIndependentConnection:
     def _ready(self, sessions):
         v = self.view
         self._journey = False
+        self._phase = 'ready'
+        self._login_deadline = None
+        self._timer.stop()
         v.session_panel.setEnabled(True)
         v._handle_sessions_loaded(sessions)
         v._status_label.setText('QQ 聊天记录已就绪 · 本人消息按所选账号区分（非 QQ 系统认证）\n现在可以重新打开 QQ。')
@@ -244,6 +269,8 @@ class QQIndependentConnection:
         v._qq_status_timer.start()
 
     def cancel(self):
+        self._phase = 'cancelling'
+        self._login_deadline = None
         self._timer.stop()
         self.cancelled.set()
         self.facade.cancel_qq_auth_flow(self.cancelled)
@@ -251,7 +278,7 @@ class QQIndependentConnection:
         if not self.view._closing:
             if self.running:
                 self.view._qq_connect_button.setEnabled(False)
-                self._action('正在取消连接', '正在释放本次读取的资料，请稍候。')
+                self._action('正在取消连接', '正在释放本次读取的资料，请稍候。', None)
             else:
                 self.release('已取消连接。')
 
@@ -259,6 +286,8 @@ class QQIndependentConnection:
         if self.running:
             self.cancel()
             return
+        self._phase = 'releasing'
+        self._login_deadline = None
         self._timer.stop()
         v = self.view
         v._qq_status_timer.stop()
@@ -268,7 +297,7 @@ class QQIndependentConnection:
         v._sessions_loaded = False
         v._qq_disconnect_button.hide()
         v._qq_connect_button.setEnabled(False)
-        self._action('正在结束连接', '正在释放本次读取的资料，请稍候。')
+        self._action('正在结束连接', '正在释放本次读取的资料，请稍候。', None)
         self._submit(self.facade.disconnect_qq,
             lambda _: self._idle(message, recovery=recovery), cleanup=False)
 
