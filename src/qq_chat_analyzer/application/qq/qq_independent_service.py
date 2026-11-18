@@ -27,6 +27,7 @@ from ...providers.qq_independent.snapshot import prepare, _protect_new_root, _po
 from ...providers.qq_independent.metadata import scoped_names
 from ...providers.qq_independent.process import verified_process, process_creation_ticks
 from ...providers.qq_independent.worker import resources_identity, runtime_files, event_api
+from ...providers.qq_independent.diagnostics import failure_record, public_message, safe_code
 from ...providers.qq_sqlite_reader import configure_read_connection
 from ...qq_db_identity import canonical_qq_uin
 from ...resources import user_data_root
@@ -310,11 +311,21 @@ class QQIndependentService:
             return self.get_snapshot()
         except Exception as error:
             _LOGGER.warning('[qq independent] stage=capture failure_code=%s error_type=%s',
-                error.code if isinstance(error,(SourceError,QQIndependentError)) else 'unexpected_error',
+                safe_code(error.code) if isinstance(error,SourceError) else
+                error.code if isinstance(error,QQIndependentError) else 'unexpected_error',
                 type(error).__name__)
             self._state=ConnectionState.ERROR
             self._clear()
             if isinstance(error,QQIndependentError): raise
+            if isinstance(error,(SourceError,OSError,subprocess.TimeoutExpired)):
+                failure=failure_record(error,code='worker_timeout' if isinstance(error,subprocess.TimeoutExpired) else None,
+                    stage=getattr(error,'diagnostic_stage','admission'))
+                _LOGGER.warning('[qq independent] stage=%s failure_code=%s',failure['failure_stage'],failure['failure_code'])
+                if 'loader_exit_code' in failure:
+                    _LOGGER.warning('[qq independent] stage=%s loader_exit_code=%d',failure['failure_stage'],failure['loader_exit_code'])
+                if 'cause_code' in failure:
+                    _LOGGER.warning('[qq independent] stage=%s cause_code=%s',failure['failure_stage'],failure['cause_code'])
+                raise QQIndependentError('qq_capture_'+failure['failure_code'],public_message(failure['failure_code'])) from None
             raise QQIndependentError() from None
         finally:
             with self._lock: self._busy=False
@@ -409,17 +420,23 @@ class QQIndependentService:
                 try:
                     for _ in range(16):
                         line=process.stdout.readline(2049)
-                        if not line or len(line)>2048: break
+                        if not line:break
+                        if len(line)>2048:
+                            messages.put_nowait(failure_record(code='protocol_incomplete'));break
                         messages.put_nowait(json.loads(line))
-                except (OSError,ValueError,queue.Full): pass
+                except (OSError,ValueError):
+                    try:messages.put_nowait(failure_record(code='protocol_invalid_json'))
+                    except queue.Full:pass
+                except queue.Full:pass
                 finally: messages.put_nowait(None)
             reader=threading.Thread(target=read,daemon=True); process.set_external_readers((reader,)); reader.start()
             self._worker_reader=reader
-            end=time.monotonic()+400; completed=False; stopping=False
+            end=time.monotonic()+400; completed=False; stopping=False; failure=None
             while True:
                 try:
                     value=messages.get(timeout=.05)
                     if value is None: break
+                    if not isinstance(value,dict):raise SourceError('invalid_capture_status')
                     phase=value.get('phase')
                     if phase=='armed':
                         deadline=datetime.fromisoformat(value['login_before_utc'])
@@ -432,12 +449,20 @@ class QQIndependentService:
                     elif phase=='awaiting_exit': progress({'phase':phase,'message':'已收到登录信息，请在 110 秒内从托盘完全退出 QQ；Echo 不会自动退出 QQ。'})
                     elif phase=='authenticating': progress({'phase':phase,'message':'QQ 已退出，正在校验并读取授权资料…'})
                     elif phase=='completed': completed=value.get('verified') is True
+                    elif phase=='failed':failure=failure_record(code=value.get('failure_code'),stage=value.get('failure_stage'),
+                        exit_code=value.get('loader_exit_code'),cause_code=value.get('cause_code'))
                     elif phase not in ('failed','stop_unconfirmed'): raise SourceError('invalid_capture_status')
                 except queue.Empty: pass
                 if (self._cancelled(external.is_set)) and not stopping:
                     stopping=True; api.SetEvent(cancel); end=min(end,time.monotonic()+9)
                 if time.monotonic()>=end: raise SourceError('capture_deadline')
-            if process.wait(timeout=3) or not completed or stopping: raise SourceError('capture_refused')
+            code=process.wait(timeout=3)
+            if code or not completed or stopping or failure is not None:
+                failure=failure or failure_record(code='cancelled' if stopping else
+                    'worker_exit_nonzero' if code else 'worker_result_missing',stage='final_check')
+                error=SourceError(failure['failure_code']);error.diagnostic_stage=failure['failure_stage']
+                error.diagnostic_exit_code=failure.get('loader_exit_code')
+                error.diagnostic_cause_code=failure.get('cause_code');raise error
         finally:
             try:
                 self._release_worker()

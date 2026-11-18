@@ -944,8 +944,8 @@ def test_payload_cleanup_failure_blocks_reuse_and_retains_owner(prepared,monkeyp
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize('fault',['none','metadata_key','account_key','shared_key','cancel','sidecar'])
-def test_offline_worker_protocol_authenticates_only_after_exit(prepared,monkeypatch,tmp_path,fault):
+@pytest.mark.parametrize('fault',['none','metadata_key','account_key','shared_key','cancel','sidecar','native_exit','wire'])
+def test_offline_worker_protocol_authenticates_only_after_exit(prepared,monkeypatch,tmp_path,caplog,fault):
     """Real Node protocol/codec and Windows locks; only QQ/native transport is fictional."""
     from types import SimpleNamespace
     from qq_chat_analyzer.providers.qq_independent import worker,snapshot
@@ -998,6 +998,8 @@ childProcess.spawn=()=>{
   child.kill=()=>{};child.stdin=new Writable({write(_data,_encoding,done){done();}});
   function emit(kind,payload){const head=Buffer.alloc(16);head.writeUInt32LE(0x32535145);head.writeUInt32LE(kind,4);head.writeUInt32LE(payload.length,8);child.stdout.write(Buffer.concat([head,payload]));}
   setImmediate(()=>{
+    if(FAULT==='native_exit'){child.stdout.end();child.exitCode=45;child.emit('close',45);return;}
+    if(FAULT==='wire'){child.stdout.write(Buffer.alloc(16));child.stdout.end();child.exitCode=0;child.emit('close',0);return;}
     emit(1,Buffer.alloc(0));emit(2,packet);
     const stopped=Buffer.alloc(16);stopped.writeUInt32LE(1);stopped.writeUInt32LE(1,4);stopped.writeUInt32LE(1,12);
     emit(3,stopped);child.stdout.end();child.exitCode=0;child.emit('close',0);
@@ -1075,9 +1077,14 @@ process.once('exit',()=>{for(const b of buffers)b.fill(0);});
             with service.acquired_session('private:private-a') as acquired:
                 assert len(json.loads(acquired.payload_path.read_text())['records'])==4
         else:
-            with pytest.raises(source.QQIndependentError):service.capture()
+            with pytest.raises(source.QQIndependentError) as refused:service.capture()
+            expected={'metadata_key':'key_not_authenticated','account_key':'key_not_authenticated',
+                      'cancel':'cancelled','sidecar':'frozen_main_required','native_exit':'loader_exit_nonzero',
+                      'wire':'transport_header_refused'}[fault]
+            assert refused.value.code=='qq_capture_'+expected
+            if fault=='native_exit':assert 'loader_exit_code=45' in caplog.text
             assert service._root is None and not service.list_sessions()
-        if fault not in ('cancel','sidecar'):
+        if fault not in ('cancel','sidecar','native_exit','wire'):
             assert frozen_sources==['nt_msg.db','group_info.db','profile_info.db']
         assert not outside_scope
         assert children and all(child.poll() is not None for child in children)
@@ -1085,6 +1092,103 @@ process.once('exit',()=>{for(const b of buffers)b.fill(0);});
         for child in children:
             if child.poll() is None:child.kill();child.wait(timeout=3)
             child.stderr.close()
+
+
+@pytest.mark.parametrize('fault,expected',[
+    ('reported','page_hmac_mismatch'),('unknown','worker_internal_error'),
+    ('exit','worker_exit_nonzero'),('missing','worker_result_missing'),
+    ('invalid_json','protocol_invalid_json'),('unverified','worker_result_missing')])
+def test_capture_worker_error_reaches_facade_without_private_fields(prepared,monkeypatch,caplog,fault,expected):
+    import io
+    from types import SimpleNamespace
+    from qq_chat_analyzer.runtime import windows_job
+    service,selection,_=prepared;service.prepare(selection)
+    monkeypatch.setattr(service,'_run_capture',source.QQIndependentService._run_capture.__get__(service))
+    monkeypatch.setattr(service,'_select_process',lambda:(123,7))
+    api=SimpleNamespace(CreateEventW=lambda *a:7,SetEvent=lambda *a:True,CloseHandle=lambda *a:True)
+    monkeypatch.setattr(source,'event_api',lambda:api)
+    frames={'reported':json.dumps({'phase':'failed','verified':False,'failure_code':'page_hmac_mismatch','failure_stage':'profile_info','private':'PRIVATE_KEY_SENTINEL'}),
+        'unknown':json.dumps({'phase':'failed','failure_code':'PRIVATE_KEY_SENTINEL','failure_stage':{'secret':'PRIVATE_PATH_SENTINEL'}}),
+        'invalid_json':'PRIVATE_PATH_SENTINEL',
+        'unverified':json.dumps({'phase':'completed','verified':False})}
+    class Job:
+        stdout=io.StringIO(frames.get(fault,'')+'\n' if fault in frames else '')
+        closed=False
+        def set_external_readers(self,*a):pass
+        def terminate_tree(self):pass
+        def active_process_count(self):return 0
+        def wait(self,**k):return 2 if fault=='exit' else 0
+        def close_after_readers(self,*a,**k):self.closed=True
+    job=Job();monkeypatch.setattr(windows_job,'launch_owned_process',lambda *a,**k:job)
+    with pytest.raises(FacadeError) as refused:facade_for(service).start_qq_auth_flow()
+    assert refused.value.code=='qq_capture_'+expected and expected in refused.value.public_message
+    assert job.closed and service._root is None and service._worker is None
+    for secret in ('PRIVATE_KEY_SENTINEL','PRIVATE_PATH_SENTINEL',str(selection.account_directory)):
+        assert secret not in caplog.text and secret not in refused.value.public_message
+
+
+@pytest.mark.parametrize('field,expected',[
+    ('authenticated','authentication_unconfirmed'),('complete','image_incomplete'),
+    ('observation_stopped','observation_unconfirmed'),('reads_stopped','reads_unconfirmed'),
+    ('hook_disabled','hook_unconfirmed'),('inflight','inflight_unconfirmed'),
+    ('missing','node_result_missing'),('exit','node_exit_nonzero'),('snapshot','snapshot_not_sent')])
+def test_node_result_rejections_keep_the_specific_failed_check(prepared,monkeypatch,field,expected):
+    import io
+    from types import SimpleNamespace
+    from qq_chat_analyzer.providers.qq_independent import worker
+    service,selection,_=prepared
+    result={'phase':'result','authenticated':True,'complete':True,'observation_stopped':True,
+            'reads_stopped':True,'hook_disabled':True,'inflight':0}
+    if field in result:result[field]=1 if field=='inflight' else False
+    class Child:
+        stdin=io.BytesIO()
+        stdout=io.StringIO('' if field=='missing' else json.dumps(result)+'\n')
+        def wait(self,**k):return 2 if field=='exit' else 0
+        def poll(self):return 0
+        def kill(self):pass
+    api=SimpleNamespace(WaitForSingleObject=lambda *a:0)
+    @contextmanager
+    def process(*a,**k):yield api,7
+    monkeypatch.setattr(worker,'verified_process',process)
+    monkeypatch.setattr(worker,'runtime_files',lambda:(selection.executable.parent,{}))
+    monkeypatch.setattr(worker,'resources_identity',lambda image:(SimpleNamespace(wrapper_path=image),((str(image),'a'*64),)))
+    monkeypatch.setattr(worker,'loaded_module',lambda *a:(1,True))
+    monkeypatch.setattr(worker,'process_creation_ticks',lambda *a:7)
+    monkeypatch.setattr(worker.subprocess,'Popen',lambda *a,**k:Child())
+    with pytest.raises(SourceError) as refused:
+        worker.capture({'image':str(selection.executable),'pid':123,'created':7},lambda:False,lambda _:None)
+    assert refused.value.code==expected
+
+
+@pytest.mark.parametrize('fault,expected',[('known','normal_qq_exit_required'),('unknown','worker_internal_error'),('os','permission_denied')])
+def test_worker_main_serializes_only_safe_error_codes(prepared,monkeypatch,capsys,fault,expected):
+    from types import SimpleNamespace
+    from qq_chat_analyzer.providers.qq_independent import worker
+    from qq_chat_analyzer.providers.qq_independent.diagnostics import failure_record
+    _,selection,_=prepared
+    service=source.QQIndependentService(workspace=selection.executable.parent/'qq-independent')
+    service.prepare(selection)
+    request={'kind':'echo-qq-independent-capture-v1','root':str(service._root),
+        'account_directory':str(selection.account_directory),'cancel_event':'Local\\EchoQQIndependentStop-'+'a'*32}
+    (service._root/'request.json').write_text(json.dumps(request),encoding='ascii')
+    monkeypatch.setattr(worker,'event_api',lambda:SimpleNamespace(OpenEventW=lambda *a:7,CloseHandle=lambda *a:True))
+    def fail(_request,_cancelled,status):
+        status({'phase':'awaiting_exit'})
+        if fault=='known':raise SourceError('normal_qq_exit_required')
+        if fault=='unknown':raise SourceError('PRIVATE_KEY_SENTINEL')
+        raise PermissionError('PRIVATE_PATH_SENTINEL')
+    monkeypatch.setattr(worker,'capture',fail)
+    try:
+        assert worker.main(str(service._root))==2
+        text=capsys.readouterr().out;record=json.loads(text.splitlines()[-1])
+        assert record==failure_record(code=expected,stage='exit')
+        assert 'PRIVATE_' not in text and selection.account not in text
+        try:raise SourceError('page_hmac_mismatch')
+        except SourceError:
+            try:raise SourceError('source_cleanup_failed')
+            except SourceError as error:
+                assert failure_record(error)['cause_code']=='page_hmac_mismatch'
+    finally:service.shutdown()
 
 
 @pytest.mark.parametrize('unknown',[False,True])

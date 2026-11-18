@@ -18,6 +18,7 @@ import time
 from ...resources import bundled_runtime_dir
 from .files import SourceError, _file, _safe, _read_unchanged
 from .process import verified_process, process_creation_ticks, loaded_module
+from .diagnostics import failure_record
 
 VERSION = (9, 9, 37, 54395)
 WRAPPER_SHA256 = 'fed532ad58d2404dcedf2858554e8fa52a5f4e65b271c008d2faca4011d7d4a2'
@@ -90,8 +91,8 @@ def capture(request, cancelled, status):
                   'sha256':next(digest for path,digest in before if Path(path) == image)}
         body = json.dumps({'directory':str(directory),'productionPins':pins,'target':target,
                            }, ensure_ascii=True).encode('ascii')
-        if len(body) > 131072 or cancelled():
-            raise SourceError('selection_refused')
+        if len(body) > 131072:raise SourceError('selection_refused')
+        if cancelled():raise SourceError('cancelled')
         env = os.environ.copy()
         env.pop('NODE_OPTIONS', None); env.pop('NODE_PATH', None)
         process = subprocess.Popen([str(directory/'node.exe'),'--max-old-space-size=512',
@@ -103,9 +104,14 @@ def capture(request, cancelled, status):
             try:
                 for _ in range(16):
                     line = process.stdout.readline(2049)
-                    if not line or len(line) > 2048: break
+                    if not line:break
+                    if len(line)>2048:
+                        messages.put_nowait({'phase':'protocol_failure','failure_code':'protocol_incomplete'});break
                     messages.put_nowait(json.loads(line))
-            except (OSError, ValueError, queue.Full): pass
+            except (OSError, ValueError):
+                try:messages.put_nowait({'phase':'protocol_failure','failure_code':'protocol_invalid_json'})
+                except queue.Full:pass
+            except queue.Full:pass
             finally: messages.put_nowait(None)
         reader = threading.Thread(target=read, daemon=True); reader.start()
         result = None
@@ -117,7 +123,10 @@ def capture(request, cancelled, status):
                 try:
                     message = messages.get(timeout=.05)
                     if message is None: break
+                    if not isinstance(message,dict):raise SourceError('invalid_capture_status')
                     if message.get('phase') == 'result': result = message
+                    elif message.get('phase') == 'protocol_failure':
+                        raise SourceError(failure_record(code=message.get('failure_code'))['failure_code'])
                     elif message.get('phase') == 'awaiting_exit':
                         if frozen_sent: raise SourceError('unexpected_snapshot_request')
                         status(message)
@@ -128,8 +137,8 @@ def capture(request, cancelled, status):
                             wait=api.WaitForSingleObject(handle,50)
                             if wait==0: break
                             if wait!=258: raise SourceError('process_exit_unconfirmed')
-                            if cancelled() or time.monotonic()>=exit_end:
-                                raise SourceError('normal_qq_exit_required')
+                            if cancelled():raise SourceError('cancelled')
+                            if time.monotonic()>=exit_end:raise SourceError('normal_qq_exit_required')
                         from .snapshot import prepare, assert_qq_exited, _read_locked, _no_sidecars
                         assert_qq_exited()
                         selections=[]
@@ -165,10 +174,28 @@ def capture(request, cancelled, status):
             if (code or not result or not all(result.get(key) is True for key in
                     ('authenticated','complete','observation_stopped','reads_stopped','hook_disabled'))
                     or result.get('inflight') != 0):
-                raise SourceError('capture_refused')
-            if (not frozen_sent or resources_identity(image)[1] != before or
-                    process_creation_ticks(api,handle) != request['created'] or api.WaitForSingleObject(handle,0)!=0):
-                raise SourceError('input_or_generation_changed')
+                failure=failure_record(code=result.get('failure_code') if result else 'node_result_missing',
+                    stage=result.get('failure_stage','final_check') if result else 'protocol')
+                if failure['failure_code']=='worker_internal_error':
+                    reason=next((reason for passed,reason in (
+                        (bool(result),'node_result_missing'),
+                        *((result.get(key) is True,reason) for key,reason in (
+                            ('authenticated','authentication_unconfirmed'),('complete','image_incomplete'),
+                            ('observation_stopped','observation_unconfirmed'),('reads_stopped','reads_unconfirmed'),
+                            ('hook_disabled','hook_unconfirmed'))),
+                        (result.get('inflight')==0,'inflight_unconfirmed'),(not code,'node_exit_nonzero')) if not passed),'worker_not_verified')
+                    failure=failure_record(code=reason,stage='final_check')
+                error=SourceError(failure['failure_code']);error.diagnostic_stage=failure['failure_stage']
+                if result:
+                    safe=failure_record(exit_code=result.get('loader_exit_code'))
+                    error.diagnostic_exit_code=safe.get('loader_exit_code')
+                    if result.get('cause_code') is not None:
+                        error.diagnostic_cause_code=failure_record(cause_code=result['cause_code'])['cause_code']
+                raise error
+            if not frozen_sent:raise SourceError('snapshot_not_sent')
+            if resources_identity(image)[1] != before:raise SourceError('resource_changed')
+            if process_creation_ticks(api,handle) != request['created']:raise SourceError('process_generation_changed')
+            if api.WaitForSingleObject(handle,0)!=0:raise SourceError('process_exit_unconfirmed')
             for selection in selections:
                 path=Path(selection['path']);_file(path);path.unlink()
         finally:
@@ -180,38 +207,46 @@ def capture(request, cancelled, status):
 
 def main(root_text):
     """Request paths are private, protected, one-shot and owned by the parent."""
-    root = _safe(Path(root_text))
-    request_path = root/'request.json'
-    _file(request_path)
-    if request_path.stat().st_size > 32768: return 2
-    request=json.loads(request_path.read_text(encoding='ascii'))
-    if request.get('kind') != 'echo-qq-independent-capture-v1': return 2
-    marker=root/'owner.json'; _file(marker)
-    if root.parent.name != 'qq-independent' or not re.fullmatch(r'run-[a-f0-9]{32}',root.name): return 2
-    proof={'kind':'echo-qq-independent-v1','root':[root.parent.stat().st_dev,root.parent.stat().st_ino],
-           'directory':[root.stat().st_dev,root.stat().st_ino]}
-    if json.loads(marker.read_text(encoding='ascii')) != proof: return 2
-    if not re.fullmatch(r'Local\\EchoQQIndependentStop-[a-f0-9]{32}',request.get('cancel_event','')): return 2
-    if Path(request.get('root',''))!=root: return 2
-    account=_safe(Path(request['account_directory']))
-    if not account.is_absolute() or not re.fullmatch(r'[1-9][0-9]{4,19}',account.name): return 2
-    if account.is_relative_to(root.parent) or root.parent.is_relative_to(account): return 2
-    api = event_api()
-    handle = api.OpenEventW(0x00100000,False,request['cancel_event'])
-    if not handle: return 2
+    stage='admission'
     def status(value):
+        nonlocal stage
+        stage={'armed':'transport','stopped':'event','stop_unconfirmed':'cleanup',
+               'awaiting_exit':'exit','authenticating':'snapshot'}.get(value.get('phase'),stage)
         print(json.dumps(value,ensure_ascii=True),flush=True)
     try:
-        # The process itself is placed in the parent's kill-on-close Job before
-        # execution. QQ is an existing unrelated process and never joins it.
-        capture(request,lambda:api.WaitForSingleObject(handle,0)==0,status)
-        status({'phase':'completed','verified':True})
-        return 0
-    except Exception:
-        status({'phase':'failed','verified':False})
+        root = _safe(Path(root_text))
+        request_path = root/'request.json'
+        _file(request_path)
+        if request_path.stat().st_size > 32768: raise SourceError('request_too_large')
+        request=json.loads(request_path.read_text(encoding='ascii'))
+        if request.get('kind') != 'echo-qq-independent-capture-v1': raise SourceError('request_kind_invalid')
+        marker=root/'owner.json'; _file(marker)
+        if root.parent.name != 'qq-independent' or not re.fullmatch(r'run-[a-f0-9]{32}',root.name): raise SourceError('owner_name_invalid')
+        proof={'kind':'echo-qq-independent-v1','root':[root.parent.stat().st_dev,root.parent.stat().st_ino],
+               'directory':[root.stat().st_dev,root.stat().st_ino]}
+        if json.loads(marker.read_text(encoding='ascii')) != proof: raise SourceError('owner_proof_invalid')
+        if not re.fullmatch(r'Local\\EchoQQIndependentStop-[a-f0-9]{32}',request.get('cancel_event','')): raise SourceError('cancel_event_name_invalid')
+        if Path(request.get('root',''))!=root: raise SourceError('request_root_mismatch')
+        account=_safe(Path(request['account_directory']))
+        if not account.is_absolute() or not re.fullmatch(r'[1-9][0-9]{4,19}',account.name): raise SourceError('account_label_invalid')
+        if account.is_relative_to(root.parent) or root.parent.is_relative_to(account): raise SourceError('workspace_overlap')
+        api = event_api()
+        handle = api.OpenEventW(0x00100000,False,request['cancel_event'])
+        if not handle: raise SourceError('cancel_event_unavailable')
+        try:
+            # The process itself is placed in the parent's kill-on-close Job before
+            # execution. QQ is an existing unrelated process and never joins it.
+            capture(request,lambda:api.WaitForSingleObject(handle,0)==0,status)
+            status({'phase':'completed','verified':True})
+            return 0
+        except Exception as error:
+            status(failure_record(error,stage=getattr(error,'diagnostic_stage',stage)))
+            return 2
+        finally:
+            api.CloseHandle(handle)
+    except Exception as error:
+        status(failure_record(error,stage=getattr(error,'diagnostic_stage',stage)))
         return 2
-    finally:
-        api.CloseHandle(handle)
 
 
 if __name__ == '__main__':

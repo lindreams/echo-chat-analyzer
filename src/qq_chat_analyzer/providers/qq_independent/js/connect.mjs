@@ -60,6 +60,7 @@ export async function connectOnce({directory, productionPins, target, firstPage,
   let transportFailed = false, aborted = false, finish;
   let parsed = null;
   let keyScopeFailure;
+  let diagnosticFailure;
   let deferredPayload;
   const authenticate = payload => {
     try {
@@ -74,6 +75,13 @@ export async function connectOnce({directory, productionPins, target, firstPage,
     } catch (error) {
       authenticated = false;
       if (error instanceof KeySourceError) {
+        // Local fixed KeySourceError codes only; never an exception message.
+        const safeCodes=['deadline_reached','cancelled','source_expired','source_cleanup_failed',
+          'key_source_failed','key_not_authenticated','passphrase_required','incomplete_event','event_size_refused',
+          'invalid_event_wire','event_field_limit','ambiguous_event_field','unexpected_response',
+          'passphrase_event_missing','invalid_passphrase_event','invalid_request','invalid_key_material',
+          'source_binding_mismatch','trusted_source_unavailable','invalid_source','source_already_used','async_source_unsupported'];
+        diagnosticFailure ??= safeCodes.includes(error.code)?error.code:'key_source_failed';
         if (['deadline_reached', 'cancelled', 'source_expired', 'source_cleanup_failed',
           'key_source_failed', 'key_not_authenticated', 'passphrase_required'].includes(error.code)) keyScopeFailure = error.code;
         if (error.code === 'key_not_authenticated') parsed = true;
@@ -84,24 +92,24 @@ export async function connectOnce({directory, productionPins, target, firstPage,
   };
   const generation = randomBytes(32).toString('hex'); // Session label, never key material.
   const cancel = () => { aborted = true; authenticated = false; child.stdin.write(Buffer.from([1])); };
-  const refuse = () => { transportFailed = true; cancel(); };
+  const refuse = code => { diagnosticFailure ??= code; transportFailed = true; cancel(); };
   const abort = () => cancel();
   signal?.addEventListener('abort', abort, {once: true});
-  const timer = setTimeout(() => { transportFailed = true; child.kill(); }, timeoutMs+9000); // Our helper ONLY, never QQ.
-  child.stdin.on('error', () => { transportFailed = true; });
+  const timer = setTimeout(() => { diagnosticFailure ??= 'loader_timeout'; transportFailed = true; child.kill(); }, timeoutMs+9000); // Our helper ONLY, never QQ.
+  child.stdin.on('error', () => { diagnosticFailure ??= 'transport_write_failed'; transportFailed = true; });
   const completed = new Promise(resolveExit => {
-    child.once('error', () => { transportFailed = true; });
+    child.once('error', () => { diagnosticFailure ??= 'loader_spawn_failed'; transportFailed = true; });
     child.once('close', code => resolveExit(code));
   });
   child.stdout.on('data', chunk => {
     try {
       total += chunk.length;
-      if (total > 8256 || phase === 3) { refuse(); return; }
+      if (total > 8256 || phase === 3) { refuse('transport_limit'); return; }
       const previous = pending;
       pending = Buffer.concat([previous, chunk]); previous.fill(0);
       while (pending.length >= 16) {
         const magic = pending.readUInt32LE(0), kind = pending.readUInt32LE(4), n = pending.readUInt32LE(8);
-        if (magic !== MAGIC || pending.readUInt32LE(12) || n > 8192) { refuse(); return; }
+        if (magic !== MAGIC || pending.readUInt32LE(12) || n > 8192) { refuse('transport_header_refused'); return; }
         if (pending.length < 16+n) break;
         const payload = pending.subarray(16, 16+n);
         if (kind === 1 && phase === 0 && n === 0) {
@@ -121,11 +129,11 @@ export async function connectOnce({directory, productionPins, target, firstPage,
           stopped = finish.reads_stopped && finish.hook_disabled;
           phase = 3; stoppedTiming = timing();
           onStatus(stopped ? 'stopped' : 'stop_unconfirmed', stoppedTiming);
-        } else { refuse(); return; }
+        } else { refuse('transport_sequence_refused'); return; }
         const rest = Buffer.from(pending.subarray(16+n)); pending.fill(0); pending = rest;
-        if (phase === 3 && pending.length) { refuse(); return; }
+        if (phase === 3 && pending.length) { refuse('transport_trailing_data'); return; }
       }
-    } catch { refuse(); }
+    } catch { refuse('transport_parse_refused'); }
     finally { chunk.fill(0); }
   });
   try {
@@ -154,6 +162,10 @@ export async function connectOnce({directory, productionPins, target, firstPage,
         login_window_elapsed_at_stop: stoppedTiming ? stoppedTiming.remaining_login_ms === 0 : null},
       observation_stopped: clean, component_unloaded: false, ...finish,
       ...(keyScopeFailure ? {key_scope_failure: keyScopeFailure} : {}),
+      failure_code: diagnosticFailure ?? (code !== 0 ? 'loader_exit_nonzero' : !stopped ? 'observation_unconfirmed'
+        : pending.length || phase !== 3 ? 'transport_sequence_refused' : aborted ? 'cancelled'
+        : !eventSeen ? 'no_target_event' : !authenticated ? 'authentication_refused' : undefined),
+      loader_exit_code: Number.isInteger(code)?code:null,
       authentication_scope: clean && authenticated && !aborted ? 'first_page_only' : 'none'};
   } finally {
     clearTimeout(timer); signal?.removeEventListener('abort', abort); header.fill(0); pending.fill(0); deferredPayload?.fill(0);
