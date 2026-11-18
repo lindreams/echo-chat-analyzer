@@ -1,4 +1,4 @@
-// Research-only bounded consumer. The existing codec remains the sole decoder.
+// Bounded offline consumer. The existing codec remains the sole decoder.
 // Called synchronously AFTER native observation has stopped, never returns a key.
 import {openSync, closeSync, fstatSync, lstatSync, readSync, writeSync, unlinkSync, existsSync} from 'node:fs';
 import {resolve, dirname} from 'node:path';
@@ -120,7 +120,7 @@ export function decryptMetadataSnapshots(selections, withDatabaseKey, onStatus =
 
 export function decryptSnapshot(selection, firstPage, key, onHeader = () => {}, onStatus = () => {}) {
   let input, output;
-  let fd, destination, block, outputCreated = false;
+  let fd, destination, block, readCache, readCacheStart = -1, outputCreated = false;
   let stage = 'selection_validation', authenticatedPages = 0, writtenPages = 0;
   let allPagesAuthenticated = false;
   let finalizationWitness;
@@ -144,9 +144,12 @@ export function decryptSnapshot(selection, firstPage, key, onHeader = () => {}, 
     stage = 'input_open';
     fd = openSync(input, 'r');
     if (identity(fstatSync(fd, {bigint: true})) !== identity(before)) throw Error('snapshot_changed');
-    const read = (start, end) => {
+    const checkRead = (start, end) => {
       if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start ||
           end > selection.size || end-start > 1024*1024) throw Error('snapshot_read_limit');
+    };
+    const read = (start, end) => {
+      checkRead(start, end);
       const bytes = Buffer.alloc(end-start);
       let at = 0;
       while (at < bytes.length) {
@@ -155,6 +158,17 @@ export function decryptSnapshot(selection, firstPage, key, onHeader = () => {}, 
         at += n;
       }
       return bytes;
+    };
+    const readPage = (start, end) => {
+      checkRead(start, end);
+      if (!readCache || start < readCacheStart || end > readCacheStart+readCache.length) {
+        readCache?.fill(0);
+        readCache = read(start, Math.min(selection.size, start+1024*1024));
+        readCacheStart = start;
+      }
+      // Keep the codec's independent slices: an IV/tag read may refill the
+      // cache while the same page's ciphertext is still being authenticated.
+      return Buffer.from(readCache.subarray(start-readCacheStart, end-readCacheStart));
     };
     const hash = () => {
       const digest = createHash('sha256');
@@ -171,7 +185,7 @@ export function decryptSnapshot(selection, firstPage, key, onHeader = () => {}, 
     destination = openSync(output, 'wx', 0o600); outputCreated = true;
     const deadline = performance.now()+120000;
     stage = 'decoder_setup';
-    const {pages, physical_pages, zero_capacity_pages} = decode({length: selection.size, subarray: read}, key, firstPage.subarray(1024, 1040), 'sha1', page => {
+    const {pages, physical_pages, zero_capacity_pages} = decode({length: selection.size, subarray: readPage}, key, firstPage.subarray(1024, 1040), 'sha1', page => {
       if (performance.now() >= deadline) throw Error('full_decode_deadline');
       let at = 0;
       while (at < page.length) {
@@ -234,5 +248,6 @@ export function decryptSnapshot(selection, firstPage, key, onHeader = () => {}, 
     throw failure;
   } finally {
     block?.fill(0);
+    readCache?.fill(0);
   }
 }

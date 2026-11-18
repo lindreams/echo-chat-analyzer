@@ -1,4 +1,4 @@
-// Research-only fault check. No account discovery, native load or real input.
+// Offline reader fault regression. No account discovery, native load or real input.
 // Uses the actual codec/reader and injects only local filesystem failures.
 import fs from 'node:fs';
 import {syncBuiltinESMExports} from 'node:module';
@@ -10,7 +10,7 @@ import {decryptSnapshot, snapshotFailureReceipt} from './qq_full_read.mjs';
 
 const parent = resolve(process.argv[2]);
 const root = fs.mkdtempSync(join(parent, 'snapshot-diagnostics-'));
-const originals = Object.fromEntries(['writeSync', 'closeSync', 'unlinkSync'].map(name => [name, fs[name]]));
+const originals = Object.fromEntries(['readSync', 'writeSync', 'closeSync', 'unlinkSync'].map(name => [name, fs[name]]));
 const restore = () => { Object.assign(fs, originals); syncBuiltinESMExports(); };
 const raw = Buffer.alloc(32, 31), salt = Buffer.alloc(16, 13);
 const plain = Buffer.alloc(4096*3);
@@ -126,9 +126,36 @@ try {
     ['output_write', 'output_close', 'input_hash_reverification', 'finalization']);
   assert.equal(statuses.find(value => value.stage === 'input_hash_reverification').authenticated_pages, 3);
   assert.equal(statuses.at(-1).format_versions_valid, true);
+
+  // More than one read-ahead block: decoding stays byte-identical without
+  // amplifying each 4 KiB page into three filesystem reads.
+  const largePlain=Buffer.alloc(4096*520);
+  plain.copy(largePlain,0,0,4096);largePlain.writeUInt32BE(520,28);
+  const largeBytes=encode(largePlain,raw,salt),large=make(largeBytes);
+  let reads=0;
+  fs.readSync=(...args)=>{reads++;return originals.readSync(...args);};syncBuiltinESMExports();
+  decryptSnapshot(large.selection,large.prefix,raw);
+  assert.ok(reads<520);restore();
+  assert.ok(fs.readFileSync(large.selection.output).equals(largePlain));
+
+  // An in-place mutation of already-prefetched ciphertext is still rejected
+  // by the independent, uncached final fingerprint pass.
+  const changed=make(largeBytes);let mutated=false;
+  const changedReceipt=expect(()=>decryptSnapshot(changed.selection,changed.prefix,raw,()=>{},status=>{
+    if(status.stage==='output_write'&&!mutated){
+      const offset=1024+4096+123,fd=fs.openSync(changed.selection.path,'r+');
+      try{fs.writeSync(fd,Buffer.from([largeBytes[offset]^1]),0,1,offset);}
+      finally{fs.closeSync(fd);}
+      mutated=true;
+    }
+  }),'snapshot_changed','input_hash_reverification',520,520);
+  assert.equal(changedReceipt.provisional_output_removed,true);
+  assert.equal(changedReceipt.all_pages_authenticated,true);
+  largePlain.fill(0);largeBytes.fill(0);
   console.log(JSON.stringify({snapshot_diagnostic_faults: 'passed', primary_error_survives_cleanup_failure: true,
     authenticated_and_written_counts_separate: true, finalizer_guard_witness_retained: true,
-    raw_exception_redacted: true, real_qq_accessed: false}));
+    raw_exception_redacted: true, buffered_pages_byte_identical:true, cached_input_reverified:true,
+    real_qq_accessed: false}));
 } finally {
   restore(); raw.fill(0); plain.fill(0);
   assert.equal(dirname(resolve(root)), parent); assert.ok(root.startsWith(join(parent, 'snapshot-diagnostics-')));

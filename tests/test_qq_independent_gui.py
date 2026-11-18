@@ -1202,6 +1202,20 @@ def test_analysis_failure_diagnostics_preserve_only_closed_codes(prepared,monkey
     assert service._root is None
 
 
+def test_buffered_snapshot_reader_preserves_authentication_and_fault_cleanup(tmp_path,monkeypatch):
+    import subprocess
+    node=shutil.which('node')
+    if node is None:pytest.skip('Node.js required for the production decoder')
+    monkeypatch.delenv('NODE_OPTIONS',raising=False);monkeypatch.delenv('NODE_PATH',raising=False)
+    script=Path(__file__).resolve().parents[1]/'scripts/spikes/qq_full_read_diagnostics_check.mjs'
+    result=subprocess.run([node,str(script),str(tmp_path)],capture_output=True,text=True,encoding='utf-8',
+        check=True,timeout=30,creationflags=subprocess.CREATE_NO_WINDOW)
+    receipt=json.loads(result.stdout)
+    assert receipt['snapshot_diagnostic_faults']=='passed'
+    assert receipt['buffered_pages_byte_identical'] and receipt['cached_input_reverified']
+    assert receipt['primary_error_survives_cleanup_failure'] and receipt['real_qq_accessed'] is False
+
+
 def test_payload_cleanup_failure_blocks_reuse_and_retains_owner(prepared,monkeypatch):
     service,selection,_=prepared
     service.prepare(selection);service.capture();service.confirm_account(selection.account)
