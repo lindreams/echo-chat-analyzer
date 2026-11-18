@@ -18,7 +18,7 @@ RichMessage 保存来源提取的结构化内容和关系；ChatMessage 是它�
 
 | 来源 | 现役身份合同 |
 | --- | --- |
-| QQ Direct DB | 发送者来自原生字段 `40033`，不是任意 uid/uin 二选一。本人上下文为 `self.namespace="qq_uin"`、`self.value`，旧桥接来源绑定快照账号的 NapCat selfInfo.uin；独立离线来源在三库认证后使用用户明确确认的 QQ 号，并标为 `basis="user_declared"`，不宣称 QQ 系统认证。Adapter 用 canonical_qq_uin 比较。命名空间不匹配或本人值不可靠时 is_self=None。sender_id 保留来源标识字符串，不附加 namespace 前缀，也不把账号值变成显示名。 |
+| QQ Direct DB | 发送者来自原生字段 `40033`，不是任意 uid/uin 二选一。本人上下文为 `self.namespace="qq_uin"`、`self.value`，旧桥接来源绑定快照账号的 NapCat selfInfo.uin；独立离线来源在三库认证后采用本次连接所选账号资料的 QQ 号，点击连接与账号选择即提供该本人上下文，不另弹号码确认；仍标为 `basis="user_declared"`，不宣称 QQ 系统认证。Adapter 用 canonical_qq_uin 比较。命名空间不匹配或本人值不可靠时 is_self=None。sender_id 保留来源标识字符串，不附加 namespace 前缀，也不把账号值变成显示名。 |
 | 微信数据库 | 发送者来自 Name2Id.user_name；本人身份使用同一 username 命名空间，不能拿目录显示名或昵称比较。 |
 
 QQ 显示名由 remark、群名片、nickname 和安全 fallback 按会话上下文解析；名称改变不应拆分已有稳定 ID，同名不同 ID 不应合并。展示名缺失不能成为猜测账号的理由。

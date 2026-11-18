@@ -8,7 +8,7 @@ Echo 是隐私优先的本地聊天分析工具。桌面来源为 QQ Direct DB �
 
 - Desktop：`echo-gui`、`python -m qq_chat_analyzer.gui` 与 frozen 入口共同进入 [desktop.py](src/qq_chat_analyzer/desktop.py)，再进入 GUI。
 - CLI：`echo-chat` 经应用服务分析本地文件，支持 `qq-db-json`、`wechat-db-json`、`detailed-json`、`chatlab-jsonl`、`cli-json`。它不是 GUI 的第三种来源，不直接获取 QQ/微信数据库。
-- QQ 正式 GUI 使用独立离线获取：用户授权一个本地账号资料，Echo armed 后正常登录捕获短期凭据，用户完全退出 QQ 后冻结三库并认证，用户声明本人 QQ 号，再列出完整群聊／私聊、选择时间并分析。声明不代表 QQ 系统认证；第一版不要求自动证明在线本人 UIN。QCE、旧 QQ JSON/JSONL 和外部 miyu 实时获取保持退休。源码虚构流程与真实 QQ 验收分开记录。
+- QQ 正式 GUI 使用独立离线获取：用户点击连接即允许读取本次所选的一个本地账号资料，Echo armed 后正常登录捕获短期凭据，用户完全退出 QQ 后冻结三库并认证，以所选账号提供本人上下文，再列出完整群聊／私聊、选择时间并分析。本人上下文保留 user_declared 标记，不另弹授权或号码确认，不代表 QQ 系统认证；第一版不要求自动证明在线本人 UIN。QCE、旧 QQ JSON/JSONL 和外部 miyu 实时获取保持退休。源码虚构流程与真实 QQ 验收分开记录。
 
 下图表示运行时调用／数据交接，不是 Python import 许可图：
 

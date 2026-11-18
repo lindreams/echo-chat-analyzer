@@ -647,7 +647,8 @@ class QQIndependentService:
             members={uin for (raw,) in rows if (uin:=canonical_qq_uin(raw)) not in (None,'0')}
             names,_,self.names_summary=scoped_names(self._root/'group_info.db',self._root/'profile_info.db',session.session_object if session.session_type=='group' else None,members)
             provider=QQDatabaseProvider(self._root/'message.db',cancelled=lambda:self._cancelled(external))
-            # Account provenance is a user declaration, never a QQ attestation.
+            # Connecting a selected profile supplies user-declared context,
+            # never a QQ attestation of the current online identity.
             payload=provider.read_session_payload(session,self_uin=self._confirmed,start_time=start_time,end_time=end_time)
             payload['self']['basis']='user_declared'
             predicate='CAST("40027" AS TEXT)=?';values=[session.internal_key]
@@ -694,7 +695,7 @@ class QQIndependentService:
     def get_snapshot(self):
         message={ConnectionState.DISCONNECTED:'QQ 尚未准备。',
             ConnectionState.STARTING:'正在准备连接 QQ，请按 Echo 的当前提示操作，等待允许登录的提示。',
-            ConnectionState.CONNECTED:('授权资料已认证，请确认本人 QQ 号（用户声明，非 QQ 系统认证）。' if not self._confirmed else '会话已就绪；本人身份由用户声明，非 QQ 系统认证。'),
+            ConnectionState.CONNECTED:('账号资料已认证，正在加载聊天列表。' if not self._confirmed else '会话已就绪；本人上下文来自所选账号资料，非 QQ 系统认证。'),
             ConnectionState.ERROR:'QQ 读取未完成，请重新准备。'}.get(self._state,'正在读取 QQ 本地快照…')
         return ConnectionSnapshot(self._state,'qq',message,version='9.9.37-54395')
 

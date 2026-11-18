@@ -1372,7 +1372,7 @@ document.documentElement.classList.add("js-ready");
   setText("cover-title", title);
   var identityNotice = document.getElementById("self-identity-notice");
   if (identityNotice && data && data.self_identity && data.self_identity.basis === "user_declared") {
-    identityNotice.textContent = "本人身份由用户声明，非 QQ 系统认证；本人／对方统计基于该声明。";
+    identityNotice.textContent = "本人账号由用户选择的账号资料提供，非 QQ 系统认证；本人／对方统计基于该账号上下文。";
     identityNotice.hidden = false;
   }
   if (data && data.title) {

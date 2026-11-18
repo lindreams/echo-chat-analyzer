@@ -10,7 +10,7 @@ from threading import Event
 import time
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QCheckBox, QFileDialog, QInputDialog, QMessageBox
+from PySide6.QtWidgets import QFileDialog, QInputDialog
 
 from ..application.connection_models import ConnectionState
 from ..application.facade import ChatSource
@@ -27,7 +27,6 @@ class QQIndependentConnection:
         self._image = None
         self._data_root = None
         self._recovery = 'data'
-        self._recover_media = False
         self._login_deadline = None
         self._timer = QTimer(workspace)
         self._timer.setInterval(250)
@@ -60,6 +59,7 @@ class QQIndependentConnection:
         v._qq_connect_button.show()
         v._qq_disconnect_button.hide()
         v._qq_settings_button.setVisible(recovery)
+        v._qq_media_option.show()
         v._update_setup_spacing()
         v.status_changed.emit(message or 'QQ 未连接')
 
@@ -115,6 +115,7 @@ class QQIndependentConnection:
         v.session_panel.clear()
         v.session_panel.setEnabled(False)
         v._qq_settings_button.hide()
+        v._qq_media_option.hide()
         v._qq_disconnect_button.hide()
         v._qq_connect_button.setText('取消连接')
         v._qq_connect_button.setEnabled(True)
@@ -163,16 +164,13 @@ class QQIndependentConnection:
                     self.release('已取消选择 QQ。')
                     return
                 self._image = discovery.executables[choices.index(choice)]
-        if not self._authorize(account):
-            self.release('尚未授权读取，可以重新选择账号。')
-            return
         if self.view._closing:
             return
         self._account = account
         cancel = self.cancelled
         image = self._image
-        recover_media = self._recover_media
-        self._action('正在准备连接 QQ', '请先不要登录，等待 Echo 的下一步提示。')
+        recover_media = self.view._qq_media_option.isChecked()
+        self._action('正在准备连接 QQ', f'当前账号：{account.name}。请先不要登录，等待 Echo 的下一步提示。')
 
         def acquire(report):
             self.facade.prepare_independent_qq(image, account,
@@ -180,21 +178,7 @@ class QQIndependentConnection:
             return self.facade.start_qq_auth_flow(progress=report, cancel_event=cancel,
                 wait_for_process=True)
 
-        self._submit(acquire, self._confirm_identity, progress=True)
-
-    def _authorize(self, account):
-        dialog = QMessageBox(QMessageBox.Icon.Question, '授权本机读取',
-            f'允许 Echo 在本机读取账号 {account.name} 的群聊和私聊，用于生成报告？\n'
-            '请只授权你本人有权分析的资料。',
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, self.view)
-        dialog.setDefaultButton(QMessageBox.StandardButton.No)
-        dialog.button(QMessageBox.StandardButton.Yes).setText('允许读取')
-        dialog.button(QMessageBox.StandardButton.No).setText('暂不连接')
-        media = QCheckBox('恢复报告图片（可能联网获取缺失表情）', dialog)
-        dialog.setCheckBox(media)
-        accepted = dialog.exec() == QMessageBox.StandardButton.Yes
-        self._recover_media = accepted and media.isChecked()
-        return accepted
+        self._submit(acquire, self._load_sessions, progress=True)
 
     def _progress(self, value):
         if not isinstance(value, dict):
@@ -233,18 +217,16 @@ class QQIndependentConnection:
         else:
             self._action('现在可以登录 QQ', f'请在 {remaining} 秒内正常登录所选账号。', 1)
 
-    def _confirm_identity(self, _snapshot):
-        self._action('确认本人 QQ 号', '该号码用于区分报告中的本人消息。', 3)
-        account, accepted = QInputDialog.getText(self.view, '确认本人 QQ 号',
-            '下方号码来自所选资料标签，请核对是否为本人 QQ 号。\n此身份由你声明，并非 QQ 系统认证。', text=self._account.name)
-        if not accepted:
-            self.release('已取消本人身份确认。')
-            return
+    def _load_sessions(self, _snapshot):
+        # Connecting the selected profile supplies the user's self context.
+        # The Facade still verifies the exact selected account after capture;
+        # this context is never promoted to a QQ-authenticated online identity.
+        account = self._account.name
         cancel = self.cancelled
         self._action('正在加载聊天列表', '请稍候，无需操作。', 3)
 
         def load():
-            self.facade.confirm_independent_qq_account(account.strip(), cancelled=cancel.is_set)
+            self.facade.confirm_independent_qq_account(account, cancelled=cancel.is_set)
             return self.facade.list_sessions(ChatSource.QQ, cancelled=cancel.is_set)
 
         self._submit(load, self._ready)
@@ -254,7 +236,7 @@ class QQIndependentConnection:
         self._journey = False
         v.session_panel.setEnabled(True)
         v._handle_sessions_loaded(sessions)
-        v._status_label.setText('QQ 聊天记录已就绪 · 本人身份由你确认\n现在可以重新打开 QQ。')
+        v._status_label.setText('QQ 聊天记录已就绪 · 本人消息按所选账号区分（非 QQ 系统认证）\n现在可以重新打开 QQ。')
         v._qq_connect_button.hide()
         v._qq_settings_button.hide()
         v._qq_disconnect_button.setEnabled(True)
