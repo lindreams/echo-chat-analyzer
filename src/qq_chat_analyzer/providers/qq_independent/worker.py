@@ -4,6 +4,7 @@ from __future__ import annotations
 import ctypes
 from contextlib import ExitStack
 from ctypes import wintypes
+from dataclasses import asdict
 import hashlib
 import json
 import os
@@ -12,6 +13,7 @@ import queue
 import re
 import struct
 import subprocess
+import sys
 import threading
 import time
 
@@ -76,8 +78,11 @@ def event_api():
     return api
 
 
-def capture(request, cancelled, status):
+def capture(request, cancelled, status, *, lifetime=None, native_reader=None):
     directory, pins = runtime_files()
+    direct = native_reader is not None
+    if direct and lifetime is None:
+        raise SourceError('session_refused')
     image = _safe(Path(request['image']))
     resources, before = resources_identity(image)
     with verified_process(request['pid'], image, synchronize=True) as (api, handle):
@@ -89,7 +94,7 @@ def capture(request, cancelled, status):
         target = {'mode':'approved-qq','version':'9.9.37-54395','image':str(image),
                   'created':str(request['created']), 'pid':request['pid'],
                   'sha256':next(digest for path,digest in before if Path(path) == image)}
-        body = json.dumps({'directory':str(directory),'productionPins':pins,'target':target,
+        body = json.dumps({'directory':str(directory),'productionPins':pins,'target':target,'direct':direct,
                            }, ensure_ascii=True).encode('ascii')
         if len(body) > 131072:raise SourceError('selection_refused')
         if cancelled():raise SourceError('cancelled')
@@ -97,7 +102,8 @@ def capture(request, cancelled, status):
         env.pop('NODE_OPTIONS', None); env.pop('NODE_PATH', None)
         process = subprocess.Popen([str(directory/'node.exe'),'--max-old-space-size=512',
                                     str(Path(__file__).parent/'js/session.mjs')],
-                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE if direct else subprocess.DEVNULL,
                                    env=env, creationflags=subprocess.CREATE_NO_WINDOW)
         messages = queue.Queue(maxsize=32)
         def read():
@@ -115,6 +121,8 @@ def capture(request, cancelled, status):
             finally: messages.put_nowait(None)
         reader = threading.Thread(target=read, daemon=True); reader.start()
         result = None
+        originals = None
+        reader_until = None
         try:
             process.stdin.write(struct.pack('<I',len(body))+body); process.stdin.flush()
             end, stopping = time.monotonic()+380, False
@@ -147,21 +155,30 @@ def capture(request, cancelled, status):
                         selections=[]
                         sources={role:Path(request['account_directory'])/'nt_qq/nt_db'/('nt_msg.db' if role=='message' else role+'.db')
                             for role in ('message','group_info','profile_info')}
-                        with ExitStack() as locks:
-                            for source in sources.values():
-                                _no_sidecars(source);locks.enter_context(_read_locked(source))
-                            for role,source in sources.items():
-                                if cancelled(): raise SourceError('cancelled')
-                                frozen=prepare(source,Path(request['root']))
-                                if role!='message' and frozen['size']>32*1024**2: raise SourceError('metadata_snapshot_limit')
-                                selections.append({'role':role,'path':frozen['snapshot'],'sha256':frozen['sha256'],
-                                    'size':frozen['size'],'output':str(Path(request['root'])/(role+'.db'))})
-                            for source in sources.values(): _no_sidecars(source)
-                            assert_qq_exited()
+                        if direct:
+                            from .native_reader import Originals
+                            originals = Originals(Path(request['account_directory']), lifetime)
+                            packet_body = {'originals':originals.selections()}
+                        else:
+                            with ExitStack() as locks:
+                                for source in sources.values():
+                                    _no_sidecars(source);locks.enter_context(_read_locked(source))
+                                for role,source in sources.items():
+                                    if cancelled(): raise SourceError('cancelled')
+                                    frozen=prepare(source,Path(request['root']))
+                                    if role!='message' and frozen['size']>32*1024**2: raise SourceError('metadata_snapshot_limit')
+                                    selections.append({'role':role,'path':frozen['snapshot'],'sha256':frozen['sha256'],
+                                        'size':frozen['size'],'output':str(Path(request['root'])/(role+'.db'))})
+                                for source in sources.values(): _no_sidecars(source)
+                                assert_qq_exited()
+                            packet_body = {'snapshot':selections[0],'metadata':selections[1:]}
                         assert_qq_exited()
                         if cancelled(): raise SourceError('cancelled')
-                        packet=json.dumps({'snapshot':selections[0],'metadata':selections[1:]},ensure_ascii=True).encode('ascii')
+                        packet=json.dumps(packet_body,ensure_ascii=True).encode('ascii')
                         if time.monotonic()>=exit_end: raise SourceError('snapshot_deadline')
+                        if direct:
+                            reader_until = time.monotonic() + 120
+                            end = min(end, reader_until)
                         process.stdin.write(struct.pack('<I',len(packet))+packet);process.stdin.flush()
                         frozen_sent=True
                     elif message.get('phase') in ('armed','stopped','stop_unconfirmed'): status(message)
@@ -198,6 +215,17 @@ def capture(request, cancelled, status):
             if resources_identity(image)[1] != before:raise SourceError('resource_changed')
             if process_creation_ticks(api,handle) != request['created']:raise SourceError('process_generation_changed')
             if api.WaitForSingleObject(handle,0)!=0:raise SourceError('process_exit_unconfirmed')
+            if direct:
+                def expired():
+                    return cancelled() or (reader_until is not None and time.monotonic() >= reader_until)
+                if expired(): raise SourceError('capture_deadline')
+                assert_qq_exited()
+                databases = originals.open_readers(native_reader, result.get('receipts'), process.stderr.raw, lifetime, expired)
+                if expired(): raise SourceError('capture_deadline')
+                # The key handoff deadline ends after validation. The parent
+                # owns connection expiry and bounds each subsequent request.
+                reader_until = None
+                return originals, databases
             for selection in selections:
                 path=Path(selection['path']);_file(path);path.unlink()
         finally:
@@ -205,6 +233,83 @@ def capture(request, cancelled, status):
             process.wait(timeout=3); process.stdin.close(); reader.join(timeout=2)
             if reader.is_alive(): raise SourceError('capture_reader_not_released')
             process.stdout.close()
+            if direct: process.stderr.close()
+
+
+def _direct_reader_pins():
+    pins = json.loads((Path(__file__).parent / 'native-pins.json').read_text(encoding='utf-8'))
+    return pins.get('reader_binaries')
+
+
+def direct_runtime_files():
+    pins = _direct_reader_pins()
+    required = ('echo_qq_native_reader.dll', 'libcrypto-3-x64.dll')
+    if not isinstance(pins,dict) or set(pins) != set(required):
+        raise SourceError('independent_runtime_changed')
+    directory = _safe(bundled_runtime_dir() / 'qq-source-reader')
+    for name in required:
+        path = directory / name
+        _file(path)
+        with path.open('rb') as stream:
+            if hashlib.file_digest(stream, 'sha256').hexdigest() != pins[name]:
+                raise SourceError('independent_runtime_changed')
+    return directory / required[0]
+
+
+def direct_reader_declared():
+    return _direct_reader_pins() is not None
+
+
+def serve_originals(root, account, originals, databases, cancelled, status):
+    """Serve requests for the account until the parent closes the reader."""
+    from ...application.qq.qq_independent_service import QQIndependentService
+
+    service = QQIndependentService(workspace=root.parent)
+    service._root = root
+    service._originals = databases
+    service._confirmed = account
+    command = root / 'read-request.json'
+    next_id = 1
+    # Every action is scoped to this reader. The parent consumes and removes
+    # each selected payload before sending another materialize request.
+    while True:
+        if cancelled(): return
+        if not os.path.lexists(command):
+            time.sleep(.025)
+            continue
+        if _file(command).st_size > 16384:
+            raise SourceError('request_too_large')
+        request = json.loads(command.read_bytes())
+        command.unlink()
+        if not isinstance(request,dict) or type(request.get('id')) is not int or request['id'] != next_id:
+            raise SourceError('invalid_capture_status')
+        operation = request.get('op')
+        originals.recheck()
+        if operation == 'list' and next_id == 1:
+            if request.get('account') != account:
+                raise SourceError('database_account_mismatch')
+            service._sessions = service._discover_sessions(account,cancelled)
+            response = [asdict(session) for session in service._sessions]
+        elif operation == 'range' and next_id > 1:
+            if not any(session.session_id == request.get('session') for session in service._sessions):
+                raise SourceError('snapshot_selection_refused')
+            response = service.get_session_message_range(request['session'])
+        elif operation == 'materialize' and next_id > 1:
+            selected = next((session for session in service._sessions if session.session_id == request.get('session')),None)
+            start, end = request.get('start'), request.get('end')
+            if (selected is None or any(value is not None and type(value) not in (int,float) for value in (start,end)) or
+                    (start is not None and end is not None and start > end)):
+                raise SourceError('snapshot_selection_refused')
+            if os.path.lexists(root / 'payload.json'):
+                raise SourceError('invalid_capture_status')
+            service._materialize(selected,cancelled,start,end)
+            response = service.read_counts
+        else:
+            raise SourceError('invalid_capture_status')
+        originals.recheck()
+        if cancelled(): return
+        status({'phase':'direct_reply','id':next_id,'value':response})
+        next_id += 1
 
 
 def main(root_text):
@@ -238,8 +343,17 @@ def main(root_text):
         try:
             # The process itself is placed in the parent's kill-on-close Job before
             # execution. QQ is an existing unrelated process and never joins it.
-            capture(request,lambda:api.WaitForSingleObject(handle,0)==0,status)
-            status({'phase':'completed','verified':True})
+            cancelled = lambda:api.WaitForSingleObject(handle,0)!=258
+            if request.get('direct') is True:
+                from .native_reader import load_reader
+                reader = load_reader(direct_runtime_files())
+                with ExitStack() as lifetime:
+                    originals, databases = capture(request,cancelled,status,lifetime=lifetime,native_reader=reader)
+                    status({'phase':'direct_ready','verified':True})
+                    serve_originals(root,account.name,originals,databases,cancelled,status)
+            else:
+                capture(request,cancelled,status)
+                status({'phase':'completed','verified':True})
             return 0
         except Exception as error:
             status(failure_record(error,stage=getattr(error,'diagnostic_stage',stage)))

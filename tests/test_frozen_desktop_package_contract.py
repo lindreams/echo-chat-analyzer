@@ -140,7 +140,8 @@ def test_frozen_package_ships_current_qq_resource_contract(filename, monkeypatch
 def test_frozen_independent_qq_runtime_and_assets(monkeypatch, tmp_path) -> None:
     _require_frozen_build()
     from qq_chat_analyzer import resources
-    from qq_chat_analyzer.providers.qq_independent.worker import runtime_files
+    from qq_chat_analyzer.providers.qq_independent.native_reader import load_reader
+    from qq_chat_analyzer.providers.qq_independent.worker import direct_reader_declared, direct_runtime_files, runtime_files
 
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "_MEIPASS", str(INTERNAL), raising=False)
@@ -150,6 +151,10 @@ def test_frozen_independent_qq_runtime_and_assets(monkeypatch, tmp_path) -> None
     directory, pins = runtime_files()
     assert directory == DIST_APP / 'runtime/qq-independent'
     assert set(pins) == {'echo_event_loader.exe', 'echo_event_54395.dll'}
+    assert direct_reader_declared()
+    reader = direct_runtime_files()
+    assert reader == DIST_APP / 'runtime/qq-source-reader/echo_qq_native_reader.dll'
+    load_reader(reader)
     packaged = INTERNAL / 'qq_chat_analyzer/providers/qq_independent'
     source = PROJECT_ROOT / 'src/qq_chat_analyzer/providers/qq_independent'
     for path in (source/'js').glob('*.mjs'):

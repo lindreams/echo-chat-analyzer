@@ -34,6 +34,8 @@ def release(tmp_path):
         "runtime/qq-independent/node.exe": b"fictional javascript runtime",
         "runtime/qq-independent/echo_event_loader.exe": b"fictional loader",
         "runtime/qq-independent/echo_event_54395.dll": b"fictional observer",
+        "runtime/qq-source-reader/echo_qq_native_reader.dll": b"fictional reader",
+        "runtime/qq-source-reader/libcrypto-3-x64.dll": b"fictional crypto",
         "runtime/wechat/WCDB.dll": b"fictional native library",
     }
     for name, version in [("qq-chat-analyzer", "0.1.0"), ("velopack", "1.2.161")]:
@@ -52,6 +54,8 @@ def release(tmp_path):
         "node_sha256": digest("runtime/qq-independent/node.exe"),
         "binaries": {name: digest("runtime/qq-independent/"+name) for name in
                      ("echo_event_loader.exe", "echo_event_54395.dll")},
+        "reader_binaries": {name: digest("runtime/qq-source-reader/"+name) for name in
+                            ("echo_qq_native_reader.dll", "libcrypto-3-x64.dll")},
     }
     (metadata / "qq-pins.json").write_text(json.dumps(pins))
     contract = {
@@ -80,13 +84,15 @@ def invoke(packager, release):
                                   project_file=project, manifest_file=manifest)
 
 
-@pytest.mark.parametrize("damage", ["private", "pin", "license", "sdk-version", "app-version"])
+@pytest.mark.parametrize("damage", ["private", "pin", "reader-pin", "license", "sdk-version", "app-version"])
 def test_invalid_tree_never_invokes_vpk(packager, release, monkeypatch, damage):
     source, output, _, _ = release
     if damage == "private":
         (source / "logs").mkdir()
     elif damage == "pin":
         (source / "runtime/wechat/WCDB.dll").write_bytes(b"tampered fictional asset")
+    elif damage == "reader-pin":
+        (source / "runtime/qq-source-reader/libcrypto-3-x64.dll").write_bytes(b"tampered fictional dependency")
     elif damage == "license":
         (source / "LICENSE").unlink()
     else:

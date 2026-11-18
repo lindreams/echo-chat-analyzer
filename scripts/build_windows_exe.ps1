@@ -28,7 +28,7 @@ $MsvcRuntimeNames = @(
     "vcruntime140.dll",
     "vcruntime140_1.dll"
 )
-$MsvcRuntimeTargets = @("qq-independent", "wechat")
+$MsvcRuntimeTargets = @("qq-independent", "qq-source-reader", "wechat")
 $MsvcRuntimeMinimumVersion = [Version]"14.43"
 
 # The portable runtime contract lives in one tracked manifest so the build and
@@ -85,6 +85,15 @@ function Assert-IndependentQQArtifactPins([string]$Root) {
         $Target = Join-Path $Root ('qq-independent/' + $Name)
         Assert-ProgramPathNotLinked $Target
         if ((Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash.ToLowerInvariant() -ne $Hashes[$Name]) { throw 'Independent QQ artifact mismatch' }
+    }
+    $ReaderNames = @('echo_qq_native_reader.dll', 'libcrypto-3-x64.dll')
+    if (@($Pins.reader_binaries.PSObject.Properties).Count -ne $ReaderNames.Count) { throw 'Invalid QQ reader pins' }
+    foreach ($Name in $ReaderNames) {
+        $Hash = [string]$Pins.reader_binaries.$Name
+        if ($Hash -cnotmatch '^[0-9a-f]{64}$') { throw 'Invalid QQ reader pin' }
+        $Target = Join-Path $Root ('qq-source-reader/' + $Name)
+        Assert-ProgramPathNotLinked $Target
+        if ((Get-FileHash -LiteralPath $Target -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Hash) { throw 'QQ reader artifact mismatch' }
     }
 }
 

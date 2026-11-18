@@ -29,7 +29,6 @@ ECHO_REPORT_HTML_SKELETON = r"""
         <p class="overline">聊天记忆报告</p>
         <h1 id="cover-title"></h1>
         <p class="cover-range" id="cover-range"></p>
-        <p class="cover-range" id="self-identity-notice" hidden></p>
         <p class="cover-note">重新阅读一段交流留下的痕迹。</p>
       </div>
 
@@ -1370,11 +1369,6 @@ document.documentElement.classList.add("js-ready");
     (conversation && conversation.name) ||
     "余音 Echo · 聊天记忆报告";
   setText("cover-title", title);
-  var identityNotice = document.getElementById("self-identity-notice");
-  if (identityNotice && data && data.self_identity && data.self_identity.basis === "user_declared") {
-    identityNotice.textContent = "本人账号由用户选择的账号资料提供，非 QQ 系统认证；本人／对方统计基于该账号上下文。";
-    identityNotice.hidden = false;
-  }
   if (data && data.title) {
     document.title = data.title + " · 余音 Echo";
   }

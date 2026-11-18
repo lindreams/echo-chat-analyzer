@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from qq_chat_analyzer.application.facade import ChatAnalyzerFacade, ChatSource
+from qq_chat_analyzer.application.facade import ChatAnalyzerFacade, ChatSource, FacadeError
 from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
 from qq_chat_analyzer.application.qq.qq_runtime_session import QQRuntimeSession
 from qq_chat_analyzer.application.qq.qq_process_registry import QQProcessRegistry
@@ -31,8 +31,10 @@ def test_inert_production_builders_cannot_construct_after_shutdown():
     from qq_chat_analyzer.gui.app import build_facade
     facade = build_facade()
     facade.shutdown()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(FacadeError) as refused:
         facade._source_bundle(ChatSource.QQ)
+    assert refused.value.code == 'application_closing'
+    assert ChatSource.QQ not in facade._built_sources
 
 
 def test_idle_analysis_owner_is_not_unknown_just_because_it_exists():

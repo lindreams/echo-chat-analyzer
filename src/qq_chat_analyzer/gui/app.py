@@ -77,7 +77,8 @@ def build_facade() -> ChatAnalyzerFacade:
 
 def _independent_qq_bundle_factory() -> Any:
     from ..application.qq.qq_independent_service import QQIndependentService
-    service = QQIndependentService()
+    from ..providers.qq_independent.worker import direct_reader_declared
+    service = QQIndependentService(read_originals=direct_reader_declared())
     return SimpleNamespace(service=service, connection=service, setup=None)
 
 

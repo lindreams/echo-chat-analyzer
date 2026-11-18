@@ -7,6 +7,7 @@ import {createHash} from 'node:crypto';
 import assert from 'node:assert/strict';
 import {encode} from './qq_independent_codec.mjs';
 import {decryptSnapshot, snapshotFailureReceipt} from './qq_full_read.mjs';
+import {authenticatePages} from '../../src/qq_chat_analyzer/providers/qq_independent/js/qq_independent_codec.mjs';
 
 const parent = resolve(process.argv[2]);
 const root = fs.mkdtempSync(join(parent, 'snapshot-diagnostics-'));
@@ -151,6 +152,22 @@ try {
   }),'snapshot_changed','input_hash_reverification',520,520);
   assert.equal(changedReceipt.provisional_output_removed,true);
   assert.equal(changedReceipt.all_pages_authenticated,true);
+
+  const padded = Buffer.concat([largeBytes, Buffer.alloc(4096)]);
+  const decrypted = [];
+  const options = {allowZeroCapacity:true, onProgress:(stage,page) => {
+    if (stage === 'page_decryption') decrypted.push(page);
+  }};
+  assert.deepEqual(authenticatePages(padded,raw,salt,options),
+    {pages:520, physical_pages:521, zero_capacity_pages:1});
+  assert.deepEqual(decrypted,[1]);
+  padded[1024+4096+123] ^= 1;
+  assert.throws(() => authenticatePages(padded,raw,salt,options),
+    error => error.message === 'page_hmac_mismatch' && error.page === 2);
+  padded[1024+4096+123] ^= 1;
+  padded[padded.length-1] = 1;
+  assert.throws(() => authenticatePages(padded,raw,salt,options), /nonzero_capacity_tail/);
+
   largePlain.fill(0);largeBytes.fill(0);
   console.log(JSON.stringify({snapshot_diagnostic_faults: 'passed', primary_error_survives_cleanup_failure: true,
     authenticated_and_written_counts_separate: true, finalizer_guard_witness_retained: true,

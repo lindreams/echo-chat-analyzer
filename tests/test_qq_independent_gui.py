@@ -1,6 +1,6 @@
 """Fictional guided account acquisition, conversation analysis and ownership."""
 import builtins
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -350,7 +350,8 @@ def test_single_account_connects_without_consent_or_identity_prompts(qt_app,prep
         window.close();assert window.await_shutdown(10)
 
 
-def test_connection_guidance_replaces_old_phases_and_ignores_late_events(qt_app,prepared):
+@pytest.mark.parametrize('reading_originals', [False, True])
+def test_connection_guidance_replaces_old_phases_and_ignores_late_events(qt_app,prepared,reading_originals):
     from datetime import datetime,timedelta,timezone
     from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
     service,_,_=prepared;tasks=[]
@@ -366,14 +367,20 @@ def test_connection_guidance_replaces_old_phases_and_ignores_late_events(qt_app,
                'login_before_utc':(datetime.now(timezone.utc)+timedelta(seconds=10)).isoformat()}
         for phase,action in [('preparation_exit','请先完全退出 QQ'),('waiting_for_qq','请打开 QQ，先不要登录')]:
             report({'phase':phase});assert widget._qq_guide_label.text()==action
+            assert '从系统托盘' not in widget._qq_login_guide_label.text()
         report(armed)
         assert widget._qq_guide_label.text()=='现在可以登录 QQ' and flow._timer.isActive()
         report({'phase':'unknown'})
         assert flow._timer.isActive()
         report({'phase':'stopped'})
         assert widget._qq_guide_label.text()=='已收到登录信息' and not flow._timer.isActive()
-        report({'phase':'awaiting_exit'})
+        report({'phase':'awaiting_exit','reading_originals':reading_originals})
         note=widget._qq_login_guide_label.text()
+        assert '从系统托盘' not in note
+        if reading_originals:
+            assert '无法打开' in note and widget._qq_disconnect_button.text() in note
+        else:
+            assert '请完全退出 QQ' in note
         report(armed);report({'phase':'stopped'});flow._login_tick()
         assert widget._qq_guide_label.text()=='请完全退出 QQ' and widget._qq_login_guide_label.text()==note
         report({'phase':'authenticating'})
@@ -390,6 +397,12 @@ def test_connection_guidance_replaces_old_phases_and_ignores_late_events(qt_app,
         assert widget._qq_guide_label.isHidden() and widget._qq_login_guide_label.isHidden()
         assert not widget._qq_guide_label.text() and not widget._qq_login_guide_label.text()
         assert widget._session_loading.isHidden() and widget._qq_qrcode_label.isHidden()
+        assert widget._status_label.isVisible()
+        if reading_originals:
+            assert '无法打开' in widget._status_label.text()
+            assert widget._qq_disconnect_button.text() in widget._status_label.text()
+        else:
+            assert widget._status_label.text()=='可以重新打开 QQ'
     finally:
         widget._closing=True;widget.cancel_connection();widget.close()
 
@@ -868,6 +881,9 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
             assert outcomes and outcomes[-1].report_path.is_file()
             assert outcomes[-1].echo_report_view.self_identity_basis=='user_declared'
             report=json.loads((outcomes[-1].report_path.parent/'echo-report.json').read_text(encoding='utf-8'))
+            html=outcomes[-1].report_path.read_text(encoding='utf-8')
+            assert 'self-identity-notice' not in html
+            assert '本人账号由用户选择的账号资料提供' not in html
             assert report['conversation']['kind']==('private' if session_id.startswith('private') else 'group')
             assert report['self_identity']=={'basis':'user_declared','system_authenticated':False}
             with service.acquired_session(session_id) as acquired:
@@ -1008,13 +1024,32 @@ def test_already_running_qq_requires_manual_exit_before_fresh_launch(prepared,mo
     if service._root:assert not list(service._root.glob('*.db'))
 
 
-@pytest.mark.parametrize('stop',['missing','account_cancel'])
-def test_formal_connection_recovers_without_publishing_sessions(qt_app,prepared,monkeypatch,stop):
+@pytest.mark.parametrize('stop',['missing','account_cancel','invalid_location','unverified_default'])
+def test_formal_connection_recovers_without_publishing_sessions(qt_app,prepared,monkeypatch,tmp_path,stop):
     import time
-    from PySide6.QtWidgets import QInputDialog
+    from PySide6.QtWidgets import QFileDialog,QInputDialog
     from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
     service,selection,_=prepared
     if stop=='missing':monkeypatch.setattr(source,'_discovery_locations',lambda **_options:([],[]))
+    if stop in ('invalid_location','unverified_default'):
+        config=tmp_path/'UserDataInfo.ini'
+        config.write_text('[UserDataSet]\nUserDataSavePathType=1\n',encoding='utf-8')
+        default_root=Path.home()/'Documents/Tencent Files'
+        default_account=default_root/selection.account
+        if stop=='unverified_default':shutil.copytree(selection.account_directory,default_account)
+        def locations(*,use_configured_root=True):
+            if use_configured_root:source._configured_data_root(config)
+            return [default_root],[selection.executable]
+        monkeypatch.setattr(source,'_discovery_locations',locations)
+        monkeypatch.setattr(QFileDialog,'getExistingDirectory',lambda *_:str(selection.account_directory.parent))
+    if stop=='unverified_default':
+        confirmations=[]
+        def confirm(_owner,_title,_prompt,choices,*_options):
+            assert service._root is None and service._selection is None
+            assert str(default_account) in choices
+            confirmations.append(str(default_account))
+            return str(default_account),len(confirmations)==2
+        monkeypatch.setattr(QInputDialog,'getItem',confirm)
     if stop=='account_cancel':
         other=selection.account_directory.parent/'100000003'
         shutil.copytree(selection.account_directory,other)
@@ -1028,8 +1063,25 @@ def test_formal_connection_recovers_without_publishing_sessions(qt_app,prepared,
         assert not widget._independent.running and not widget._sessions_loaded
         assert service._root is None and widget._qq_connect_button.isEnabled()
         assert not widget.session_panel.isEnabled()
-        assert widget._qq_settings_button.isHidden()==(stop!='missing')
-        if stop=='missing':assert service._selection is None
+        assert widget._qq_settings_button.isHidden()==(stop=='account_cancel')
+        if stop!='account_cancel':
+            assert service._selection is None
+            assert widget._qq_settings_button.text()=='选择 QQ 资料位置…'
+            guide=widget._qq_login_guide_label.text()
+            assert '聊天消息默认保存到' in guide and '地址栏' in guide
+        if stop in ('invalid_location','unverified_default'):
+            assert '保存位置类型' in guide
+            if stop=='unverified_default':
+                assert len(confirmations)==1
+                widget._qq_connect_button.click()
+            else:
+                widget._qq_settings_button.click()
+            end=time.monotonic()+5
+            while not widget._sessions_loaded and time.monotonic()<end:
+                qt_app.processEvents();time.sleep(.005)
+            assert widget._sessions_loaded and service._confirmed==selection.account
+            if stop=='unverified_default':
+                assert len(confirmations)==2 and service._selection.account_directory==default_account
     finally:
         widget._closing=True;widget.cancel_connection();widget.close()
 
@@ -1233,13 +1285,21 @@ def test_payload_cleanup_failure_blocks_reuse_and_retains_owner(prepared,monkeyp
 
 
 @pytest.mark.slow_integration
-@pytest.mark.parametrize('fault',['none','metadata_key','account_key','shared_key','cancel','sidecar','native_exit','wire'])
+@pytest.mark.parametrize('fault',['none','metadata_key','account_key','shared_key','cancel','sidecar','native_exit','wire','direct'])
 def test_offline_worker_protocol_authenticates_only_after_exit(prepared,monkeypatch,tmp_path,caplog,fault):
     """Real Node protocol/codec and Windows locks; only QQ/native transport is fictional."""
     from types import SimpleNamespace
     from qq_chat_analyzer.providers.qq_independent import worker,snapshot
+    from qq_chat_analyzer.providers.qq_independent.native_reader import load_reader
     from test_qq_direct_main_wal_poc import _reserve_48_bytes
     service,selection,dbroot=prepared
+    library=None
+    lifetime=ExitStack()
+    if fault=='direct':
+        try: path=worker.direct_runtime_files()
+        except FileNotFoundError: pytest.skip('Pinned source native reader not provisioned')
+        library=load_reader(path)
+        monkeypatch.setattr(service,'_validate_databases',lambda _:None)
     seed=tmp_path/'seed';seed.mkdir()
     for name in ('nt_msg.db','group_info.db','profile_info.db'):
         destination=seed/name;_reserve_48_bytes(destination)
@@ -1354,15 +1414,19 @@ process.once('exit',()=>{for(const b of buffers)b.fill(0);});
             assert exited and not frozen_sources
     def capture(_progress,_external):
         try:
-            worker.capture({'image':str(selection.executable),'pid':7,'created':7,
-                'account_directory':str(selection.account_directory),'root':str(service._root)},cancel.is_set,observe)
+            opened=worker.capture({'image':str(selection.executable),'pid':7,'created':7,
+                'account_directory':str(selection.account_directory),'root':str(service._root)},cancel.is_set,observe,
+                lifetime=lifetime if library is not None else None,native_reader=library)
+            if opened is not None:
+                originals,service._originals=opened
+                originals.recheck()
         except Exception as error:
             if fault in ('none','shared_key'):pytest.fail(f"worker={type(error).__name__}, code={getattr(error,'code',None)}, phases={statuses}, node={children[-1].stderr.read().decode('utf-8',errors='replace')[-1500:]}")
             raise
     monkeypatch.setattr(service,'_run_capture',capture)
     service.prepare(selection)
     try:
-        if fault in ('none','shared_key'):
+        if fault in ('none','shared_key','direct'):
             service.capture();service.confirm_account(selection.account)
             assert len(service.list_sessions())==3
             assert statuses.index('stopped')<statuses.index('awaiting_exit')<statuses.index('authenticating')
@@ -1376,11 +1440,15 @@ process.once('exit',()=>{for(const b of buffers)b.fill(0);});
             assert refused.value.code=='qq_capture_'+expected
             if fault=='native_exit':assert 'loader_exit_code=45' in caplog.text
             assert service._root is None and not service.list_sessions()
-        if fault not in ('cancel','sidecar','native_exit','wire'):
+        if fault=='direct':
+            assert frozen_sources==[] and not list(service._root.glob('*.db'))
+        elif fault not in ('cancel','sidecar','native_exit','wire'):
             assert frozen_sources==['nt_msg.db','group_info.db','profile_info.db']
         assert not outside_scope
         assert children and all(child.poll() is not None for child in children)
     finally:
+        lifetime.close()
+        service._originals=None
         for child in children:
             if child.poll() is None:child.kill();child.wait(timeout=3)
             child.stderr.close()
@@ -1524,16 +1592,18 @@ def test_independent_account_media_reaches_final_html_with_animation(prepared,tm
     segment=_scalar(45002,11)+_scalar(80810,item.resource_pack_id)+_bytes(80903,bytes.fromhex(item.resource_id))
     original=image_bytes('GIF',animated=True);digest=hashlib.md5(original).hexdigest()
     pic=selection.account_directory/'nt_qq/nt_data/Pic/2026-01/Ori';pic.mkdir(parents=True)
-    (pic/(digest+'.gif')).write_bytes(original)
+    original_name='fictional-cache-resource.gif'
+    (pic/original_name).write_bytes(original)
     missing=image_bytes('PNG');missing_digest=hashlib.md5(missing).hexdigest()
     # An original in another account is not authorized as a fallback.
     sibling=selection.account_directory.parent/'100000003/nt_qq/nt_data/Pic/2026-01/Ori'
-    sibling.mkdir(parents=True);(sibling/(missing_digest+'.png')).write_bytes(missing)
+    sibling.mkdir(parents=True);(sibling/'fictional-sibling-resource.png').write_bytes(missing)
     with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:
         db.execute('UPDATE group_msg_table SET "40800"=? WHERE "40001"=0',
                    (synthetic_text_message_blob('Orchard seedlings need gentle rain tomorrow')+_body(segment),))
-        for index,md5 in ((1,digest),(2,missing_digest)):
-            custom=_scalar(45002,2)+_scalar(45003,1)+_bytes(45406,bytes.fromhex(md5))+_scalar(45418,1)
+        for index,md5,filename in ((1,digest,original_name),(2,missing_digest,'fictional-sibling-resource.png')):
+            custom=(_scalar(45002,2)+_scalar(45003,1)+_bytes(45406,bytes.fromhex(md5))
+                    +_bytes(45403,filename.encode('ascii'))+_scalar(45418,1))
             db.execute('UPDATE group_msg_table SET "40800"=? WHERE "40001"=?',
                        (synthetic_text_message_blob('Fictional custom picture in this conversation')+_body(custom),index))
         db.commit()

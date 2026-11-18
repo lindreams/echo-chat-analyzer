@@ -5,5 +5,9 @@
   "binaries": {
     "echo_event_loader.exe": "3e06683e165a839ec49ba37fb5ec10cb1e6e31a2fc732af944dfe357dc453d5e",
     "echo_event_54395.dll": "e15f3a29977ae7edab91f001ae7779bc55f4227dc5cf2a9945e8f33f8e7194c4"
+  },
+  "reader_binaries": {
+    "echo_qq_native_reader.dll": "5136b0029bc5465bd5e5f8b526cf89711d8c330019c4c6a7afd1ae9109fd90cd",
+    "libcrypto-3-x64.dll": "f6fd8cd9f9ffac9e1db28622dbb17495e544718ab41c64774356973b9e36026e"
   }
 }

@@ -71,9 +71,11 @@ class QQSession:
 class QQDatabaseProvider:
     """Read a supported QQ group-message database into a raw payload v0."""
 
-    def __init__(self, database_path: str | Path, *, cancelled: Callable[[], bool] = lambda: False) -> None:
+    def __init__(self, database_path: str | Path, *, cancelled: Callable[[], bool] = lambda: False,
+                 connection=None) -> None:
         self._database_path = Path(database_path)
         self._cancelled = cancelled
+        self._connection = connection
         self._success_diagnostic_recorded = False
 
     @staticmethod
@@ -177,8 +179,13 @@ class QQDatabaseProvider:
                     ) or "",
                 )
             )
-        _LOGGER.info('[qq sessions] stage=inventory kind=%s partition_rows=%d returned_sessions=%d source_rows=%d skipped_partition_rows=%d',
-                     session_type,len(rows),len(sessions),sum(row['message_count'] for row in rows),len(rows)-len(sessions))
+        try:
+            _LOGGER.info(
+                '[qq sessions] stage=inventory kind=%s partition_rows=%d returned_sessions=%d source_rows=%d skipped_partition_rows=%d',
+                session_type, len(rows), len(sessions), sum(row['message_count'] for row in rows), len(rows)-len(sessions),
+            )
+        except Exception:
+            pass  # Diagnostics cannot interrupt session discovery or cleanup.
         return sessions
 
     def materialize_group_payload(
@@ -415,7 +422,13 @@ class QQDatabaseProvider:
         try:
             if self._cancelled():
                 raise sqlite3.DatabaseError("QQ SQLite read cancelled.")
-            if needs_qq_layout(self._database_path):
+            if self._connection is not None:
+                stage = "query"
+                with closing(self._connection.execute(query, parameters or [])) as cursor:
+                    names = [column[0] for column in cursor.description]
+                    for row in cursor:
+                        yield dict(zip(names, row))
+            elif needs_qq_layout(self._database_path):
                 stage = "query"
                 with closing(iter_row_batches(
                     self._database_path, query, parameters, cancelled=self._cancelled,

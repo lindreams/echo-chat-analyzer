@@ -82,6 +82,18 @@
       "source": "qq-independent",
       "type": "file",
       "description": "Independent QQ program asset."
+    },
+    {
+      "path": "qq-source-reader/echo_qq_native_reader.dll",
+      "source": "qq-source-reader",
+      "type": "file",
+      "description": "Read-only QQ database adapter."
+    },
+    {
+      "path": "qq-source-reader/libcrypto-3-x64.dll",
+      "source": "qq-source-reader",
+      "type": "file",
+      "description": "Pinned OpenSSL dependency of the QQ database adapter."
     }
   ],
   "packageDirectories": [
@@ -142,7 +154,9 @@
     "NOTICE.md",
     "third_party/velopack/LICENSE",
     "third_party/minhook/LICENSE",
-    "third_party/node/LICENSE"
+    "third_party/node/LICENSE",
+    "third_party/sqlcipher/LICENSE",
+    "third_party/openssl/LICENSE.txt"
   ],
   "releaseTreePrivatePaths": [
     "logs",

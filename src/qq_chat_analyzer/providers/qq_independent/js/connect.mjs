@@ -64,12 +64,13 @@ export async function connectOnce({directory, productionPins, target, firstPage,
   let deferredPayload;
   const authenticate = payload => {
     try {
+      const deadline = performance.now()+consumerTimeoutMs;
       authenticated = observeCdeResponse({command: COMMAND, direction: 'receive', error: 0,
         truncated: false, originalLength: payload.length, payload},
         {version: BUILD, profile: PROFILE, sessionGeneration: generation, firstPage},
-        {signal, deadline: performance.now()+consumerTimeoutMs}, consumeAuthenticatedKey ? (key, withDatabaseKey) => {
+        {signal, deadline}, consumeAuthenticatedKey ? (key, withDatabaseKey) => {
           parsed = true; // Consumer failure must not erase successful parsing.
-          consumeAuthenticatedKey(key, withDatabaseKey);
+          consumeAuthenticatedKey(key, withDatabaseKey, deadline);
         } : undefined).state === 'authenticated_event';
       parsed = authenticated ? true : null;
     } catch (error) {

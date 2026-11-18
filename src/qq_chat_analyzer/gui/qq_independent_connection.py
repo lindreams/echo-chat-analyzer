@@ -16,6 +16,13 @@ from ..application.connection_models import ConnectionState
 from ..application.facade import ChatSource
 
 
+_DIRECT_QQ_OPEN_HINT = '连接期间打开 QQ 可能提示「无法打开」。要使用 QQ，请先点「退出连接」。'
+_QQ_DATA_LOCATION_HINT = (
+    '在 QQ「设置 → 存储管理」中，查看「聊天消息默认保存到」下面的路径。\n'
+    '在 Echo 点「选择 QQ 资料位置…」，在窗口顶部的地址栏输入这行路径，回车后确认选择该文件夹。'
+)
+
+
 class QQIndependentConnection:
     def __init__(self, workspace):
         self.view = workspace
@@ -52,6 +59,7 @@ class QQIndependentConnection:
     def _idle(self, message=None, *, recovery=False, blocked=False):
         v = self.view
         self._journey = False
+        self._reading_originals = False
         self._phase = 'idle'
         self._login_deadline = None
         self._timer.stop()
@@ -65,12 +73,16 @@ class QQIndependentConnection:
         v._set_stage(None)
         v._status_label.setText('QQ 连接已停止' if blocked else 'QQ 未连接')
         v._status_label.show()
-        v._show_qq_guide('连接 QQ', message or
-            '连接期间需要你按提示登录并完全退出 QQ，读取完成后可重新打开。\n聊天记录仅在本机处理。')
+        note = message or '请按提示登录并完全退出 QQ。连接后可连续分析多个会话。\n聊天记录仅在本机处理。'
+        choosing_data = recovery and self._recovery == 'data'
+        if choosing_data:
+            note = f'{note}\n{_QQ_DATA_LOCATION_HINT}'
+        v._show_qq_guide('连接 QQ', note)
         v._qq_connect_button.setText('连接已停止' if blocked else '重新连接' if message else '连接 QQ')
         v._qq_connect_button.setEnabled(not blocked)
         v._qq_connect_button.show()
         v._qq_disconnect_button.hide()
+        v._qq_settings_button.setText('选择 QQ 资料位置…' if choosing_data else '连接设置…')
         v._qq_settings_button.setVisible(recovery)
         v._update_setup_spacing()
         v.status_changed.emit(message or 'QQ 未连接')
@@ -96,12 +108,10 @@ class QQIndependentConnection:
             if cleanup and self.cancelled.is_set():
                 self.release('已取消连接，可以重新开始。')
             elif failure:
-                code, message = failure[0]
+                _, message = failure[0]
                 if cleanup:
                     self._image = None
-                    location_error=code=='qq_data_location_unverified'
-                    if location_error:self._recovery='data'
-                    self.release(message,recovery=location_error)
+                    self.release(message)
                 else:
                     self._idle('本次资料未能安全释放，已停止连接。请关闭 Echo，暂勿重复连接。', blocked=True)
             elif result:
@@ -136,21 +146,32 @@ class QQIndependentConnection:
             self._data_root, cancelled=cancel.is_set), self._discovered)
 
     def _discovered(self, discovery):
+        location_warning = discovery.location_warning
         if not discovery.accounts:
             self._recovery = 'data'
-            self._idle('没有找到 QQ 聊天记录，请通过连接设置选择资料位置。', recovery=True)
+            self._idle(location_warning or '没有找到 QQ 聊天记录。', recovery=True)
             return
         accounts = discovery.accounts
-        labels = [path.name for path in accounts]
-        if len(set(labels)) != len(labels):
+        labels = [str(path) if location_warning else path.name for path in accounts]
+        if not location_warning and len(set(labels)) != len(labels):
             self._recovery = 'data'
-            self._idle('发现多个同号资料，请通过连接设置明确选择一个账号资料位置。', recovery=True)
+            self._idle('发现同一账号的多个资料目录，请选择 QQ 当前使用的那个目录。', recovery=True)
             return
-        if len(accounts) > 1:
-            label, accepted = QInputDialog.getItem(self.view, '选择 QQ 账号',
-                '选择本次要分析的账号资料', labels, 0, False)
-            if not accepted:
-                self.release('已取消选择账号。')
+        if location_warning or len(accounts) > 1:
+            other = '选择其他资料位置…'
+            title = '确认 QQ 资料位置' if location_warning else '选择 QQ 账号'
+            prompt = (f'{location_warning}\n已在常用位置找到账号目录。请按 QQ「存储管理 → 聊天消息默认保存到」核对。'
+                      if location_warning else '选择本次要分析的账号资料')
+            choices = [*labels, other] if location_warning else labels
+            label, accepted = QInputDialog.getItem(self.view, title, prompt, choices, 0, False)
+            if not accepted or label == other:
+                if location_warning:
+                    self._recovery = 'data'
+                    self._idle(location_warning, recovery=True)
+                    if accepted:
+                        self._settings()
+                else:
+                    self.release('已取消选择账号。')
                 return
             account = accounts[labels.index(label)]
         else:
@@ -207,7 +228,7 @@ class QQIndependentConnection:
         self._login_deadline = None
         if phase == 'preparation_exit':
             self._action('请先完全退出 QQ',
-                '检测到 QQ 正在运行，本次连接需要重新登录。若开启了自动登录，请先关闭；然后从系统托盘退出 QQ，Echo 会自动继续。')
+                '检测到 QQ 正在运行，本次连接需要重新登录。若开启了自动登录，请先关闭；然后完全退出 QQ，Echo 会自动继续。')
         elif phase == 'waiting_for_qq':
             self._action('请打开 QQ，先不要登录',
                 '请停留在登录界面，等待 Echo 提示。如果 QQ 自动进入聊天界面，请取消本次连接并先关闭自动登录。', 1)
@@ -218,8 +239,10 @@ class QQIndependentConnection:
             self._timer.start()
             self._login_tick()
         elif phase == 'awaiting_exit':
+            self._reading_originals = value.get('reading_originals') is True
             self._action('请完全退出 QQ',
-                '请从系统托盘退出 QQ，以便读取完整记录。Echo 会自动继续；聊天列表出现前请勿重新打开。', 2)
+                (f'请在 Echo 连接期间保持 QQ 关闭。{_DIRECT_QQ_OPEN_HINT}'
+                 if self._reading_originals else '请完全退出 QQ，以便读取完整记录。Echo 会自动继续；聊天列表出现前请勿重新打开。'), 2)
         elif phase == 'authenticating':
             self._action('正在读取聊天记录', '请稍候，无需操作。', 2)
         elif phase == 'stopped':
@@ -261,7 +284,7 @@ class QQIndependentConnection:
         self._timer.stop()
         v.session_panel.setEnabled(True)
         v._handle_sessions_loaded(sessions)
-        v._status_label.setText('可以重新打开 QQ')
+        v._status_label.setText(_DIRECT_QQ_OPEN_HINT if self._reading_originals else '可以重新打开 QQ')
         v._qq_connect_button.hide()
         v._qq_settings_button.hide()
         v._qq_disconnect_button.setEnabled(True)
@@ -299,7 +322,8 @@ class QQIndependentConnection:
         v._qq_connect_button.setEnabled(False)
         self._action('正在结束连接', '正在释放本次读取的资料，请稍候。', None)
         self._submit(self.facade.disconnect_qq,
-            lambda _: self._idle(message, recovery=recovery), cleanup=False)
+            lambda _: self._idle(message or ('QQ 已断开，可以重新打开 QQ。' if self._reading_originals else None),
+                                 recovery=recovery), cleanup=False)
 
     def refresh(self):
         if self.view._closing or self.running or self._journey or not self.view._sessions_loaded:
@@ -319,7 +343,8 @@ class QQIndependentConnection:
             if value:
                 self._image = Path(value)
         else:
-            value = QFileDialog.getExistingDirectory(self.view, '选择 QQ 资料位置', str(Path.home() / 'Documents'))
+            value = QFileDialog.getExistingDirectory(self.view, '选择 QQ 资料位置（可在地址栏输入路径）',
+                                                     str(self._data_root or Path.home() / 'Documents'))
             if value:
                 self._data_root = Path(value)
         if value:

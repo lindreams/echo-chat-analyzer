@@ -1,12 +1,12 @@
 """Names from authenticated, account-scoped QQ metadata databases."""
-from contextlib import closing
+from contextlib import closing, nullcontext
 from pathlib import Path
 import logging,sqlite3,time
 from .files import SourceError,_safe,_file
 
 _LOGGER = logging.getLogger('qq_chat_analyzer.desktop.qq.independent')
 
-def scoped_names(group_database, profile_database, group, member_keys):
+def scoped_names(group_database, profile_database, group, member_keys, *, connections=None):
     """Read only the authorized group and explicit report UINs, never messages.
 
     Caller owns authenticated temporary DBs. Known NT columns: 60001 group code,
@@ -33,11 +33,15 @@ def scoped_names(group_database, profile_database, group, member_keys):
         # These identifiers are fixed at the call sites below, not read from
         # account data. Together with the source location they identify the
         # parameterized query without retaining SQL values or database paths.
-        role='group_info' if path==paths[0] else 'profile_info'
+        index = paths.index(path)
+        role = ('group_info', 'profile_info')[index]
         try:
-            with closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True)) as db:
-                db.execute("PRAGMA query_only=ON")
-                db.execute("PRAGMA trusted_schema=OFF")
+            connection = (closing(sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True))
+                          if connections is None else nullcontext(connections[index]))
+            with connection as db:
+                if connections is None:
+                    db.execute("PRAGMA query_only=ON")
+                    db.execute("PRAGMA trusted_schema=OFF")
                 end = time.monotonic() + 10
                 db.set_progress_handler(lambda: int(time.monotonic() >= end), 10000)
                 # Name caches are optional. Missing fields must not become

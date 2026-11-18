@@ -46,6 +46,10 @@ def _validate_pins(entries: dict, contract: dict, manifest: Path) -> None:
         raise PackageError("Unsupported independent QQ source")
     hashes = {**pins["binaries"], "node.exe": pins["node_sha256"]}
     runtime_hashes = {"qq-independent/" + name: digest for name, digest in hashes.items()}
+    reader_hashes = pins.get("reader_binaries")
+    if not isinstance(reader_hashes, dict) or set(reader_hashes) != {"echo_qq_native_reader.dll", "libcrypto-3-x64.dll"}:
+        raise PackageError("Invalid QQ reader pins")
+    runtime_hashes.update({"qq-source-reader/" + name: digest for name, digest in reader_hashes.items()})
     runtime_hashes.update(contract["wechatPinnedAssets"])
     for name, expected in runtime_hashes.items():
         portable._manifest_path(name)

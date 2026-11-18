@@ -1,0 +1,124 @@
+--- a/src/os.h
++++ b/src/os.h
+@@ -143,7 +143,9 @@
+ ** 1GB boundary.
+ **
+ */
+-#ifdef SQLITE_OMIT_WSD
++#if defined(ECHO_QQ_SNAPSHOT_READER)
++# define PENDING_BYTE     (0x40000000 - 1024)
++#elif defined(SQLITE_OMIT_WSD)
+ # define PENDING_BYTE     (0x40000000)
+ #else
+ # define PENDING_BYTE      sqlite3PendingByte
+--- a/src/os_win.c
++++ b/src/os_win.c
+@@ -287,12 +287,14 @@
+ ** The winFile structure is a subclass of sqlite3_file* specific to the win32
+ ** portability layer.
+ */
++#define echo_probe_readonly 1
+ typedef struct winFile winFile;
+ struct winFile {
+   const sqlite3_io_methods *pMethod; /*** Must be first ***/
+   sqlite3_vfs *pVfs;      /* The VFS used to open this file */
+   HANDLE h;               /* Handle for accessing the file */
+   u8 locktype;            /* Type of lock currently held on this file */
++  int echoPrefix;         /* Fictional QQ main file data offset */
+   short sharedLockByte;   /* Randomly chosen byte used as a shared lock */
+   u8 ctrlFlags;           /* Flags.  See WINFILE_* below */
+   DWORD lastErrno;        /* The Windows errno from the last I/O error */
+@@ -2540,6 +2542,9 @@
+   DWORD numBytesLow,
+   DWORD numBytesHigh
+ ){
++  if( offsetHigh==0 && offsetLow>=PENDING_BYTE && offsetLow<PENDING_BYTE+512 ){
++    offsetLow += 1024;
++  }
+ #if SQLITE_OS_WINCE
+   /*
+   ** NOTE: Windows CE is handled differently here due its lack of the Win32
+@@ -2571,6 +2576,9 @@
+   DWORD numBytesLow,
+   DWORD numBytesHigh
+ ){
++  if( offsetHigh==0 && offsetLow>=PENDING_BYTE && offsetLow<PENDING_BYTE+512 ){
++    offsetLow += 1024;
++  }
+ #if SQLITE_OS_WINCE
+   /*
+   ** NOTE: Windows CE is handled differently here due its lack of the Win32
+@@ -2759,6 +2767,7 @@
+   assert( id!=0 );
+   assert( amt>0 );
+   assert( offset>=0 );
++  offset += pFile->echoPrefix;
+   SimulateIOError(return SQLITE_IOERR_READ);
+   OSTRACE(("READ pid=%lu, pFile=%p, file=%p, buffer=%p, amount=%d, "
+            "offset=%lld, lock=%d\n", osGetCurrentProcessId(), pFile,
+@@ -2835,6 +2844,8 @@
+
+   assert( amt>0 );
+   assert( pFile );
++  if( echo_probe_readonly ) return SQLITE_READONLY;
++  offset += pFile->echoPrefix;
+   SimulateIOError(return SQLITE_IOERR_WRITE);
+   SimulateDiskfullError(return SQLITE_FULL);
+
+@@ -2936,6 +2947,8 @@
+   winFile *pFile = (winFile*)id;  /* File handle object */
+   int rc = SQLITE_OK;             /* Return code for this function */
+   DWORD lastErrno;
++  if( echo_probe_readonly ) return SQLITE_READONLY;
++  nByte += pFile->echoPrefix;
+ #if SQLITE_MAX_MMAP_SIZE>0
+   sqlite3_int64 oldMmapSize;
+   if( pFile->nFetchOut>0 ){
+@@ -3143,6 +3156,10 @@
+     }
+   }
+ #endif
++  if( rc==SQLITE_OK ){
++    if( *pSize < pFile->echoPrefix ) return SQLITE_IOERR_FSTAT;
++    *pSize -= pFile->echoPrefix;
++  }
+   OSTRACE(("SIZE file=%p, pSize=%p, *pSize=%lld, rc=%s\n",
+            pFile->h, pSize, *pSize, sqlite3ErrName(rc)));
+   return rc;
+@@ -4700,7 +4717,7 @@
+            osGetCurrentProcessId(), fd, iOff, nAmt, pp));
+
+ #if SQLITE_MAX_MMAP_SIZE>0
+-  if( pFd->mmapSizeMax>0 ){
++  if( !pFd->echoPrefix && pFd->mmapSizeMax>0 ){
+     if( pFd->pMapRegion==0 ){
+       int rc = winMapfile(pFd, -1);
+       if( rc!=SQLITE_OK ){
+@@ -5205,6 +5222,11 @@
+   int eType = flags&0xFFF00;  /* Type of file to open */
+ #endif
+
++  if( echo_probe_readonly ){
++    if( !zName || (flags & SQLITE_OPEN_DELETEONCLOSE) ) return SQLITE_CANTOPEN;
++    if( (flags & SQLITE_OPEN_CREATE) && !(flags & SQLITE_OPEN_WAL) ) return SQLITE_CANTOPEN;
++    flags = (flags & ~(SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)) | SQLITE_OPEN_READONLY;
++  }
+   int isExclusive  = (flags & SQLITE_OPEN_EXCLUSIVE);
+   int isDelete     = (flags & SQLITE_OPEN_DELETEONCLOSE);
+   int isCreate     = (flags & SQLITE_OPEN_CREATE);
+@@ -5458,6 +5480,8 @@
+   sqlite3_free(zTmpname);
+   pFile->pMethod = pAppData ? pAppData->pMethod : &winIoMethod;
+   pFile->pVfs = pVfs;
++  pFile->echoPrefix = (flags & SQLITE_OPEN_MAIN_DB) && (flags & SQLITE_OPEN_URI)
++      && sqlite3_uri_boolean(zName, "qq_prefix", 0) ? 1024 : 0;
+   pFile->h = h;
+   if( isReadonly ){
+     pFile->ctrlFlags |= WINFILE_RDONLY;
+@@ -5500,5 +5524,6 @@
+   DWORD attr;
+   DWORD lastErrno = 0;
+   void *zConverted;
++  if( echo_probe_readonly ) return SQLITE_READONLY;
+   UNUSED_PARAMETER(pVfs);
+   UNUSED_PARAMETER(syncDir);

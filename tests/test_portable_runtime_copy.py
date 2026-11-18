@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -171,25 +172,20 @@ def _fictional_runtime(
     }))
 
     def digest(relative):
-        path = runtime / "qq-napcat-candidate" / relative
-        return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "0" * 64
-
-    def wechat_digest(relative):
         path = runtime / relative
         return hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else "0" * 64
 
     contract = json.loads(json.dumps(RUNTIME_CONTRACT))
     contract["wechatPinnedAssets"] = {
-        name: wechat_digest(name) for name in contract["wechatPinnedAssets"]
+        name: digest(name) for name in contract["wechatPinnedAssets"]
     }
     (scripts / "windows_runtime_manifest.json").write_text(json.dumps(contract))
-    pins = json.loads((PROJECT_ROOT / "scripts/qq_napcat_runtime_pins.json").read_text())
-    pins["requiredFiles"] = {name: digest(name) for name in pins["requiredFiles"]}
-    pins["napcatPatch"]["patchedSha256"] = digest("napcat.mjs")
-    pins["pluginConfigSha256"] = digest("config/plugins.json")
-    for item in pins["templates"]:
-        item["sha256"] = digest(item["target"])
-    (scripts / "qq_napcat_runtime_pins.json").write_text(json.dumps(pins))
+    relative = Path("src/qq_chat_analyzer/providers/qq_independent/native-pins.json")
+    pins = json.loads((PROJECT_ROOT / relative).read_text())
+    pins["node_sha256"] = digest("qq-independent/node.exe")
+    for key, folder in (("binaries", "qq-independent"), ("reader_binaries", "qq-source-reader")):
+        pins[key] = {name: digest(f"{folder}/{name}") for name in pins[key]}
+    _write(project_root / relative, json.dumps(pins))
     return runtime
 
 
@@ -241,8 +237,8 @@ def test_runtime_only_build_copies_complete_wechat_node_module(
     assert shipped_runner.read_text(encoding="utf-8").startswith(
         "# fictional diagnostic runner"
     )
-    for name in ("source_guard.mjs", "source_guard.ps1"):
-        relative = Path("qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot") / name
+    for relative in (Path("qq-source-reader/echo_qq_native_reader.dll"),
+                     Path("qq-source-reader/libcrypto-3-x64.dll")):
         assert (tmp_path / "dist/Echo/runtime" / relative).read_bytes() == (tmp_path / "runtime" / relative).read_bytes()
 
 
@@ -292,7 +288,7 @@ def test_runtime_build_ships_wx_key_msvc_runtime_dependencies(
     completed = _copy_runtime(tmp_path)
 
     assert completed.returncode == 0, completed.stderr
-    for runtime_name in ("wechat", "qq-napcat-candidate"):
+    for runtime_name in ("wechat", "qq-independent", "qq-source-reader"):
         portable_runtime = tmp_path / "dist/Echo/runtime" / runtime_name
         for filename in (
             "msvcp140.dll",
@@ -342,11 +338,13 @@ def _pe_machine(path: Path) -> int:
 
 
 def test_key_portable_native_binaries_are_x64() -> None:
-    portable = PROJECT_ROOT / "dist" / "Echo"
+    portable = Path(os.environ.get("ECHO_TEST_FROZEN_APP", PROJECT_ROOT / "dist" / "Echo"))
     required = (
         portable / "Echo.exe",
-        portable / "runtime/qq-napcat-candidate/NapCatWinBootMain.exe",
-        portable / "runtime/qq-napcat-candidate/NapCatWinBootHook.dll",
+        portable / "runtime/qq-independent/echo_event_loader.exe",
+        portable / "runtime/qq-independent/echo_event_54395.dll",
+        portable / "runtime/qq-source-reader/echo_qq_native_reader.dll",
+        portable / "runtime/qq-source-reader/libcrypto-3-x64.dll",
         portable / "runtime/wechat/node.exe",
         portable / "runtime/wechat/wcdb_cli.exe",
         portable / "runtime/wechat/WCDB.dll",
@@ -363,14 +361,14 @@ def test_key_portable_native_binaries_are_x64() -> None:
 
 @pytest.mark.parametrize(
     "filename",
-    ["NapCatWinBootMain.exe"],
+    ["echo_event_loader.exe"],
 )
 def test_runtime_build_rejects_missing_qq_native_launcher(
     tmp_path: Path,
     filename: str,
 ) -> None:
     runtime = _fictional_runtime(tmp_path)
-    (runtime / "qq-napcat-candidate" / filename).unlink()
+    (runtime / "qq-independent" / filename).unlink()
 
     completed = _copy_runtime(tmp_path)
 
@@ -378,19 +376,19 @@ def test_runtime_build_rejects_missing_qq_native_launcher(
     assert filename in completed.stderr + completed.stdout
 
 
-def test_runtime_build_keeps_echo_plugin_enablement_without_account_state(
+def test_runtime_build_excludes_legacy_runtime_and_qq_account_state(
     tmp_path: Path,
 ) -> None:
-    _fictional_runtime(tmp_path)
+    runtime = _fictional_runtime(tmp_path)
+    _write(runtime / "qq-independent/config/fictional-account.json")
 
     completed = _copy_runtime(tmp_path)
 
     assert completed.returncode == 0, completed.stderr
-    portable_config = tmp_path / "dist/Echo/runtime/qq-napcat-candidate/config"
-    assert (portable_config / "plugins.json").read_text(encoding="utf-8") == (
-        '{"napcat-plugin-echo":true}\n'
-    )
-    assert not (portable_config / "napcat_fictional-account.json").exists()
+    portable = tmp_path / "dist/Echo/runtime"
+    assert not (portable / "qq-napcat-candidate").exists()
+    assert not (portable / "qq-independent/config").exists()
+    assert (portable / "qq-independent/node.exe").is_file()
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is unavailable")
@@ -420,8 +418,8 @@ def test_copied_portable_koffi_can_be_loaded_by_node(tmp_path: Path) -> None:
     assert helper_probe.stdout == "loaded"
 
 
-def test_runtime_build_excludes_only_selected_assets(tmp_path: Path) -> None:
-    """Portable pruning must leave the complete source and lookalikes intact."""
+def test_runtime_build_excludes_retired_assets_without_touching_source(tmp_path: Path) -> None:
+    """The retired runtime stays out of the package and its source stays intact."""
     runtime = _fictional_runtime(tmp_path)
     source = runtime / "qq-napcat-candidate"
     lookalikes = (
@@ -439,12 +437,8 @@ def test_runtime_build_excludes_only_selected_assets(tmp_path: Path) -> None:
 
     assert completed.returncode == 0, completed.stderr
     portable = tmp_path / "dist/Echo/runtime/qq-napcat-candidate"
-    excluded = tuple("native/" + name for name in EXCLUDED_NATIVE_ASSETS) + (EXCLUDED_FONT,)
-    assert all(not (portable / name).exists() for name in excluded)
-    assert all((portable / name).read_bytes() == before[Path(name)] for name in lookalikes)
+    assert not portable.exists()
     assert before == {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()}
-    assert sum(p.is_file() for p in (source / "native").rglob("*")) == 25
-    assert sum(p.is_file() for p in (portable / "native").rglob("*")) == 12
 
 
 def _validate_portable_runtime(project_root: Path) -> subprocess.CompletedProcess[str]:
@@ -471,14 +465,14 @@ def test_portable_still_validates_retained_native_pin(tmp_path: Path, change: st
     _fictional_runtime(tmp_path)
     completed = _copy_runtime(tmp_path)
     assert completed.returncode == 0, completed.stderr
-    addon = tmp_path / "dist/Echo/runtime/qq-napcat-candidate/native/napi2native/ffmpeg.dll"
+    addon = tmp_path / "dist/Echo/runtime/qq-source-reader/libcrypto-3-x64.dll"
     if change == "missing":
         addon.unlink()
     else:
         addon.write_text("tampered fictional library")
     result = _validate_portable_runtime(tmp_path)
     assert result.returncode != 0
-    assert "ffmpeg.dll" in result.stderr + result.stdout
+    assert ("libcrypto-3-x64.dll" if change == "missing" else "QQ reader artifact mismatch") in result.stderr + result.stdout
 
 
 def test_runtime_copy_ships_program_assets_without_mutable_state(tmp_path: Path) -> None:
@@ -502,7 +496,7 @@ def test_runtime_copy_ships_program_assets_without_mutable_state(tmp_path: Path)
     ])
     for relative in private_paths:
         _write(runtime / relative, "fictional private state")
-    # These are immutable frontend routes, not local authentication/session state.
+    # The retired frontend files must remain outside the package too.
     for route in ("assets",):
         _write(runtime / f"qq-napcat-candidate/static/{route}/index.html", "fictional frontend route")
     source_before = {p.relative_to(runtime): p.read_bytes() for p in runtime.rglob("*") if p.is_file()}
@@ -521,13 +515,10 @@ def test_runtime_copy_ships_program_assets_without_mutable_state(tmp_path: Path)
                 assert not target.exists()
             else:
                 assert target.is_file()
-    for filename in ("snapshot.mjs", "main_wal.mjs", "workspace.mjs"):
-        assert (portable / "qq-napcat-candidate/plugins/napcat-plugin-echo/snapshot" / filename).is_file()
-    for source in ("qq-napcat-candidate", "wechat"):
+    for source in ("qq-independent", "qq-source-reader", "wechat"):
         for filename in ("msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"):
             assert (portable / source / filename).is_file()
-    for route in ("assets",):
-        assert (portable / f"qq-napcat-candidate/static/{route}/index.html").is_file()
+    assert not (portable / "qq-napcat-candidate").exists()
     assert {p.relative_to(runtime): p.read_bytes() for p in runtime.rglob("*") if p.is_file()} == source_before
 
 
@@ -537,23 +528,24 @@ def test_runtime_copy_rejects_junctions_inside_program_assets(tmp_path: Path) ->
     runtime = _fictional_runtime(tmp_path)
     private = tmp_path / "fictional-private"
     _write(private / "private.json", "fictional user state")
-    _winapi.CreateJunction(str(private), str(runtime / "qq-napcat-candidate/node_modules/linked-package"))
+    _winapi.CreateJunction(str(private), str(runtime / "wechat/node_modules/koffi/linked-package"))
 
     completed = _copy_runtime(tmp_path)
 
     assert completed.returncode != 0
     assert "reparse point" in completed.stderr + completed.stdout
-    assert not (tmp_path / "dist/Echo/runtime/qq-napcat-candidate/node_modules/linked-package/private.json").exists()
+    assert not (tmp_path / "dist/Echo/runtime/wechat/node_modules/koffi/linked-package/private.json").exists()
     assert (private / "private.json").read_text(encoding="utf-8") == "fictional user state"
 
 
-@pytest.mark.parametrize('artifact', ['napcat.mjs', 'plugins/napcat-plugin-echo/snapshot/snapshot.mjs'])
+@pytest.mark.parametrize('artifact', ['qq-independent/echo_event_loader.exe', 'qq-independent/echo_event_54395.dll',
+                                     'qq-source-reader/echo_qq_native_reader.dll', 'qq-source-reader/libcrypto-3-x64.dll'])
 def test_modified_echo_artifact_cannot_ship(tmp_path, artifact):
     runtime = _fictional_runtime(tmp_path)
-    _write(runtime / 'qq-napcat-candidate' / artifact, 'modified fictional artifact')
+    _write(runtime / artifact, 'modified fictional artifact')
     result = _copy_runtime(tmp_path)
     assert result.returncode != 0
-    assert 'pin mismatch' in result.stderr + result.stdout
+    assert 'artifact mismatch' in result.stderr + result.stdout
     assert not (tmp_path / 'dist/Echo/runtime').exists()
 
 

@@ -210,7 +210,7 @@ def authorized_group_partition(connection, group, on_status):
     return _verified_partition(key, counts, has_object, on_status)
 
 
-def authorized_group_partitions(connection, groups):
+def authorized_group_partitions(connection, groups, *, native=False):
     """Apply the same row proofs to a list without rescanning per group.
 
     Only the small group/key selection is materialized in memory.
@@ -222,7 +222,7 @@ def authorized_group_partitions(connection, groups):
         return {}
     if len(groups) > 400:
         return {group: proof for offset in range(0, len(groups), 400)
-                for group, proof in authorized_group_partitions(connection, groups[offset:offset+400]).items()}
+                for group, proof in authorized_group_partitions(connection, groups[offset:offset+400], native=native).items()}
     columns = {row[1] for row in connection.execute('PRAGMA table_info(group_msg_table)')}
     has_object = '40021' in columns
     marks = ','.join('?' for _ in groups)
@@ -253,14 +253,19 @@ def authorized_group_partitions(connection, groups):
     # Give the small materialized selection TEXT affinity, so SQLite can
     # automatically index its keys while scanning the message table once.
     # Keep the snapshot connection immutable and query-only throughout.
-    connection.execute('PRAGMA temp_store=MEMORY')
+    if not native:
+        connection.execute('PRAGMA temp_store=MEMORY')
     rows = ','.join('(?,?)' for _ in targets)
-    with closing(connection.execute(f'''WITH targets AS MATERIALIZED (
-        SELECT CAST(column1 AS TEXT) AS authorized_group,
-               CAST(column2 AS TEXT) AS partition_key FROM (VALUES {rows}))
+    target_rows = f'''SELECT CAST(column1 AS TEXT) AS authorized_group,
+        CAST(column2 AS TEXT) AS partition_key FROM (VALUES {rows})'''
+    # The pinned native engine predates MATERIALIZED. An offset prevents
+    # flattening the anonymous derived table without widening schema access.
+    cte = '' if native else f'WITH targets AS MATERIALIZED ({target_rows})'
+    target_table = f'({target_rows} LIMIT -1 OFFSET 0)' if native else 'targets'
+    with closing(connection.execute(f'''{cte}
         SELECT target.authorized_group,
         {_partition_aggregates(has_object, 'target.authorized_group')}
-        FROM group_msg_table JOIN targets AS target
+        FROM group_msg_table JOIN {target_table} AS target
           ON CAST("40027" AS TEXT)=target.partition_key
         GROUP BY target.authorized_group''', [value for target in targets for value in target])) as cursor:
         counts = cursor.fetchall()

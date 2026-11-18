@@ -240,7 +240,7 @@ def test_both_qq_sides_recover_using_only_authorized_content_evidence(tmp_path):
     assert [media.original_bytes for media in data.media] == list(raws)
 
 
-@pytest.mark.parametrize("kind", ["different_bytes", "corrupt", "outside", "thumb", "relative"])
+@pytest.mark.parametrize("kind", ["different_bytes", "filename_mismatch", "corrupt", "outside", "thumb", "relative"])
 def test_qq_path_candidates_never_replace_content_or_read_authority(tmp_path, monkeypatch, kind):
     from contextlib import contextmanager
     from dataclasses import replace
@@ -259,7 +259,7 @@ def test_qq_path_candidates_never_replace_content_or_read_authority(tmp_path, mo
         path.parent.mkdir()
         content = raw
     path.write_bytes(content)
-    hint = "../opaque-resource" if kind == "relative" else str(path)
+    hint = {"relative": "../opaque-resource", "filename_mismatch": path.name}.get(kind, str(path))
     send = replace(qq_pic(digest), local_paths=(hint,), is_self=False)
     opened = []
     real_open = sticker_media._open_original
@@ -275,7 +275,7 @@ def test_qq_path_candidates_never_replace_content_or_read_authority(tmp_path, mo
     if kind == "corrupt":
         assert (item.status, item.reason) == ("invalid", "invalid_image")
         assert opened == [path]
-    elif kind == "different_bytes":
+    elif kind in {"different_bytes", "filename_mismatch"}:
         assert (item.status, item.reason) == ("missing", "digest_mismatch")
         assert opened == [path]
     else:

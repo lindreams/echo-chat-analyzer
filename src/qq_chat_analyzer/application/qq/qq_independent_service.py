@@ -27,7 +27,7 @@ from ...providers.qq_independent.files import SourceError, _file, _safe, _no_sid
 from ...providers.qq_independent.snapshot import prepare, _protect_new_root, _powershell, authorized_group_partition, authorized_group_partitions
 from ...providers.qq_independent.metadata import scoped_names
 from ...providers.qq_independent.process import verified_process, process_creation_ticks
-from ...providers.qq_independent.worker import resources_identity, runtime_files, event_api
+from ...providers.qq_independent.worker import direct_runtime_files, resources_identity, runtime_files, event_api
 from ...providers.qq_independent.diagnostics import failure_record, public_message, safe_code
 from ...providers.qq_sqlite_reader import configure_read_connection
 from ...qq_db_identity import canonical_qq_uin
@@ -73,6 +73,7 @@ class QQIndependentDiscovery:
     executables: tuple[Path, ...]
     incompatible_executables: tuple[Path, ...] = ()
     unverified_executables: tuple[Path, ...] = ()
+    location_warning: str | None = None
 
 
 def _configured_data_root(config):
@@ -90,7 +91,9 @@ def _configured_data_root(config):
             except (UnicodeError,configparser.Error):continue
         if parsed is None:raise ValueError()
         mode=parsed.get('UserDataSet','UserDataSavePathType')
-        if mode!='2':raise ValueError()
+        if mode!='2':
+            raise QQIndependentError('qq_data_location_unverified',
+                'Echo 无法自动识别 QQ 配置的保存位置类型，尚未读取聊天记录。')
         value=parsed.get('UserDataSet','UserDataSavePath').strip().strip('"')
         path=Path(os.path.expandvars(value))
         if not path.is_absolute():raise ValueError()
@@ -99,7 +102,7 @@ def _configured_data_root(config):
         return path
     except (OSError,ValueError,configparser.Error,SourceError):
         raise QQIndependentError('qq_data_location_unverified',
-            '无法确认 QQ 设置的资料位置，尚未读取聊天记录。请通过连接设置明确选择授权资料位置。') from None
+            '无法确认 QQ 设置的资料位置，尚未读取聊天记录。') from None
 
 
 def _discovery_locations(*, use_configured_root=True):
@@ -134,7 +137,7 @@ def _discovery_locations(*, use_configured_root=True):
     if native_profile and use_configured_root:
         common=ctypes.create_unicode_buffer(32768)
         if ctypes.windll.shell32.SHGetFolderPathW(None,0x2e,None,0,common)!=0:
-            raise QQIndependentError('qq_data_location_unverified','无法读取 QQ 资料位置设置，请通过连接设置明确选择授权资料位置。')
+            raise QQIndependentError('qq_data_location_unverified','无法读取 QQ 资料位置设置。')
         configured=_configured_data_root(Path(common.value)/'Tencent/QQ/UserDataInfo.ini')
         if configured is not None:
             # The configured location takes precedence over stale defaults;
@@ -171,7 +174,8 @@ def _remove_run(root, parent):
     if proof != {'kind':'echo-qq-independent-v1','root':list((parent.stat().st_dev,parent.stat().st_ino)),
                  'directory':list((root.stat().st_dev,root.stat().st_ino))}:
         raise SourceError('workspace_owner_mismatch')
-    allowed={'owner.json','request.json','message.db','group_info.db','profile_info.db','payload.json'}
+    allowed={'owner.json','request.json','message.db','group_info.db','profile_info.db','payload.json',
+             'read-request.json','read-request.pending'}
     for child in root.iterdir():
         _safe(child)
         if child.is_file():
@@ -210,7 +214,7 @@ class QQIndependentService:
     """No QQ launch/kill or persisted key; one authorized, expiring snapshot."""
     independent = True
 
-    def __init__(self, *, workspace: Path | None = None):
+    def __init__(self, *, workspace: Path | None = None, read_originals=False):
         self._parent=workspace or user_data_root()/'qq-independent'
         self._lock=threading.RLock()
         self._root=None; self._lease=None; self._selection=None; self._frozen=[]
@@ -218,6 +222,9 @@ class QQIndependentService:
         self._cancel=threading.Event(); self._busy=False; self._closing=False
         self._timer=None; self._generation=None; self._generation_handle=None
         self._worker=None; self._worker_reader=None; self._worker_exited=False
+        self._read_originals=read_originals
+        self._worker_messages=None; self._worker_stop=None; self._request_number=0
+        self._originals=None
         self._state=ConnectionState.DISCONNECTED
 
     def _cancelled(self, external=lambda:False):
@@ -229,8 +236,14 @@ class QQIndependentService:
         Discovery is not authorization, account attestation or key matching.
         A custom root is expanded one level, without following linked paths.
         """
-        roots,images=(_discovery_locations() if data_root is None else
-                      _discovery_locations(use_configured_root=False))
+        location_warning = None
+        try:
+            roots,images=_discovery_locations(use_configured_root=data_root is None)
+        except QQIndependentError as error:
+            if data_root is not None or error.code!='qq_data_location_unverified':raise
+            # Default locations are candidates for explicit confirmation only.
+            location_warning=error.public_message
+            roots,images=_discovery_locations(use_configured_root=False)
         if data_root is not None:roots=[Path(data_root)]
         accounts=[];executables=[];incompatible=[];unverified=[]
         def stopped():
@@ -276,7 +289,7 @@ class QQIndependentService:
             except (OSError,ValueError):unverified.append(image)
             else:
                 if image not in executables:executables.append(image)
-        return QQIndependentDiscovery(tuple(accounts),tuple(executables),tuple(incompatible),tuple(unverified))
+        return QQIndependentDiscovery(tuple(accounts),tuple(executables),tuple(incompatible),tuple(unverified),location_warning)
 
     def prepare(self, selection: QQIndependentSelection, *, cancelled=lambda:False):
         with self._lock:
@@ -297,7 +310,9 @@ class QQIndependentService:
             for name in ('nt_msg.db','group_info.db','profile_info.db'):
                 _file(account/'nt_qq/nt_db'/name)
             image=_safe(Path(selection.executable)); _file(image)
-            resources_identity(image); runtime_files()
+            resources_identity(image)
+            runtime_files()
+            if self._read_originals: direct_runtime_files()
             # The snapshot and its ACL helper must share a Windows-compatible
             # path budget. Refuse before a login/capture, never after QQ exits.
             longest=self._parent.absolute()/('run-'+'0'*32)/('qq-authorized-full-'+'0'*32)/'encrypted.db'
@@ -333,10 +348,11 @@ class QQIndependentService:
         if self._timer: self._timer.cancel()
         def expire():
             with self._lock:
-                if self._busy: return
+                if self._timer is not timer or self._busy: return
                 try: self._clear()
                 except Exception: self._state=ConnectionState.ERROR
-        self._timer=threading.Timer(_TTL,expire); self._timer.daemon=True; self._timer.start()
+        timer=threading.Timer(_TTL,expire); timer.daemon=True
+        self._timer=timer; timer.start()
 
     def capture(self, *, progress=lambda value:None, cancel_event=None, wait_for_process=False):
         with self._lock:
@@ -358,9 +374,10 @@ class QQIndependentService:
             if offline_started is not None:
                 _LOGGER.info('[qq independent] stage=qq_offline_read elapsed_ms=%d',int((time.perf_counter()-offline_started)*1000))
             if self._cancelled(external.is_set): raise QQIndependentError('analysis_cancelled','QQ 读取已取消。')
-            progress({'phase':'authenticating','message':'正在校验授权数据库…'})
-            with qq_session_stage(_LOGGER,'qq_database_validation'):
-                self._validate_databases(external.is_set)
+            if not self._read_originals:
+                progress({'phase':'authenticating','message':'正在校验授权数据库…'})
+                with qq_session_stage(_LOGGER,'qq_database_validation'):
+                    self._validate_databases(external.is_set)
             self._state=ConnectionState.CONNECTED; self._expire_later()
             return self.get_snapshot()
         except Exception as error:
@@ -451,15 +468,19 @@ class QQIndependentService:
         name='Local\\EchoQQIndependentStop-'+uuid4().hex
         cancel=api.CreateEventW(None,True,False,name)
         if not cancel: raise SourceError('cancel_event_unavailable')
-        process=None; reader=None
+        process=None; reader=None; keep=False
         try:
             request={'kind':'echo-qq-independent-capture-v1','image':str(self._selection.executable),
                      'pid':pid,'created':created,'cancel_event':name,
-                     'account_directory':str(self._selection.account_directory),'root':str(root)}
+                     'account_directory':str(self._selection.account_directory),'root':str(root),
+                     'direct':self._read_originals}
             (root/'request.json').write_text(json.dumps(request,ensure_ascii=True),encoding='ascii')
             env=os.environ.copy(); env.update(PYTHONNOUSERSITE='1',PYTHONDONTWRITEBYTECODE='1')
             for variable in _ENV:
                 directory=root/variable; directory.mkdir(); env[variable]=str(directory)
+            if self._read_originals:
+                env['OPENSSL_CONF']='NUL'
+                env['OPENSSL_MODULES']=env['TEMP']
             if getattr(sys,'frozen',False):
                 command=[sys.executable,'--echo-qq-independent-worker',str(root)]
             else:
@@ -472,10 +493,11 @@ class QQIndependentService:
             messages=queue.Queue(maxsize=32)
             def read():
                 try:
-                    for _ in range(16):
-                        line=process.stdout.readline(2049)
+                    limit=8*1024**2 if self._read_originals else 2048
+                    for _ in range(1024 if self._read_originals else 16):
+                        line=process.stdout.readline(limit+1)
                         if not line:break
-                        if len(line)>2048:
+                        if len(line)>limit:
                             messages.put_nowait(failure_record(code='protocol_incomplete'));break
                         messages.put_nowait(json.loads(line))
                 except (OSError,ValueError):
@@ -500,9 +522,16 @@ class QQIndependentService:
                         progress({'phase':'armed','login_before_utc':value['login_before_utc'],
                                   'remaining_login_ms':remaining})
                     elif phase=='stopped': progress({'phase':phase,'message':'登录捕获已停止。'})
-                    elif phase=='awaiting_exit': progress({'phase':phase,'message':'已收到登录信息，请在 110 秒内从托盘完全退出 QQ；Echo 不会自动退出 QQ。'})
+                    elif phase=='awaiting_exit': progress({'phase':phase,'message':'已收到登录信息，请在 110 秒内从托盘完全退出 QQ；Echo 不会自动退出 QQ。',
+                                                          'reading_originals':self._read_originals})
                     elif phase=='authenticating': progress({'phase':phase,'message':'QQ 已退出，正在校验并读取授权资料…'})
-                    elif phase=='completed': completed=value.get('verified') is True
+                    elif phase=='direct_ready' and self._read_originals and value.get('verified') is True:
+                        if stopping or failure is not None or self._cancelled(external.is_set):
+                            raise SourceError('cancelled')
+                        self._worker_messages=messages; self._worker_stop=(api,cancel); self._request_number=0
+                        keep=True
+                        return
+                    elif phase=='completed' and not self._read_originals: completed=value.get('verified') is True
                     elif phase=='failed':failure=failure_record(code=value.get('failure_code'),stage=value.get('failure_stage'),
                         exit_code=value.get('loader_exit_code'),cause_code=value.get('cause_code'))
                     elif phase not in ('failed','stop_unconfirmed'): raise SourceError('invalid_capture_status')
@@ -518,10 +547,38 @@ class QQIndependentService:
                 error.diagnostic_exit_code=failure.get('loader_exit_code')
                 error.diagnostic_cause_code=failure.get('cause_code');raise error
         finally:
-            try:
-                self._release_worker()
-            finally:
-                api.CloseHandle(cancel)
+            if not keep:
+                try:
+                    self._release_worker()
+                finally:
+                    api.CloseHandle(cancel)
+
+    def _request_read(self, operation, cancelled, **fields):
+        if self._cancelled(cancelled):
+            raise SourceError('cancelled')
+        if self._worker_messages is None or self._worker is None or self._worker.poll() is not None:
+            raise SourceError('worker_result_missing')
+        number=self._request_number+1
+        pending=self._root/'read-request.pending'
+        command=self._root/'read-request.json'
+        with pending.open('x',encoding='ascii') as stream:
+            json.dump({'id':number,'op':operation,**fields},stream,ensure_ascii=True,allow_nan=False)
+        pending.rename(command)
+        end=time.monotonic()+125
+        while time.monotonic()<end:
+            if self._cancelled(cancelled):
+                api,handle=self._worker_stop
+                api.SetEvent(handle)
+                raise SourceError('cancelled')
+            try: result=self._worker_messages.get(timeout=.05)
+            except queue.Empty: continue
+            if not isinstance(result,dict): raise SourceError('worker_result_missing')
+            if result.get('phase')=='failed': raise SourceError(safe_code(result.get('failure_code')))
+            if result.get('phase')!='direct_reply' or result.get('id')!=number:
+                raise SourceError('invalid_capture_status')
+            self._request_number=number
+            return result['value']
+        raise SourceError('capture_deadline')
 
     def _release_worker(self):
         # A failed Job query/close retains the owner and its plaintext lease.
@@ -529,7 +586,13 @@ class QQIndependentService:
         process=self._worker
         if process is None:return
         if not self._worker_exited:
-            process.terminate_tree()
+            if self._worker_stop:
+                api,handle=self._worker_stop
+                if api.SetEvent(handle):
+                    try: process.wait(timeout=.25)
+                    except subprocess.TimeoutExpired: pass
+            if not self._worker_stop or process.active_process_count()!=0:
+                process.terminate_tree()
             end=time.monotonic()+3
             while process.active_process_count()!=0 and time.monotonic()<end:time.sleep(.01)
             if process.active_process_count()!=0:raise SourceError('owned_tree_not_released')
@@ -539,6 +602,11 @@ class QQIndependentService:
         process.close_after_readers((reader,) if reader else (),deadline=time.monotonic()+2)
         if not process.closed or reader and reader.is_alive():raise SourceError('owned_reader_not_released')
         self._worker=None; self._worker_reader=None; self._worker_exited=False
+        self._worker_messages=None; self._request_number=0
+        if self._worker_stop:
+            api,handle=self._worker_stop
+            api.CloseHandle(handle)
+            self._worker_stop=None
 
     def _validate_databases(self, external=lambda:False):
         end=time.monotonic()+180
@@ -558,7 +626,10 @@ class QQIndependentService:
         try:
             if not _positive(account) or account!=self._selection.account:
                 raise QQIndependentError('qq_declaration_mismatch','本人 QQ 号须与所选账号资料标签一致；如资料选错，请重新选择。')
-            sessions=self._discover_sessions(account,cancelled)
+            if self._read_originals:
+                sessions=[QQSession(**entry) for entry in self._request_read('list',cancelled,account=account)]
+            else:
+                sessions=self._discover_sessions(account,cancelled)
             if self._cancelled(cancelled): raise SourceError('cancelled')
             self._confirmed=account; self._sessions=sessions
             self._media=self._media_roots() if self._selection.recover_media else ()
@@ -596,7 +667,7 @@ class QQIndependentService:
 
     def _discover_sessions(self, account, cancelled):
         started=time.perf_counter()
-        provider=QQDatabaseProvider(self._root/'message.db',cancelled=lambda:self._cancelled(cancelled))
+        provider=self._message_provider(cancelled)
         sessions=[];unnamed_groups=0
         with self._message_database(cancelled) as db:
             discovered=provider.list_sessions(self_uin=account)
@@ -612,7 +683,7 @@ class QQIndependentService:
                 if not _positive(group): raise SourceError('invalid_group')
                 groups[session.internal_key]=group
             with qq_session_stage(_LOGGER,'partition_validation'):
-                partitions=authorized_group_partitions(db,groups.values())
+                partitions=authorized_group_partitions(db,groups.values(),native=self._originals is not None)
             for session in discovered:
                 if self._cancelled(cancelled): raise SourceError('cancelled')
                 if session.session_type=='group':
@@ -621,7 +692,7 @@ class QQIndependentService:
                     if key!=session.internal_key: raise SourceError('partition_mismatch')
                     # Listing needs the group title only. Member identities
                     # remain scoped and resolved when that chat is analyzed.
-                    _,title,_=scoped_names(self._root/'group_info.db',self._root/'profile_info.db',group,set())
+                    _,title,_=self._scoped_names(group,set())
                     if not title:unnamed_groups+=1
                     session=replace(session,session_object=group,display_name=title or group)
                 else:
@@ -629,7 +700,7 @@ class QQIndependentService:
                     peers-={None,'0',account}
                     if len(peers)>1: raise SourceError('ambiguous_private_participants')
                     peer=next(iter(peers),session.peer_uin)
-                    names,_,_=scoped_names(self._root/'group_info.db',self._root/'profile_info.db',None,{peer} if peer else set())
+                    names,_,_=self._scoped_names(None,{peer} if peer else set())
                     session=replace(session,peer_uin=peer,display_name=names[peer].display_name if peer in names else session.display_name)
                 sessions.append(session)
         _LOGGER.info('[qq independent] stage=session_inventory group_sessions=%d private_sessions=%d message_rows=%d unresolved_group_names=%d elapsed_ms=%d',
@@ -639,12 +710,31 @@ class QQIndependentService:
 
     @contextmanager
     def _message_database(self, external=lambda:False):
+        if self._originals is not None:
+            _, db = self._originals['message']
+            end=time.monotonic()+180
+            db.set_progress_handler(lambda:self._cancelled(external) or time.monotonic()>=end,10000)
+            yield db
+            return
         path=self._root/'message.db';_file(path);_no_sidecars(path)
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True)) as db:
             db.execute('PRAGMA query_only=ON');db.execute('PRAGMA trusted_schema=OFF');configure_read_connection(db)
             end=time.monotonic()+180
             db.set_progress_handler(lambda:int(self._cancelled(external) or time.monotonic()>=end),10000)
             yield db
+
+    def _message_provider(self, external):
+        if self._originals is None:
+            return QQDatabaseProvider(self._root/'message.db',cancelled=lambda:self._cancelled(external))
+        path, connection = self._originals['message']
+        return QQDatabaseProvider(path,cancelled=lambda:self._cancelled(external),connection=connection)
+
+    def _scoped_names(self, group, members):
+        if self._originals is None:
+            return scoped_names(self._root/'group_info.db',self._root/'profile_info.db',group,members)
+        group_path, group_db = self._originals['group_info']
+        profile_path, profile_db = self._originals['profile_info']
+        return scoped_names(group_path,profile_path,group,members,connections=(group_db,profile_db))
 
     def _materialize(self, session, external, start_time, end_time):
         table='group_msg_table' if session.session_type=='group' else 'c2c_msg_table'
@@ -656,8 +746,8 @@ class QQIndependentService:
             rows=db.execute(f'SELECT "40033" FROM {table} WHERE CAST("40027" AS TEXT)=?',(session.internal_key,))
             members={uin for (raw,) in rows if (uin:=canonical_qq_uin(raw)) not in (None,'0')}
             with qq_session_stage(_LOGGER,'analysis_names'):
-                names,_,self.names_summary=scoped_names(self._root/'group_info.db',self._root/'profile_info.db',session.session_object if session.session_type=='group' else None,members)
-            provider=QQDatabaseProvider(self._root/'message.db',cancelled=lambda:self._cancelled(external))
+                names,_,self.names_summary=self._scoped_names(session.session_object if session.session_type=='group' else None,members)
+            provider=self._message_provider(external)
             # Connecting a selected profile supplies user-declared context,
             # never a QQ attestation of the current online identity.
             with qq_session_stage(_LOGGER,'analysis_records'):
@@ -724,15 +814,22 @@ class QQIndependentService:
         return tuple(roots)
 
     def get_snapshot(self):
+        with self._lock:
+            state=self._state
+            if (self._read_originals and state is ConnectionState.CONNECTED and
+                    (self._cancel.is_set() or self._worker is None or self._worker.poll() is not None)):
+                state=ConnectionState.ERROR
         message={ConnectionState.DISCONNECTED:'QQ 尚未准备。',
             ConnectionState.STARTING:'正在准备连接 QQ，请按 Echo 的当前提示操作，等待允许登录的提示。',
             ConnectionState.CONNECTED:('账号资料已认证，正在加载聊天列表。' if not self._confirmed else '会话已就绪；本人上下文来自所选账号资料，非 QQ 系统认证。'),
-            ConnectionState.ERROR:'QQ 读取未完成，请重新准备。'}.get(self._state,'正在读取 QQ 本地快照…')
-        return ConnectionSnapshot(self._state,'qq',message,version='9.9.37-54395')
+            ConnectionState.ERROR:'QQ 读取未完成，请重新准备。'}.get(state,'正在读取 QQ 本地快照…')
+        return ConnectionSnapshot(state,'qq',message,version='9.9.37-54395')
 
     def check_status(self):
-        return SimpleNamespace(available=bool(self._confirmed),direct_db_ready=bool(self._confirmed),
-            runtime_running=False,qq_online=False,message=self.get_snapshot().message)
+        snapshot=self.get_snapshot()
+        ready=bool(self._confirmed) and snapshot.state is ConnectionState.CONNECTED
+        return SimpleNamespace(available=ready,direct_db_ready=ready,
+            runtime_running=False,qq_online=False,message=snapshot.message)
 
     def list_sessions(self, *, cancelled=lambda:False):
         with self._lock:
@@ -744,9 +841,19 @@ class QQIndependentService:
             if self._busy or not self._confirmed: return None
             session=next((s for s in self._sessions if s.session_id==session_id),None)
             if session is None:return None
+            if self._read_originals:
+                try:
+                    result=self._request_read('range',lambda:False,session=session_id)
+                    self._expire_later()
+                    return tuple(result) if result else None
+                except Exception:
+                    self._clear()
+                    raise QQIndependentError('qq_snapshot_expired','本次读取已结束，请重新连接 QQ。') from None
             table='group_msg_table' if session.session_type=='group' else 'c2c_msg_table'
             with self._message_database() as db:
-                return db.execute(f'SELECT MIN("40050"),MAX("40050") FROM {table} WHERE CAST("40027" AS TEXT)=?',(session.internal_key,)).fetchone()
+                with closing(db.execute(f'SELECT MIN("40050"),MAX("40050") FROM {table} WHERE CAST("40027" AS TEXT)=?',
+                                        (session.internal_key,))) as rows:
+                    return rows.fetchone()
 
     @contextmanager
     def acquired_session(self, session_id, *, start_time=None,end_time=None,cancelled=lambda:False):
@@ -758,7 +865,12 @@ class QQIndependentService:
         try:
             try:
                 with qq_session_stage(_LOGGER,'analysis_export'):
-                    self._materialize(session,cancelled,start_time,end_time)
+                    if self._read_originals:
+                        self.read_counts=self._request_read('materialize',cancelled,session=session_id,start=start_time,end=end_time)
+                        self._payload=self._root/'payload.json'
+                        _file(self._payload)
+                    else:
+                        self._materialize(session,cancelled,start_time,end_time)
             except ApplicationServiceError:
                 raise
             except Exception as error:
@@ -789,6 +901,7 @@ class QQIndependentService:
                 else:self._expire_later()
             except BaseException:
                 self._cancel.set()
+                self._release_worker()
                 raise
             finally:
                 with self._lock:self._busy=False

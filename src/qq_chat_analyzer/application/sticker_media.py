@@ -441,7 +441,7 @@ def resolve_sticker_media(
     cooperative deadline bounds traversal.
 
     ``targeted`` is for a large client cache whose layout is unknown: the walk
-    is bounded by ``max_scan_entries``; only digest-named or exact QQ path-hint
+    is bounded by ``max_scan_entries``; only digest-named or exact QQ path/filename
     candidates are opened. Names, directories and suffixes remain candidate
     hints; the full-file MD5 and the decode must still agree. A tree no larger
     than ``max_entries`` files keeps the complete read, so an explicitly
@@ -454,9 +454,9 @@ def resolve_sticker_media(
     them; siblings are skipped and never opened. Scope validation and all
     traversal share one entry budget, deadline and byte budget.
 
-    QQ absolute local path hints may also nominate files encountered by this
-    authorized walk. Hints never add roots, bypass the whitelist or establish
-    content identity. Diagnostics contain aggregate counts/coverage only.
+    QQ absolute paths and bare filenames may nominate files encountered by
+    this authorized walk. Hints never add roots, bypass the whitelist or
+    establish content identity. Diagnostics contain aggregate counts only.
     """
     occurrences = tuple(sends)
     unique = {send.media_key: send for send in occurrences}
@@ -507,6 +507,7 @@ def resolve_sticker_media(
         if len(roots) > 16:
             raise _Rejected("limited", "root_budget")
         hints: dict[str, set[Path]] = {digest: set() for digest in wanted}
+        filenames: dict[str, set[str]] = defaultdict(set)
         for send in occurrences:
             check_cancelled()
             if time.monotonic() > deadline:
@@ -521,6 +522,10 @@ def resolve_sticker_media(
                 if (path.is_absolute() and ".." not in path.parts
                         and not path.drive.startswith("\\\\") and "\x00" not in value):
                     hints[send.content_md5].add(path)
+                elif (value and value not in {".", ".."}
+                      and not any(character in value for character in "\\/:\x00")
+                      and not value.endswith((".", " "))):
+                    filenames[value.lower()].add(send.content_md5)
 
         inventory = [] if scan_cache is not None and scan_cache.signature is None else None
 
@@ -534,9 +539,10 @@ def resolve_sticker_media(
                 inventory.append(item)
             if targeted or digest_names_only:
                 name = path.name.lower()
+                hinted_digests = filenames.get(name, ())
                 name_match = path_match = False
                 for digest in wanted:
-                    by_name, by_path = digest in name, path in hints[digest]
+                    by_name, by_path = digest in name, path in hints[digest] or digest in hinted_digests
                     if by_name or by_path:
                         named[digest].append(item)
                     name_match |= by_name
