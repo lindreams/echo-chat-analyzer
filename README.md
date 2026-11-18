@@ -4,7 +4,7 @@
 
 Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连接聊天来源，选择一段会话，把聊天节奏、表达习惯和常用表情包整理成可以慢慢回看的 **Echo Report**。
 
-**[⬇ 国内下载 Windows 安装包（v0.3.5）](https://cnb.cool/echo_mly/echo_releases/-/releases/download/v0.3.5/Echo-0.3.5-windows-x64-Setup.exe)** · [GitHub 备用直链](https://github.com/lindreams/echo-chat-analyzer/releases/download/v0.3.5/Echo-0.3.5-windows-x64-Setup.exe) · [版本说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.5) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
+**[⬇ 国内下载 Windows 安装包（v0.3.6）](https://cnb.cool/echo_mly/echo_releases/-/releases/download/v0.3.6/Echo-0.3.6-windows-x64-Setup.exe)** · [GitHub 备用直链](https://github.com/lindreams/echo-chat-analyzer/releases/download/v0.3.6/Echo-0.3.6-windows-x64-Setup.exe) · [版本说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.6) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
 
 **只支持 Windows 64 位电脑，暂不支持手机端。** 需要电脑端 QQ / 微信已经保存了相应的本地聊天记录；无法直接分析只存在手机里的历史记录。
 
@@ -33,7 +33,7 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 
 **连接 QQ / 微信 → 选择会话与时间范围 → 生成报告 → 阅读或分享**
 
-1. 点击顶部的 **国内下载** 链接，下载并运行 `Echo-0.3.5-windows-x64-Setup.exe`，按照安装提示操作。
+1. 点击顶部的 **国内下载** 链接，下载并运行 `Echo-0.3.6-windows-x64-Setup.exe`，按照安装提示操作。
 2. 打开 Echo，选择 QQ 或微信，按界面提示完成连接与授权。
 3. 选择聊天会话和时间范围，生成报告；报告可以在本机查看，也可以自行分享。
 
@@ -81,15 +81,15 @@ Echo 是较新的个人开发软件，Windows SmartScreen 可能因应用信誉�
 
 ## 版本、更新与反馈
 
-**当前正式版：v0.3.5（2026-11-12）**
+**当前正式版是 v0.3.6（2026-11-19）**
 
-这一版重点改善较大聊天记录的分析效率与稳定性，减少 QQ 快照校验、会话发现、重复文本处理和表情索引的额外开销，并修复 PIC 缓存不完整时的重复扫描。**它是性能与稳定性更新，没有增加新的报告分析功能。**
+分析 QQ 聊天时直接读取本机记录，省去整库复制。一次连接可以连续分析多个会话，连接期间请保持 QQ 关闭，点「退出连接」后即可重新打开 QQ。
 
 近期版本还持续完善了 QQ 数据读取、图片与表情包处理、报告按需加载以及日志管理。报告中已有的聊天节奏、语言画像和表情包分析继续保留。
 
-**已知限制：** 个别大群分析仍可能短暂卡顿；过深的 Windows 报告输出路径仍有限制。QQ / 微信的跨版本与跨机器兼容性继续收集反馈。0.3.4 → 0.3.5 正式身份升级、自动重启及数据保留尚待真实用户验证，不能视为已经全面验收。
+使用 QQ 分析需安装 QQ 9.9.37（54395）。报告中的图片和表情视可用素材而定。个别大群分析仍可能短暂卡顿，过深的 Windows 报告输出路径仍有限制。
 
-[查看 v0.3.5 更新说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.5) · [查看全部版本](https://cnb.cool/echo_mly/echo_releases/-/releases) · [后续开发计划](docs/ROADMAP.md)
+[查看 v0.3.6 更新说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.6) · [查看全部版本](https://cnb.cool/echo_mly/echo_releases/-/releases) · [后续开发计划](docs/ROADMAP.md)
 
 <details>
 <summary>已安装用户如何更新？</summary>
