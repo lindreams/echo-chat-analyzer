@@ -641,15 +641,18 @@ class QQIndependentService:
         table='group_msg_table' if session.session_type=='group' else 'c2c_msg_table'
         with self._message_database(external) as db:
             if session.session_type=='group':
-                key,count,first,last=authorized_group_partition(db,session.session_object,lambda _:None)
+                with qq_session_stage(_LOGGER,'analysis_partition'):
+                    key,count,first,last=authorized_group_partition(db,session.session_object,lambda _:None)
                 if key!=session.internal_key: raise SourceError('partition_mismatch')
             rows=db.execute(f'SELECT "40033" FROM {table} WHERE CAST("40027" AS TEXT)=?',(session.internal_key,))
             members={uin for (raw,) in rows if (uin:=canonical_qq_uin(raw)) not in (None,'0')}
-            names,_,self.names_summary=scoped_names(self._root/'group_info.db',self._root/'profile_info.db',session.session_object if session.session_type=='group' else None,members)
+            with qq_session_stage(_LOGGER,'analysis_names'):
+                names,_,self.names_summary=scoped_names(self._root/'group_info.db',self._root/'profile_info.db',session.session_object if session.session_type=='group' else None,members)
             provider=QQDatabaseProvider(self._root/'message.db',cancelled=lambda:self._cancelled(external))
             # Connecting a selected profile supplies user-declared context,
             # never a QQ attestation of the current online identity.
-            payload=provider.read_session_payload(session,self_uin=self._confirmed,start_time=start_time,end_time=end_time)
+            with qq_session_stage(_LOGGER,'analysis_records'):
+                payload=provider.read_session_payload(session,self_uin=self._confirmed,start_time=start_time,end_time=end_time)
             payload['self']['basis']='user_declared'
             predicate='CAST("40027" AS TEXT)=?';values=[session.internal_key]
             if start_time is not None: predicate+=' AND "40050">=?';values.append(start_time)
@@ -657,20 +660,36 @@ class QQIndependentService:
             count=db.execute(f'SELECT COUNT(*) FROM {table} WHERE '+predicate,values).fetchone()[0]
             # Do not silently discard unfamiliar NULL-body records.
             missing=0
-            for row in db.execute(f'SELECT * FROM {table} WHERE '+predicate+' AND ("40800" IS NULL OR typeof("40800")!=\'blob\' OR length("40800")=0)',values):
-                columns=[d[1] for d in db.execute(f'PRAGMA table_info({table})')]
-                raw=dict(zip(columns,row))
-                if (session.session_type!='group' or raw.get('40800') is not None or raw.get('40033')!=0
-                    or type(raw.get('40011')) is not int or raw['40011']!=1
-                    or type(raw.get('40012')) is not int or raw['40012'] not in (0,1)):
-                    raise SourceError('unclassified_provider_exclusions')
-                missing+=1
-            if len(payload['records'])+missing!=count: raise SourceError('unclassified_provider_exclusions')
+            with closing(db.execute(f'SELECT * FROM {table} WHERE '+predicate+' AND ("40800" IS NULL OR typeof("40800")!=\'blob\' OR length("40800")=0)',values)) as excluded:
+                for row in excluded:
+                    columns=[d[1] for d in db.execute(f'PRAGMA table_info({table})')]
+                    raw=dict(zip(columns,row))
+                    if (session.session_type!='group' or raw.get('40800') is not None or raw.get('40033')!=0
+                        or type(raw.get('40011')) is not int or raw['40011']!=1
+                        or type(raw.get('40012')) is not int or raw['40012'] not in (0,1)):
+                        body=raw.get('40800')
+                        body_kind=('null' if body is None else 'empty_blob' if isinstance(body,bytes) and not body
+                                   else 'text' if isinstance(body,str) else 'other')
+                        # Only bounded message-type flags, never sender UINs,
+                        # timestamps, message IDs, text or BLOB bytes.
+                        flags=[]
+                        for field in ('40011','40012'):
+                            value=raw.get(field)
+                            flags.append('missing' if field not in raw else 'null' if value is None
+                                         else value if type(value) is int and 0<=value<=255 else 'other')
+                        _LOGGER.warning('[qq independent] stage=analysis_exclusions session_kind=%s body_kind=%s flag_40011=%s flag_40012=%s',
+                            session.session_type,body_kind,*flags)
+                        raise SourceError('unclassified_provider_exclusions')
+                    missing+=1
+            if len(payload['records'])+missing!=count:
+                _LOGGER.warning('[qq independent] stage=analysis_exclusions database_rows=%d provider_messages=%d verified_missing_body_rows=%d',count,len(payload['records']),missing)
+                raise SourceError('unclassified_provider_exclusions')
             self.read_counts={'database_rows':count,'provider_messages':len(payload['records']),
                 'verified_missing_body_rows':missing,'unclassified_exclusions':0}
         if self._cancelled(external): raise SourceError('cancelled')
         self._payload=self._root/'payload.json'
-        attach_sender_names(self._payload,payload,names,self._confirmed)
+        with qq_session_stage(_LOGGER,'analysis_payload'):
+            attach_sender_names(self._payload,payload,names,self._confirmed)
 
     def _media_roots(self):
         base=self._selection.account_directory/'nt_qq/nt_data'
@@ -726,11 +745,26 @@ class QQIndependentService:
             self._busy=True
         try:
             try:
-                self._materialize(session,cancelled,start_time,end_time)
+                with qq_session_stage(_LOGGER,'analysis_export'):
+                    self._materialize(session,cancelled,start_time,end_time)
             except ApplicationServiceError:
                 raise
-            except Exception:
-                raise QQIndependentError() from None
+            except Exception as error:
+                code=(safe_code(error.code) if isinstance(error,SourceError) else
+                      'sqlite_error' if isinstance(error,sqlite3.Error) else
+                      'file_missing' if isinstance(error,FileNotFoundError) else
+                      'permission_denied' if isinstance(error,PermissionError) else
+                      'io_error' if isinstance(error,OSError) else 'unexpected_error')
+                trace=error.__traceback__
+                while trace and trace.tb_next:trace=trace.tb_next
+                filename=Path(trace.tb_frame.f_code.co_filename).name if trace else 'unknown'
+                if filename not in {'qq_independent_service.py','metadata.py','snapshot.py',
+                                    'qq_database_provider.py','qq_sqlite_reader.py'}:filename='other'
+                _LOGGER.warning('[qq independent] stage=analysis_export failure_code=%s error_type=%s file=%s line=%d sqlite_code=%d',
+                    code,type(error).__name__,filename,trace.tb_lineno if trace else 0,getattr(error,'sqlite_errorcode',0))
+                message=('所选会话包含尚无法识别的消息记录，已停止生成报告，避免遗漏统计。' if code=='unclassified_provider_exclusions'
+                         else '所选会话读取失败，已停止本次分析。')
+                raise QQIndependentError('qq_analysis_'+code,message+'（错误码：qq_analysis_'+code+'）') from None
             yield QQIndependentAcquisition(self._payload,self._confirmed,session,self._media,self._selection.recover_media)
         except BaseException:
             self._cancel.set()  # A failed source/consumer never retains a usable generation.

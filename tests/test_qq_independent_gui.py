@@ -1084,6 +1084,44 @@ def test_snapshot_cleanup_preserves_consumer_facade_error(prepared):
     assert refused.value is error and service._root is None
 
 
+@pytest.mark.parametrize('body,kind',[(None,'null'),('PRIVATE_BODY_SENTINEL','text'),(b'','empty_blob')])
+def test_analysis_exclusion_reason_reaches_gui_boundary_and_cleans(prepared,tmp_path,caplog,body,kind):
+    service,selection,dbroot=prepared
+    with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:
+        db.execute('UPDATE c2c_msg_table SET "40800"=? WHERE "40001"=100',(body,));db.commit()
+    service.prepare(selection);service.capture();service.confirm_account(selection.account)
+    facade=facade_for(service)
+    with pytest.raises(FacadeError) as refused:
+        facade.analyze_session(ChatSource.QQ,'private:private-a',AnalysisConfig(output_directory=tmp_path/'report'))
+    assert refused.value.code=='qq_analysis_unclassified_provider_exclusions'
+    assert refused.value.code in refused.value.public_message
+    assert 'stage=analysis_exclusions session_kind=private body_kind='+kind in caplog.text
+    assert 'stage=analysis_export failure_code=unclassified_provider_exclusions' in caplog.text
+    assert service._root is None and not service.check_status().available
+    assert not list((tmp_path/'report').rglob('echo-report.json'))
+    for private in ('PRIVATE_BODY_SENTINEL',selection.account,str(dbroot)):
+        assert private not in caplog.text and private not in refused.value.public_message
+
+
+@pytest.mark.parametrize('error,code',[
+    (SourceError('metadata_member_scope_mismatch'),'metadata_member_scope_mismatch'),
+    (SourceError('PRIVATE_ERROR_SENTINEL'),'worker_internal_error'),
+    (sqlite3.OperationalError('PRIVATE_ERROR_SENTINEL'),'sqlite_error'),
+    (ValueError('PRIVATE_ERROR_SENTINEL'),'unexpected_error'),
+])
+def test_analysis_failure_diagnostics_preserve_only_closed_codes(prepared,monkeypatch,caplog,error,code):
+    service,selection,_=prepared
+    service.prepare(selection);service.capture();service.confirm_account(selection.account)
+    def fail(*a):raise error
+    monkeypatch.setattr(service,'_materialize',fail)
+    with pytest.raises(source.QQIndependentError) as refused:
+        with service.acquired_session('private:private-a'):pytest.fail('failed export published')
+    assert refused.value.code=='qq_analysis_'+code
+    assert 'failure_code='+code in caplog.text
+    assert 'PRIVATE_ERROR_SENTINEL' not in caplog.text and 'PRIVATE_ERROR_SENTINEL' not in refused.value.public_message
+    assert service._root is None
+
+
 def test_payload_cleanup_failure_blocks_reuse_and_retains_owner(prepared,monkeypatch):
     service,selection,_=prepared
     service.prepare(selection);service.capture();service.confirm_account(selection.account)
