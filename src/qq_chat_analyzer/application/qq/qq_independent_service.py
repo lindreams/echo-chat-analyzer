@@ -24,13 +24,14 @@ from uuid import uuid4
 
 from ...providers.qq_database_provider import QQDatabaseProvider, QQSession, attach_sender_names
 from ...providers.qq_independent.files import SourceError, _file, _safe, _no_sidecars
-from ...providers.qq_independent.snapshot import prepare, _protect_new_root, _powershell, authorized_group_partition
+from ...providers.qq_independent.snapshot import prepare, _protect_new_root, _powershell, authorized_group_partition, authorized_group_partitions
 from ...providers.qq_independent.metadata import scoped_names
 from ...providers.qq_independent.process import verified_process, process_creation_ticks
 from ...providers.qq_independent.worker import resources_identity, runtime_files, event_api
 from ...providers.qq_independent.diagnostics import failure_record, public_message, safe_code
 from ...providers.qq_sqlite_reader import configure_read_connection
 from ...qq_db_identity import canonical_qq_uin
+from ...diagnostics import qq_session_stage
 from ...resources import user_data_root
 from ..connection_models import ConnectionSnapshot, ConnectionState
 from ..errors import ApplicationServiceError
@@ -585,23 +586,33 @@ class QQIndependentService:
             with self._lock: self._busy=False
 
     def _discover_sessions(self, account, cancelled):
+        started=time.perf_counter()
         provider=QQDatabaseProvider(self._root/'message.db',cancelled=lambda:self._cancelled(cancelled))
         sessions=[];unnamed_groups=0
         with self._message_database(cancelled) as db:
-            for session in provider.list_sessions(self_uin=account):
+            discovered=provider.list_sessions(self_uin=account)
+            groups={}
+            for session in discovered:
+                if session.session_type!='group':continue
+                if self._cancelled(cancelled): raise SourceError('cancelled')
+                group=session.session_object
+                if not group:
+                    candidates=db.execute('SELECT DISTINCT CAST("40021" AS TEXT) FROM group_msg_table WHERE CAST("40027" AS TEXT)=? LIMIT 2',(session.internal_key,)).fetchall()
+                    if len(candidates)!=1: raise SourceError('ambiguous_group')
+                    group=candidates[0][0]
+                if not _positive(group): raise SourceError('invalid_group')
+                groups[session.internal_key]=group
+            with qq_session_stage(_LOGGER,'partition_validation'):
+                partitions=authorized_group_partitions(db,groups.values())
+            for session in discovered:
                 if self._cancelled(cancelled): raise SourceError('cancelled')
                 if session.session_type=='group':
-                    group=session.session_object
-                    if not group:
-                        candidates=db.execute('SELECT DISTINCT CAST("40021" AS TEXT) FROM group_msg_table WHERE CAST("40027" AS TEXT)=? LIMIT 2',(session.internal_key,)).fetchall()
-                        if len(candidates)!=1: raise SourceError('ambiguous_group')
-                        group=candidates[0][0]
-                    if not _positive(group): raise SourceError('invalid_group')
-                    key,count,first,last=authorized_group_partition(db,group,lambda _:None)
+                    group=groups[session.internal_key]
+                    key,count,first,last=partitions[group]
                     if key!=session.internal_key: raise SourceError('partition_mismatch')
-                    members={canonical_qq_uin(row[0]) for row in db.execute('SELECT DISTINCT "40033" FROM group_msg_table WHERE CAST("40027" AS TEXT)=?',(key,))}
-                    members.discard(None);members.discard('0')
-                    _,title,_=scoped_names(self._root/'group_info.db',self._root/'profile_info.db',group,members)
+                    # Listing needs the group title only. Member identities
+                    # remain scoped and resolved when that chat is analyzed.
+                    _,title,_=scoped_names(self._root/'group_info.db',self._root/'profile_info.db',group,set())
                     if not title:unnamed_groups+=1
                     session=replace(session,session_object=group,display_name=title or group)
                 else:
@@ -612,9 +623,9 @@ class QQIndependentService:
                     names,_,_=scoped_names(self._root/'group_info.db',self._root/'profile_info.db',None,{peer} if peer else set())
                     session=replace(session,peer_uin=peer,display_name=names[peer].display_name if peer in names else session.display_name)
                 sessions.append(session)
-        _LOGGER.info('[qq independent] stage=session_inventory group_sessions=%d private_sessions=%d message_rows=%d unresolved_group_names=%d',
+        _LOGGER.info('[qq independent] stage=session_inventory group_sessions=%d private_sessions=%d message_rows=%d unresolved_group_names=%d elapsed_ms=%d',
             sum(s.session_type=='group' for s in sessions),sum(s.session_type=='private' for s in sessions),
-            sum(s.message_count or 0 for s in sessions),unnamed_groups)
+            sum(s.message_count or 0 for s in sessions),unnamed_groups,int((time.perf_counter()-started)*1000))
         return sessions
 
     @contextmanager

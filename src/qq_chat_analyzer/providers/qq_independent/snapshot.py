@@ -1,5 +1,6 @@
 """Frozen encrypted inputs and strict group partition binding."""
 import ctypes
+from contextlib import closing
 from ctypes import wintypes
 import hashlib,json,os,subprocess,time,uuid
 from pathlib import Path
@@ -160,6 +161,32 @@ def validate_prepared(path, digest):
     return manifest
 
 
+def _partition_aggregates(has_object, group_sql):
+    number = f'''typeof("40030") IN ('integer','text') AND CAST("40030" AS TEXT)={group_sql}'''
+    zero = '''typeof("40030") IN ('integer','text') AND CAST("40030" AS TEXT)='0' '''
+    object_matches = f'''typeof("40021") IN ('integer','text') AND CAST("40021" AS TEXT)={group_sql}''' if has_object else "0"
+    return f'''COUNT(*), MIN("40050"), MAX("40050"),
+          SUM(CASE WHEN {number} THEN 1 ELSE 0 END),
+          SUM(CASE WHEN ({zero}) AND ({object_matches}) THEN 1 ELSE 0 END),
+          SUM(CASE WHEN ({object_matches}) THEN 0 ELSE 1 END),
+          COUNT(DISTINCT typeof("40027"))'''
+
+
+def _verified_partition(key, counts, has_object, on_status):
+    count, first, last, numbered, witnessed_zero, object_conflicts, key_types = counts
+    valid = bool(count and numbered + witnessed_zero == count and key_types == 1
+                 and (not has_object or object_conflicts == 0))
+    on_status({"phase": "group_partition_mapping", "state": "verified" if valid else "refused",
+        "candidate_partitions": 1, "partition_rows": count, "group_number_rows": numbered or 0,
+        "zero_number_object_confirmed_rows": witnessed_zero or 0,
+        "unproven_number_rows": count - (numbered or 0) - (witnessed_zero or 0),
+        "object_column_present": has_object, "object_conflict_rows": object_conflicts if has_object else 0,
+        "partition_storage_types": key_types})
+    if not valid:
+        raise SourceError("authorized_partition_mismatch")
+    return key, count, first, last
+
+
 def authorized_group_partition(connection, group, on_status):
     """Bind an external group to one partition using metadata, never bodies.
 
@@ -174,29 +201,71 @@ def authorized_group_partition(connection, group, on_status):
         on_status({"phase": "group_partition_mapping", "state": "refused", "candidate_partitions": len(keys)})
         raise SourceError("authorized_session_missing_or_ambiguous")
     key = keys[0][0]
-    columns = {row[1] for row in connection.execute("PRAGMA table_info(group_msg_table)")}
-    has_object = "40021" in columns
     # SQL NULL must count as unproven, not silently disappear from != tests.
-    number = '''typeof("40030") IN ('integer','text') AND CAST("40030" AS TEXT)=:group'''
-    zero = '''typeof("40030") IN ('integer','text') AND CAST("40030" AS TEXT)='0' '''
-    object_matches = '''typeof("40021") IN ('integer','text') AND CAST("40021" AS TEXT)=:group''' if has_object else "0"
-    count, first, last, numbered, witnessed_zero, object_conflicts, key_types = connection.execute(f'''
-        SELECT COUNT(*), MIN("40050"), MAX("40050"),
-          SUM(CASE WHEN {number} THEN 1 ELSE 0 END),
-          SUM(CASE WHEN ({zero}) AND ({object_matches}) THEN 1 ELSE 0 END),
-          SUM(CASE WHEN ({object_matches}) THEN 0 ELSE 1 END),
-          COUNT(DISTINCT typeof("40027"))
+    counts = connection.execute(f'''
+        SELECT {_partition_aggregates(has_object, ':group')}
         FROM group_msg_table WHERE CAST("40027" AS TEXT)=:key''', {"group": group, "key": key}).fetchone()
     # Legacy fixtures without 40021 retain the strict all-40030 rule. When
     # present, require a uniform object binding even on nonzero anchor rows.
-    valid = bool(count and numbered + witnessed_zero == count and key_types == 1
-                 and (not has_object or object_conflicts == 0))
-    on_status({"phase": "group_partition_mapping", "state": "verified" if valid else "refused",
-        "candidate_partitions": 1, "partition_rows": count, "group_number_rows": numbered or 0,
-        "zero_number_object_confirmed_rows": witnessed_zero or 0,
-        "unproven_number_rows": count - (numbered or 0) - (witnessed_zero or 0),
-        "object_column_present": has_object, "object_conflict_rows": object_conflicts if has_object else 0,
-        "partition_storage_types": key_types})
-    if not valid:
-        raise SourceError("authorized_partition_mismatch")
-    return key, count, first, last
+    return _verified_partition(key, counts, has_object, on_status)
+
+
+def authorized_group_partitions(connection, groups):
+    """Apply the same row proofs to a list without rescanning per group.
+
+    Only the small group/key selection is materialized in memory.
+    Message bodies and full message/header copies are never materialized.
+    Single-session report reads keep using authorized_group_partition.
+    """
+    groups = list(dict.fromkeys(groups))
+    if not groups:
+        return {}
+    if len(groups) > 400:
+        return {group: proof for offset in range(0, len(groups), 400)
+                for group, proof in authorized_group_partitions(connection, groups[offset:offset+400]).items()}
+    columns = {row[1] for row in connection.execute('PRAGMA table_info(group_msg_table)')}
+    has_object = '40021' in columns
+    marks = ','.join('?' for _ in groups)
+    sql = f'''SELECT CAST("40030" AS TEXT), CAST("40027" AS TEXT)
+        FROM group_msg_table WHERE CAST("40030" AS TEXT) IN ({marks})'''
+    values = list(groups)
+    if has_object:
+        sql += f''' UNION SELECT CAST("40021" AS TEXT), CAST("40027" AS TEXT)
+            FROM group_msg_table WHERE CAST("40030" AS TEXT)='0'
+            AND CAST("40021" AS TEXT) IN ({marks})'''
+        values += groups
+    else:
+        sql = sql.replace('SELECT ', 'SELECT DISTINCT ', 1)
+    keys = {group: set() for group in groups}
+    with closing(connection.execute(sql, values)) as mappings:
+        for group, key in mappings:
+            keys[group].add(key)
+            if len(keys[group]) > 1:
+                raise SourceError('authorized_session_missing_or_ambiguous')
+    targets = []
+    for group in groups:
+        if len(keys[group]) != 1:
+            raise SourceError('authorized_session_missing_or_ambiguous')
+        key = next(iter(keys[group]))
+        if not key or key.strip() in ('', '0'):
+            raise SourceError('authorized_session_missing_or_ambiguous')
+        targets.append((group, key))
+    # Give the small materialized selection TEXT affinity, so SQLite can
+    # automatically index its keys while scanning the message table once.
+    # Keep the snapshot connection immutable and query-only throughout.
+    connection.execute('PRAGMA temp_store=MEMORY')
+    rows = ','.join('(?,?)' for _ in targets)
+    with closing(connection.execute(f'''WITH targets AS MATERIALIZED (
+        SELECT CAST(column1 AS TEXT) AS authorized_group,
+               CAST(column2 AS TEXT) AS partition_key FROM (VALUES {rows}))
+        SELECT target.authorized_group,
+        {_partition_aggregates(has_object, 'target.authorized_group')}
+        FROM group_msg_table JOIN targets AS target
+          ON CAST("40027" AS TEXT)=target.partition_key
+        GROUP BY target.authorized_group''', [value for target in targets for value in target])) as cursor:
+        counts = cursor.fetchall()
+    result = {group: _verified_partition(next(iter(keys[group])), row, has_object, lambda _: None)
+              for group, *row in counts}
+    if len(result) != len(groups):
+        raise SourceError('authorized_partition_mismatch')
+    return result

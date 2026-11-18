@@ -19,6 +19,70 @@ from qq_chat_analyzer.application.qq.qq_independent_service import _discovery_lo
 from qq_chat_analyzer.application.shutdown_models import ShutdownStatus
 from qq_chat_analyzer.providers.qq_independent.files import SourceError
 from qq_chat_analyzer.providers.qq_independent.snapshot import bind_live_database_paths
+from qq_chat_analyzer.providers.qq_independent.snapshot import authorized_group_partition, authorized_group_partitions
+
+
+@pytest.mark.parametrize('fault',[
+    None, 'zero_only', 'null_number', 'real_number', 'blob_number', 'object_conflict',
+    'null_object', 'second_partition', 'mixed_key_storage', 'missing', 'zero_key',
+    'legacy', 'legacy_zero',
+])
+def test_batch_partition_validation_preserves_single_session_proofs(tmp_path,fault):
+    path=tmp_path/'fictional.db'
+    has_object=fault not in ('legacy','legacy_zero')
+    rows=[('partition-a',900000001,900000001,10),('partition-a',0,900000001,20),
+          ('partition-b',900000002,900000002,30)]
+    if fault=='zero_only':rows[0]=('partition-a',0,900000001,10)
+    elif fault in ('null_number','real_number','blob_number','object_conflict','null_object'):
+        number={'null_number':None,'real_number':900000001.0,'blob_number':b'900000001'}.get(fault,900000001)
+        obj=None if fault=='null_object' else 900000002 if fault=='object_conflict' else 900000001
+        rows.append(('partition-a',number,obj,40))
+    elif fault=='second_partition':rows.append(('partition-c',900000001,900000001,40))
+    elif fault=='mixed_key_storage':rows[:2]=[('123',900000001,900000001,10),(123,0,900000001,20)]
+    elif fault=='missing':rows=rows[-1:]
+    elif fault=='zero_key':rows[:2]=[('0',900000001,900000001,10),('0',0,900000001,20)]
+    elif fault=='legacy':rows[1]=('partition-a',900000001,900000001,20)
+    with closing(sqlite3.connect(path)) as db:
+        db.execute('CREATE TABLE group_msg_table ("40027","40030",'+('"40021",' if has_object else '')+'"40050","40800")')
+        db.executemany('INSERT INTO group_msg_table VALUES ('+','.join('?' for _ in range(5 if has_object else 4))+')',
+            [(*row,None) if has_object else (row[0],row[1],row[3],None) for row in rows])
+        db.commit()
+    original=path.read_bytes()
+    with closing(sqlite3.connect(path.as_uri()+'?mode=ro&immutable=1',uri=True)) as db:
+        db.execute('PRAGMA query_only=ON')
+        # These proofs must never read a message body or weaken query_only.
+        def guard(action,table,column,*_):
+            if action==sqlite3.SQLITE_READ and column=='40800':return sqlite3.SQLITE_DENY
+            if action==sqlite3.SQLITE_PRAGMA and table=='query_only' and column is not None:
+                return sqlite3.SQLITE_DENY
+            return sqlite3.SQLITE_OK
+        db.set_authorizer(guard)
+        valid=fault in (None,'zero_only','legacy')
+        if valid:
+            expected={g:authorized_group_partition(db,g,lambda _:None) for g in ('900000001','900000002')}
+            assert authorized_group_partitions(db,expected)==expected
+            assert expected['900000001'][1:]==(2,10,20)
+        else:
+            code='authorized_session_missing_or_ambiguous' if fault in ('second_partition','missing','zero_key') else 'authorized_partition_mismatch'
+            for call in (lambda:authorized_group_partition(db,'900000001',lambda _:None),
+                         lambda:authorized_group_partitions(db,['900000001','900000002'])):
+                with pytest.raises(SourceError) as refused:call()
+                assert refused.value.code==code
+        assert db.execute('PRAGMA query_only').fetchone()==(1,)
+    assert path.read_bytes()==original
+
+
+def test_batch_partition_validation_handles_large_lists_and_cancellation(tmp_path):
+    with closing(sqlite3.connect(':memory:')) as db:
+        db.execute('CREATE TABLE group_msg_table ("40027","40030","40021","40050")')
+        groups=[str(900000000+i) for i in range(401)]
+        db.executemany('INSERT INTO group_msg_table VALUES (?,?,?,?)',[(f'key-{g}',g,g,1) for g in groups])
+        db.execute('PRAGMA query_only=ON')
+        assert set(authorized_group_partitions(db,groups))==set(groups)
+        assert authorized_group_partitions(db,[])=={}
+        db.set_progress_handler(lambda:1,1)
+        with pytest.raises(sqlite3.OperationalError,match='interrupted'):
+            authorized_group_partitions(db,groups)
 
 
 def test_live_database_path_binding_requires_independent_owner_and_unique_scope(tmp_path):
