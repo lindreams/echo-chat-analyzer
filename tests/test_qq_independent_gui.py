@@ -114,6 +114,18 @@ def facade_for(service):
                               analysis_service=AnalysisApplicationService())
 
 
+def test_long_workspace_refuses_before_capture_or_private_files(prepared,tmp_path,monkeypatch):
+    _,selection,_=prepared
+    parent=tmp_path/('p'*120)
+    service=source.QQIndependentService(workspace=parent)
+    monkeypatch.setattr(service,'_run_capture',lambda *a:pytest.fail('capture started for unsupported path'))
+    try:
+        with pytest.raises(source.QQIndependentError) as refused:service.prepare(selection)
+        assert refused.value.code=='qq_workspace_path_too_long'
+        assert service._root is None and service._lease is None and not parent.exists()
+    finally:service.shutdown()
+
+
 def test_profile_discovery_lists_metadata_only_and_requires_explicit_scope(prepared,tmp_path,monkeypatch):
     service,selection,dbroot=prepared;facade=facade_for(service)
     other=tmp_path/'100000002';shutil.copytree(dbroot,other/'nt_qq/nt_db')

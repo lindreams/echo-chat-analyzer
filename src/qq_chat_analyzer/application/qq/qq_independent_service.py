@@ -259,6 +259,12 @@ class QQIndependentService:
                 _file(account/'nt_qq/nt_db'/name)
             image=_safe(Path(selection.executable)); _file(image)
             resources_identity(image); runtime_files()
+            # The snapshot and its ACL helper must share a Windows-compatible
+            # path budget. Refuse before a login/capture, never after QQ exits.
+            longest=self._parent.absolute()/('run-'+'0'*32)/('qq-authorized-full-'+'0'*32)/'encrypted.db'
+            if os.name=='nt' and len(str(longest))>=260:
+                raise QQIndependentError('qq_workspace_path_too_long',
+                    '临时资料目录过长，连接尚未开始。请缩短验收或数据目录后再连接。')
             self._parent.mkdir(parents=True,exist_ok=True); _safe(self._parent)
             lease=_lease(self._parent/'.independent.lock',0); lease.__enter__(); self._lease=lease
             # The OS lease excludes every other live owner, including cleanup.
