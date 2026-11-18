@@ -5,6 +5,7 @@ from contextlib import contextmanager, closing
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import ctypes
+import configparser
 from ctypes import wintypes
 import json
 import logging
@@ -73,7 +74,34 @@ class QQIndependentDiscovery:
     unverified_executables: tuple[Path, ...] = ()
 
 
-def _discovery_locations():
+def _configured_data_root(config):
+    """QQ's explicit storage location, not an account or credential witness."""
+    if not os.path.lexists(config):return None
+    try:
+        _file(config)
+        with config.open('rb') as stream:data=stream.read(16385)
+        if len(data)>16384:raise ValueError()
+        parsed=None
+        for encoding in ('utf-8-sig','utf-16','gb18030'):
+            try:
+                parser=configparser.ConfigParser(interpolation=None)
+                parser.read_string(data.decode(encoding));parsed=parser;break
+            except (UnicodeError,configparser.Error):continue
+        if parsed is None:raise ValueError()
+        mode=parsed.get('UserDataSet','UserDataSavePathType')
+        if mode!='2':raise ValueError()
+        value=parsed.get('UserDataSet','UserDataSavePath').strip().strip('"')
+        path=Path(os.path.expandvars(value))
+        if not path.is_absolute():raise ValueError()
+        path=_safe(path)
+        if not path.is_dir():raise ValueError()
+        return path
+    except (OSError,ValueError,configparser.Error,SourceError):
+        raise QQIndependentError('qq_data_location_unverified',
+            '无法确认 QQ 设置的资料位置，尚未读取聊天记录。请通过连接设置明确选择授权资料位置。') from None
+
+
+def _discovery_locations(*, use_configured_root=True):
     """Fixed local metadata locations only; no drive search or process probe."""
     documents=Path.home()/'Documents'
     images=[]
@@ -102,6 +130,15 @@ def _discovery_locations():
                 images.append(Path(base)/relative)
     roots=[documents/'Tencent Files']
     if appdata:=os.environ.get('APPDATA'):roots.append(Path(appdata)/'Tencent/QQ')
+    if native_profile and use_configured_root:
+        common=ctypes.create_unicode_buffer(32768)
+        if ctypes.windll.shell32.SHGetFolderPathW(None,0x2e,None,0,common)!=0:
+            raise QQIndependentError('qq_data_location_unverified','无法读取 QQ 资料位置设置，请通过连接设置明确选择授权资料位置。')
+        configured=_configured_data_root(Path(common.value)/'Tencent/QQ/UserDataInfo.ini')
+        if configured is not None:
+            # The configured location takes precedence over stale defaults;
+            # never combine two copies of the same account or rank by size/age.
+            roots=[configured]
     return roots,images
 
 
@@ -191,7 +228,8 @@ class QQIndependentService:
         Discovery is not authorization, account attestation or key matching.
         A custom root is expanded one level, without following linked paths.
         """
-        roots,images=_discovery_locations()
+        roots,images=(_discovery_locations() if data_root is None else
+                      _discovery_locations(use_configured_root=False))
         if data_root is not None:roots=[Path(data_root)]
         accounts=[];executables=[];incompatible=[];unverified=[]
         def stopped():
@@ -548,7 +586,7 @@ class QQIndependentService:
 
     def _discover_sessions(self, account, cancelled):
         provider=QQDatabaseProvider(self._root/'message.db',cancelled=lambda:self._cancelled(cancelled))
-        sessions=[]
+        sessions=[];unnamed_groups=0
         with self._message_database(cancelled) as db:
             for session in provider.list_sessions(self_uin=account):
                 if self._cancelled(cancelled): raise SourceError('cancelled')
@@ -564,6 +602,7 @@ class QQIndependentService:
                     members={canonical_qq_uin(row[0]) for row in db.execute('SELECT DISTINCT "40033" FROM group_msg_table WHERE CAST("40027" AS TEXT)=?',(key,))}
                     members.discard(None);members.discard('0')
                     _,title,_=scoped_names(self._root/'group_info.db',self._root/'profile_info.db',group,members)
+                    if not title:unnamed_groups+=1
                     session=replace(session,session_object=group,display_name=title or group)
                 else:
                     peers={canonical_qq_uin(row[0]) for row in db.execute('SELECT DISTINCT "40033" FROM c2c_msg_table WHERE CAST("40027" AS TEXT)=?',(session.internal_key,))}
@@ -573,6 +612,9 @@ class QQIndependentService:
                     names,_,_=scoped_names(self._root/'group_info.db',self._root/'profile_info.db',None,{peer} if peer else set())
                     session=replace(session,peer_uin=peer,display_name=names[peer].display_name if peer in names else session.display_name)
                 sessions.append(session)
+        _LOGGER.info('[qq independent] stage=session_inventory group_sessions=%d private_sessions=%d message_rows=%d unresolved_group_names=%d',
+            sum(s.session_type=='group' for s in sessions),sum(s.session_type=='private' for s in sessions),
+            sum(s.message_count or 0 for s in sessions),unnamed_groups)
         return sessions
 
     @contextmanager

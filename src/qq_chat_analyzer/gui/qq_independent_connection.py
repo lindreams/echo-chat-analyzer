@@ -84,10 +84,12 @@ class QQIndependentConnection:
             if cleanup and self.cancelled.is_set():
                 self.release('已取消连接，可以重新开始。')
             elif failure:
-                _code, message = failure[0]
+                code, message = failure[0]
                 if cleanup:
                     self._image = None
-                    self.release(message)
+                    location_error=code=='qq_data_location_unverified'
+                    if location_error:self._recovery='data'
+                    self.release(message,recovery=location_error)
                 else:
                     self._idle('本次资料未能安全释放，已停止连接。请关闭 Echo，暂勿重复连接。', blocked=True)
             elif result:

@@ -177,6 +177,8 @@ class QQDatabaseProvider:
                     ) or "",
                 )
             )
+        _LOGGER.info('[qq sessions] stage=inventory kind=%s partition_rows=%d returned_sessions=%d source_rows=%d skipped_partition_rows=%d',
+                     session_type,len(rows),len(sessions),sum(row['message_count'] for row in rows),len(rows)-len(sessions))
         return sessions
 
     def materialize_group_payload(

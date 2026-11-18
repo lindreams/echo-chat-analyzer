@@ -15,6 +15,7 @@ from qq_db_test_data import synthetic_text_message_blob
 from qq_chat_analyzer.application.analysis_service import AnalysisApplicationService
 from qq_chat_analyzer.application.facade import ChatAnalyzerFacade, ChatSource, AnalysisConfig, FacadeError
 from qq_chat_analyzer.application.qq import qq_independent_service as source
+from qq_chat_analyzer.application.qq.qq_independent_service import _discovery_locations as actual_locations
 from qq_chat_analyzer.application.shutdown_models import ShutdownStatus
 from qq_chat_analyzer.providers.qq_independent.files import SourceError
 from qq_chat_analyzer.providers.qq_independent.snapshot import bind_live_database_paths
@@ -84,7 +85,7 @@ def prepared(tmp_path,monkeypatch):
         db.commit()
     monkeypatch.setattr(source,'resources_identity',lambda _:None)
     monkeypatch.setattr(source,'runtime_files',lambda:None)
-    monkeypatch.setattr(source,'_discovery_locations',lambda:([tmp_path],[image]))
+    monkeypatch.setattr(source,'_discovery_locations',lambda **_options:([tmp_path],[image]))
     def freeze(path,parent):
         child=parent/('qq-authorized-full-'+hashlib.sha256(path.name.encode()).hexdigest()[:32]); child.mkdir()
         (child/'owner.json').write_text(json.dumps({'kind':'echo-qq-full-read','version':1}))
@@ -112,6 +113,71 @@ def prepared(tmp_path,monkeypatch):
 def facade_for(service):
     return ChatAnalyzerFacade(qq_service=service,qq_connection_service=service,independent_qq=True,
                               analysis_service=AnalysisApplicationService())
+
+
+def test_configured_root_replaces_stale_default_and_loads_all_conversations(qt_app,prepared,tmp_path,monkeypatch,caplog):
+    import time,winreg
+    from PySide6.QtWidgets import QInputDialog
+    from qq_chat_analyzer.gui.main_window import MainWindow
+    from qq_chat_analyzer.gui.qq_independent_connection import QQIndependentConnection
+    from qq_chat_analyzer.application.qq import qq_auth_bridge
+    service,selection,dbroot=prepared
+    custom=tmp_path/'custom-storage';account=custom/selection.account;database=account/'nt_qq/nt_db'
+    shutil.copytree(dbroot,database)
+    with closing(sqlite3.connect(database/'nt_msg.db')) as db:
+        for i in range(23):
+            db.execute('INSERT INTO group_msg_table VALUES (?,?,?,?,?,?,?,?,?)',
+                (1000+i,'group-extra-'+str(i),900001000+i,900001000+i,100000001,1760000000+i,
+                 synthetic_text_message_blob('Fictional extra conversation'),1,0))
+        for i in range(24):
+            db.execute('INSERT INTO c2c_msg_table VALUES (?,?,?,?,?,?,?)',
+                (2000+i,'private-extra-'+str(i),100001000+i,100001000+i,100001000+i,1760000000+i,
+                 synthetic_text_message_blob('Fictional extra private conversation')))
+        db.commit()
+    with closing(sqlite3.connect(database/'group_info.db')) as db:
+        for i in range(23):
+            for table in ('group_list','group_detail_info_ver1'):
+                db.execute(f'INSERT INTO {table} VALUES (?,?)',(900001000+i,'Fictional group '+str(i)))
+        db.commit()
+    old=Path.home()/'Documents/Tencent Files'/selection.account/'nt_qq/nt_db';old.mkdir(parents=True)
+    for name in ('nt_msg.db','group_info.db','profile_info.db'):(old/name).write_bytes(b'OLD_PARTIAL_DATABASE_MUST_NOT_BE_OPENED')
+    common=tmp_path/'common';config=common/'Tencent/QQ/UserDataInfo.ini';config.parent.mkdir(parents=True)
+    config.write_text('[UserDataSet]\nUserDataSavePathType=2\nUserDataSavePath='+str(custom)+'\n',encoding='utf-8-sig')
+    def folders(_owner,kind,_token,_flags,buffer):
+        assert kind in (0x28,0x2e)
+        buffer.value=str(Path.home() if kind==0x28 else common);return 0
+    monkeypatch.setattr(source.ctypes.windll.shell32,'SHGetFolderPathW',folders)
+    def no_registry(*a):raise FileNotFoundError('fictional absent registry')
+    monkeypatch.setattr(winreg,'OpenKey',no_registry)
+    monkeypatch.setattr(qq_auth_bridge,'_qq_install_candidates',lambda:[selection.executable])
+    for key in ('ProgramFiles','ProgramFiles(x86)','ProgramW6432','LOCALAPPDATA'):
+        monkeypatch.setenv(key,str(tmp_path/key))
+    monkeypatch.setattr(source,'_discovery_locations',actual_locations)
+    assert actual_locations()[0]==[custom]
+    assert facade_for(service).discover_independent_qq_profiles().accounts==(account,)
+    monkeypatch.setattr(QQIndependentConnection,'_authorize',lambda *a:True)
+    monkeypatch.setattr(QInputDialog,'getText',lambda *a,**k:(selection.account,True))
+    window=MainWindow(facade_for(service));window.show()
+    try:
+        window.home_page._qq_btn.click();workspace=window.qq_workspace;workspace._qq_connect_button.click()
+        end=time.monotonic()+15
+        while not workspace._sessions_loaded and time.monotonic()<end:
+            qt_app.processEvents();time.sleep(.005)
+        assert workspace._sessions_loaded
+        assert service._selection.account_directory==account and workspace.session_panel._session_list.count()==50
+        sessions=service.list_sessions()
+        assert sum(s.session_type=='group' for s in sessions)==25
+        assert sum(s.session_type=='private' for s in sessions)==25
+    finally:
+        window.close();assert window.await_shutdown(10)
+
+
+@pytest.mark.parametrize('value',['relative-path','',None])
+def test_bad_configured_location_never_falls_back_to_old_database(tmp_path,value):
+    config=tmp_path/'UserDataInfo.ini'
+    config.write_text('[UserDataSet]\nUserDataSavePathType=2\n'+('UserDataSavePath='+value if value is not None else ''),encoding='utf-8')
+    with pytest.raises(source.QQIndependentError) as refused:source._configured_data_root(config)
+    assert refused.value.code=='qq_data_location_unverified'
 
 
 def test_long_workspace_refuses_before_capture_or_private_files(prepared,tmp_path,monkeypatch):
@@ -172,7 +238,7 @@ def test_program_discovery_filters_versions_and_broken_resources(prepared,tmp_pa
     service,selection,_=prepared
     old=tmp_path/'old/QQ.exe';old.parent.mkdir();old.write_bytes(b'old')
     broken=tmp_path/'broken/QQ.exe';broken.parent.mkdir();broken.write_bytes(b'broken')
-    monkeypatch.setattr(source,'_discovery_locations',lambda:([],[selection.executable,old,broken,selection.executable]))
+    monkeypatch.setattr(source,'_discovery_locations',lambda **_options:([],[selection.executable,old,broken,selection.executable]))
     def validate(path):
         if path==old:raise SourceError('exact_active_version_required')
         if path==broken:raise SourceError('module_identity_refused')
@@ -383,7 +449,7 @@ def test_formal_composition_and_navigation_are_passive(qt_app,monkeypatch):
     from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
     monkeypatch.setattr(source,'resources_identity',lambda _:pytest.fail('navigation inspected QQ'))
     monkeypatch.setattr(source,'runtime_files',lambda:pytest.fail('navigation touched runtime'))
-    monkeypatch.setattr(source,'_discovery_locations',lambda:pytest.fail('passive navigation discovered profiles'))
+    monkeypatch.setattr(source,'_discovery_locations',lambda **_options:pytest.fail('passive navigation discovered profiles'))
     facade=build_facade();window=MainWindow(facade)
     try:
         window.show_qq_workspace()
@@ -791,7 +857,7 @@ def test_formal_connection_recovers_without_publishing_sessions(qt_app,prepared,
     from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
     from qq_chat_analyzer.gui.qq_independent_connection import QQIndependentConnection
     service,selection,_=prepared
-    if stop=='missing':monkeypatch.setattr(source,'_discovery_locations',lambda:([],[]))
+    if stop=='missing':monkeypatch.setattr(source,'_discovery_locations',lambda **_options:([],[]))
     monkeypatch.setattr(QQIndependentConnection,'_authorize',lambda *a:stop!='consent')
     monkeypatch.setattr(QInputDialog,'getText',lambda *a,**k:('999999999',stop=='wrong_identity'))
     widget=QQWorkspace(facade_for(service))
