@@ -1,4 +1,4 @@
-"""Coalesce QQ original scopes without expanding media read authority."""
+"""Coalesce QQ media scopes without expanding media read authority."""
 from pathlib import Path
 import re
 
@@ -12,7 +12,7 @@ def qq_media_search_roots(scopes: tuple[Path, ...]) -> tuple[Path, ...]:
     roots = []
     for scope in scopes:
         root = scope
-        if scope.name == "Ori" and re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", scope.parent.name):
+        if scope.name in {"Ori", "Thumb"} and re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", scope.parent.name):
             base = scope.parent.parent
             if (base.name == "Pic" and base.parent.name == "nt_data"
                     and base.parent.parent.name == "nt_qq") or (

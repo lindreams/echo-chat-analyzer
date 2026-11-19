@@ -1335,6 +1335,50 @@ def test_qq_cached_inventory_rechecks_files_and_rejects_changed_scope(tmp_path):
     assert (item.status, item.reason) == ("unsafe", "scan_scope_changed")
 
 
+def test_qq_size_hints_recover_renamed_originals_across_batches(tmp_path, monkeypatch):
+    from qq_chat_analyzer.analysis.stickers import StickerData
+    from qq_chat_analyzer.application import sticker_media
+
+    def image(comment_length):
+        stream = BytesIO()
+        Image.new("RGB", (4, 3), "blue").save(stream, format="GIF", comment=b"x" * comment_length)
+        return stream.getvalue()
+
+    sizes, originals, sends = {}, set(), []
+    for index in range(40):
+        raw = image(index + 1)
+        digest = hashlib.md5(raw).hexdigest()
+        sizes[digest] = (len(raw),)
+        originals.add(raw)
+        sends.append(qq_pic(digest))
+        (tmp_path / f"qq-renamed-{index}.gif").write_bytes(raw)
+    crowded = image(100)
+    crowded_digest = hashlib.md5(crowded).hexdigest()
+    sends.append(qq_pic(crowded_digest))
+    sizes[crowded_digest] = (len(crowded),)
+    (tmp_path / "crowded-original.gif").write_bytes(crowded)
+    for index in range(sticker_media.MAX_QQ_SIZE_CANDIDATES):
+        (tmp_path / f"unrelated-{index}.gif").write_bytes(b"_" * len(crowded))
+    scan = sticker_media._QQMediaCacheScan(candidate_sizes=sizes)
+    data = StickerData(sends=tuple(sends))
+    count = sticker_media.STICKER_MEDIA_BATCH_SIZE
+    walks, real_scan = [], sticker_media.os.scandir
+
+    def inventory(path):
+        walks.append(path)
+        return real_scan(path)
+
+    monkeypatch.setattr(sticker_media.os, "scandir", inventory)
+    for start in range(0, len(sends), count):
+        data = sticker_media.associate_sticker_media(
+            data, media_keys=tuple(send.media_key for send in sends[start:start + count]),
+            roots=(tmp_path,), source="qq", scan_cache=scan)
+    assert walks == [tmp_path]
+    assert {item.original_bytes for item in data.media if item.status == "available"} == originals
+    remaining, = (item for item in data.media if item.media_key == sends[-1].media_key)
+    assert (remaining.status, remaining.reason) == ("limited", "size_candidate_budget")
+
+
 def test_batch_memory_ceiling_applies_across_pages(tmp_path, monkeypatch):
     from qq_chat_analyzer.analysis.stickers import StickerData
     from qq_chat_analyzer.application import sticker_media

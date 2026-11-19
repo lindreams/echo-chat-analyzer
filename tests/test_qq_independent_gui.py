@@ -167,7 +167,7 @@ def prepared(tmp_path,monkeypatch):
             service._frozen.append({'path':frozen['snapshot']})
             shutil.copyfile(frozen['snapshot'],service._root/(role+'.db'))
     monkeypatch.setattr(service,'_run_capture',capture)
-    monkeypatch.setattr(service,'_process_candidates',lambda **options:[] if options.get('include_children') else [{'ProcessId':123,'ExecutablePath':str(image)}])
+    monkeypatch.setattr(service,'_process_candidates',lambda **options:[] if options.get('include_children') else [123])
     selection=source.QQIndependentSelection(image,account,'100000001',False)
     yield service,selection,dbroot
     assert service.shutdown() is ShutdownStatus.SUCCESS
@@ -480,6 +480,14 @@ def test_facade_complete_list_scoped_analysis_report_and_reuse(prepared,tmp_path
     assert service._root is None
     with pytest.raises(FacadeError):
         facade.analyze_session(ChatSource.QQ,group.session_id,AnalysisConfig(output_directory=tmp_path/'repeat'))
+    facade.prepare_independent_qq(selection.executable,selection.account_directory)
+    facade.start_qq_auth_flow()
+    facade.confirm_independent_qq_account(selection.account)
+    assert [session.session_id for session in facade.list_sessions(ChatSource.QQ)] == [
+        session.session_id for session in sessions
+    ]
+    facade.disconnect_qq()
+    assert service._root is None
 
 
 def test_session_range_skips_unknown_timestamps(prepared):
@@ -606,9 +614,11 @@ def test_media_scope_is_account_bound_and_missing_cache_is_optional(prepared):
     assert service._media_roots()==()
     root=selection.account_directory/'nt_qq/nt_data'
     original=root/'Pic/2026-01/Ori';original.mkdir(parents=True)
+    thumb=root/'Emoji/emoji-recv/2026-02/Thumb';thumb.mkdir(parents=True)
+    favorites=root/'Emoji/personal_emoji/Ori';favorites.mkdir(parents=True)
     face=root/'Emoji/marketface';face.mkdir(parents=True)
     (root/'Pic/unrelated').mkdir()
-    assert set(service._media_roots())=={original,face}
+    assert set(service._media_roots())=={original,thumb,favorites,face}
 
 
 def test_shutdown_blocks_new_facade_acquisition(prepared):
@@ -845,8 +855,8 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
     existing=iter([True,False,True,False])
     def processes(**options):
         if options.get('include_children'):
-            return [{'ProcessId':122}] if next(existing) else []
-        return [{'ProcessId':123}]
+            return [122] if next(existing) else []
+        return [123]
     monkeypatch.setattr(service,'_process_candidates',processes)
     progress_phases=[]
     def capture(report,external):
@@ -1008,7 +1018,7 @@ def test_automatic_process_wait_never_opens_databases_or_starts_capture(prepared
         calls.append(True)
         assert not list(service._root.glob('*.db'))
         if outcome=='cancel':event.set()
-        return ([{},{}] if outcome=='ambiguous' else [{}] if outcome=='appears' else [])
+        return ([123,124] if outcome=='ambiguous' else [123] if outcome=='appears' else [])
     monkeypatch.setattr(service,'_process_candidates',candidates)
     clock=iter([0,121])
     if outcome=='timeout':
@@ -1033,9 +1043,9 @@ def test_already_running_qq_requires_manual_exit_before_fresh_launch(prepared,mo
     def candidates(**options):
         checks.append(options.get('include_children',False))
         assert service._worker is None and service._generation_handle is None
-        if not options.get('include_children'):return [{'ProcessId':456}]
+        if not options.get('include_children'):return [456]
         if outcome=='cancel':event.set()
-        return [{}] if outcome!='exit_then_open' or len(checks)==1 else []
+        return [123] if outcome!='exit_then_open' or len(checks)==1 else []
     monkeypatch.setattr(service,'_process_candidates',candidates)
     clock=iter([0,121])
     if outcome=='timeout':monkeypatch.setattr(source,'time',SimpleNamespace(monotonic=lambda:next(clock,121)))
@@ -1629,20 +1639,37 @@ def test_independent_account_media_reaches_final_html_with_animation(prepared,tm
     item=send()
     write_cache(cache,item)
     segment=_scalar(45002,11)+_scalar(80810,item.resource_pack_id)+_bytes(80903,bytes.fromhex(item.resource_id))
-    original=image_bytes('GIF',animated=True);digest=hashlib.md5(original).hexdigest()
+    original=image_bytes('GIF',animated=True)
     pic=selection.account_directory/'nt_qq/nt_data/Pic/2026-01/Ori';pic.mkdir(parents=True)
     original_name='fictional-cache-resource.gif'
     (pic/original_name).write_bytes(original)
+    thumbnail=original.replace(bytes((255,0,0)),bytes((0,255,0)),1)
+    favorite=original.replace(bytes((255,0,0)),bytes((255,255,0)),1)
+    assert len({original,thumbnail,favorite})==3
+    thumb=pic.parent/'Thumb';thumb.mkdir()
+    (thumb/'fictional-renamed.gif').write_bytes(thumbnail)
+    favorites=cache.parent/'personal_emoji/Ori';favorites.mkdir(parents=True)
+    favorite_digest=hashlib.md5(favorite).hexdigest()
+    (favorites/f'{favorite_digest}.gif').write_bytes(favorite)
     missing=image_bytes('PNG');missing_digest=hashlib.md5(missing).hexdigest()
+    # A correctly named thumbnail with different bytes is not an original.
+    (thumb/f'{missing_digest}.png').write_bytes(original)
     # An original in another account is not authorized as a fallback.
     sibling=selection.account_directory.parent/'100000003/nt_qq/nt_data/Pic/2026-01/Ori'
     sibling.mkdir(parents=True);(sibling/'fictional-sibling-resource.png').write_bytes(missing)
     with closing(sqlite3.connect(dbroot/'nt_msg.db')) as db:
         db.execute('UPDATE group_msg_table SET "40800"=? WHERE "40001"=0',
                    (synthetic_text_message_blob('Orchard seedlings need gentle rain tomorrow')+_body(segment),))
-        for index,md5,filename in ((1,digest,original_name),(2,missing_digest,'fictional-sibling-resource.png')):
-            custom=(_scalar(45002,2)+_scalar(45003,1)+_bytes(45406,bytes.fromhex(md5))
-                    +_bytes(45403,filename.encode('ascii'))+_scalar(45418,1))
+        db.execute('INSERT INTO group_msg_table VALUES (?,?,?,?,?,?,?,?,?)',
+                   (4,'partition-a',900000001,900000001,100000002,1760000240,b'',1,0))
+        for index,raw,hint in (
+            (1,original,_bytes(45402,original_name.encode('ascii'))),
+            (2,missing,_bytes(45402,b'fictional-sibling-resource.png')+_scalar(45405,len(missing))),
+            (3,thumbnail,_scalar(45405,len(thumbnail))),
+            (4,favorite,b''),
+        ):
+            md5=hashlib.md5(raw).digest()
+            custom=_scalar(45002,2)+_scalar(45003,1)+_bytes(45406,md5)+hint+_scalar(45418,1)
             db.execute('UPDATE group_msg_table SET "40800"=? WHERE "40001"=?',
                        (synthetic_text_message_blob('Fictional custom picture in this conversation')+_body(custom),index))
         db.commit()
@@ -1657,13 +1684,15 @@ def test_independent_account_media_reaches_final_html_with_animation(prepared,tm
     outcome=facade.analyze_session(ChatSource.QQ,session.session_id,
                                  AnalysisConfig(output_directory=tmp_path/'animated-report'))
     assert outcome.report_path is not None
-    assert len(outcome.result.stickers.sends)==3
+    assert len(outcome.result.stickers.sends)==5
     assets=outcome.echo_report_view.stickers.assets
-    assert len(assets)==3
+    assert len(assets)==5
     ready=[a for a in assets if a.status in ('available','preview')]
     absent=[a for a in assets if a.status=='missing']
-    assert len(ready)==2 and len(absent)==1 and not absent[0].data_uri
+    assert len(ready)==4 and len(absent)==1 and not absent[0].data_uri
     assert all(a.reason!='report_media_source_unavailable' for a in assets)
+    assert {original,thumbnail,favorite}.issubset(
+        (outcome.report_path.parent/a.data_uri).read_bytes() for a in ready)
     from PIL import Image
     for asset in ready:
         reference=asset.data_uri

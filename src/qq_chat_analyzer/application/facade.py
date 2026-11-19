@@ -811,7 +811,18 @@ class ChatAnalyzerFacade:
                 # No discovery: use only caller/source-owned, previously trusted scopes.
                 if roots:
                     local_started = _perf_counter()
-                    scan_cache = _QQMediaCacheScan()
+                    sizes = defaultdict(set)
+                    if self.independent_qq:
+                        digests = {sends[key][0].content_md5 for key in keys}
+                        for fact in result.qq_pic_media_facts:
+                            check_budget()
+                            if fact.session_id != session.session_id:
+                                continue
+                            for element in fact.elements:
+                                if (element.is_custom_sticker and element.content_md5 in digests
+                                        and element.file_size is not None):
+                                    sizes[element.content_md5].add(element.file_size)
+                    scan_cache = _QQMediaCacheScan(candidate_sizes=sizes)
                     scan_incomplete = False
                     _LOGGER.info("[sticker-media-local] batch=%s state=start main_thread=%s", batch,
                                  threading.current_thread() is threading.main_thread())

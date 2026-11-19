@@ -143,6 +143,7 @@ class QQPicMediaElement:
     file_uuid: str | None = field(default=None, repr=False)
     content_md5: str | None = field(default=None, repr=False)
     is_custom_sticker: bool = False
+    file_size: int | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -248,6 +249,8 @@ def _qq_pic_media_element(
     subtype = [item for tag, wire, item in segment if tag == 45003 and wire == 0]
     segment_id = values.get((45001, 0))
     file_uuid = _utf8_text(values.get((45503, 2)))
+    size_fields = [(wire, item) for tag, wire, item in segment if tag == 45405]
+    file_size = size_fields[0][1] if len(size_fields) == 1 and size_fields[0][0] == 0 else None
     if group:
         # Repeated locating fields cannot silently pick the last value.
         if sum(tag == 45001 for tag, _, _ in segment) != 1:
@@ -265,6 +268,7 @@ def _qq_pic_media_element(
         file_uuid=file_uuid,
         content_md5=_pic_digest(segment),
         is_custom_sticker=subtype == [1],
+        file_size=file_size if isinstance(file_size, int) and file_size > 0 else None,
     )
 
 
@@ -773,6 +777,15 @@ def _content_from_segment(
         # Only the observed Windows QQ value 45003=1 marks a custom sticker send.
         # Ordinary images, unobserved values and repeated fields remain images.
         subtype = [value for tag, wire, value in fields if tag == 45003 and wire == 0]
+        if subtype != [1]:
+            return NonTextContent("image", media=media)
+        # Treat the message's filename only as a hint inside the allowed roots.
+        names = [(wire, item) for tag, wire, item in fields if tag == 45402]
+        if len(names) == 1 and names[0][0] == 2:
+            name = _utf8_text(names[0][1])
+            if (name and name not in {".", ".."} and not name.endswith((".", " "))
+                    and not any(char in name for char in "\\/:\x00") and name not in paths):
+                paths += (name,)
         sticker = StickerIdentity(
             classification_basis="qq_pic_45003_custom",
             identity_basis="qq_pic_45406_md5" if digest else "unresolved",
@@ -780,7 +793,7 @@ def _content_from_segment(
             identity_key=f"qq-pic:md5:{digest}" if digest else None,
             content_md5=digest,
             local_paths=paths,
-        ) if subtype == [1] else None
+        )
         return NonTextContent("image", media=media, sticker=sticker)
     if content_type == 6:
         face_index = values.get((47601, 0))

@@ -2333,16 +2333,18 @@ document.documentElement.classList.add("js-ready");
     if (!stickerGroup && !noSends) {
       document.getElementById("sticker-rankings").appendChild(stickerStaff());
     }
-    function memoryImage(items) {
+    function memoryImage(items, showPreviewCaption = true) {
       var item = items[0] || {asset_key: ""};
       var figure = memoryElement("figure", "memory-art");
       figure.dataset.assetKey = item.asset_key;
       figure.appendChild(stickerImage(item));
       var asset = stickerAssets[item.asset_key], status = asset && asset.status;
       figure.classList.toggle("is-original", status === "available");
-      figure.appendChild(memoryElement("figcaption", "",
-        status === "available" ? "已验证原件" :
-        status === "preview" ? "可信预览 · 非原件" : "未恢复图片"));
+      if (status !== "preview" || showPreviewCaption) {
+        figure.appendChild(memoryElement("figcaption", "",
+          status === "available" ? "已验证原件" :
+          status === "preview" ? "可信预览 · 非原件" : "未恢复图片"));
+      }
       return figure;
     }
     function memoryDates(points) {
@@ -2487,7 +2489,7 @@ document.documentElement.classList.add("js-ready");
         points.forEach(function (point, index) {
           var turn = memoryElement("li", (stickerGroup ? index % 2 === 1 : point.label === "TA") ? "is-peer" : "");
           turn.appendChild(memoryElement("span", "memory-turn-side", point.label + (point.value > 1 ? " · " + point.value + " 次" : "")));
-          turn.appendChild(memoryImage(point.materials));
+          turn.appendChild(memoryImage(point.materials, false));
           turn.appendChild(memoryElement("span", "memory-turn-number", String(index + 1).padStart(2, "0")));
           turns.appendChild(turn);
         });

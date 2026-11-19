@@ -981,22 +981,28 @@ def test_saved_qq_media_report_loads_actual_images_offline(tmp_path, kind, caplo
 @pytest.mark.slow_integration
 @pytest.mark.parametrize("kind", ["private", "group"])
 def test_sticker_personal_findings_and_repeated_events_have_their_own_place(tmp_path, kind):
+    from base64 import b64encode
     from qq_chat_analyzer.presentation.models import (
-        EchoStickers, EchoStickerMember, EchoStickerMemory, EchoStickerFinding,
+        EchoStickers, EchoStickerAsset, EchoStickerItem, EchoStickerMember, EchoStickerMemory, EchoStickerFinding,
         EchoStickerMemoryPoint,
     )
+    from test_sticker_data import image_bytes
 
     chromium = _find_chromium()
     if chromium is None:
         pytest.skip("no local Chromium available")
     labels = ("我", "TA") if kind == "private" else ("小林（1）", "小林（2）")
+    preview = EchoStickerItem("虚构的表情", 1, "sticker:preview")
+    image_uri = "data:image/png;base64," + b64encode(image_bytes("PNG")).decode("ascii")
     personal = tuple(EchoStickerFinding("signature", f"{label}的长期偏爱", owner_label=label,
         points=(EchoStickerMemoryPoint(label, value=12, date_count=8,
             start_date="2025-01-01", end_date="2025-03-01"),)) for label in labels)
     relays = tuple(EchoStickerFinding("relay", f"你来我往，一连 {day + 3} 轮。",
         period=f"2025-04-0{day} 12:00:00 — 2025-04-0{day} 12:01:00",
-        points=tuple(EchoStickerMemoryPoint(label, value=1) for label in labels)) for day in (3, 1, 2))
+        points=(EchoStickerMemoryPoint(labels[0], value=1, materials=(preview,)),
+                EchoStickerMemoryPoint(labels[1], value=1))) for day in (3, 1, 2))
     chapter = EchoStickers(available=True, conversation_kind=kind, total_send_count=24,
+        assets=(EchoStickerAsset(preview.asset_key, image_uri, "preview"),),
         members=tuple(EchoStickerMember(label, send_count=12) for label in labels),
         memories=(EchoStickerMemory((personal[0], relays[0])),
                   EchoStickerMemory((relays[1], personal[1])),
@@ -1016,6 +1022,8 @@ def test_sticker_personal_findings_and_repeated_events_have_their_own_place(tmp_
         result.initialCardCount=cards().length;
         result.initial=current();result.firstDisabled=buttons[0].disabled;result.firstCount=status.textContent;
         const first=cards()[0];
+        result.previewImagePresent=!!first.querySelector(".memory-relay .memory-art img");
+        result.assetStatus=window.ECHO_DATA.stickers.assets["sticker:preview"].status;
         buttons[1].click();result.second=current();result.secondCount=status.textContent;
         const second=cards().find(visible);
         buttons[1].click();result.third=current();result.lastDisabled=buttons[1].disabled;
@@ -1050,6 +1058,8 @@ def test_sticker_personal_findings_and_repeated_events_have_their_own_place(tmp_
     for key, day in (("initial", 1), ("second", 2), ("third", 3), ("back", 2), ("restored", 2)):
         assert len(result[key]) == 1 and f"2025-04-0{day}" in result[key][0]
     assert result["firstDisabled"] and result["lastDisabled"]
+    assert result["previewImagePresent"] and result["assetStatus"] == "preview"
+    assert "可信预览 · 非原件" not in result["initial"][0] and "未恢复图片" in result["initial"][0]
     assert result["firstCount"] == "1 / 3" and result["secondCount"] == "2 / 3"
     assert result["printCount"] == 3 and not result["overflow"] and result["allCardsHaveStaff"]
     assert len(result["personal"]) == 2

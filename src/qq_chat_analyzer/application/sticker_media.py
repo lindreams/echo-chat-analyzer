@@ -32,6 +32,8 @@ from ..analysis.stickers import StickerData, StickerMedia, StickerSend
 
 STICKER_MEDIA_BATCH_SIZE = 32
 MAX_RETAINED_MEDIA_BYTES = 128 * 1024 * 1024
+MAX_QQ_SIZE_CANDIDATES = 8
+MAX_QQ_SIZE_LOOKUP_BYTES = 16 * 1024 * 1024
 # Mirrors the complete-file bound; RPC chunks stay below the response cap.
 MAX_FETCHED_MEDIA_BYTES = 32 * 1024 * 1024
 # Decoding is sequential. Bound canvas memory independently from total work;
@@ -80,15 +82,16 @@ class _QQMediaSendIndex:
 class _QQMediaCacheScan:
     """One report's complete directory inventory; never caches read authority.
 
-    Only names inside the exact original roots/scopes are reused. Every
+    Only metadata inside the exact authorized roots/scopes is reused. Every
     selected file still goes through the current path/handle witnesses, MD5
     and full decode. New cache entries can be found on the next report (or
     by native QQ recovery), never by broadening this inventory's scope.
     """
 
     signature: tuple | None = field(default=None, repr=False)
-    files: tuple[tuple[Path, Path], ...] = field(default=(), repr=False)
+    files: tuple[tuple[Path, Path, int], ...] = field(default=(), repr=False)
     entries: int = 0
+    candidate_sizes: Mapping[str, Iterable[int]] = field(default_factory=dict, repr=False)
 
 
 def qq_media_failure(media_key: str, code: str) -> StickerMedia:
@@ -454,8 +457,8 @@ def resolve_sticker_media(
     them; siblings are skipped and never opened. Scope validation and all
     traversal share one entry budget, deadline and byte budget.
 
-    QQ absolute paths and bare filenames may nominate files encountered by
-    this authorized walk. Hints never add roots, bypass the whitelist or
+    QQ paths, filenames and bounded size matches may nominate files encountered
+    by this authorized walk. Hints never add roots, bypass the whitelist or
     establish content identity. Diagnostics contain aggregate counts only.
     """
     occurrences = tuple(sends)
@@ -484,6 +487,7 @@ def resolve_sticker_media(
 
     originals: dict[str, tuple[bytes, str]] = {}
     ambiguous = set()
+    size_limited = set()
     entries = total_bytes = files = 0
     deadline = time.monotonic() + 10
     every: list[tuple[Path, Path]] = []
@@ -528,15 +532,25 @@ def resolve_sticker_media(
                     filenames[value.lower()].add(send.content_md5)
 
         inventory = [] if scan_cache is not None and scan_cache.signature is None else None
+        size_targets = defaultdict(set)
+        if scan_cache is not None:
+            for digest in wanted:
+                for size in scan_cache.candidate_sizes.get(digest, ()):
+                    if 0 < size <= max_file_bytes:
+                        size_targets[size].add(digest)
+        by_size = defaultdict(list)
+        named_sizes = {}
 
-        def nominate(path, root):
+        def nominate(path, root, size):
             nonlocal files
             files += 1
             item = (path, root)
             if len(every) < max_entries:
                 every.append(item)
             if inventory is not None:
-                inventory.append(item)
+                inventory.append((path, root, size))
+            if size in size_targets and len(by_size[size]) <= MAX_QQ_SIZE_CANDIDATES:
+                by_size[size].append(item)
             if targeted or digest_names_only:
                 name = path.name.lower()
                 hinted_digests = filenames.get(name, ())
@@ -549,6 +563,8 @@ def resolve_sticker_media(
                     path_match |= by_path
                 stats["name_candidates"] += int(name_match)
                 stats["path_candidates"] += int(path_match)
+                if name_match or path_match:
+                    named_sizes[path] = size
 
         limit = max_scan_entries if targeted else max_entries
         pending = []
@@ -586,11 +602,11 @@ def resolve_sticker_media(
             # Root/scope validation above is repeated. The inventory nominates
             # candidates only; _open_original below revalidates every read.
             entries = scan_cache.entries
-            for path, root in scan_cache.files:
+            for path, root, size in scan_cache.files:
                 check_cancelled()
                 if time.monotonic() > deadline:
                     raise _Rejected("limited", "scan_budget")
-                nominate(path, root)
+                nominate(path, root, size)
             pending.clear()
             stats["scan_reused"] = True
         while pending:
@@ -620,7 +636,7 @@ def resolve_sticker_media(
                         raise _Rejected("unsafe", "not_regular_file")
                     if not inside_scope:
                         raise _Rejected("unsafe", "scope_changed")
-                    nominate(path, root)
+                    nominate(path, root, info.st_size)
 
         stats["traversal_complete"] = True
         if inventory is not None:
@@ -638,6 +654,24 @@ def resolve_sticker_media(
                     if item[0] not in seen:
                         seen.add(item[0])
                         selected.append(item)
+            # File size is a weaker hint. Preserve space for every candidate
+            # found by name/path, and skip crowded sizes instead of guessing.
+            remaining = min(MAX_QQ_SIZE_LOOKUP_BYTES, max_total_bytes - sum(named_sizes.values()))
+            for size, candidates in sorted(by_size.items()):
+                check_cancelled()
+                if len(candidates) > MAX_QQ_SIZE_CANDIDATES:
+                    size_limited.update(size_targets[size])
+                    continue
+                extra = [item for item in candidates if item[0] not in seen]
+                cost = size * len(extra)
+                if cost > remaining or len(selected) + len(extra) > max_files:
+                    size_limited.update(size_targets[size])
+                    continue
+                for digest in size_targets[size]:
+                    named[digest].extend(candidates)
+                seen.update(path for path, _ in extra)
+                selected.extend(extra)
+                remaining -= cost
         stats["candidate_files"] = len(selected)
         if len(selected) > max_files:
             raise _Rejected("limited", "file_count_budget")
@@ -681,6 +715,9 @@ def resolve_sticker_media(
             if digest in ambiguous:
                 results[key] = StickerMedia(key, "ambiguous", "digest_content_conflict")
             elif digest not in originals:
+                if digest in size_limited:
+                    results[key] = StickerMedia(key, "limited", "size_candidate_budget")
+                    continue
                 # No name/path candidate is not proof of content absence.
                 # Keep the existing fixed reason code for callers.
                 no_name = (targeted or digest_names_only) and not complete and not named[digest]

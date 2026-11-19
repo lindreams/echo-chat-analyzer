@@ -31,6 +31,8 @@ PackageError = portable.PackageError
 VELOPACK_VERSION = "1.2.161"
 ROOT = Path(__file__).resolve().parents[1]
 ECHO_SETUP_ICON = ROOT / "branding/Echo.ico"
+LAB_PACKAGE_ID = "Echo.IndependentQQ.Lab"
+LAB_CHANNEL = "win-x64-lab"
 
 
 def _validate_pins(entries: dict, contract: dict, manifest: Path) -> None:
@@ -123,8 +125,9 @@ def package_setup(source_dir: str | Path, output_dir: str | Path, *, vpk_path: P
                 if portable._file_digest(target) != hashes[name]:
                     raise PackageError("Source changed while staging")
         pack_started = time.perf_counter()
+        title = "Echo Group Test" if (pack_id, channel) == (LAB_PACKAGE_ID, LAB_CHANNEL) else "Echo"
         _run(vpk_command + ["pack", "--packId", pack_id, "--packVersion", release_version,
-                           "--packDir", str(stage), "--mainExe", "Echo.exe", "--packTitle", "Echo",
+                           "--packDir", str(stage), "--mainExe", "Echo.exe", "--packTitle", title,
                            "--channel", channel, "--runtime", "win-x64", "--delta", "None",
                            "--icon", str(ECHO_SETUP_ICON),
                            "--shortcuts", "Desktop,StartMenuRoot",

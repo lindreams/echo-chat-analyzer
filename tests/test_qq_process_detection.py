@@ -5,6 +5,8 @@ import importlib
 import io
 import logging
 import os
+from pathlib import Path
+import shutil
 import subprocess
 
 import pytest
@@ -163,6 +165,73 @@ def test_close_failure_cannot_return_a_successful_empty_list(native_api):
     assert caught.value.stage == "close"
     assert caught.value.winerror == 6
     assert api.closed == [api.handle]
+
+
+def test_selected_qq_uses_unicode_image_path_and_distinguishes_secondary_processes(tmp_path, monkeypatch):
+    module = _module()
+    account_path = tmp_path / "虚构账户"
+    account_path.mkdir()
+    image = account_path / "QQ.exe"
+    shutil.copyfile(Path(os.environ["SystemRoot"]) / "System32/cmd.exe", image)
+    child_options = dict(stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=subprocess.CREATE_NO_WINDOW)
+    with subprocess.Popen([str(image), "/d", "/q", "/k", "rem publisher"], **child_options) as main:
+        with subprocess.Popen([str(image), "/d", "/q", "/k", "rem --Type=renderer"], **child_options) as helper:
+            try:
+                monkeypatch.setattr(module, "_process_rows", lambda: [
+                    (main.pid, 1, "QQ.exe"), (helper.pid, main.pid, "qq.EXE"),
+                ])
+                assert module.selected_qq_pids(image) == [main.pid]
+                assert module.selected_qq_pids(image, include_children=True) == sorted((main.pid, helper.pid))
+                assert module.selected_qq_pids(tmp_path / "some-other-installation" / "QQ.exe") == []
+            finally:
+                for process in (main, helper):
+                    try:
+                        process.communicate(b"exit\r\n", timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.communicate(timeout=5)
+
+
+def test_selected_qq_unknown_path_is_never_reported_as_absent(monkeypatch):
+    from types import SimpleNamespace
+
+    module = _module()
+    closed = []
+    monkeypatch.setattr(module, "_process_rows", lambda: [(123, 1, "QQ.exe")])
+    monkeypatch.setattr(module, "_metadata_api", lambda: SimpleNamespace(
+        OpenProcess=lambda *_: 456,
+        QueryFullProcessImageNameW=lambda *_: False,
+        CloseHandle=lambda handle: closed.append(handle) or True,
+    ))
+    with pytest.raises(module.QQProcessDetectionError) as error:
+        module.selected_qq_pids(Path("C:/fictional/QQ.exe"), include_children=True)
+    assert error.value.stage == "image"
+    assert closed == [456]
+
+
+def test_snapshot_exit_guard_requires_a_complete_empty_native_snapshot(monkeypatch):
+    import subprocess
+
+    from qq_chat_analyzer.providers.qq_independent import snapshot
+    from qq_chat_analyzer.providers.qq_independent.files import SourceError
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("exit detection must not invoke PowerShell")
+
+    monkeypatch.setattr(subprocess, "Popen", forbidden)
+    monkeypatch.setattr(snapshot, "find_conflicting_qq_pids", lambda owned: [456])
+    with pytest.raises(SourceError, match="normal_qq_exit_required"):
+        snapshot.assert_qq_exited()
+
+    def unreadable(owned):
+        raise _module().QQProcessDetectionError("next", 5)
+
+    monkeypatch.setattr(snapshot, "find_conflicting_qq_pids", unreadable)
+    with pytest.raises(SourceError, match="process_detection_failed"):
+        snapshot.assert_qq_exited()
+    monkeypatch.setattr(snapshot, "find_conflicting_qq_pids", lambda owned: [])
+    snapshot.assert_qq_exited()
 
 
 def test_enumeration_error_is_preserved_when_close_also_fails(native_api):

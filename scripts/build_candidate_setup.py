@@ -119,8 +119,8 @@ def main() -> int:
             os.environ.update(env)
             artifact = stage("setup_and_validation", lambda: setup.package_setup(
                 output / "dist/Echo", output / "setup", vpk_path=vpk, dotnet_path=dotnet,
-                pack_id="Echo.IndependentQQ.Lab" if args.lab else setup.PRODUCTION_PACKAGE_ID,
-                channel="win-x64-lab" if args.lab else setup.PRODUCTION_CHANNEL, timings=timings))
+                pack_id=setup.LAB_PACKAGE_ID if args.lab else setup.PRODUCTION_PACKAGE_ID,
+                channel=setup.LAB_CHANNEL if args.lab else setup.PRODUCTION_CHANNEL, timings=timings))
             timings["total"] = round(time.perf_counter() - started, 3)
             (output / "timings.json").write_text(json.dumps(timings, indent=2) + "\n", encoding="utf-8")
             print(json.dumps(timings), flush=True)

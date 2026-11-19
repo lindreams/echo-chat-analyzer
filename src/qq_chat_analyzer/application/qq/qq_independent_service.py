@@ -24,7 +24,7 @@ from uuid import uuid4
 
 from ...providers.qq_database_provider import QQDatabaseProvider, QQSession, attach_sender_names
 from ...providers.qq_independent.files import SourceError, _file, _safe, _no_sidecars
-from ...providers.qq_independent.snapshot import prepare, _protect_new_root, _powershell, authorized_group_partition, authorized_group_partitions
+from ...providers.qq_independent.snapshot import prepare, _protect_new_root, authorized_group_partition, authorized_group_partitions
 from ...providers.qq_independent.metadata import scoped_names
 from ...providers.qq_independent.process import verified_process, process_creation_ticks
 from ...providers.qq_independent.worker import direct_runtime_files, resources_identity, runtime_files, event_api
@@ -36,6 +36,7 @@ from ...resources import user_data_root
 from ..connection_models import ConnectionSnapshot, ConnectionState
 from ..errors import ApplicationServiceError
 from ..shutdown_models import ShutdownStatus
+from .qq_process_detection import QQProcessDetectionError, selected_qq_pids
 from .qq_runtime_workspace import _lease
 
 _ENV = ('HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP','MPLCONFIGDIR','XDG_CONFIG_HOME','XDG_CACHE_HOME')
@@ -403,13 +404,12 @@ class QQIndependentService:
 
     def _process_candidates(self, *, include_children=False):
         """Inspect process metadata only for the explicitly selected image."""
-        parents="" if include_children else " | Where-Object { $_.CommandLine -notmatch '--type=' }"
-        raw=_powershell("Get-CimInstance Win32_Process -Filter \"Name='QQ.exe'\""+parents+" | Select-Object ProcessId,ExecutablePath | ConvertTo-Json -Compress")
-        rows=json.loads(raw) if raw else []
-        if isinstance(rows,dict): rows=[rows]
-        rows=[row for row in rows if row.get('ExecutablePath') and
-              os.path.normcase(row['ExecutablePath'])==os.path.normcase(str(self._selection.executable))]
-        return rows
+        try:
+            return selected_qq_pids(self._selection.executable, include_children=include_children)
+        except QQProcessDetectionError as error:
+            _LOGGER.warning('[qq independent] stage=process_detection api_stage=%s code=%d',
+                            error.stage, error.winerror)
+            raise SourceError('process_detection_failed') from None
 
     def _wait_for_process(self, progress, external):
         # Existing QQ may already be logged in. Require a clean manual exit;
@@ -442,7 +442,7 @@ class QQIndependentService:
         rows=self._process_candidates()
         if len(rows)!=1:
             raise QQIndependentError('qq_process_selection_required','QQ 状态已变化，请重新连接并停留在登录页面。')
-        pid=int(rows[0]['ProcessId'])
+        pid=rows[0]
         with verified_process(pid,self._selection.executable) as (api,handle):
             created=process_creation_ticks(api,handle)
             api.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]
@@ -798,6 +798,17 @@ class QQIndependentService:
         if not base.exists(): return ()
         base=_safe(base)
         roots=[]
+        extra=[]
+
+        def add_optional(path):
+            if path.exists():
+                try:
+                    if _safe(path).is_dir(): extra.append(path)
+                except (SourceError, OSError):
+                    # An unusable optional cache leaf does not invalidate the
+                    # original roots already authorized for this account.
+                    pass
+
         for relative in ('Pic','Emoji/emoji-recv'):
             parent=base/relative
             if parent.exists():
@@ -808,9 +819,13 @@ class QQIndependentService:
                     if re.fullmatch(r'[0-9]{4}-(0[1-9]|1[0-2])',month.name):
                         original=month/'Ori'
                         if original.exists() and _safe(original).is_dir(): roots.append(original)
+                        add_optional(month/'Thumb')
+        for name in ('personal_emoji','personal-emoji'):
+            add_optional(base/'Emoji'/name/'Ori')
         face=base/'Emoji/marketface'
         if face.exists() and _safe(face).is_dir(): roots.append(face)
         if len(roots)>128: raise SourceError('media_scope_limit')
+        if len(extra)<=128: roots.extend(extra)
         return tuple(roots)
 
     def get_snapshot(self):

@@ -1,9 +1,10 @@
 """Frozen encrypted inputs and strict group partition binding."""
 import ctypes
-from contextlib import closing
+from contextlib import ExitStack, closing
 from ctypes import wintypes
-import hashlib,json,os,subprocess,time,uuid
+import hashlib,json,os,time,uuid
 from pathlib import Path
+from ...application.qq.qq_process_detection import QQProcessDetectionError, find_conflicting_qq_pids
 from .files import SourceError,_safe,_file,_identity,_no_sidecars,_format
 MAX_BYTES=1024**3
 OWNER={"kind":"echo-qq-full-read","version":1}
@@ -38,44 +39,106 @@ def bind_live_database_paths(paths, expected_uin):
     return main
 
 
-def _powershell(program, *, env=None):
-    executable = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    result = subprocess.run([str(executable), "-NoProfile", "-NonInteractive", "-Command", program],
-        env=env, capture_output=True, timeout=15, creationflags=subprocess.CREATE_NO_WINDOW)
-    if result.returncode:
-        raise SourceError("preparation_os_check_failed")
-    return result.stdout.strip()
-
-
 def assert_qq_exited():
-    if _powershell("@(Get-Process -Name QQ -ErrorAction SilentlyContinue).Count") != b"0":
+    if os.name != "nt":
+        raise SourceError("windows_x64_required")
+    try:
+        running = find_conflicting_qq_pids(())
+    except QQProcessDetectionError:
+        raise SourceError("process_detection_failed") from None
+    if running:
         raise SourceError("normal_qq_exit_required")
 
 
 def _protect_new_root(root):
-    environment = os.environ.copy()
-    environment["ECHO_OWNED_FULL_ROOT"] = str(root)
-    _powershell("""$ErrorActionPreference='Stop'
-$p=$env:ECHO_OWNED_FULL_ROOT
-$u=[Security.Principal.WindowsIdentity]::GetCurrent().User
-if((Get-Acl -LiteralPath $p).Owner -ne $u.Translate([Security.Principal.NTAccount]).Value){exit 1}
-$a=New-Object Security.AccessControl.DirectorySecurity
-$a.SetAccessRuleProtection($true,$false)
-foreach($s in @($u,(New-Object Security.Principal.SecurityIdentifier('S-1-5-18')))) {
- $r=New-Object Security.AccessControl.FileSystemAccessRule($s,'FullControl','ContainerInherit,ObjectInherit','None','Allow')
- $a.AddAccessRule($r)
-}
-# The creator must already own this new directory; changing ownership would
-# require WRITE_OWNER even when the current owner can safely protect its DACL.
-# Persist only the DACL section changed above. Set-Acl also attempts
-# audit-security updates on an already protected directory, requiring an
-# unrelated SeSecurityPrivilege and refusing an otherwise identical ACL.
-[IO.Directory]::SetAccessControl($p,$a)
-$v=Get-Acl -LiteralPath $p
-if(-not $v.AreAccessRulesProtected -or $v.Owner -ne $u.Translate([Security.Principal.NTAccount]).Value){exit 1}
-foreach($r in $v.Access){$s=$r.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
- if($s -ne $u.Value -and $s -ne 'S-1-5-18'){exit 1}}
-""", env=environment)
+    """Give the current owner and LocalSystem exclusive inheritable access."""
+    if os.name != "nt":
+        raise SourceError("windows_x64_required")
+    root = _safe(root)
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    security = ctypes.WinDLL("advapi32", use_last_error=True)
+    pointer = ctypes.c_void_p
+    out_pointer = ctypes.POINTER(pointer)
+    handle, dword, boolean = wintypes.HANDLE, wintypes.DWORD, wintypes.BOOL
+
+    def bind(library, name, result, *arguments):
+        function = getattr(library, name)
+        function.restype, function.argtypes = result, arguments
+        return function
+
+    def require(check):
+        if not check:
+            raise SourceError("preparation_os_check_failed")
+
+    open_file = bind(kernel, "CreateFileW", handle, wintypes.LPCWSTR, dword, dword,
+                     pointer, dword, dword, handle)
+    close = bind(kernel, "CloseHandle", boolean, handle)
+    free = bind(kernel, "LocalFree", handle, handle)
+    current_process = bind(kernel, "GetCurrentProcess", handle)
+    file_info = bind(kernel, "GetFileInformationByHandleEx", boolean, handle, dword, pointer, dword)
+    open_token = bind(security, "OpenProcessToken", boolean, handle, dword, out_pointer)
+    token_info = bind(security, "GetTokenInformation", boolean, handle, dword, pointer, dword,
+                      ctypes.POINTER(dword))
+    sid_string = bind(security, "ConvertSidToStringSidW", boolean, pointer, out_pointer)
+    equal_sid = bind(security, "EqualSid", boolean, pointer, pointer)
+    get_security = bind(security, "GetSecurityInfo", dword, handle, dword, dword,
+                        out_pointer, out_pointer, out_pointer, out_pointer, out_pointer)
+    set_security = bind(security, "SetSecurityInfo", dword, handle, dword, dword,
+                        pointer, pointer, pointer, pointer)
+    parse_descriptor = bind(security, "ConvertStringSecurityDescriptorToSecurityDescriptorW",
+                            boolean, wintypes.LPCWSTR, dword, out_pointer, ctypes.POINTER(dword))
+    descriptor_dacl = bind(security, "GetSecurityDescriptorDacl", boolean, pointer,
+                           ctypes.POINTER(boolean), out_pointer, ctypes.POINTER(boolean))
+    descriptor_control = bind(security, "GetSecurityDescriptorControl", boolean, pointer,
+                              ctypes.POINTER(wintypes.WORD), ctypes.POINTER(dword))
+
+    with ExitStack() as resources:
+        # READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES, without sharing deletion.
+        # BACKUP_SEMANTICS opens a directory; OPEN_REPARSE_POINT keeps the final link unfollowed.
+        directory = open_file(str(root), 0x60080, 3, None, 3, 0x02200000, None)
+        require(directory not in (None, pointer(-1).value))
+        resources.callback(close, directory)
+        attributes = (dword * 2)()
+        require(file_info(directory, 9, attributes, ctypes.sizeof(attributes)))  # FileAttributeTagInfo
+        require(attributes[0] & 0x10 and not attributes[0] & 0x400)
+
+        token, length = handle(), dword()
+        require(open_token(current_process(), 0x0008, ctypes.byref(token)))  # TOKEN_QUERY
+        resources.callback(close, token)
+        token_info(token, 1, None, 0, ctypes.byref(length))  # TokenUser
+        require(length.value >= ctypes.sizeof(pointer))
+        user_info = ctypes.create_string_buffer(length.value)
+        require(token_info(token, 1, user_info, length, ctypes.byref(length)))
+        user_sid = pointer.from_buffer(user_info)
+
+        def read_descriptor():
+            owner, dacl, descriptor = pointer(), pointer(), pointer()
+            require(get_security(directory, 1, 5, ctypes.byref(owner), None, ctypes.byref(dacl),
+                                 None, ctypes.byref(descriptor)) == 0)
+            resources.callback(free, descriptor)
+            require(owner.value and equal_sid(owner, user_sid))
+            return dacl, descriptor
+
+        read_descriptor()
+        sid, expected = pointer(), pointer()
+        require(sid_string(user_sid, ctypes.byref(sid)))
+        resources.callback(free, sid)
+        sddl = f"D:P(A;OICI;FA;;;{ctypes.wstring_at(sid.value)})(A;OICI;FA;;;SY)"
+        require(parse_descriptor(sddl, 1, ctypes.byref(expected), None))
+        resources.callback(free, expected)
+        present, defaulted, dacl = boolean(), boolean(), pointer()
+        require(descriptor_dacl(expected, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)))
+        require(present.value and dacl.value)
+        # SE_FILE_OBJECT, DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION.
+        require(set_security(directory, 1, 0x80000004, None, None, dacl, None) == 0)
+        actual, descriptor = read_descriptor()
+        control, revision = wintypes.WORD(), dword()
+        require(descriptor_control(descriptor, ctypes.byref(control), ctypes.byref(revision)))
+        require(actual.value and control.value & 0x1000)  # SE_DACL_PROTECTED
+        # ACL header's AclSize includes both ACEs. Require the exact permissions we wrote.
+        size = wintypes.WORD.from_address(dacl.value + 2).value
+        require(wintypes.WORD.from_address(actual.value + 2).value == size
+                and ctypes.string_at(actual, size) == ctypes.string_at(dacl, size))
 
 
 def _read_locked(path):
