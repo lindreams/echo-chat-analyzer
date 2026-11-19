@@ -5,7 +5,7 @@ import time
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import pytest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
 from test_setup_uninstall import installation
@@ -36,9 +36,9 @@ def window(tmp_path, monkeypatch):
     page = module.MainWindow(facade)
     page.show()
     page.show_about_page()
-    warnings = []
-    monkeypatch.setattr(QMessageBox, 'warning', lambda *args: warnings.append(args[2]))
-    yield page, service, calls, warnings
+    page.activateWindow()
+    app.processEvents()
+    yield page, service, calls
     page.hide()
     page.deleteLater()
     app.processEvents()
@@ -51,51 +51,72 @@ def settle(window):
         time.sleep(.01)
 
 
-def test_cancel_is_inert_and_reentrant_click_is_ignored(window, monkeypatch):
-    page, service, calls, _ = window
+def confirm_uninstall(page, mode):
+    prompt = page.about_page.maintenance_section.uninstall_prompt
+    text = '保留报告和普通设置并卸载' if mode == 'keep' else '清除 Echo 本地数据并卸载'
+    assert prompt.isVisibleTo(page) and not prompt.isWindow()
+    button = next(button for button in prompt.findChildren(QPushButton)
+                  if button.isVisible() and button.text() == text)
+    button.click()
+
+
+def test_cancel_is_inert_and_reentrant_click_is_ignored(window):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    page, service, calls = window
     button = page.about_page.maintenance_section.uninstall_button
     assert button.isEnabled()
-    questions = []
-    def cancel(*args):
-        questions.append(args[0])
-        page.request_setup_uninstall()
-        return None
-    monkeypatch.setattr('qq_chat_analyzer.gui.main_window._confirm_setup_uninstall', cancel)
     button.click()
-    assert len(questions) == 1
-    assert questions == [page]
+    prompt = page.about_page.maintenance_section.uninstall_prompt
+    choices = prompt.findChildren(QPushButton)
+    page.request_setup_uninstall()
+    assert prompt.findChildren(QPushButton) == choices
+    assert {choice.text() for choice in choices} == {
+        '取消', '保留报告和普通设置并卸载', '清除 Echo 本地数据并卸载',
+    }
+    assert not any(choice.isDefault() for choice in choices)
+    cancel = next(choice for choice in choices if choice.text() == '取消')
+    assert cancel.hasFocus()
+    QTest.keyClick(cancel, Qt.Key.Key_Escape)
+    assert not prompt.pending
     assert not page.shutdown_protocol.started and service._pending is None and calls == []
     assert button.isEnabled()
+    button.click()
+    page.show_home_page()
+    assert not prompt.pending and service._pending is None and calls == []
 
 
 @pytest.mark.parametrize('mode', ['keep', 'purge'])
-def test_confirm_shuts_down_before_one_handoff_and_normal_close(window, monkeypatch, mode):
-    page, service, calls, warnings = window
-    monkeypatch.setattr('qq_chat_analyzer.gui.main_window._confirm_setup_uninstall', lambda *args: mode)
+def test_confirm_shuts_down_before_one_handoff_and_normal_close(window, mode):
+    page, service, calls = window
     button = page.about_page.maintenance_section.uninstall_button
     button.click()
     button.click()
+    assert not page.shutdown_protocol.started and calls == []
+    confirm_uninstall(page, mode)
     settle(page)
     assert page.shutdown_protocol.finished
     assert page.shutdown_protocol.result.can_apply_update
-    assert len(calls) == 1 and not page.isVisible() and warnings == []
+    assert len(calls) == 1 and not page.isVisible()
     assert calls[0].cleanup_mode == mode
     assert page._facade._shutdown_result is not None
 
 
 def test_busy_task_refuses_without_shutdown_or_confirmation(window, monkeypatch):
     from qq_chat_analyzer.gui import main_window as module
-    page, service, calls, warnings = window
+    page, service, calls = window
     monkeypatch.setattr(module, 'workers_idle', lambda: False)
-    monkeypatch.setattr('qq_chat_analyzer.gui.main_window._confirm_setup_uninstall', lambda *args: pytest.fail('busy confirmation'))
     page.about_page.maintenance_section.uninstall_button.click()
-    assert warnings and not page.shutdown_protocol.started and calls == []
+    maintenance = page.about_page.maintenance_section
+    assert '请等待后台任务' in maintenance.status_label.text()
+    assert not maintenance.uninstall_prompt.pending
+    assert not page.shutdown_protocol.started and calls == []
 
 
 @pytest.mark.parametrize('failure', ['spawn', 'cleanup', 'changed_identity'])
 def test_failed_handoff_stays_visible_and_reports_failure(window, monkeypatch, failure):
-    page, service, calls, warnings = window
-    monkeypatch.setattr('qq_chat_analyzer.gui.main_window._confirm_setup_uninstall', lambda *args: 'keep')
+    page, service, calls = window
     if failure == 'spawn':
         def fail(snapshot):
             raise OSError('fictional failure')
@@ -110,59 +131,44 @@ def test_failed_handoff_stays_visible_and_reports_failure(window, monkeypatch, f
             return original(token, proof)
         service.handoff = changed
     page.about_page.maintenance_section.uninstall_button.click()
+    confirm_uninstall(page, 'keep')
     limit = time.monotonic() + 3
-    while not warnings and time.monotonic() < limit:
+    status = page.about_page.maintenance_section.status_label
+    while '请关闭并重新打开' not in status.text() and time.monotonic() < limit:
         QApplication.processEvents()
         time.sleep(.01)
-    assert warnings and page.isVisible() and calls == []
+    assert '请关闭并重新打开' in status.text() and page.isVisible() and calls == []
     assert not page.about_page.maintenance_section.uninstall_button.isEnabled()
 
 
-def test_invalid_identity_never_enables_or_confirms(window, monkeypatch):
-    page, service, calls, warnings = window
+def test_invalid_identity_never_enables_or_confirms(window):
+    page, service, calls = window
     service._setup_runtime = lambda: False
-    monkeypatch.setattr('qq_chat_analyzer.gui.main_window._confirm_setup_uninstall', lambda *args: pytest.fail('invalid confirmation'))
     page.request_setup_uninstall()
     assert calls == [] and not page.shutdown_protocol.started
+    assert not page.about_page.maintenance_section.uninstall_prompt.pending
     assert not page.about_page.maintenance_section.uninstall_button.isEnabled()
 
 
 def test_timeout_does_not_handoff_or_close(window, monkeypatch):
-    page, service, calls, warnings = window
+    page, service, calls = window
     from qq_chat_analyzer.gui.shutdown import ShutdownProtocol
     page._shutdown_protocol = ShutdownProtocol(wait_seconds=0)
     monkeypatch.setattr(page, 'begin_shutdown', lambda: None)
-    monkeypatch.setattr('qq_chat_analyzer.gui.main_window._confirm_setup_uninstall', lambda *args: 'keep')
     page.about_page.maintenance_section.uninstall_button.click()
+    confirm_uninstall(page, 'keep')
     page._poll_uninstall_shutdown()
-    assert warnings and calls == [] and page.isVisible()
+    assert '安全退出超时' in page.about_page.maintenance_section.status_label.text()
+    assert calls == [] and page.isVisible()
     assert not page._uninstall_timer.isActive()
 
 
 def test_task_started_during_confirmation_is_rejected(window, monkeypatch):
     from qq_chat_analyzer.gui import main_window as module
-    page, service, calls, warnings = window
+    page, service, calls = window
     idle = iter([True, False])
     monkeypatch.setattr(module, 'workers_idle', lambda: next(idle))
-    monkeypatch.setattr('qq_chat_analyzer.gui.main_window._confirm_setup_uninstall', lambda *args: 'keep')
     page.about_page.maintenance_section.uninstall_button.click()
-    assert warnings and not page.shutdown_protocol.started and calls == []
-
-
-@pytest.mark.parametrize('choice', ['keep', 'purge', None])
-def test_uninstall_dialog_defaults_to_cancel_and_requires_explicit_choice(window, choice):
-    from PySide6.QtCore import QTimer
-    from qq_chat_analyzer.gui.main_window import _confirm_setup_uninstall
-    page, _, calls, _ = window
-    observed = []
-    def choose():
-        dialog = QApplication.activeModalWidget()
-        observed.append(dialog.defaultButton() is dialog.button(QMessageBox.Cancel))
-        if choice is None:
-            dialog.button(QMessageBox.Cancel).click()
-        else:
-            text = '卸载，保留报告和普通设置' if choice == 'keep' else '卸载并清除 Echo 本地数据'
-            next(button for button in dialog.buttons() if button.text() == text).click()
-    QTimer.singleShot(0, choose)
-    assert _confirm_setup_uninstall(page) == choice
-    assert observed == [True] and calls == []
+    confirm_uninstall(page, 'keep')
+    assert '请等待后台任务' in page.about_page.maintenance_section.status_label.text()
+    assert not page.shutdown_protocol.started and calls == []

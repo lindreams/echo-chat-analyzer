@@ -18,7 +18,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
-    QMessageBox,
     QPushButton,
     QStackedWidget,
     QVBoxLayout,
@@ -43,25 +42,6 @@ from .workers import shutdown as shutdown_workers
 from .workers import submit
 from .workers import is_idle as workers_idle
 from ..application.facade import ChatSource, InstallHandoffResult
-
-
-def _confirm_setup_uninstall(parent) -> str | None:
-    dialog = QMessageBox(parent)
-    dialog.setWindowTitle('卸载 Echo')
-    dialog.setIcon(QMessageBox.Warning)
-    dialog.setText('移除 Echo 程序和快捷方式，并选择如何处理本地数据。')
-    dialog.setInformativeText(
-        '两种选择都会清除已保存的数据库密钥、连接凭据、受管理的 QQ 工作副本、临时数据、日志和更新记录，包括已识别的旧版本残留。\n'
-        '“清除”还会永久删除 Echo 内的报告和配置，无法撤销；另存文件和自定义 QQ／微信目录不受影响。\n'
-        '本次打开后若已连接过 QQ／微信，请先关闭并重新打开 Echo，不连接来源再卸载。')
-    keep = dialog.addButton('卸载，保留报告和普通设置', QMessageBox.AcceptRole)
-    purge = dialog.addButton('卸载并清除 Echo 本地数据', QMessageBox.DestructiveRole)
-    cancel = dialog.addButton(QMessageBox.Cancel)
-    dialog.setDefaultButton(cancel)
-    dialog.setEscapeButton(cancel)
-    dialog.exec()
-    return 'keep' if dialog.clickedButton() is keep else 'purge' if dialog.clickedButton() is purge else None
-
 
 WINDOW_TITLE = "\u4f59\u97f3 Echo"
 _HOME_LABEL = "\u9996\u9875"
@@ -314,44 +294,60 @@ class MainWindow(QMainWindow):
         if (self._uninstall_active or self._shutdown_protocol.started
                 or self._update_install_token is not None or self.about_page is None):
             return
-        button = self.about_page.maintenance_section.uninstall_button
-        self._uninstall_active = True
-        button.setEnabled(False)
+        maintenance = self.about_page.maintenance_section
         try:
             if not self._facade.can_uninstall_setup():
-                QMessageBox.warning(self, '无法卸载 Echo', '当前安装身份或卸载器无效，无法卸载。')
+                maintenance.uninstall_button.setEnabled(False)
+                self._report_uninstall('当前安装身份或卸载器无效，无法卸载。')
                 return
             if not workers_idle() or self.about_page._local_operation:
-                QMessageBox.warning(self, '暂不能卸载 Echo', '请等待后台任务完成，再重试卸载。')
+                self._report_uninstall('请等待后台任务完成，再重试卸载。')
                 return
-            cleanup_mode = _confirm_setup_uninstall(self)
-            if cleanup_mode is None:
-                return
-            # A modal dialog runs a nested event loop: check work again.
+            self._uninstall_active = True
+            maintenance.uninstall_button.setEnabled(False)
+            maintenance._report(False, '')
+            self.about_page.confirm_uninstall(self._start_setup_uninstall, self._finish_uninstall_confirmation)
+        except Exception:
+            self._finish_uninstall_confirmation()
+            self._report_uninstall('无法准备卸载，请稍后重试。')
+
+    def _finish_uninstall_confirmation(self) -> None:
+        self._uninstall_active = False
+        try:
+            available = self._facade.can_uninstall_setup()
+        except Exception:
+            available = False
+        self.about_page.maintenance_section.uninstall_button.setEnabled(available)
+
+    def _start_setup_uninstall(self, cleanup_mode: str) -> None:
+        if not self._uninstall_active or self._shutdown_protocol.started:
+            return
+        try:
             if not workers_idle() or self.about_page._local_operation:
-                QMessageBox.warning(self, '暂不能卸载 Echo', '请等待后台任务完成，再重试卸载。')
+                self._report_uninstall('请等待后台任务完成，再重试卸载。')
                 return
             prepared = self._facade.prepare_setup_uninstall(cleanup_mode)
             if prepared.status != 'ready' or not prepared.token:
-                QMessageBox.warning(self, '无法卸载 Echo', prepared.public_message or '当前无法准备卸载。')
+                self._report_uninstall(prepared.public_message or '当前无法准备卸载。')
                 return
             self._uninstall_token = prepared.token
             self.centralWidget().setEnabled(False)
-            self.about_page.maintenance_section._report(True, '正在安全退出，准备卸载…')
+            self._report_uninstall('正在安全退出，准备卸载…')
             self._uninstall_started_at = time.monotonic()
             self.begin_shutdown()
             self._uninstall_timer.start()
         except Exception as error:
             from ..application.facade import FacadeError
             message = error.public_message if isinstance(error, FacadeError) else '无法准备卸载，请稍后重试。'
-            QMessageBox.warning(self, '无法卸载 Echo', message)
+            self._report_uninstall(message)
         finally:
             if self._uninstall_token is None:
-                self._uninstall_active = False
-                try:
-                    button.setEnabled(self._facade.can_uninstall_setup())
-                except Exception:
-                    button.setEnabled(False)
+                self._finish_uninstall_confirmation()
+
+    def _report_uninstall(self, message: str) -> None:
+        maintenance = self.about_page.maintenance_section
+        maintenance._report(True, message)
+        self.about_page.scroll_area.ensureWidgetVisible(maintenance.status_label)
 
     def _poll_uninstall_shutdown(self) -> None:
         if not self._shutdown_protocol.finished:
@@ -377,8 +373,7 @@ class MainWindow(QMainWindow):
     def _uninstall_failed(self, message: str) -> None:
         # Resource owners have stopped. Keep the surface disabled; the window
         # close control remains available, but stopped services cannot restart.
-        self.about_page.maintenance_section._report(True, message)
-        QMessageBox.warning(self, 'Echo 卸载未完成', message + '\nEcho 已停止后台服务，请关闭并重新打开后重试。')
+        self._report_uninstall(message + '\nEcho 已停止后台服务，请关闭并重新打开后重试。')
 
     def request_update_install(self, prepared: InstallHandoffResult) -> None:
         """GUI-thread, user-confirmed intent only. Normal close owns cleanup."""
@@ -387,7 +382,8 @@ class MainWindow(QMainWindow):
                 or prepared.status != 'ready' or not prepared.token):
             return
         if not workers_idle():
-            QMessageBox.warning(self, '暂不能安装更新', '请等待后台任务完成，再重试安装。')
+            if self.about_page is not None:
+                self.about_page.show_install_error('请等待后台任务完成，再重试安装。')
             return
         self._update_install_token = prepared.token
         self.close()

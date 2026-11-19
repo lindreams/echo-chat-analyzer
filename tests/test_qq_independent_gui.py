@@ -421,14 +421,20 @@ def test_connection_guidance_replaces_old_phases_and_ignores_late_events(qt_app,
         widget._closing=True;widget.cancel_connection();widget.close()
 
 
-def test_program_recovery_picker_starts_at_home_instead_of_working_directory(qt_app,prepared,monkeypatch):
-    from PySide6.QtWidgets import QFileDialog
+def test_program_recovery_uses_inline_full_path_input(qt_app,prepared):
+    from PySide6.QtWidgets import QLineEdit,QPushButton
     from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
-    service,_,_=prepared;starts=[]
+    service,selection,_=prepared
     widget=QQWorkspace(facade_for(service))
-    monkeypatch.setattr(QFileDialog,'getOpenFileName',lambda _parent,_title,start,_filter: starts.append(start) or ('',''))
     widget._independent._recovery='program';widget._independent._settings()
-    assert starts==[str(Path.home())] and Path(starts[0])!=Path.cwd()
+    prompt=widget._connection_prompt
+    edit=prompt.findChild(QLineEdit)
+    proceed=next(button for button in prompt.findChildren(QPushButton) if button.text()=='继续连接')
+    assert prompt.pending and not prompt.isWindow() and not edit.text()
+    edit.setText("QQ.exe");assert not proceed.isEnabled()
+    edit.setText(f'"{selection.executable}"');assert proceed.isEnabled()
+    prompt.cancel()
+    assert not prompt.pending and widget._qq_settings_button.isEnabled() and service._selection is None
     widget.close()
 
 
@@ -837,7 +843,7 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
         end=time.monotonic()+10
         while not predicate() and time.monotonic()<end:
             qt_app.processEvents();time.sleep(.005)
-        assert predicate(), (statuses, dialogs, window.qq_workspace._qq_login_guide_label.text())
+        assert predicate(), (statuses, window.qq_workspace._qq_login_guide_label.text())
     window=MainWindow(facade_for(service))
     opened=[]
     window.show();qt_app.processEvents()
@@ -849,28 +855,23 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
         window.home_page._qq_btn.click();w=window.qq_workspace
         assert w._qq_connect_button.isVisible() and service._root is None
         assert not statuses or '现在可以登录 QQ' not in statuses
-        # Only the multi-account choice is modal; reading and self context
-        # continue automatically after selecting that profile.
-        from PySide6.QtCore import QTimer
-        from PySide6.QtWidgets import QInputDialog,QMessageBox,QComboBox
-        dialogs=[];selected=[other.name]
-        def answer():
-            modal=qt_app.activeModalWidget()
-            if isinstance(modal,QInputDialog):
-                combo=modal.findChild(QComboBox)
-                if combo is not None:
-                    assert combo.count()==2
-                    combo.setCurrentText(selected[0])
-                    dialogs.append('account')
-                else:
-                    pytest.fail('connection requested an identity confirmation')
-                modal.accept()
-            elif isinstance(modal,QMessageBox):
-                pytest.fail('connection requested an authorization dialog')
-        dialog_timer=QTimer(window);dialog_timer.setInterval(5);dialog_timer.timeout.connect(answer);dialog_timer.start()
-        w._qq_connect_button.click()
+        from PySide6.QtWidgets import QComboBox,QPushButton
+        prompt=w._connection_prompt
+
+        def select_account(account):
+            w._qq_connect_button.click()
+            wait_for(lambda:prompt.pending)
+            assert prompt.isVisibleTo(window) and not prompt.isWindow()
+            assert qt_app.activeModalWidget() is None and service._selection is None
+            combo=prompt.findChild(QComboBox)
+            assert combo.count()==2
+            combo.setCurrentText(account)
+            next(button for button in prompt.findChildren(QPushButton)
+                 if button.isVisible() and button.text()=='继续连接').click()
+
+        select_account(other.name)
         wait_for(lambda:w._sessions_loaded and not w._independent.running)
-        assert dialogs==['account']
+        assert not prompt.pending and qt_app.activeModalWidget() is None
         assert progress_phases==['armed'] and '现在可以登录 QQ' in statuses
         assert '请先完全退出 QQ' in statuses
         assert statuses.index('请先完全退出 QQ')<statuses.index('请打开 QQ，先不要登录')<statuses.index('现在可以登录 QQ')
@@ -912,12 +913,9 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
         w._qq_disconnect_button.click();wait_for(lambda:not w._independent.running)
         assert service._root is None and not w._sessions_loaded
         assert '可以重新打开 QQ' in w._qq_login_guide_label.text()
-        selected[0]=selection.account
-        w._qq_connect_button.click()
+        select_account(selection.account)
         wait_for(lambda:w._sessions_loaded and not w._independent.running)
         assert service._selection.account==selection.account
-        assert dialogs==['account']*2
-        dialog_timer.stop()
         with service.acquired_session('group:partition-a') as acquired:
             assert 'SECOND_ACCOUNT_SENTINEL' not in acquired.payload_path.read_text()
     finally:
@@ -1042,7 +1040,7 @@ def test_already_running_qq_requires_manual_exit_before_fresh_launch(prepared,mo
 @pytest.mark.parametrize('stop',['missing','account_cancel','invalid_location','unverified_default'])
 def test_formal_connection_recovers_without_publishing_sessions(qt_app,prepared,monkeypatch,tmp_path,stop):
     import time
-    from PySide6.QtWidgets import QFileDialog,QInputDialog
+    from PySide6.QtWidgets import QComboBox,QLineEdit,QPushButton
     from qq_chat_analyzer.gui.qq_workspace import QQWorkspace
     service,selection,_=prepared
     if stop=='missing':monkeypatch.setattr(source,'_discovery_locations',lambda **_options:([],[]))
@@ -1056,25 +1054,30 @@ def test_formal_connection_recovers_without_publishing_sessions(qt_app,prepared,
             if use_configured_root:source._configured_data_root(config)
             return [default_root],[selection.executable]
         monkeypatch.setattr(source,'_discovery_locations',locations)
-        monkeypatch.setattr(QFileDialog,'getExistingDirectory',lambda *_:str(selection.account_directory.parent))
-    if stop=='unverified_default':
-        confirmations=[]
-        def confirm(_owner,_title,_prompt,choices,*_options):
-            assert service._root is None and service._selection is None
-            assert str(default_account) in choices
-            confirmations.append(str(default_account))
-            return str(default_account),len(confirmations)==2
-        monkeypatch.setattr(QInputDialog,'getItem',confirm)
     if stop=='account_cancel':
         other=selection.account_directory.parent/'100000003'
         shutil.copytree(selection.account_directory,other)
-        monkeypatch.setattr(QInputDialog,'getItem',lambda *a,**k:('',False))
     widget=QQWorkspace(facade_for(service))
-    try:
-        widget._qq_connect_button.click()
+    widget.show()
+    prompt=widget._connection_prompt
+
+    def wait_for_discovery():
         end=time.monotonic()+5
         while widget._independent.running and time.monotonic()<end:
             qt_app.processEvents();time.sleep(.005)
+        assert not widget._independent.running
+
+    def continue_connection():
+        next(button for button in prompt.findChildren(QPushButton)
+             if button.isVisible() and button.text()=='继续连接').click()
+
+    try:
+        widget._qq_connect_button.click()
+        wait_for_discovery()
+        if stop in ('account_cancel','unverified_default'):
+            assert prompt.pending and service._selection is None
+            assert qt_app.activeModalWidget() is None
+            prompt.cancel()
         assert not widget._independent.running and not widget._sessions_loaded
         assert service._root is None and widget._qq_connect_button.isEnabled()
         assert not widget.session_panel.isEnabled()
@@ -1083,20 +1086,26 @@ def test_formal_connection_recovers_without_publishing_sessions(qt_app,prepared,
             assert service._selection is None
             assert widget._qq_settings_button.text()=='选择 QQ 资料位置…'
             guide=widget._qq_login_guide_label.text()
-            assert '聊天消息默认保存到' in guide and '地址栏' in guide
+            assert '聊天消息默认保存到' in guide and '输入框' in guide
         if stop in ('invalid_location','unverified_default'):
             assert '保存位置类型' in guide
             if stop=='unverified_default':
-                assert len(confirmations)==1
                 widget._qq_connect_button.click()
+                wait_for_discovery()
+                combo=next(combo for combo in prompt.findChildren(QComboBox) if combo.isVisible())
+                assert service._selection is None and combo.findText(str(default_account)) >= 0
+                combo.setCurrentText(str(default_account))
+                continue_connection()
             else:
                 widget._qq_settings_button.click()
+                prompt.findChild(QLineEdit).setText(str(selection.account_directory.parent))
+                continue_connection()
             end=time.monotonic()+5
             while not widget._sessions_loaded and time.monotonic()<end:
                 qt_app.processEvents();time.sleep(.005)
             assert widget._sessions_loaded and service._confirmed==selection.account
             if stop=='unverified_default':
-                assert len(confirmations)==2 and service._selection.account_directory==default_account
+                assert service._selection.account_directory==default_account
     finally:
         widget._closing=True;widget.cancel_connection();widget.close()
 

@@ -160,7 +160,9 @@ def test_queued_old_callbacks_cannot_reach_retry_ui(
     assert panel._analysis_task is None
     if event == "error":
         assert errors == [("fiction-old", "fiction-old")]
-        assert dialogs == ["fiction-old"]
+        assert dialogs == []
+        assert window.stack.currentIndex() != PROCESSING_PAGE_INDEX
+        assert window._status_label.text() == "fiction-old"
     else:
         assert successes == [outcome]
         if event == "progress":

@@ -5,7 +5,7 @@ import dataclasses
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QCheckBox, QDialog, QLabel, QListWidget, QPushButton
+from PySide6.QtWidgets import QCheckBox, QLabel, QListWidget, QPushButton
 
 from test_gui import (StubFacade, _QueuedExecutor, _drain, _gui_report_summary,
                       _main_window, qt_app, sources)
@@ -203,26 +203,45 @@ def test_delete_freezes_identity_before_confirmation(qt_app, sources, confirm):
     assert page._refresh_button.isEnabled()
 
 
-def test_confirmation_lists_every_report_and_defaults_to_cancel(qt_app):
-    from qq_chat_analyzer.gui.local_data_page import _bulk_delete_confirmation_dialog
+def test_confirmation_lists_every_report_and_defaults_to_cancel(qt_app, sources):
     reports = tuple(dataclasses.replace(_gui_report_summary(str(i)), conversation_name="Same name")
-                    for i in range(30))
-    dialog = _bulk_delete_confirmation_dialog(reports, 7)
-    labels = " ".join(label.text() for label in dialog.findChildren(QLabel))
+                    for i in range(37))
+    facade = BulkFacade(sources=sources, reports=reports)
+    window = _main_window(qt_app, facade)
+    window.show()
+    window.activateWindow()
+    window.show_local_data_page()
+    _drain(window)
+    page = window.local_data_page
+    page._enter_delete_button.click()
+    for index in range(30):
+        checkbox(page, index).setChecked(True)
+    page._delete_checked_button.click()
+    prompt = page._delete_prompt
+    _drain(window)
+    assert prompt.isVisibleTo(window) and not prompt.isWindow()
+    labels = " ".join(label.text() for label in prompt.findChildren(QLabel))
     assert "30 份" in labels and "7 份正常报告" in labels
-    listing = dialog.findChild(QListWidget, "archiveDeletionList")
+    listing = prompt.findChild(QListWidget, "archiveDeletionList")
     assert listing.count() == 30
     assert [listing.item(i).data(Qt.ItemDataRole.UserRole) for i in range(30)] == [str(i) for i in range(30)]
     assert all(str(i) in listing.item(i).text() for i in range(30))
-    cancel = next(b for b in dialog.findChildren(QPushButton) if b.text() == "取消")
-    delete = next(b for b in dialog.findChildren(QPushButton) if b.text() == "确认删除")
-    assert cancel.isDefault() and not delete.isDefault() and not delete.autoDefault()
+    cancel = next(b for b in prompt.findChildren(QPushButton) if b.text() == "取消")
     assert "QQ / 微信原始聊天数据" in labels and "删除后无法恢复" in labels
-    dialog.show()
-    _drain(dialog)
     assert listing.verticalScrollBar().maximum() > 0
-    QTest.keyClick(cancel, Qt.Key.Key_Return)
-    assert dialog.result() == QDialog.DialogCode.Rejected
+    assert not facade.batch_calls
+    QTest.keyClick(cancel, Qt.Key.Key_Escape)
+    assert not prompt.pending and not facade.batch_calls
+
+    page._delete_checked_button.click()
+    window.show_home_page()
+    assert not prompt.pending and not facade.batch_calls
+
+    window.show_local_data_page()
+    page._delete_checked_button.click()
+    next(button for button in prompt.findChildren(QPushButton, "archiveConfirmDelete")
+         if button.isVisible()).click()
+    assert facade.batch_calls == [tuple(str(i) for i in range(30))]
 
 
 def test_delete_blocks_duplicates_refresh_and_stale_callbacks(qt_app, sources):

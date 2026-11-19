@@ -1901,10 +1901,13 @@ def _drive_wechat_database_mismatch(
     workspace = window.wechat_workspace
     workspace._wechat_connect_button.click()
     if len(data_roots) > 1:
-        # Several candidates: the user picks one first, so the connect runs
-        # from the setup dialog instead of the one-click auto path.
-        workspace._wechat_setup_dialog.set_data_root(data_roots[0])
-        workspace._save_wechat_environment_from_dialog()
+        from PySide6.QtWidgets import QComboBox, QPushButton
+
+        prompt = workspace._setup_prompt
+        assert prompt.isVisibleTo(window) and not prompt.isWindow()
+        prompt.findChild(QComboBox).setCurrentText(data_roots[0])
+        next(button for button in prompt.findChildren(QPushButton)
+             if button.text() == "继续连接").click()
         _drain(window)
 
     executor.operation(lambda _message: None)

@@ -120,8 +120,8 @@ def test_facade_refuses_used_sources_before_destructive_shutdown(tmp_path):
     assert calls == []
 
 
-def test_install_confirmation_and_closed_dialog_drop_late_preparation(tmp_path, monkeypatch):
-    from PySide6.QtWidgets import QApplication, QMessageBox
+def test_install_confirmation_and_closed_dialog_drop_late_preparation(tmp_path):
+    from PySide6.QtWidgets import QApplication, QPushButton
     app = QApplication.instance() or QApplication([])
     from qq_chat_analyzer.application.facade import ChatAnalyzerFacade
     from qq_chat_analyzer.gui.update_dialog import UpdatePage
@@ -134,12 +134,15 @@ def test_install_confirmation_and_closed_dialog_drop_late_preparation(tmp_path, 
     dialog.show()
     received = []
     dialog.install_requested.connect(received.append)
-    monkeypatch.setattr(QMessageBox, 'exec', lambda *args: QMessageBox.No)
     dialog.install_button.click()
+    dialog._install_prompt.cancel()
     assert requests == []
-    monkeypatch.setattr(QMessageBox, 'exec', lambda *args: QMessageBox.Yes)
     dialog.install_button.click()
     dialog.install_button.click()
+    confirmation = next(button for button in dialog._install_prompt.findChildren(QPushButton, "confirmInstallUpdate")
+                        if button.isVisible())
+    confirmation.click()
+    confirmation.click()
     assert len(requests) == 1
     prepared = requests[0][0]()
     dialog.close()
@@ -261,7 +264,7 @@ def test_real_qt_exit_handoff_uses_worktree_code_and_preserves_fictional_data(tm
 import json, sys
 from pathlib import Path
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QPushButton
 from qq_chat_analyzer.gui import app
 from qq_chat_analyzer.gui.main_window import MainWindow
 from qq_chat_analyzer import __file__ as source_file
@@ -288,9 +291,6 @@ facade = app.build_facade()
 facade._installable_update_service = service
 window = MainWindow(facade)
 window.show()
-QMessageBox.exec = lambda *args: QMessageBox.Yes
-warnings = []
-QMessageBox.warning = lambda *args: warnings.append(args)
 prepared = facade.prepare_update_install() if mode == 'direct' else None
 def click():
     if mode == 'direct':
@@ -298,11 +298,11 @@ def click():
     else:
         window.show_about_page()
         window.about_page.install_button.click()
+        window.about_page.findChild(QPushButton, 'confirmInstallUpdate').click()
 QTimer.singleShot(0, click)
 QTimer.singleShot(10000, lambda: application.exit(91))
 code = application.exec()
 assert code == 0
-assert warnings == []
 assert calls == []  # never spawn before the exit owner has collected evidence
 if mode == 'worker':
     assert window.await_shutdown(5)

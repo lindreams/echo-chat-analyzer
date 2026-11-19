@@ -10,7 +10,7 @@ from threading import Event
 import time
 
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QFileDialog, QInputDialog
+from PySide6.QtWidgets import QComboBox
 
 from ..application.connection_models import ConnectionState
 from ..application.facade import ChatSource
@@ -19,7 +19,7 @@ from ..application.facade import ChatSource
 _IDLE_HINT = '连续 10 分钟未读取会话或生成报告时，Echo 会自动结束连接。'
 _QQ_DATA_LOCATION_HINT = (
     '在 QQ「设置 → 存储管理」中，查看「聊天消息默认保存到」下面的路径。\n'
-    '在 Echo 点「选择 QQ 资料位置…」，在窗口顶部的地址栏输入这行路径，回车后确认选择该文件夹。'
+    '回到 Echo 点「选择 QQ 资料位置…」，将这行路径粘贴到输入框。'
 )
 
 
@@ -58,6 +58,8 @@ class QQIndependentConnection:
 
     def _idle(self, message=None, *, recovery=False, blocked=False):
         v = self.view
+        v._connection_prompt.dismiss()
+        self._recovery_message = message
         self._journey = False
         self._reading_originals = False
         self._phase = 'idle'
@@ -138,6 +140,8 @@ class QQIndependentConnection:
         self._journey = True
         self._phase = 'preparing'
         v = self.view
+        v._connection_prompt.dismiss()
+        v._qq_connect_button.show()
         v.session_panel.clear()
         v.session_panel.setEnabled(False)
         v._qq_settings_button.hide()
@@ -161,24 +165,36 @@ class QQIndependentConnection:
             self._idle('发现同一账号的多个资料目录，请选择 QQ 当前使用的那个目录。', recovery=True)
             return
         if location_warning or len(accounts) > 1:
-            other = '选择其他资料位置…'
             title = '确认 QQ 资料位置' if location_warning else '选择 QQ 账号'
             prompt = (f'{location_warning}\n已在常用位置找到账号目录。请按 QQ「存储管理 → 聊天消息默认保存到」核对。'
                       if location_warning else '选择本次要分析的账号资料')
-            choices = [*labels, other] if location_warning else labels
-            label, accepted = QInputDialog.getItem(self.view, title, prompt, choices, 0, False)
-            if not accepted or label == other:
-                if location_warning:
-                    self._recovery = 'data'
-                    self._idle(location_warning, recovery=True)
-                    if accepted:
-                        self._settings()
-                else:
-                    self.release('已取消选择账号。')
-                return
-            account = accounts[labels.index(label)]
-        else:
-            account = accounts[0]
+            self._recovery = 'data'
+            self._recovery_message = location_warning
+            self._choose(
+                title, prompt, labels,
+                lambda index: self._select_program(discovery, accounts[index]),
+                on_cancel=lambda: self._idle(location_warning or '已取消选择账号。', recovery=bool(location_warning)),
+                other=bool(location_warning),
+            )
+            return
+        self._select_program(discovery, accounts[0])
+
+    def _choose(self, title, detail, labels, selected, *, on_cancel, other=False):
+        v = self.view
+        v._qq_connect_button.hide()
+        v._hide_qq_guide()
+        combo = QComboBox()
+        combo.setAccessibleName(title)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.addItems(labels)
+        combo.setToolTip(combo.currentText())
+        combo.currentTextChanged.connect(combo.setToolTip)
+        actions = [('继续连接', lambda: selected(combo.currentIndex()))]
+        if other:
+            actions.insert(0, ('使用其他资料位置', self._settings))
+        v._connection_prompt.present(title, detail, actions, on_cancel=on_cancel, content=combo)
+
+    def _select_program(self, discovery, account):
         if self._image is None:
             if not discovery.executables:
                 self._recovery = 'program'
@@ -194,17 +210,21 @@ class QQIndependentConnection:
                 self._image = discovery.executables[0]
             else:
                 choices = [f'QQ 9.9.37（54395） · {path.parent}' for path in discovery.executables]
-                choice, accepted = QInputDialog.getItem(self.view, '选择 QQ',
-                    '发现多个兼容的 QQ，请选择本次使用的程序', choices, 0, False)
-                if not accepted:
-                    self.release('已取消选择 QQ。')
-                    return
-                self._image = discovery.executables[choices.index(choice)]
+                self._choose(
+                    '选择 QQ', '发现多个兼容的 QQ，请选择本次使用的程序。', choices,
+                    lambda index: self._prepare(account, discovery.executables[index]),
+                    on_cancel=lambda: self._idle('已取消选择 QQ。'),
+                )
+                return
+        self._prepare(account, self._image)
+
+    def _prepare(self, account, image):
         if self.view._closing:
             return
         self._account = account
+        self._image = image
         cancel = self.cancelled
-        image = self._image
+        self.view._qq_connect_button.show()
         self._action('正在准备连接 QQ', f'本次读取账号 {account.name} 的本机记录。请等待打开 QQ 的提示。')
 
         def acquire(report):
@@ -321,6 +341,7 @@ class QQIndependentConnection:
         self._timer.stop()
         v = self.view
         v._qq_status_timer.stop()
+        v._connection_prompt.dismiss()
         v.session_panel.cancel_analysis()
         v.session_panel.clear()
         v.session_panel.setEnabled(False)
@@ -347,15 +368,23 @@ class QQIndependentConnection:
     def _settings(self):
         if self.running or self.view._closing:
             return
-        if self._recovery == 'program':
-            value, _ = QFileDialog.getOpenFileName(self.view, '选择 QQ 程序',
-                str(self._image.parent if self._image else Path.home()), 'QQ 程序 (QQ.exe)')
-            if value:
+        v = self.view
+        v._hide_qq_guide()
+        v._qq_connect_button.hide()
+        v._qq_settings_button.hide()
+        program = self._recovery == 'program'
+
+        def use_path(value):
+            if program:
                 self._image = Path(value)
-        else:
-            value = QFileDialog.getExistingDirectory(self.view, '选择 QQ 资料位置（可在地址栏输入路径）',
-                                                     str(self._data_root or Path.home() / 'Documents'))
-            if value:
+            else:
                 self._data_root = Path(value)
-        if value:
             self.connect()
+
+        v._connection_prompt.request_path(
+            '选择 QQ 程序' if program else '选择 QQ 资料位置',
+            '从资源管理器复制 QQ.exe 的完整路径。' if program else _QQ_DATA_LOCATION_HINT.split('\n')[0],
+            '继续连接', use_path,
+            on_cancel=lambda: self._idle(self._recovery_message, recovery=True),
+            placeholder='QQ.exe 的完整路径' if program else 'QQ 聊天消息保存目录',
+        )

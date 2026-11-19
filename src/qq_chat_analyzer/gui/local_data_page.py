@@ -11,7 +11,6 @@ from PySide6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
-    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -20,13 +19,15 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QPushButton,
     QSizePolicy,
+    QStackedWidget,
     QStyle,
     QStyleOptionButton,
     QVBoxLayout,
     QWidget,
 )
 
-from .theme import LOCAL_DATA_QSS, ARCHIVE_CONFIRMATION_QSS, COLOR_PAPER, STATUS_STYLE_BASE
+from .inline_prompt import InlinePrompt
+from .theme import LOCAL_DATA_QSS, COLOR_PAPER, STATUS_STYLE_BASE
 from .workers import submit
 
 
@@ -109,9 +110,9 @@ class LocalDataPage(QWidget):
         self._status_label.hide()
         layout.addWidget(self._status_label)
 
-        history_box = QWidget()
-        history_box.setObjectName("localDataHistory")
-        history_layout = QVBoxLayout(history_box)
+        self._history_box = QWidget()
+        self._history_box.setObjectName("localDataHistory")
+        history_layout = QVBoxLayout(self._history_box)
         history_layout.setContentsMargins(0, 0, 0, 0)
         history_layout.setSpacing(12)
         search_row = QHBoxLayout()
@@ -192,7 +193,16 @@ class LocalDataPage(QWidget):
         selection_row.addWidget(self._delete_checked_button)
         history_layout.addLayout(selection_row)
         self._update_controls()
-        layout.addWidget(history_box, stretch=1)
+        self._history_stack = QStackedWidget()
+        self._history_stack.addWidget(self._history_box)
+        self._delete_prompt = InlinePrompt()
+        self._history_stack.addWidget(self._delete_prompt)
+        layout.addWidget(self._history_stack, stretch=1)
+
+    def hideEvent(self, event: Any) -> None:
+        if self.isHidden():
+            self._delete_prompt.cancel()
+        super().hideEvent(event)
 
     # ---------------------------------------------------------------- public API
 
@@ -457,20 +467,37 @@ class LocalDataPage(QWidget):
         self._refresh_generation += 1
         generation = self._refresh_generation
         self._update_controls()
-        try:
-            if self._confirm_delete_reports is not None:
-                confirmed = bool(self._confirm_delete_reports(frozen_names, kept_count))
-            else:
-                dialog = _bulk_delete_confirmation_dialog(records, kept_count, self, retain_selected=retain_selected)
-                confirmed = dialog.exec() == QDialog.DialogCode.Accepted
-        except Exception:
+        def cancel():
+            self._history_stack.setCurrentWidget(self._history_box)
             self._deleting = False
             self._update_controls()
-            raise
-        if not confirmed:
-            self._deleting = False
-            self._update_controls()
+
+        def delete():
+            self._history_stack.setCurrentWidget(self._history_box)
+            self._delete_confirmed_reports(records, frozen_names, generation, retain_selected=retain_selected)
+
+        if self._confirm_delete_reports is not None:
+            try:
+                confirmed = self._confirm_delete_reports(frozen_names, kept_count)
+            except Exception:
+                cancel()
+                raise
+            (delete if confirmed else cancel)()
             return
+        note = (
+            f"将保留 {kept_count} 份正常报告。删除后无法恢复，QQ / 微信原始聊天数据不受影响。"
+            + ("删除范围不受搜索筛选限制。" if retain_selected else "")
+        )
+        self._history_stack.setCurrentWidget(self._delete_prompt)
+        (confirm,) = self._delete_prompt.present(
+            f"将删除 {len(records)} 份报告", note, [("确认删除", delete)],
+            on_cancel=cancel, content=_deletion_confirmation_list(records),
+        )
+        confirm.setObjectName("archiveConfirmDelete")
+        confirm.style().unpolish(confirm)
+        confirm.style().polish(confirm)
+
+    def _delete_confirmed_reports(self, records, frozen_names, generation, *, retain_selected):
         self._set_status("正在删除…")
         if not retain_selected:
             self._retain_retry_records = ()
@@ -583,29 +610,7 @@ def _report_entry(record: Any, checked: bool, on_check: Callable[[bool], None], 
     return entry
 
 
-def _bulk_delete_confirmation_dialog(
-    records: tuple[Any, ...], kept_count: int, parent: QWidget | None = None,
-    *, retain_selected: bool = False,
-) -> QDialog:
-    dialog = QDialog(parent)
-    dialog.setObjectName("archiveDeletionDialog")
-    dialog.setWindowTitle("保留所选，删除其余" if retain_selected else "确认删除勾选报告")
-    dialog.setStyleSheet(ARCHIVE_CONFIRMATION_QSS)
-    dialog.resize(620, 520)
-    layout = QVBoxLayout(dialog)
-    layout.setContentsMargins(24, 24, 24, 24)
-    layout.setSpacing(16)
-    heading = _plain_label(f"将删除 {len(records)} 份报告", "archiveDeletionTitle")
-    layout.addWidget(heading)
-    retained = _plain_label(f"将保留 {kept_count} 份正常报告", "archiveDeletionRetained")
-    layout.addWidget(retained)
-    note = _plain_label(
-        "只删除下方清单中的 Echo 报告文件，不影响 QQ / 微信原始聊天数据。删除后无法恢复。"
-        + ("删除范围不受搜索筛选限制。" if retain_selected else ""),
-        "archiveDeletionNote",
-    )
-    note.setWordWrap(True)
-    layout.addWidget(note)
+def _deletion_confirmation_list(records: tuple[Any, ...]) -> QListWidget:
     listing = QListWidget()
     listing.setObjectName("archiveDeletionList")
     listing.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
@@ -621,21 +626,7 @@ def _bulk_delete_confirmation_dialog(
         item = QListWidgetItem(f"{name}\n{source} · {generated} · {messages} 条消息 · {_report_size_text(record)} · {scope}\n{record.package_name}")
         item.setData(Qt.ItemDataRole.UserRole, record.package_name)
         listing.addItem(item)
-    layout.addWidget(listing, stretch=1)
-    actions = QHBoxLayout()
-    actions.addStretch(1)
-    cancel = QPushButton("取消")
-    cancel.setDefault(True)
-    cancel.clicked.connect(dialog.reject)
-    delete = QPushButton("确认删除")
-    delete.setObjectName("archiveConfirmDelete")
-    delete.setAutoDefault(False)
-    delete.clicked.connect(dialog.accept)
-    actions.addWidget(cancel)
-    actions.addWidget(delete)
-    layout.addLayout(actions)
-    cancel.setFocus()
-    return dialog
+    return listing
 
 
 def _report_size_text(record: Any) -> str:

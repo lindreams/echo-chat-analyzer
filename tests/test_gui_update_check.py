@@ -85,10 +85,10 @@ def test_late_callbacks_after_close_never_touch_widgets(ui, app, destroy):
 
 
 def test_main_window_navigation_keeps_download_progress_and_install_handoff(app, monkeypatch):
+    from PySide6.QtWidgets import QLabel, QPushButton
     from qq_chat_analyzer.gui.main_window import MainWindow
     from qq_chat_analyzer.application.facade import InstallHandoffResult
     from test_gui import StubFacade
-    module = importlib.import_module("qq_chat_analyzer.gui.update_dialog")
     facade = StubFacade()
     facade.get_update_status = lambda: InstallableUpdateResult("available", "0.1.0", "0.2.0")
     facade.download_update = lambda **kwargs: None
@@ -97,11 +97,6 @@ def test_main_window_navigation_keeps_download_progress_and_install_handoff(app,
     window = MainWindow(facade, executor=executor)
     prepared = []
     monkeypatch.setattr(window, "request_update_install", prepared.append)
-    confirmations = []
-    def confirm(box):
-        confirmations.append(box.text())
-        return module.QMessageBox.Yes
-    monkeypatch.setattr(module.QMessageBox, "exec", confirm)
     window.show()
     window.home_page._about_btn.click()
     page = window.stack.currentWidget()
@@ -120,8 +115,16 @@ def test_main_window_navigation_keeps_download_progress_and_install_handoff(app,
     assert window.stack.currentWidget() is page
     assert page.install_button.isVisible() and page.install_button.isEnabled()
     page.install_button.click()
-    assert len(confirmations) == 1
-    assert all(word in confirmations[0] for word in ('关闭', '安装', '自动重启'))
+    prompt = page._install_prompt
+    assert len(executor.tasks) == 1
+    detail = prompt.findChild(QLabel, "inlinePromptDetail")
+    assert all(word in detail.text() for word in ('关闭', '安装', '自动重启'))
+    page.back_button.click()
+    assert not prompt.pending and len(executor.tasks) == 1
+    window.home_page._about_btn.click()
+    page.install_button.click()
+    next(button for button in prompt.findChildren(QPushButton, "confirmInstallUpdate")
+         if button.isVisible()).click()
     install_task = executor.tasks[-1]
     install_task.on_success(install_task.operation())
     app.processEvents()
@@ -177,9 +180,8 @@ def update_ui(app):
 
 
 def test_install_confirmation_readable_and_cancel_is_safe(update_ui, app):
-    from PySide6.QtCore import QTimer
     from PySide6.QtGui import QColor, QPalette
-    from PySide6.QtWidgets import QMessageBox, QLabel
+    from PySide6.QtWidgets import QLabel, QPushButton
     from qq_chat_analyzer.gui.theme import BASE_QSS
 
     page, executor, facade = update_ui
@@ -193,26 +195,19 @@ def test_install_confirmation_readable_and_cancel_is_safe(update_ui, app):
     palette.setColor(QPalette.WindowText, QColor("#eeeeee"))
     app.setPalette(palette)
     app.setStyleSheet(BASE_QSS)
-    observed = []
-
-    def cancel():
-        box = app.activeModalWidget()
-        if not isinstance(box, QMessageBox):
-            return
-        label = box.findChild(QLabel, "qt_msgbox_label")
-        observed.append((
-            box.button(QMessageBox.Yes).text(), box.button(QMessageBox.No).text(),
-            box.defaultButton() is box.button(QMessageBox.No),
-            box.escapeButton() is box.button(QMessageBox.No),
-            box.palette().color(QPalette.Window).name(),
-            label.palette().color(QPalette.WindowText).name(),
-        ))
-        QTest.keyClick(box, Qt.Key_Escape)
-
-    QTimer.singleShot(0, cancel)
     try:
         page.install_button.click()
-        assert observed == [("安装并重启", "取消", True, True, "#f8f5ed", "#1d1a17")]
+        prompt = page._install_prompt
+        assert prompt.isVisibleTo(page) and not prompt.isWindow()
+        assert app.activeModalWidget() is None
+        label = prompt.findChild(QLabel, "inlinePromptTitle")
+        assert prompt.palette().color(QPalette.Window).name() == "#f8f5ed"
+        assert label.palette().color(QPalette.WindowText).name() == "#1d1a17"
+        buttons = {button.text(): button for button in prompt.findChildren(QPushButton)}
+        assert set(buttons) == {"取消", "确认安装并重启"}
+        assert not buttons["确认安装并重启"].isDefault()
+        QTest.keyClick(buttons["取消"], Qt.Key_Escape)
+        assert not prompt.pending
         assert executor.tasks == []
         assert page.install_button.isEnabled()
     finally:

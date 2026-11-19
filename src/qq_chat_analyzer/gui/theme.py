@@ -181,20 +181,18 @@ CONNECTION_TRACK_LABEL = COLOR_FAINT
 CONNECTION_TRACK_LABEL_CURRENT = HOME_COLOR_MUTED
 CONNECTION_TRACK_COUNTER = COLOR_FAINT
 WECHAT_SETUP_QSS = f"""
-QWidget#wechatWorkspace, QDialog#wechatSetupDialog {{ background: {HOME_COLOR_PAPER}; }}
+QWidget#wechatWorkspace {{ background: {HOME_COLOR_PAPER}; }}
 QWidget#wechatSessionPanel, QFrame#wechatConnectionSurface {{ background: transparent; }}
-QFrame#wechatConnectionSurface QWidget, QDialog#wechatSetupDialog QWidget {{
+QFrame#wechatConnectionSurface QWidget {{
     font-family: {REFRESH_SANS_FAMILY};
     color: {HOME_COLOR_TEXT}; background: transparent;
 }}
-QFrame#wechatConnectionSurface QPushButton, QDialog#wechatSetupDialog QPushButton {{
+QFrame#wechatConnectionSurface QPushButton {{
     border: 1px solid {COLOR_BORDER}; border-radius: 0;
     background: transparent; padding: 8px 20px;
 }}
 QFrame#wechatConnectionSurface QPushButton:hover,
-QFrame#wechatConnectionSurface QPushButton:focus,
-QDialog#wechatSetupDialog QPushButton:hover,
-QDialog#wechatSetupDialog QPushButton:focus {{
+QFrame#wechatConnectionSurface QPushButton:focus {{
     border-color: {HOME_COLOR_ACCENT}; color: {HOME_COLOR_ACCENT};
     background: {HOME_COLOR_LEAF};
 }}
@@ -204,17 +202,6 @@ QFrame#wechatConnectionSurface QPushButton#wechatSettings {{
 QFrame#wechatConnectionSurface QPushButton#wechatSettings:hover,
 QFrame#wechatConnectionSurface QPushButton#wechatSettings:focus {{
     color: {HOME_COLOR_ACCENT}; background: transparent; text-decoration: underline;
-}}
-QDialog#wechatSetupDialog QLabel {{ color: {HOME_COLOR_MUTED}; }}
-QDialog#wechatSetupDialog QLineEdit, QDialog#wechatSetupDialog QComboBox {{
-    background: {HOME_COLOR_LEAF}; border: 1px solid {COLOR_BORDER};
-    border-radius: 0; padding: 8px;
-}}
-QDialog#wechatSetupDialog QLineEdit:focus, QDialog#wechatSetupDialog QComboBox:focus {{
-    border-color: {HOME_COLOR_ACCENT};
-}}
-QDialog#wechatSetupDialog QPushButton#wechatSave {{
-    color: {HOME_COLOR_ACCENT}; border-color: {HOME_COLOR_ACCENT};
 }}
 """
 
@@ -341,18 +328,10 @@ QWidget#localDataPage QLabel#archiveEntryTitle {{ font-size: {FONT_SIZE_TITLE}; 
 QWidget#localDataPage QLabel#archiveEntryMeta,
 QWidget#localDataPage QLabel#archiveEntryScope,
 QWidget#localDataPage QLabel#archiveCheckedCount {{ font-size: {FONT_SIZE_SMALL}; color: {COLOR_MUTED}; }}
-"""
-
-ARCHIVE_CONFIRMATION_QSS = f"""
-QDialog#archiveDeletionDialog {{ background: {COLOR_PAPER}; }}
-QDialog#archiveDeletionDialog QLabel {{ background: transparent; color: {COLOR_MUTED}; }}
-QDialog#archiveDeletionDialog QLabel#archiveDeletionTitle {{
-    font-size: {FONT_SIZE_HOME_TITLE}; font-weight: 600; color: {COLOR_TEXT};
-}}
-QDialog#archiveDeletionDialog QListWidget {{ background: {COLOR_PAPER}; border: 1px solid {COLOR_RULE_SOFT}; }}
-QDialog#archiveDeletionDialog QListWidget::item {{ padding: 10px; border-bottom: 1px solid {COLOR_RULE_SOFT}; }}
-QDialog#archiveDeletionDialog QListWidget::item:hover {{ background: {COLOR_PAPER}; }}
-QDialog#archiveDeletionDialog QPushButton#archiveConfirmDelete {{
+QWidget#localDataPage QListWidget#archiveDeletionList {{ background: {COLOR_PAPER}; border: 1px solid {COLOR_RULE_SOFT}; }}
+QWidget#localDataPage QListWidget#archiveDeletionList::item {{ padding: 10px; border-bottom: 1px solid {COLOR_RULE_SOFT}; }}
+QWidget#localDataPage QListWidget#archiveDeletionList::item:hover {{ background: {COLOR_PAPER}; }}
+QWidget#localDataPage QPushButton#archiveConfirmDelete {{
     color: {COLOR_ERROR}; border-color: {COLOR_ERROR};
 }}
 """
@@ -614,7 +593,6 @@ QToolTip {{
 
 __all__ = [
     "BASE_QSS",
-    "ARCHIVE_CONFIRMATION_QSS",
     "COLOR_ACCENT",
     "COLOR_ACCENT_DARK",
     "COLOR_ACCENT_SOFT",

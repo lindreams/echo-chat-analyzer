@@ -12,7 +12,6 @@ from typing import Any
 from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFontMetricsF, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -24,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from ..application.facade import ChatSource
 from ..diagnostics import log_qq_session_event, qq_session_stage
+from .inline_prompt import InlinePrompt
 from .progress_track import ConnectionProgressTrack
 from .session_analysis_panel import SessionAnalysisPanel, SessionConnectionBar
 from .theme import (
@@ -45,7 +45,6 @@ _QQ_CONNECT_LABEL = "连接QQ"
 _QQ_CONNECTING = "正在准备QQ连接环境，请稍候..."
 _QQ_CONNECT_FAILED = "QQ 连接失败"
 _QQ_PATH_PROMPT_TITLE = "选择 QQ.exe"
-_QQ_PATH_PROMPT_FILTER = "QQ 程序 (QQ.exe);;所有文件 (*)"
 _QQ_PATH_INVALID_TITLE = "QQ 路径无效"
 _QQ_PATH_INVALID_HINT = "请选择有效的 QQ.exe 文件。"
 _QQ_PATH_SAVING = "正在保存 QQ 路径..."
@@ -300,7 +299,6 @@ class QQWorkspace(QWidget):
         self._independent = None
         self._qq_connect_in_flight = False
         self._connection_task: Any = None
-        self._qq_install_prompt_active = False
         # A cancelled QQ.exe prompt must not reappear on passive refreshes;
         # an explicit reconnect clears it again.
         self._qq_install_prompt_shown = False
@@ -382,6 +380,8 @@ class QQWorkspace(QWidget):
             alignment=Qt.AlignmentFlag.AlignTop,
         )
         self._connection_layout.addLayout(self._qq_guide_row)
+        self._connection_prompt = InlinePrompt()
+        self._connection_layout.addWidget(self._connection_prompt)
 
         actions = QHBoxLayout()
         actions.setSpacing(16)
@@ -853,6 +853,7 @@ class QQWorkspace(QWidget):
         if self._qq_connect_in_flight:
             self.cancel_connection()
             return
+        self._connection_prompt.dismiss()
         # An explicit connect is the user asking again: a previously cancelled
         # QQ.exe prompt may be offered once more.
         self._qq_install_prompt_shown = False
@@ -959,21 +960,16 @@ class QQWorkspace(QWidget):
         Asked once per workspace: once the prompt has been shown, a cancelled
         selection stays dismissed until the user explicitly connects again.
         """
-        if self._qq_install_prompt_active or self._qq_install_prompt_shown:
+        if self._qq_install_prompt_shown:
             return
-        self._qq_install_prompt_active = True
         self._qq_install_prompt_shown = True
-        try:
-            path, _ = QFileDialog.getOpenFileName(
-                self,
-                _QQ_PATH_PROMPT_TITLE,
-                "",
-                _QQ_PATH_PROMPT_FILTER,
-            )
-        finally:
-            self._qq_install_prompt_active = False
-        if not path:
-            return
+        self._connection_prompt.request_path(
+            _QQ_PATH_PROMPT_TITLE, "从资源管理器复制 QQ.exe 的完整路径。",
+            "保存并连接", self._select_qq_install_path,
+            on_cancel=lambda: None, placeholder="QQ.exe 的完整路径",
+        )
+
+    def _select_qq_install_path(self, path: str) -> None:
         candidate = Path(path)
         if (
             not candidate.is_file()
@@ -1078,6 +1074,7 @@ class QQWorkspace(QWidget):
 
     def cancel_connection(self) -> None:
         """Cancel the active source task and return to a reconnectable page."""
+        self._connection_prompt.dismiss()
         if self._independent is not None:
             self._independent.cancel()
             return

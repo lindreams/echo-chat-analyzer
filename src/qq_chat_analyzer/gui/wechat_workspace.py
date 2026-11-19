@@ -10,9 +10,11 @@ from typing import Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSizePolicy,
     QVBoxLayout,
@@ -26,6 +28,7 @@ from ..application.facade import (
     WeChatEnvironmentConfig,
 )
 from ..resources import default_wechat_login_guide_path
+from .inline_prompt import InlinePrompt
 from .progress_track import ConnectionProgressTrack
 from .session_analysis_panel import SessionAnalysisPanel, SessionConnectionBar
 from .theme import (
@@ -34,7 +37,6 @@ from .theme import (
     WECHAT_STATUS_STYLE,
     WECHAT_SETUP_QSS,
 )
-from .wechat_setup_dialog import WeChatSetupDialog
 from .workers import submit
 
 
@@ -108,17 +110,9 @@ _WECHAT_PROGRESS_STAGE = {
 _WECHAT_GUIDE_NOTE = (
     "聊天数据仅在本机读取，不上传、不保存额外副本。"
 )
-_WECHAT_GUIDE_DIRECTORY_MISSING = (
-    "如未在常用位置找到微信数据位置，请按以下步骤获取微信数据目录："
-)
 _WECHAT_GUIDE_DIRECTORY_NOTE = (
-    "1. 进入微信：设置 → 存储位置 → 更改；\n"
-    "2. 右键 xwechat_files，选择 复制地址；\n"
-    "3. 完全关闭微信，并重新打开微信，使微信回到登录界面；\n"
-    "4. 返回 Echo，将复制的地址直接粘贴到上方输入框；\n"
-    "5. 点击 Save；\n"
-    "6. Save 后 Echo 会开始准备连接，请暂时不要登录；\n"
-    "7. 等待 Echo 提示可以登录后，再从微信登录界面登录。"
+    "在微信「设置 → 存储位置 → 更改」中，复制 xwechat_files 文件夹的路径，"
+    "粘贴到下方。按 Echo 的后续提示打开微信和登录。"
 )
 _WECHAT_DETECTED = "✓ 已检测到微信数据位置，无需手动选择路径。"
 _WECHAT_NOT_DETECTED = "未在常用位置找到微信数据位置。"
@@ -307,6 +301,8 @@ class WeChatWorkspace(QWidget):
             alignment=Qt.AlignmentFlag.AlignTop,
         )
         self._connection_layout.addLayout(self._wechat_guide_row)
+        self._setup_prompt = InlinePrompt()
+        self._connection_layout.addWidget(self._setup_prompt)
         actions = QHBoxLayout()
         actions.setSpacing(16)
         actions.addWidget(self._wechat_connect_button)
@@ -320,6 +316,10 @@ class WeChatWorkspace(QWidget):
 
         self.session_panel = SessionAnalysisPanel()
         self.session_panel.setObjectName("wechatSessionPanel")
+        # Keep the connection section at the top while the setup form is open.
+        panel_policy = self.session_panel.sizePolicy()
+        panel_policy.setRetainSizeWhenHidden(True)
+        self.session_panel.setSizePolicy(panel_policy)
         self.session_panel.configure(
             facade,
             ChatSource.WECHAT,
@@ -357,7 +357,7 @@ class WeChatWorkspace(QWidget):
 
     def select_source(self, source: Any) -> None:
         """Configure the panel for WeChat and reset transient state."""
-        if self._connection_task is not None:
+        if self._connection_task is not None or self._setup_prompt.pending:
             return
         self._wechat_attempt_generation += 1
         self.session_panel.configure(
@@ -380,7 +380,7 @@ class WeChatWorkspace(QWidget):
         load_sessions_on_ready: bool = False,
     ) -> None:
         """Ask the facade for WeChat's connection state and render it."""
-        if self._connection_task is not None:
+        if self._connection_task is not None or self._setup_prompt.pending:
             return
         self._wechat_attempt_generation += 1
         generation = self._wechat_attempt_generation
@@ -510,20 +510,11 @@ class WeChatWorkspace(QWidget):
     def _show_wechat_guide(
         self,
         *,
-        include_directory_help: bool = False,
         progress: WeChatConnectionProgress = WeChatConnectionProgress.PREPARING,
         current_step_only: bool = False,
     ) -> None:
-        """Show the current connection action or the existing fallback guide."""
-        if include_directory_help:
-            self._set_stage(None)
-            self._wechat_setup_button.setVisible(True)
-            self._wechat_guide_label.setText(_WECHAT_GUIDE_DIRECTORY_MISSING)
-            self._wechat_guide_note_label.setText(_WECHAT_GUIDE_DIRECTORY_NOTE)
-            self._wechat_guide_note_label.setStyleSheet(GUIDE_STYLE_EMPHASIS)
-            self._wechat_guide_key_label.clear()
-            self._wechat_guide_key_label.setVisible(False)
-        elif current_step_only:
+        """Show the current connection action."""
+        if current_step_only:
             # One step at a time: no repeated privacy line under the step.
             self._wechat_setup_button.setVisible(False)
             self._wechat_guide_label.setText(_WECHAT_PROGRESS_INSTRUCTIONS[progress])
@@ -549,10 +540,7 @@ class WeChatWorkspace(QWidget):
         self._wechat_guide_label.setVisible(True)
         self._wechat_guide_note_label.setVisible(True)
 
-        if (
-            not include_directory_help
-            and progress is WeChatConnectionProgress.READY_FOR_LOGIN
-        ):
+        if progress is WeChatConnectionProgress.READY_FOR_LOGIN:
             self._refresh_wechat_guide_image()
         else:
             self._hide_wechat_guide_image()
@@ -599,6 +587,8 @@ class WeChatWorkspace(QWidget):
         detect_data_roots: Any = None,
     ) -> None:
         """Connect WeChat in one click, asking for a directory only if needed."""
+        if self._setup_prompt.pending:
+            return
         if self._connection_task is not None:
             self.cancel_connection()
             return
@@ -630,7 +620,6 @@ class WeChatWorkspace(QWidget):
             return
 
         self._status_label.setText(_WECHAT_NOT_DETECTED)
-        self._show_wechat_guide(include_directory_help=True)
         self.open_wechat_setup()
 
     def _start_wechat_connect(
@@ -724,12 +713,12 @@ class WeChatWorkspace(QWidget):
         if task is not None and self._connection_task is not task:
             return
         self._connection_task = None
-        self._wechat_connect_button.setEnabled(True)
+        self._wechat_connect_button.setEnabled(not self._setup_prompt.pending)
         connected = (
             self._status_label.text().startswith(_CONNECTED_PREFIX)
             or self._status_label.text() == _WECHAT_LOADING_SESSIONS
         )
-        self._wechat_connect_button.setVisible(not connected)
+        self._wechat_connect_button.setVisible(not connected and not self._setup_prompt.pending)
 
     def _after_wechat_key_acquired(
         self,
@@ -874,6 +863,7 @@ class WeChatWorkspace(QWidget):
 
     def cancel_connection(self) -> None:
         """Cancel an in-flight WeChat connection."""
+        self._setup_prompt.cancel()
         self._wechat_attempt_generation += 1
         self._clear_sessions()
         if self._connection_cancel_event is not None:
@@ -893,6 +883,7 @@ class WeChatWorkspace(QWidget):
         self._hide_wechat_guide()
         self._wechat_connect_button.setText(_WECHAT_CONNECT_LABEL)
         self._wechat_connect_button.setEnabled(True)
+        self._wechat_setup_button.setEnabled(True)
         self._wechat_disconnect_button.setVisible(False)
         self._status_label.setText("连接已取消，可以重新开始。")
         self._status_label.setVisible(True)
@@ -975,10 +966,8 @@ class WeChatWorkspace(QWidget):
         """Return the user to the WeChat data-location flow.
 
         Used when the captured key cannot read the selected database. The
-        session list is deliberately not loaded. The user sees the actionable
-        message and the setup dialog opens with everything available: every
-        detected candidate when there are several, otherwise a free-text
-        directory field that also accepts a pasted path Echo never detected.
+        session list stays closed while the user reviews the detected
+        locations or pastes a directory.
         The key captured in this process is reused for the retry, so changing
         the directory does not require another WeChat login.
         """
@@ -991,7 +980,6 @@ class WeChatWorkspace(QWidget):
         self._status_label.setText(_DISCONNECTED_PREFIX + text)
         self._status_label.setToolTip(text)
         self.session_panel.show_disconnected_placeholder()
-        self._show_wechat_guide(include_directory_help=True)
         self._set_restart_action()
         self.open_wechat_setup(data_roots=self._recovery_candidates())
         self.status_changed.emit(text)
@@ -1012,50 +1000,68 @@ class WeChatWorkspace(QWidget):
     # ---------------------------------------------------------------- setup
 
     def open_wechat_setup(self, data_roots: Any = None) -> None:
-        """Open the setup dialog, showing the current facade state.
-
-        One workspace owns at most one live setup window: opening it again
-        raises the existing window instead of stacking a second copy. A window
-        the user closed opens normally afterwards, and the accepted signal of
-        the reused window keeps saving through the same path.
-        """
-        existing = getattr(self, "_wechat_setup_dialog", None)
-        if existing is not None and existing.isVisible():
-            existing.raise_()
-            existing.activateWindow()
+        """Collect the data location in the workspace's connection section."""
+        if self._setup_prompt.pending:
             return
-        try:
-            setup_status = self._facade.get_wechat_setup_status()
-        except Exception:
-            setup_status = None
         try:
             detected_root = self._facade.detect_wechat_data_root()
         except Exception:
             detected_root = None
-        self._wechat_setup_dialog = WeChatSetupDialog(
-            self,
-            setup_status=setup_status,
-            data_root=detected_root,
-            data_roots=data_roots,
+        edit = QLineEdit()
+        control = edit
+        if data_roots:
+            combo = QComboBox()
+            combo.setEditable(True)
+            combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.addItems([str(root) for root in data_roots])
+            edit = combo.lineEdit()
+            control = combo
+        elif detected_root:
+            edit.setText(str(detected_root))
+        edit.setAccessibleName("微信数据位置")
+        edit.setPlaceholderText("微信数据目录（xwechat_files）")
+        self._hide_wechat_guide()
+        setup_actions = (
+            self._wechat_connect_button, self._wechat_setup_button,
+            self._wechat_disconnect_button, self.session_panel,
         )
-        self._wechat_setup_dialog.accepted.connect(
-            self._save_wechat_environment_from_dialog
-        )
-        self._wechat_setup_dialog.show()
+        visible = tuple(not widget.isHidden() for widget in setup_actions)
+        for widget in setup_actions:
+            widget.hide()
 
-    def _save_wechat_environment_from_dialog(self) -> None:
-        dialog = getattr(self, "_wechat_setup_dialog", None)
-        if dialog is None:
-            return
-        pending = getattr(self, "_wechat_connect_pending", False)
-        self._wechat_connect_pending = False
-        if pending:
-            self._start_wechat_connect(
-                dialog.config(),
-                reuse_key=self._wechat_key_captured,
-            )
-            return
-        self.save_wechat_environment(dialog.config())
+        def restore_actions():
+            for widget, was_visible in zip(setup_actions, visible):
+                widget.setVisible(was_visible)
+            self._wechat_connect_button.setEnabled(True)
+
+        def path_text():
+            return edit.text().strip().strip('"').strip()
+
+        def save():
+            restore_actions()
+            config = WeChatEnvironmentConfig(data_root=Path(path_text()))
+            if self._wechat_connect_pending:
+                self._wechat_connect_pending = False
+                self._start_wechat_connect(config, reuse_key=self._wechat_key_captured)
+            else:
+                self.save_wechat_environment(config)
+
+        def cancel():
+            restore_actions()
+            if self._wechat_connect_pending:
+                self._wechat_connect_pending = False
+                self._set_restart_action()
+
+        action = "继续连接" if self._wechat_connect_pending else "保存"
+        (button,) = self._setup_prompt.present(
+            "选择微信数据位置", _WECHAT_GUIDE_DIRECTORY_NOTE, [(action, save)],
+            on_cancel=cancel, content=control,
+        )
+        button.setEnabled(bool(path_text()))
+        edit.textChanged.connect(lambda: button.setEnabled(bool(path_text())))
+        if not data_roots:
+            edit.setFocus()
 
     def save_wechat_environment(self, config: Any) -> None:
         """Persist one WeChat environment through the facade."""

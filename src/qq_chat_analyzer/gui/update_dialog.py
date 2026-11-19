@@ -22,7 +22,7 @@ from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFrame, QHBoxLayout, QLabel, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
-    QVBoxLayout, QWidget, QMessageBox,
+    QVBoxLayout, QWidget,
 )
 from shiboken6 import isValid
 
@@ -32,8 +32,9 @@ from ..application.facade import (
 )
 from ..resources import user_data_root
 from ..application.update_channel import official_release_url
+from .inline_prompt import InlinePrompt
 from .theme import (
-    HOME_COLOR_PAPER, HOME_COLOR_TEXT, HOME_COLOR_LEAF, HOME_COLOR_MUTED, HOME_COLOR_ACCENT, HOME_QSS,
+    HOME_COLOR_PAPER, HOME_COLOR_TEXT, HOME_COLOR_MUTED, HOME_COLOR_ACCENT, HOME_QSS,
     COLOR_BORDER, COLOR_ERROR, REFRESH_SANS_FAMILY,
 )
 from .workers import submit
@@ -375,6 +376,8 @@ class MaintenanceSection(QWidget):
         uninstall_layout.addWidget(self.uninstall_button, alignment=Qt.AlignVCenter)
         rows_layout.addWidget(uninstall_row)
         uninstall_row.setVisible(view.show_uninstall)
+        self.uninstall_prompt = InlinePrompt()
+        rows_layout.addWidget(self.uninstall_prompt)
         _add_rule(rows_layout).setVisible(view.show_uninstall)
 
         self.portable_note = QLabel(view.portable_note)
@@ -517,7 +520,7 @@ class UpdatePage(QWidget):
         description.setWordWrap(True)
         layout.addWidget(description)
         _add_rule(layout)
-        update_group = QWidget(self.page_content)
+        self._update_group = update_group = QWidget(self.page_content)
         update_layout = QVBoxLayout(update_group)
         update_layout.setContentsMargins(0, 0, 0, 0)
         update_layout.setSpacing(ABOUT_SECTION_GAP)
@@ -529,7 +532,7 @@ class UpdatePage(QWidget):
         self.status_label.setTextFormat(Qt.PlainText)
         self.status_label.setWordWrap(True)
         self.status_label.setMinimumHeight(ABOUT_ACTION_ROW_HEIGHT)
-        update_rows = QWidget(update_group)
+        self._update_rows = update_rows = QWidget(update_group)
         update_rows_layout = QVBoxLayout(update_rows)
         update_rows_layout.setContentsMargins(0, 0, 0, 0)
         update_rows_layout.setSpacing(0)
@@ -563,6 +566,8 @@ class UpdatePage(QWidget):
         self.check_button.clicked.connect(self._check)
         actions.addWidget(self.check_button)
         update_row.addLayout(actions)
+        self._install_prompt = InlinePrompt()
+        update_layout.addWidget(self._install_prompt)
         _add_rule(update_rows_layout)
         self.maintenance_section = MaintenanceSection(self._maintenance, self.page_content)
         layout.addWidget(self.maintenance_section)
@@ -586,7 +591,15 @@ class UpdatePage(QWidget):
         self._closed = True
         self._generation += 1
         self._status_timer.stop()
+        self._install_prompt.dismiss()
+        self.maintenance_section.uninstall_prompt.cancel()
         super().closeEvent(event)
+
+    def hideEvent(self, event: Any) -> None:
+        if self.isHidden():
+            self._install_prompt.cancel()
+            self.maintenance_section.uninstall_prompt.cancel()
+        super().hideEvent(event)
 
     def showEvent(self, event: Any) -> None:
         super().showEvent(event)
@@ -632,11 +645,11 @@ class UpdatePage(QWidget):
             download_available=self._can_download(),
         )
         self.status_label.setText(view.text)
-        self.check_button.setEnabled(view.check_enabled)
+        self.check_button.setEnabled(view.check_enabled and not self._local_operation)
         self.check_button.setText(view.check_text)
         self.release_button.setVisible(view.show_release)
         self.download_button.setVisible(view.show_download)
-        self.download_button.setEnabled(view.download_enabled)
+        self.download_button.setEnabled(view.download_enabled and not self._local_operation)
         self.download_button.setText(view.download_text)
         installable = (self._core_result is not None and self._core_result.status == 'downloaded'
                        and callable(getattr(self._facade, 'prepare_update_install', None)))
@@ -803,7 +816,7 @@ class UpdatePage(QWidget):
 
     def _start_download(self) -> None:
         """Adapt worker positional reporter to the Facade's keyword contract."""
-        if (self._closed or not self._can_download()
+        if (self._closed or self._local_operation or not self._can_download()
                 or self._phase not in _DOWNLOAD_READY):
             return
         generation = self._begin(UpdatePhase.DOWNLOADING)
@@ -828,38 +841,53 @@ class UpdatePage(QWidget):
     def _start_install(self) -> None:
         if self._closed or self._local_operation or self._core_result is None or self._core_result.status != 'downloaded':
             return
-        # Lock admission even while the confirmation's nested Qt event loop runs.
         self._local_operation = True
         self._render()
-        confirmation = QMessageBox(QMessageBox.Question, '安装更新并重启？',
-            'Echo 将关闭、安装更新并自动重启。\n安装前会清理当前业务；清理失败则取消安装。',
-            QMessageBox.Yes | QMessageBox.No, self)
-        # About's transparent child backgrounds otherwise inherit the system's
-        # dark surface while retaining Echo's ink text. Own this dialog's colors.
-        confirmation.setStyleSheet(f"""
-            QMessageBox, QMessageBox QLabel {{
-                background: {HOME_COLOR_PAPER}; color: {HOME_COLOR_TEXT};
-                font-family: {REFRESH_SANS_FAMILY}; font-size: 15px;
-            }}
-            QMessageBox QPushButton {{
-                background: {HOME_COLOR_PAPER}; color: {HOME_COLOR_TEXT};
-                border: 1px solid {COLOR_BORDER}; padding: 8px 20px;
-            }}
-            QMessageBox QPushButton:hover, QMessageBox QPushButton:focus {{
-                background: {HOME_COLOR_LEAF}; border-color: {HOME_COLOR_ACCENT};
-            }}
-        """)
-        confirmation.button(QMessageBox.Yes).setText('安装并重启')
-        confirmation.button(QMessageBox.No).setText('取消')
-        confirmation.setDefaultButton(QMessageBox.No)
-        confirmation.setEscapeButton(QMessageBox.No)
-        confirmed = confirmation.exec()
-        confirmation.deleteLater()
-        if confirmed != QMessageBox.Yes or self._closed:
+        self._update_rows.hide()
+
+        def cancel():
+            self._update_rows.show()
             self._local_operation = False
             if not self._closed:
                 self._render()
+                self.install_button.setFocus()
+
+        (confirm,) = self._install_prompt.present(
+            '安装更新并重启？',
+            'Echo 将关闭、安装更新并自动重启。请在未连接 QQ／微信、没有分析任务时安装。安全清理失败时会停止安装。',
+            [('确认安装并重启', self._prepare_install)], on_cancel=cancel,
+        )
+        confirm.setObjectName("confirmInstallUpdate")
+        self.scroll_area.ensureWidgetVisible(self._install_prompt)
+
+    def confirm_uninstall(self, on_confirm, on_cancel):
+        self._update_group.setEnabled(False)
+        prompt = self.maintenance_section.uninstall_prompt
+
+        def finish(action):
+            self._update_group.setEnabled(True)
+            action()
+
+        prompt.present(
+            '卸载 Echo',
+            '移除 Echo 程序和快捷方式。两种选择都会清除已保存的数据库密钥、连接凭据、'
+            '受管理的 QQ 工作副本、临时数据、日志和更新记录，包括已识别的旧版本残留。\n'
+            '选择清除本地数据还会永久删除 Echo 内的报告和配置。另存文件和自定义 QQ／微信目录不受影响。\n'
+            '本次若已连接过 QQ／微信，请重启 Echo 后直接卸载。',
+            [('保留报告和普通设置并卸载', lambda: finish(lambda: on_confirm('keep'))),
+             ('清除 Echo 本地数据并卸载', lambda: finish(lambda: on_confirm('purge')))],
+            on_cancel=lambda: finish(on_cancel),
+        )
+        self.scroll_area.ensureWidgetVisible(prompt)
+
+    def show_install_error(self, message):
+        self._note = message
+        self._render()
+
+    def _prepare_install(self) -> None:
+        if self._closed:
             return
+        self._update_rows.show()
         self._generation += 1
         generation = self._generation
         reference = weakref.ref(self)
