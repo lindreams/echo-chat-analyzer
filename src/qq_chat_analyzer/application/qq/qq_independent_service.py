@@ -851,9 +851,14 @@ class QQIndependentService:
                     raise QQIndependentError('qq_snapshot_expired','本次读取已结束，请重新连接 QQ。') from None
             table='group_msg_table' if session.session_type=='group' else 'c2c_msg_table'
             with self._message_database() as db:
-                with closing(db.execute(f'SELECT MIN("40050"),MAX("40050") FROM {table} WHERE CAST("40027" AS TEXT)=?',
-                                        (session.internal_key,))) as rows:
-                    return rows.fetchone()
+                # Unknown timestamps must not become the Unix epoch in the
+                # date editor. Keep them available to the all-records analysis.
+                query = f'''SELECT MIN("40050"), MAX("40050") FROM {table}
+                    WHERE CAST("40027" AS TEXT)=?
+                    AND typeof("40050") IN ('integer','real') AND "40050">0'''
+                with closing(db.execute(query, (session.internal_key,))) as rows:
+                    first, last = rows.fetchone()
+                    return (first, last) if first is not None else None
 
     @contextmanager
     def acquired_session(self, session_id, *, start_time=None,end_time=None,cancelled=lambda:False):

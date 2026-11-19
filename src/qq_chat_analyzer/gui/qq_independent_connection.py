@@ -307,9 +307,9 @@ class QQIndependentConnection:
         self._timer.stop()
         v.session_panel.setEnabled(True)
         v._handle_sessions_loaded(sessions)
-        guidance = ('可连续生成报告。要使用 QQ，请先点「退出连接」。'
-                    if self._reading_originals else '可连续生成报告，也可以重新打开 QQ。')
-        v._status_label.setText(f'QQ 已连接。{guidance}{_IDLE_HINT}')
+        guidance = ('要使用 QQ，请先点「退出连接」。'
+                    if self._reading_originals else '可以重新打开 QQ。')
+        v._status_label.setText(f'{guidance}{_IDLE_HINT}')
         v._qq_connect_button.hide()
         v._qq_settings_button.hide()
         v._qq_disconnect_button.setEnabled(True)

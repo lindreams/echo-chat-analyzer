@@ -399,12 +399,11 @@ def test_connection_guidance_replaces_old_phases_and_ignores_late_events(qt_app,
         assert not widget._qq_guide_label.text() and not widget._qq_login_guide_label.text()
         assert widget._session_loading.isHidden() and widget._qq_qrcode_label.isHidden()
         assert widget._status_label.isVisible()
-        assert '可连续生成报告' in widget._status_label.text()
-        assert '10 分钟' in widget._status_label.text()
-        if reading_originals:
-            assert widget._qq_disconnect_button.text() in widget._status_label.text()
-        else:
-            assert '可以重新打开 QQ' in widget._status_label.text()
+        expected_action = ('要使用 QQ，请先点「退出连接」。'
+                           if reading_originals else '可以重新打开 QQ。')
+        assert widget._status_label.text() == (
+            expected_action + '连续 10 分钟未读取会话或生成报告时，Echo 会自动结束连接。'
+        )
 
         # The source has released the idle connection. The page waits for
         # successful cleanup before offering to reopen QQ or reconnect.
@@ -481,6 +480,22 @@ def test_facade_complete_list_scoped_analysis_report_and_reuse(prepared,tmp_path
     assert service._root is None
     with pytest.raises(FacadeError):
         facade.analyze_session(ChatSource.QQ,group.session_id,AnalysisConfig(output_directory=tmp_path/'repeat'))
+
+
+def test_session_range_skips_unknown_timestamps(prepared):
+    service, selection, dbroot = prepared
+    with closing(sqlite3.connect(dbroot / 'nt_msg.db')) as db:
+        db.execute('UPDATE group_msg_table SET "40050"=0 WHERE "40001" IN (41,42)')
+        db.commit()
+    facade = facade_for(service)
+    facade.prepare_independent_qq(selection.executable, selection.account_directory)
+    facade.start_qq_auth_flow()
+    facade.confirm_independent_qq_account(selection.account)
+    try:
+        assert facade.get_session_message_range(ChatSource.QQ, 'group:partition-a') == (1760000000, 1760000180)
+        assert facade.get_session_message_range(ChatSource.QQ, 'group:partition-b') is None
+    finally:
+        facade.disconnect_qq()
 
 
 @pytest.mark.parametrize('bad_number,bad_object',[(900000002,900000001),(0,900000002),(None,900000001)])
