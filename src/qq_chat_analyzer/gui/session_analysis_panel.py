@@ -9,7 +9,7 @@ from typing import Any
 
 from PySide6.QtCore import (
     QDate, QEasingCurve, QEvent, QPersistentModelIndex, QRectF, QSize,
-    Qt, QTimer, QVariantAnimation, Signal,
+    QSignalBlocker, Qt, QTimer, QVariantAnimation, Signal,
 )
 from PySide6.QtGui import QColor, QRadialGradient
 from PySide6.QtWidgets import (
@@ -282,6 +282,7 @@ class SessionAnalysisPanel(QWidget):
         self._analysis_operation: object | None = None
         self._analysis_cancel: Event | None = None
         self._range_request: object | None = None
+        self._range_error = ""
         self._sessions_ready = False
         self._selected_source: ChatSource | None = None
         self._sessions_data: list[Any] = []
@@ -502,11 +503,12 @@ class SessionAnalysisPanel(QWidget):
             step_row.addWidget(button, stretch=1)
         tools_layout.addLayout(step_row)
         custom_range_layout.addWidget(self._date_adjust_tools, 4, 0)
-        self._date_range_error = QLabel("开始日期不能晚于结束日期，请调整日期。")
+        self._date_range_error = QLabel()
         self._date_range_error.setObjectName("dateRangeError")
+        self._date_range_error.setProperty("rangeError", False)
+        self._date_range_error.setTextFormat(Qt.TextFormat.PlainText)
         self._date_range_error.setWordWrap(True)
         self._date_range_error.hide()
-        custom_range_layout.addWidget(self._date_range_error, 5, 0)
         self._date_adjust_target.currentIndexChanged.connect(self._update_date_adjust_target)
         self._update_date_adjust_target()
         for index, edit in enumerate((self._start_date, self._end_date)):
@@ -516,9 +518,12 @@ class SessionAnalysisPanel(QWidget):
             edit.lineEdit().textEdited.connect(
                 lambda _text, index=index: self._mark_date_edited(index)
             )
+            edit.editingFinished.connect(self._update_analyze_enabled)
         self._custom_range_widget.setVisible(False)
         self._scope_custom.toggled.connect(self._on_custom_scope_toggled)
+        self._scope_custom.clicked.connect(self._retry_session_time_range)
         range_layout.addWidget(self._custom_range_widget)
+        range_layout.addWidget(self._date_range_error)
         settings_layout.addWidget(self._analysis_range_box)
         settings_layout.addStretch(1)
 
@@ -829,7 +834,6 @@ class SessionAnalysisPanel(QWidget):
         self._analyze_button.setVisible(visible)
 
     def _on_session_selection_changed(self) -> None:
-        self._update_analyze_enabled()
         self._reset_time_range()
         if self._selected_source is ChatSource.WECHAT or (
             self._selected_source is ChatSource.QQ and getattr(self._facade, 'independent_qq', False)
@@ -840,6 +844,7 @@ class SessionAnalysisPanel(QWidget):
 
     def _reset_time_range(self) -> None:
         self._range_request = None
+        self._range_error = ""
         self._message_range = None
         self._setting_date_defaults = True
         try:
@@ -863,22 +868,40 @@ class SessionAnalysisPanel(QWidget):
             return
         request = object()
         self._range_request = request
+        self._range_error = ""
+        self._update_analyze_enabled()
+
+        def is_current() -> bool:
+            return (
+                self._range_request is request
+                and self._selected_source is source
+                and self.selected_session_id() == session_id
+            )
 
         def apply_range(message_range: Any) -> None:
-            if (
-                self._range_request is not request
-                or self._selected_source is not source
-                or self.selected_session_id() != session_id
-            ):
+            if not is_current():
                 return
             self._range_request = None
             self._set_message_range(message_range)
+            self._update_analyze_enabled()
+
+        def show_range_error(_code: str, message: str) -> None:
+            if not is_current():
+                return
+            self._range_request = None
+            self._range_error = f"无法读取会话的时间范围。{message}"
+            self._update_analyze_enabled()
 
         self._executor(
             lambda: facade_method(source, session_id),
             on_success=apply_range,
-            on_error=lambda *_: None,
+            on_error=show_range_error,
         )
+
+    def _retry_session_time_range(self) -> None:
+        session_id = self.selected_session_id()
+        if self._range_error and session_id:
+            self._request_session_time_range(session_id)
 
     def _set_message_range(self, message_range: Any) -> None:
         if not isinstance(message_range, (tuple, list)) or len(message_range) != 2:
@@ -962,12 +985,27 @@ class SessionAnalysisPanel(QWidget):
         self._update_analyze_enabled()
 
     def _update_date_range_validation(self) -> bool:
-        invalid = (
-            self._scope_custom.isChecked()
-            and self._start_date.date() > self._end_date.date()
-        )
-        self._date_range_error.setVisible(invalid)
-        return not invalid
+        custom = self._scope_custom.isChecked()
+        inverted = custom and self._start_date.date() > self._end_date.date()
+        needs_dates = custom and not all(self._date_user_edited)
+        if inverted:
+            message = "开始日期不能晚于结束日期，请调整日期。"
+        elif self._range_error:
+            message = f"{self._range_error}可点「自定义」重试，或手动填写起止日期。"
+        elif needs_dates and self._range_request is not None:
+            message = "正在查询会话的时间范围…"
+        else:
+            message = ""
+        failed = bool(inverted or self._range_error)
+        if self._date_range_error.property("rangeError") != failed:
+            self._date_range_error.setProperty("rangeError", failed)
+            style = self._date_range_error.style()
+            style.unpolish(self._date_range_error)
+            style.polish(self._date_range_error)
+        self._date_range_error.setText(message)
+        self._date_range_error.setVisible(bool(message))
+        range_unavailable = bool(self._range_error) or self._range_request is not None
+        return not inverted and not (needs_dates and range_unavailable)
 
     def _reapply_session_view(self) -> None:
         """Filter and sort the cached sessions for the current controls."""
@@ -996,11 +1034,16 @@ class SessionAnalysisPanel(QWidget):
         else:
             filtered.sort(key=self._recent_session_key)
 
+        selected_id = self.selected_session_id()
         self._selection_delegate.reset()
-        self._session_list.clear()
-
-        for _, session in filtered:
-            self._add_session_item(session)
+        # Rebuilding the view should only change the analysis selection when
+        # that session no longer appears as an enabled row.
+        with QSignalBlocker(self._session_list):
+            self._session_list.clear()
+            for _, session in filtered:
+                item = self._add_session_item(session)
+                if session.session_id == selected_id and item.flags() & Qt.ItemFlag.ItemIsEnabled:
+                    self._session_list.setCurrentItem(item)
 
         count = self._session_list.count()
         self._set_session_count(count)
@@ -1018,9 +1061,12 @@ class SessionAnalysisPanel(QWidget):
         else:
             self._session_box.setVisible(True)
             self._session_views.setCurrentWidget(self._session_list)
-        self._update_analyze_enabled()
+        if self.selected_session_id() != selected_id:
+            self._on_session_selection_changed()
+        else:
+            self._update_analyze_enabled()
 
-    def _add_session_item(self, session: Any) -> None:
+    def _add_session_item(self, session: Any) -> QListWidgetItem:
         item = QListWidgetItem(session.display_name)
         item.setSizeHint(QSize(0, 54))
         item.setData(SESSION_ID_ROLE, session.session_id)
@@ -1037,6 +1083,7 @@ class SessionAnalysisPanel(QWidget):
             tooltip.append(f"消息数：{session.message_count}")
         item.setToolTip("\n".join(tooltip))
         self._session_list.addItem(item)
+        return item
 
     @staticmethod
     def _recent_session_key(pair: tuple[int, Any]) -> tuple[int, int, int]:

@@ -16,7 +16,7 @@ from ..application.connection_models import ConnectionState
 from ..application.facade import ChatSource
 
 
-_DIRECT_QQ_OPEN_HINT = '连接期间打开 QQ 可能提示「无法打开」。要使用 QQ，请先点「退出连接」。'
+_IDLE_HINT = '连续 10 分钟未读取会话或生成报告时，Echo 会自动结束连接。'
 _QQ_DATA_LOCATION_HINT = (
     '在 QQ「设置 → 存储管理」中，查看「聊天消息默认保存到」下面的路径。\n'
     '在 Echo 点「选择 QQ 资料位置…」，在窗口顶部的地址栏输入这行路径，回车后确认选择该文件夹。'
@@ -73,7 +73,10 @@ class QQIndependentConnection:
         v._set_stage(None)
         v._status_label.setText('QQ 连接已停止' if blocked else 'QQ 未连接')
         v._status_label.show()
-        note = message or '请按提示登录并完全退出 QQ。连接后可连续分析多个会话。\n聊天记录仅在本机处理。'
+        note = message or (
+            '按提示打开并登录 QQ，再完全退出 QQ。连接后可连续生成报告，'
+            '聊天记录仅在本机处理。'
+        )
         choosing_data = recovery and self._recovery == 'data'
         if choosing_data:
             note = f'{note}\n{_QQ_DATA_LOCATION_HINT}'
@@ -106,7 +109,7 @@ class QQIndependentConnection:
             self._operation = None
             self._timer.stop()
             if cleanup and self.cancelled.is_set():
-                self.release('已取消连接，可以重新开始。')
+                self.release(None if self.view._sessions_loaded else '已取消连接，可以重新开始。')
             elif failure:
                 _, message = failure[0]
                 if cleanup:
@@ -202,7 +205,7 @@ class QQIndependentConnection:
         self._account = account
         cancel = self.cancelled
         image = self._image
-        self._action('正在准备连接 QQ', f'当前账号：{account.name}。请先不要登录，等待 Echo 的下一步提示。')
+        self._action('正在准备连接 QQ', f'本次读取账号 {account.name} 的本机记录。请等待打开 QQ 的提示。')
 
         def acquire(report):
             self.facade.prepare_independent_qq(image, account,
@@ -228,10 +231,10 @@ class QQIndependentConnection:
         self._login_deadline = None
         if phase == 'preparation_exit':
             self._action('请先完全退出 QQ',
-                '检测到 QQ 正在运行，本次连接需要重新登录。若开启了自动登录，请先关闭；然后完全退出 QQ，Echo 会自动继续。')
+                '本次连接需要重新登录。请先关闭 QQ 自动登录，再用任务栏右下角的 QQ 图标退出，Echo 会自动继续。')
         elif phase == 'waiting_for_qq':
             self._action('请打开 QQ，先不要登录',
-                '请停留在登录界面，等待 Echo 提示。如果 QQ 自动进入聊天界面，请取消本次连接并先关闭自动登录。', 1)
+                '请停在登录界面。如果 QQ 自动进入聊天界面，请取消连接，关闭 QQ 自动登录后重试。', 1)
         elif phase == 'armed':
             remaining = min(value['remaining_login_ms'] / 1000,
                 (datetime.fromisoformat(value['login_before_utc']) - datetime.now(timezone.utc)).total_seconds())
@@ -241,8 +244,8 @@ class QQIndependentConnection:
         elif phase == 'awaiting_exit':
             self._reading_originals = value.get('reading_originals') is True
             self._action('请完全退出 QQ',
-                (f'请在 Echo 连接期间保持 QQ 关闭。{_DIRECT_QQ_OPEN_HINT}'
-                 if self._reading_originals else '请完全退出 QQ，以便读取完整记录。Echo 会自动继续；聊天列表出现前请勿重新打开。'), 2)
+                ('请用任务栏右下角的 QQ 图标退出。Echo 会自动读取，连接期间请保持 QQ 关闭。'
+                 if self._reading_originals else '请用任务栏右下角的 QQ 图标退出。Echo 会自动读取，请等聊天列表出现后再打开 QQ。'), 2)
         elif phase == 'authenticating':
             self._action('正在读取聊天记录', '请稍候，无需操作。', 2)
         elif phase == 'stopped':
@@ -284,7 +287,9 @@ class QQIndependentConnection:
         self._timer.stop()
         v.session_panel.setEnabled(True)
         v._handle_sessions_loaded(sessions)
-        v._status_label.setText(_DIRECT_QQ_OPEN_HINT if self._reading_originals else '可以重新打开 QQ')
+        guidance = ('可连续生成报告。要使用 QQ，请先点「退出连接」。'
+                    if self._reading_originals else '可连续生成报告，也可以重新打开 QQ。')
+        v._status_label.setText(f'QQ 已连接。{guidance}{_IDLE_HINT}')
         v._qq_connect_button.hide()
         v._qq_settings_button.hide()
         v._qq_disconnect_button.setEnabled(True)
@@ -301,7 +306,9 @@ class QQIndependentConnection:
         if not self.view._closing:
             if self.running:
                 self.view._qq_connect_button.setEnabled(False)
-                self._action('正在取消连接', '正在释放本次读取的资料，请稍候。', None)
+                self.view._qq_disconnect_button.setEnabled(False)
+                action = '正在结束连接' if self.view._sessions_loaded else '正在取消连接'
+                self._action(action, '正在释放本次读取的资料，请稍候。', None)
             else:
                 self.release('已取消连接。')
 
@@ -322,17 +329,20 @@ class QQIndependentConnection:
         v._qq_connect_button.setEnabled(False)
         self._action('正在结束连接', '正在释放本次读取的资料，请稍候。', None)
         self._submit(self.facade.disconnect_qq,
-            lambda _: self._idle(message or ('QQ 已断开，可以重新打开 QQ。' if self._reading_originals else None),
+            lambda _: self._idle(message or '连接已结束，可以重新打开 QQ。要继续生成报告，请重新连接。',
                                  recovery=recovery), cleanup=False)
 
     def refresh(self):
-        if self.view._closing or self.running or self._journey or not self.view._sessions_loaded:
+        v = self.view
+        if v._closing or self.running or not v._sessions_loaded or not v.session_panel.isEnabled():
             return
         self._submit(self.facade.get_qq_connection_snapshot, self._refreshed)
 
     def _refreshed(self, snapshot):
-        if snapshot.state is not ConnectionState.CONNECTED:
-            self.release('临时聊天记录已释放。如需继续分析，请重新连接 QQ。')
+        # Analysis may have started after this status check was queued. Let
+        # its result (or the next poll) drive the workspace transition.
+        if self.view.session_panel.isEnabled() and snapshot.state is not ConnectionState.CONNECTED:
+            self.release()
 
     def _settings(self):
         if self.running or self.view._closing:

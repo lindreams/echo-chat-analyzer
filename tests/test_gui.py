@@ -1303,9 +1303,58 @@ def test_session_panel_date_wechat_stale_requests_cannot_pollute_reselected_sess
     executor.tasks[2].succeed((1704067200, 1704153600))
     expected = panel.build_config()
     executor.tasks[0].succeed((1609459200, 1609545600))
-    executor.tasks[1].succeed((1640995200, 1641081600))
+    executor.tasks[1].fail("stale_range_failed", "Fictional stale error")
     assert panel.build_config() == expected
+    assert not panel._date_range_error.isVisibleTo(panel)
     assert panel._start_date.date().toPython() == datetime.fromtimestamp(1704067200).date()
+    assert panel._end_date.date().toPython() == datetime.fromtimestamp(1704153600).date()
+
+
+def test_session_search_and_sort_preserve_selection_and_dates(custom_date_panel):
+    executor = _IndependentDeferredExecutor()
+    panel = custom_date_panel("WECHAT", executor)
+    panel._start_date.setDate(QDate(2020, 1, 2))
+    panel._session_sort.setCurrentIndex(panel._session_sort.findData("name"))
+    panel._session_search.setText("会话 A")
+
+    assert panel.selected_session_id() == "fiction-A"
+    assert len(executor.tasks) == 1
+    executor.tasks[0].succeed((1704067200, 1704153600))
+    assert panel._start_date.date() == QDate(2020, 1, 2)
+    assert panel._end_date.date().toPython() == datetime.fromtimestamp(1704153600).date()
+
+    panel._session_search.setText("会话 B")
+    assert panel.selected_session_id() is None
+    assert not panel._analyze_button.isEnabled()
+
+
+def test_range_query_failure_reaches_controls_and_can_be_retried(custom_date_panel):
+    module = _facade_module()
+    fail = True
+
+    def get_range(_session_id):
+        if fail:
+            raise OSError("private diagnostic")
+        return 1704067200, 1704153600
+
+    facade = module.ChatAnalyzerFacade(
+        wechat_service=SimpleNamespace(get_session_message_range=get_range),
+    )
+    panel = custom_date_panel("WECHAT")
+    panel.configure(facade, module.ChatSource.WECHAT)
+    panel._session_list.setCurrentRow(1)
+
+    assert panel._date_range_error.isVisibleTo(panel)
+    assert "无法读取会话的时间范围" in panel._date_range_error.text()
+    assert "private diagnostic" not in panel._date_range_error.text()
+    assert not panel._analyze_button.isEnabled()
+    panel._scope_all.click()
+    assert panel._analyze_button.isEnabled()
+
+    fail = False
+    panel._scope_custom.click()
+    assert not panel._date_range_error.isVisibleTo(panel)
+    assert panel._analyze_button.isEnabled()
     assert panel._end_date.date().toPython() == datetime.fromtimestamp(1704153600).date()
 
 
@@ -1614,6 +1663,42 @@ def test_wechat_analysis_forwards_cancel_signal(qt_app):
     event.set()
     assert captured["cancelled"]() is True
 
+
+def test_analysis_and_report_open_failures_use_workspace_feedback(qt_app, tmp_path, monkeypatch):
+    from qq_chat_analyzer.gui.main_window import WECHAT_WORKSPACE_INDEX
+
+    warnings = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *args: warnings.append(args))
+    window, facade, executor, panel = _window_with_running_fictional_analysis(
+        qt_app, _facade_module().ChatSource.WECHAT,
+    )
+    config = panel.build_config()
+    executor.tasks[-1].fail("analysis_failed", "请稍后重试。")
+    assert window.stack.currentIndex() == WECHAT_WORKSPACE_INDEX
+    assert window._status_label.text() == "请稍后重试。"
+    assert panel.selected_session_id() == "fiction-B"
+    assert panel.build_config() == config
+    assert facade.list_sessions_calls == []
+
+    report_path = tmp_path / "echo-report.html"
+    report_path.write_text("<html>fictional report</html>", encoding="utf-8")
+    window._report_opener = lambda _path: False
+    panel.start_analysis()
+    _drain(window)
+    executor.tasks[-1].succeed(_StubOutcome(report_path=report_path))
+    assert window.stack.currentIndex() == WECHAT_WORKSPACE_INDEX
+    assert "无法打开 Echo 报告" in window._status_label.text()
+    assert window._open_echo_button.isVisibleTo(window)
+
+    window._report_opener = lambda _path: True
+    window._open_echo_button.click()
+    assert "无法打开" not in window._status_label.text()
+
+    window._directory_opener = lambda _path: False
+    window._open_report_directory_button.click()
+    assert "无法打开报告目录" in window._status_label.text()
+    assert window._open_report_directory_button.isEnabled()
+    assert warnings == []
 
 
 @pytest.mark.parametrize("source_name", ["qq", "wechat"])

@@ -1194,7 +1194,7 @@ class QQWorkspace(QWidget):
 
         Reading the session list belongs to connecting. It must never be
         reported through ``analysis_failed``, which belongs to a user-started
-        analysis and drives the main window's "分析失败" dialog. The error stays
+        analysis and drives the main window's analysis feedback. The error stays
         visible on the page and the restart action stays available.
         """
         if code == "qq_reconnect_required":

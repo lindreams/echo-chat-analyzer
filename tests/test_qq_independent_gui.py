@@ -345,7 +345,7 @@ def test_single_account_connects_without_consent_or_identity_prompts(qt_app,prep
             qt_app.processEvents();time.sleep(.005)
         assert w._sessions_loaded and w.session_panel._session_list.count()==3
         assert service._confirmed==selection.account and service._selection.recover_media is True
-        assert w._status_label.text()=='可以重新打开 QQ'
+        assert '可以重新打开 QQ' in w._status_label.text()
     finally:
         window.close();assert window.await_shutdown(10)
 
@@ -377,10 +377,11 @@ def test_connection_guidance_replaces_old_phases_and_ignores_late_events(qt_app,
         report({'phase':'awaiting_exit','reading_originals':reading_originals})
         note=widget._qq_login_guide_label.text()
         assert '从系统托盘' not in note
+        assert 'QQ 图标退出' in note
         if reading_originals:
-            assert '无法打开' in note and widget._qq_disconnect_button.text() in note
+            assert '连接期间请保持 QQ 关闭' in note
         else:
-            assert '请完全退出 QQ' in note
+            assert '等聊天列表出现后再打开 QQ' in note
         report(armed);report({'phase':'stopped'});flow._login_tick()
         assert widget._qq_guide_label.text()=='请完全退出 QQ' and widget._qq_login_guide_label.text()==note
         report({'phase':'authenticating'})
@@ -398,11 +399,24 @@ def test_connection_guidance_replaces_old_phases_and_ignores_late_events(qt_app,
         assert not widget._qq_guide_label.text() and not widget._qq_login_guide_label.text()
         assert widget._session_loading.isHidden() and widget._qq_qrcode_label.isHidden()
         assert widget._status_label.isVisible()
+        assert '可连续生成报告' in widget._status_label.text()
+        assert '10 分钟' in widget._status_label.text()
         if reading_originals:
-            assert '无法打开' in widget._status_label.text()
             assert widget._qq_disconnect_button.text() in widget._status_label.text()
         else:
-            assert widget._status_label.text()=='可以重新打开 QQ'
+            assert '可以重新打开 QQ' in widget._status_label.text()
+
+        # The source has released the idle connection. The page waits for
+        # successful cleanup before offering to reopen QQ or reconnect.
+        flow.refresh()
+        snapshot, poll = tasks.pop(0)
+        poll['on_success'](snapshot());poll['on_finished']()
+        assert widget._qq_guide_label.text()=='正在结束连接'
+        assert not widget._qq_connect_button.isEnabled()
+        disconnect, release = tasks.pop(0)
+        release['on_success'](disconnect());release['on_finished']()
+        assert '可以重新打开 QQ' in widget._qq_login_guide_label.text()
+        assert widget._qq_connect_button.text()=='重新连接' and widget._qq_connect_button.isEnabled()
     finally:
         widget._closing=True;widget.cancel_connection();widget.close()
 
@@ -863,7 +877,7 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
         assert '请完全退出 QQ' in statuses and '正在读取聊天记录' in statuses
         assert w._progress_track.isHidden() and w._qq_qrcode_label.isHidden()
         assert w._qq_guide_label.isHidden() and w._connection_bar.isVisible()
-        assert w._status_label.text()=='可以重新打开 QQ'
+        assert '可以重新打开 QQ' in w._status_label.text()
         panel=w.session_panel
         assert panel._session_list.count()==3
         original=panel.build_config
@@ -897,6 +911,7 @@ def test_gui_guided_flow_group_private_dates_reports_and_release(qt_app,prepared
         window.show_qq_workspace()
         w._qq_disconnect_button.click();wait_for(lambda:not w._independent.running)
         assert service._root is None and not w._sessions_loaded
+        assert '可以重新打开 QQ' in w._qq_login_guide_label.text()
         selected[0]=selection.account
         w._qq_connect_button.click()
         wait_for(lambda:w._sessions_loaded and not w._independent.running)

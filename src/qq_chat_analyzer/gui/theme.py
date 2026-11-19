@@ -417,7 +417,8 @@ QPushButton#dateAdjustStep:hover, QPushButton#dateAdjustStep:focus {{
     background: {HOME_COLOR_LEAF}; border-color: {HOME_COLOR_ACCENT};
 }}
 QPushButton#dateAdjustStep:pressed {{ background: {COLOR_ACCENT_SOFT}; }}
-QLabel#dateRangeError {{ color: {COLOR_ERROR}; }}
+QLabel#dateRangeError {{ color: {HOME_COLOR_MUTED}; }}
+QLabel#dateRangeError[rangeError="true"] {{ color: {COLOR_ERROR}; }}
 QListWidget#sessionList {{
     font-size: 14px;
     background: {HOME_COLOR_PAPER}; border: 1px solid {COLOR_RULE_SOFT};

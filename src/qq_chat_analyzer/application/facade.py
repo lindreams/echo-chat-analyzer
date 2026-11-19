@@ -1583,8 +1583,8 @@ class ChatAnalyzerFacade:
     ) -> tuple[int, int] | None:
         """Return earliest and latest message timestamps for one session."""
         chat_source = _coerce_source(source)
-        service = self._require_service(chat_source)
-        try:
+        with _translated_errors(chat_source):
+            service = self._require_service(chat_source)
             if chat_source is ChatSource.QQ:
                 range_method = getattr(service, "get_session_message_range", None)
                 if range_method is None:
@@ -1609,8 +1609,6 @@ class ChatAnalyzerFacade:
                     )
                 return range_method(session_id)
             return service.get_session_message_range(session_id)
-        except Exception:
-            return None
 
     def list_report_packages(self) -> ReportPackageListing:
         """List published package summaries and unreadable package issues."""

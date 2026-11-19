@@ -68,23 +68,16 @@ _HOME_LABEL = "\u9996\u9875"
 _BACK_LABEL = "\u8fd4\u56de\u9009\u62e9"
 _OPEN_ECHO_LABEL = "\u67e5\u770b Echo"
 _OPEN_REPORT_DIRECTORY_LABEL = "\u6253\u5f00\u62a5\u544a\u6240\u5728\u76ee\u5f55"
-_ERROR_TITLE = "\u5206\u6790\u5931\u8d25"
 _PREPARING = "\u6b63\u5728\u51c6\u5907..."
 _CANCEL_ANALYSIS = "\u53d6\u6d88\u5206\u6790"
-_REPORT_DIRECTORY_OPEN_FAILED = "\u65e0\u6cd5\u6253\u5f00\u62a5\u544a\u76ee\u5f55\u3002"
-
-# Report actions own this one-line feedback copy. Success and
-# progress stay quiet (header line only); a failure is never silent: it also
-# raises one modal warning named by the _FAILURE_TITLE_* constants below.
+_REPORT_DIRECTORY_OPEN_FAILED = "无法打开报告目录，请检查资源管理器后重试。"
 _ANALYSIS_CANCELLED = "分析已取消。"
 _REPORT_SAVED = "报告已保存"
 _REPORT_UNSAVED = "分析完成，报告暂未保存。"
 _ANALYSIS_COMPLETED = "分析完成"
-_OPEN_REPORT_FAILED = "无法打开 Echo 报告。"
-_REPORT_MISSING = "报告文件不存在，可能已被移动或删除。"
-_REPORT_DIRECTORY_MISSING = "报告目录不存在，可能已被移动或删除。"
-_FAILURE_TITLE_OPEN_REPORT = "无法打开报告"
-_FAILURE_TITLE_OPEN_DIRECTORY = "无法打开报告目录"
+_OPEN_REPORT_FAILED = "无法打开 Echo 报告，请检查默认浏览器，或从报告所在目录打开。"
+_REPORT_MISSING = "报告文件已找不到。可在「本地数据」查看已保存的报告，或重新生成。"
+_REPORT_DIRECTORY_MISSING = "报告目录已找不到。可在「本地数据」查看已保存的报告，或重新生成。"
 
 _LOGGER = logging.getLogger("qq_chat_analyzer.desktop.main_window")
 
@@ -155,6 +148,7 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(self._title_label)
         header_layout.addStretch(1)
         self._status_label = QLabel("")
+        self._status_label.setTextFormat(Qt.TextFormat.PlainText)
         self._status_label.setWordWrap(True)
         self._status_label.setVisible(False)
         self._status_label.setStyleSheet(STATUS_STYLE_BASE)
@@ -440,16 +434,7 @@ class MainWindow(QMainWindow):
         self.processing_page.stop()
         self.qq_workspace.cancel_analysis()
         self.wechat_workspace.cancel_analysis()
-        # Cancellation returns to the existing selection; entering the source
-        # through show_*_workspace would probe readiness and reload sessions.
-        if self._active_source == "qq":
-            self.stack.setCurrentIndex(QQ_WORKSPACE_INDEX)
-        elif self._active_source == "wechat":
-            self.stack.setCurrentIndex(WECHAT_WORKSPACE_INDEX)
-        else:
-            self.show_home_page()
-        self._home_button.setVisible(self._active_source in ("qq", "wechat"))
-        self._back_button.setVisible(False)
+        self._return_from_processing()
         self._set_status_message(_ANALYSIS_CANCELLED)
 
 
@@ -470,19 +455,22 @@ class MainWindow(QMainWindow):
     def show_outcome(self, outcome: Any) -> None:
         """Finish one analysis, open Echo, and return to the active workspace."""
         self.processing_page.stop()
+        report_path = getattr(outcome, "report_path", None)
+        report_directory = getattr(outcome, "report_directory", None)
         _LOGGER.info(
             "[gui] show_outcome report_path=%s report_directory=%s",
-            getattr(outcome, "report_path", None),
-            getattr(outcome, "report_directory", None),
+            report_path,
+            report_directory,
         )
-        self._set_echo_report_path(
-            getattr(outcome, "report_path", None),
-            getattr(outcome, "report_directory", None),
-        )
+        self._set_echo_report_path(report_path, report_directory)
+        self._return_from_processing()
+        if report_path is not None and self._current_report_path is None:
+            self._set_status_message(_REPORT_MISSING, failed=True)
+            return
         retention_warning = getattr(outcome, "retention_warning", "")
-        if getattr(outcome, "report_directory", None) is not None:
+        if report_directory is not None:
             self._set_status_message(retention_warning or _REPORT_SAVED)
-        elif getattr(outcome, "report_path", None) is not None:
+        elif report_path is not None:
             self._set_status_message(_REPORT_UNSAVED)
         else:
             self._set_status_message(_ANALYSIS_COMPLETED)
@@ -496,7 +484,7 @@ class MainWindow(QMainWindow):
                 f"{self._status_label.text()} · 表情包图片 {shown}/{len(chapter.assets)}（发送统计已保留）")
         outcome_key = (
             id(outcome),
-            str(getattr(outcome, "report_path", "")),
+            str(report_path),
         )
         if (
             self._current_report_path is not None
@@ -507,11 +495,9 @@ class MainWindow(QMainWindow):
             self.open_echo_report()
         if retention_warning and self._status_label.text() != retention_warning:
             self._status_label.setText(f"{retention_warning}\n{self._status_label.text()}")
-        self._return_to_workspace_after_success()
 
-    def _return_to_workspace_after_success(self) -> None:
-        """Return to the active workspace without clearing the Echo entry."""
-        self._home_button.setVisible(True)
+    def _return_from_processing(self) -> None:
+        """Restore the workspace with its existing selection and report entry."""
         self._back_button.setVisible(False)
         if self._active_source == "qq":
             self.stack.setCurrentIndex(QQ_WORKSPACE_INDEX)
@@ -519,26 +505,17 @@ class MainWindow(QMainWindow):
             self.stack.setCurrentIndex(WECHAT_WORKSPACE_INDEX)
         else:
             self.stack.setCurrentIndex(HOME_PAGE_INDEX)
+        self._home_button.setVisible(self._active_source in ("qq", "wechat"))
 
     # ---------------------------------------------------------------- status feedback
 
     def _set_status_message(self, message: str, *, failed: bool = False) -> None:
-        """Show one non-modal status line; an empty message hides it again.
-
-        Success and progress copy stays on this quiet header line. Failures use
-        the highlighted variant and are announced by :meth:`_announce_failure`
-        as well, so a failed click is never silent.
-        """
+        """Set the existing page feedback line, hiding it when empty."""
         self._status_label.setStyleSheet(
             STATUS_STYLE_ERROR if failed else STATUS_STYLE_BASE
         )
         self._status_label.setText(message)
         self._status_label.setVisible(bool(message))
-
-    def _announce_failure(self, title: str, message: str) -> None:
-        """Make one failed user action unmissable: status line plus one dialog."""
-        self._set_status_message(message, failed=True)
-        QMessageBox.warning(self, title, message)
 
     # ---------------------------------------------------------------- echo report
 
@@ -553,14 +530,16 @@ class MainWindow(QMainWindow):
             # The entry was offered but its report is gone: drop the stale
             # entry and tell the user instead of returning silently.
             self._clear_echo_report_entry()
-            self._announce_failure(_FAILURE_TITLE_OPEN_REPORT, _REPORT_MISSING)
+            self._set_status_message(_REPORT_MISSING, failed=True)
             return
         try:
             opened = self._report_opener(report_path)
         except Exception:
             opened = False
         if opened is False:
-            self._announce_failure(_FAILURE_TITLE_OPEN_REPORT, _OPEN_REPORT_FAILED)
+            self._set_status_message(_OPEN_REPORT_FAILED, failed=True)
+        elif self._status_label.text() == _OPEN_REPORT_FAILED:
+            self._set_status_message("")
 
     def open_echo_report_directory(self) -> None:
         """Open the directory containing the latest successful report."""
@@ -572,18 +551,16 @@ class MainWindow(QMainWindow):
             # Same rule as the report itself: a stale entry is reported, not
             # silently swallowed.
             self._clear_echo_report_entry()
-            self._announce_failure(
-                _FAILURE_TITLE_OPEN_DIRECTORY, _REPORT_DIRECTORY_MISSING
-            )
+            self._set_status_message(_REPORT_DIRECTORY_MISSING, failed=True)
             return
         try:
             opened = self._directory_opener(directory)
         except Exception:
             opened = False
         if opened is False:
-            self._announce_failure(
-                _FAILURE_TITLE_OPEN_DIRECTORY, _REPORT_DIRECTORY_OPEN_FAILED
-            )
+            self._set_status_message(_REPORT_DIRECTORY_OPEN_FAILED, failed=True)
+        elif self._status_label.text() == _REPORT_DIRECTORY_OPEN_FAILED:
+            self._set_status_message("")
 
     def _set_echo_report_path(
         self,
@@ -633,9 +610,8 @@ class MainWindow(QMainWindow):
         """Show a user-safe message. Never a traceback."""
         self.processing_page.stop()
         if self.stack.currentIndex() == PROCESSING_PAGE_INDEX:
-            self._show_active_workspace_or_home()
+            self._return_from_processing()
         self._set_status_message(message, failed=True)
-        QMessageBox.warning(self, _ERROR_TITLE, message)
 
     # ---------------------------------------------------------------- lifecycle
 
