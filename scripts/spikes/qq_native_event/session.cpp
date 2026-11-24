@@ -47,13 +47,20 @@ extern "C" __declspec(dllexport) DWORD WINAPI EchoSessionRun(void* parameter) {
     unsigned char approval = 0;
     if (ok) ok = pipe_io(pipe, &approval, 1, false, end) && approval == 1;
     bool installed = false;
+    NativeResults results;
     EchoEvent event{}; event.size = sizeof(event);
     if (ok) {
         const auto now = GetTickCount64();
         EchoOptions options{sizeof(EchoOptions), 9, 9, 37, 54395, now < end ? static_cast<unsigned>(end-now) : 0, 0};
         options.not_after = end;
         installed = EchoInstall(&options) == 1;
-        ok = installed && frame_write(pipe, Ready, nullptr, 0, end);
+        results.install = installed ? Passed : Failed;
+        if (!installed) results.fail(InstallFailed);
+        if (installed) {
+            ok = frame_write(pipe, Ready, nullptr, 0, end);
+            results.ready = ok ? Passed : Failed;
+            if (!ok) results.fail(ReadyFailed);
+        } else ok = false;
     }
     bool cancelled = false;
     while (ok && GetTickCount64() < end) {
@@ -65,6 +72,8 @@ extern "C" __declspec(dllexport) DWORD WINAPI EchoSessionRun(void* parameter) {
             // Bounded metadata records only; no commands can reconfigure it.
             if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr) || available) { cancelled = true; break; }
             ok = event.length == 32 && frame_write(pipe, Target, event.payload, event.length, end);
+            results.target = ok ? Passed : Failed;
+            if (!ok) results.fail(TargetFailed);
             SecureZeroMemory(event.payload, sizeof(event.payload)); event.length = 0;
             if (!ok || event.state != Armed) break;
 #else
@@ -79,17 +88,29 @@ extern "C" __declspec(dllexport) DWORD WINAPI EchoSessionRun(void* parameter) {
     DWORD available = 0;
     if (ok && (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr) || available)) cancelled = true;
 #ifndef ECHO_LOGIN_LIFECYCLE
-    if (ok && !cancelled && event.length && GetTickCount64() < end)
+    if (ok && !cancelled && event.length && GetTickCount64() < end) {
         ok = frame_write(pipe, Target, event.payload, event.length, end);
+        results.target = ok ? Passed : Failed;
+        if (!ok) results.fail(TargetFailed);
+    }
 #endif
     SecureZeroMemory(&event, sizeof(event));
-    if (installed) EchoStop();
+    const bool stop_ok = installed && EchoStop() == 1;
     const auto status = EchoGetStatus();
+    if (installed) {
+        results.stop = stop_ok && status.observation_disabled && !status.inflight ? Passed : Failed;
+        if (results.stop == Failed) results.fail(StopFailed);
+    }
     Finish finish{installed && status.observation_disabled && !status.inflight ? 1u : 0u,
         status.observation_disabled, status.inflight, status.resources_retained};
     // A short cleanup grace is transport-only; it cannot extend observation.
     if (pipe != INVALID_HANDLE_VALUE) {
-        if (ok) frame_write(pipe, Finished, &finish, sizeof(finish), GetTickCount64()+500);
+        // The loader consumes this summary, then emits its terminal summary
+        // after checking Finished and the remote thread's exit independently.
+        if (!frame_write(pipe, Diagnostic, &results, sizeof(results), GetTickCount64()+500))
+            results.fail(DiagnosticFailed);
+        if (ok && !frame_write(pipe, Finished, &finish, sizeof(finish), GetTickCount64()+500))
+            results.fail(FinishedFailed);
         CancelIoEx(pipe, nullptr); CloseHandle(pipe);
     }
     SecureZeroMemory(&c, sizeof(c));
@@ -101,9 +122,11 @@ extern "C" __declspec(dllexport) DWORD WINAPI EchoSessionRun(void* parameter) {
         EchoReleaseAfterHostJoined()) {
         HMODULE self = nullptr;
         if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            reinterpret_cast<LPCWSTR>(EchoSessionRun), &self)) FreeLibraryAndExitThread(self, 0);
+            reinterpret_cast<LPCWSTR>(EchoSessionRun), &self))
+            FreeLibraryAndExitThread(self, results.first_failure ? 100 + results.first_failure : 0);
     }
 #endif
     // Production keeps its loader reference and trampoline until normal exit.
-    return installed && status.observation_disabled ? 0 : 13;
+    return results.first_failure ? 100 + results.first_failure :
+        installed && status.observation_disabled ? 0 : 13;
 }

@@ -178,12 +178,15 @@ def test_selected_qq_uses_unicode_image_path_and_distinguishes_secondary_process
     with subprocess.Popen([str(image), "/d", "/q", "/k", "rem publisher"], **child_options) as main:
         with subprocess.Popen([str(image), "/d", "/q", "/k", "rem --Type=renderer"], **child_options) as helper:
             try:
-                monkeypatch.setattr(module, "_process_rows", lambda: [
-                    (main.pid, 1, "QQ.exe"), (helper.pid, main.pid, "qq.EXE"),
+                monkeypatch.setattr(module, "_desktop_process_rows", lambda _kernel: [
+                    (main.pid, "QQ.exe"), (helper.pid, "qq.EXE"),
                 ])
-                assert module.selected_qq_pids(image) == [main.pid]
-                assert module.selected_qq_pids(image, include_children=True) == sorted((main.pid, helper.pid))
-                assert module.selected_qq_pids(tmp_path / "some-other-installation" / "QQ.exe") == []
+                primary, = module.selected_qq_processes(image)
+                assert primary[0] == main.pid and primary[1] > 2**53
+                both = module.selected_qq_processes(image, include_children=True)
+                assert [pid for pid, _ in both] == sorted((main.pid, helper.pid))
+                assert primary in both
+                assert module.selected_qq_processes(tmp_path / "some-other-installation" / "QQ.exe") == []
             finally:
                 for process in (main, helper):
                     try:
@@ -193,21 +196,80 @@ def test_selected_qq_uses_unicode_image_path_and_distinguishes_secondary_process
                         process.communicate(timeout=5)
 
 
-def test_selected_qq_unknown_path_is_never_reported_as_absent(monkeypatch):
+@pytest.mark.parametrize('queried,length,relation', [
+    (False,32768,'same'), (False,32768,'different'),
+    (True,0,'unknown'), (True,32768,'same')])
+def test_selected_qq_unknown_path_is_never_reported_as_absent(monkeypatch,queried,length,relation):
     from types import SimpleNamespace
 
     module = _module()
     closed = []
-    monkeypatch.setattr(module, "_process_rows", lambda: [(123, 1, "QQ.exe")])
+    def query(_handle,_flags,_image,size):
+        size._obj.value=length
+        C.set_last_error(5)  # Successful calls must not reuse this as a denial.
+        return queried
+    def session(pid,output):
+        output._obj.value=1 if pid==os.getpid() or relation=='same' else 2
+        return relation!='unknown'
+    monkeypatch.setattr(module, "_desktop_process_rows", lambda _kernel: [(123, "QQ.exe")])
     monkeypatch.setattr(module, "_metadata_api", lambda: SimpleNamespace(
         OpenProcess=lambda *_: 456,
-        QueryFullProcessImageNameW=lambda *_: False,
+        QueryFullProcessImageNameW=query, ProcessIdToSessionId=session,
         CloseHandle=lambda handle: closed.append(handle) or True,
     ))
     with pytest.raises(module.QQProcessDetectionError) as error:
-        module.selected_qq_pids(Path("C:/fictional/QQ.exe"), include_children=True)
+        module.selected_qq_processes(Path("C:/fictional/QQ.exe"), include_children=True)
     assert error.value.stage == "image"
+    assert error.value.query_result == ('succeeded' if queried else 'failed')
+    expected_length = ('zero' if length==0 else 'out_of_range') if queried else 'not_checked'
+    assert error.value.length_result == expected_length
+    assert error.value.candidate_session == relation
+    assert error.value.winerror == (0 if queried else 5)
+    assert error.value.candidate_access_denied is (not queried)
     assert closed == [456]
+
+
+def test_selected_qq_excludes_other_desktops_but_refuses_unreadable_local_qq(monkeypatch):
+    from types import SimpleNamespace
+
+    module = _module()
+    opened, freed = [], []
+    record = module._WtsProcessInfoW
+    rows = (record * 3)(record(2, 90, "QQ.exe"), record(1, 91, "Other.exe"), record(1, 92, "QQ.exe"))
+    row_count = 3
+
+    def current_session(pid, session):
+        assert pid in (os.getpid(),92)
+        session._obj.value = 1
+        return True
+
+    def enumerate_session(server, level, session, output, count):
+        assert server is None and level._obj.value == 0 and session.value == 1
+        count._obj.value = row_count
+        C.cast(output, C.POINTER(C.POINTER(record)))[0] = C.cast(rows, C.POINTER(record))
+        return True
+
+    def denied(_access, _inherit, pid):
+        opened.append(pid)
+        C.set_last_error(5)
+        return None
+
+    monkeypatch.setattr(module, "_metadata_api", lambda: SimpleNamespace(
+        OpenProcess=denied, ProcessIdToSessionId=current_session,
+    ))
+    monkeypatch.setattr(module, "_desktop_api", lambda: SimpleNamespace(
+        WTSEnumerateProcessesExW=enumerate_session,
+        WTSFreeMemoryExW=lambda level, ptr, count: freed.append((level, count.value)) or True,
+    ))
+    image = Path("C:/fictional/QQ.exe")
+    with pytest.raises(module.QQProcessDetectionError) as error:
+        module.selected_qq_processes(image)
+    assert (error.value.stage, error.value.winerror) == ("process_open", 5)
+    assert opened == [92]
+    row_count = 2
+    assert module.selected_qq_processes(image) == []
+    assert opened == [92]
+    assert freed == [(0, 3), (0, 2)]
 
 
 def test_snapshot_exit_guard_requires_a_complete_empty_native_snapshot(monkeypatch):

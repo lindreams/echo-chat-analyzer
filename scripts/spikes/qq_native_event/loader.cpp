@@ -253,6 +253,8 @@ int wmain(int argc, wchar_t** argv) {
         }
     });
     bool ok = true, ready = false, delivered = false, finished = false, stopping = false;
+    bool diagnostic_seen = false;
+    NativeResults results;
 #ifdef ECHO_LOGIN_LIFECYCLE
     unsigned metadata_records = 0;
 #endif
@@ -261,29 +263,61 @@ int wmain(int argc, wchar_t** argv) {
         if (cancelled(stop.h) && !stopping) {
             unsigned char cancel = 1;
             ok = pipe_io(pipe.h, &cancel, 1, true, GetTickCount64()+500);
+            if (!ok) results.fail(CancelFailed);
             stopping = true;
         }
         Frame h{};
         // Poll readiness so control cancellation is noticed within 10 ms.
         DWORD available = 0;
-        if (!PeekNamedPipe(pipe.h, nullptr, 0, nullptr, &available, nullptr)) { ok = false; break; }
-        if (!available) { if (WaitForSingleObject(process.h, 0) == WAIT_OBJECT_0) { ok = false; break; } Sleep(5); continue; }
-        if (!pipe_io(pipe.h, &h, sizeof(h), false, deadline+1000) || h.magic != SessionMagic || h.reserved || h.length > EchoEventLimit) { ok = false; break; }
-        if (h.length && !pipe_io(pipe.h, payload, h.length, false, deadline+1000)) { ok = false; break; }
-        if (h.type == Ready && !ready && !h.length) ready = true;
+        if (!PeekNamedPipe(pipe.h, nullptr, 0, nullptr, &available, nullptr)) { results.fail(PipeFailed); ok = false; break; }
+        if (!available) {
+            if (WaitForSingleObject(process.h, 0) == WAIT_OBJECT_0 ||
+                WaitForSingleObject(session.thread.h, 0) == WAIT_OBJECT_0) {
+                // The final frames may arrive between the first peek and the
+                // exit check. Drain them before treating exit as missing data.
+                if (!PeekNamedPipe(pipe.h, nullptr, 0, nullptr, &available, nullptr)) {
+                    results.fail(PipeFailed); ok = false; break;
+                }
+                if (!available) { ok = false; break; }
+            } else { Sleep(5); continue; }
+        }
+        if (!pipe_io(pipe.h, &h, sizeof(h), false, deadline+1000)) { results.fail(PipeFailed); ok = false; break; }
+        if (h.magic != SessionMagic || h.reserved || h.length > EchoEventLimit) { results.fail(FrameRefused); ok = false; break; }
+        if (h.length && !pipe_io(pipe.h, payload, h.length, false, deadline+1000)) { results.fail(PipeFailed); ok = false; break; }
+        if (h.type == Diagnostic && !diagnostic_seen && h.length == sizeof(NativeResults)) {
+            const auto* reported = reinterpret_cast<const NativeResults*>(payload);
+            if (reported->install > Failed || reported->ready > Failed || reported->target > Failed ||
+                reported->finished != Unknown || reported->stop > Failed || reported->thread != Unknown ||
+                reported->first_failure > DiagnosticFailed) { results.fail(FrameRefused); ok = false; break; }
+            diagnostic_seen = true;
+            results.install = reported->install; results.stop = reported->stop;
+            if (!ready) results.ready = reported->ready;
+            if (!delivered) results.target = reported->target;
+            results.fail(reported->first_failure);
+            SecureZeroMemory(payload, sizeof(payload));
+            continue;
+        }
+        if (h.type == Ready && !diagnostic_seen && !ready && !h.length) {
+            ready = true; results.ready = Passed; results.install = Passed;
+        }
 #ifdef ECHO_LOGIN_LIFECYCLE
-        else if (h.type == Target && ready && h.length == 32 && ++metadata_records <= 65) delivered = true;
+        else if (h.type == Target && !diagnostic_seen && ready && h.length == 32 && ++metadata_records <= 65) { delivered = true; results.target = Passed; }
 #else
-        else if (h.type == Target && ready && !delivered && h.length) delivered = true;
+        else if (h.type == Target && !diagnostic_seen && ready && !delivered && h.length) { delivered = true; results.target = Passed; }
 #endif
         else if (h.type == Finished && h.length == sizeof(Finish)) {
             const auto* f = reinterpret_cast<const Finish*>(payload);
             ok = f->reads_stopped == 1 && f->hook_disabled == 1; finished = true;
-        } else { ok = false; break; }
+            results.finished = Passed;
+            results.stop = ok && !f->inflight ? Passed : Failed;
+            if (results.stop == Failed) results.fail(StopFailed);
+        } else { results.fail(FrameRefused); ok = false; break; }
         // Cancelled sessions never forward another target, even if a frame was
         // already in flight when STOP arrived. No frames follow Finished.
         if (!(h.type == Target && (stopping || cancelled(stop.h))))
-            ok = stdout_bytes(&h, sizeof(h)) && (!h.length || stdout_bytes(payload, h.length)) && ok;
+            if (!stdout_bytes(&h, sizeof(h)) || (h.length && !stdout_bytes(payload, h.length))) {
+                results.fail(ForwardFailed); ok = false;
+            }
         SecureZeroMemory(payload, sizeof(payload));
     }
     controls_done.store(true); controls.join();
@@ -291,6 +325,22 @@ int wmain(int argc, wchar_t** argv) {
     SecureZeroMemory(payload, sizeof(payload)); SecureZeroMemory(&received, sizeof(received)); SecureZeroMemory(&config, sizeof(config));
     const auto ended = WaitForSingleObject(session.thread.h, 2000);
     DWORD code = 1;
-    if (ended == WAIT_OBJECT_0) GetExitCodeThread(session.thread.h, &code);
-    return ok && ready && finished && ended == WAIT_OBJECT_0 && code == 0 ? 0 : 42;
+    const bool thread_ok = ended == WAIT_OBJECT_0 && GetExitCodeThread(session.thread.h, &code) && code == 0;
+    results.thread = thread_ok ? Passed : Failed;
+    // Session exit codes contain only this closed failure vocabulary. Prefer
+    // its earlier failure over the consequential missing Finished/thread error.
+    if (ended == WAIT_OBJECT_0 && code > 100 && code <= 100 + DiagnosticFailed) results.fail(code - 100);
+    if (!finished && GetTickCount64() >= deadline+1000) results.fail(NativeDeadline);
+    if (!ready) { results.ready = Failed; results.fail(ReadyFailed); }
+    if (!finished) { results.finished = Failed; results.fail(FinishedFailed); }
+    if (!thread_ok) results.fail(ended == WAIT_OBJECT_0 ? ThreadExitFailed : ThreadWaitFailed);
+    const bool success = ok && ready && finished && thread_ok && !results.first_failure;
+#if !defined(ECHO_IDENTITY_METADATA) && !defined(ECHO_LOGIN_LIFECYCLE)
+    Frame diagnostic{SessionMagic, Diagnostic, sizeof(results), 0};
+    const bool reported = stdout_bytes(&diagnostic, sizeof(diagnostic)) && stdout_bytes(&results, sizeof(results));
+    return success && reported ? 0 : 42;
+#else
+    // Existing metadata-only research consumers retain their byte contract.
+    return success ? 0 : 42;
+#endif
 }

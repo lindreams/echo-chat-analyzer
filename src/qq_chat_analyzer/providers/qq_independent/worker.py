@@ -78,6 +78,31 @@ def event_api():
     return api
 
 
+def _wait_for_wrapper(api, handle, wrapper, cancelled):
+    deadline = time.monotonic() + 12
+    metadata_error = None
+    while True:
+        if cancelled():
+            raise SourceError('cancelled')
+        wait = api.WaitForSingleObject(handle, 0)
+        if wait == 0:
+            raise SourceError('selected_process_changed')
+        if wait != 258:
+            raise SourceError('process_exit_unconfirmed')
+        try:
+            matched = loaded_module(api, handle, wrapper)[1]
+            metadata_error = None
+            if matched:
+                return
+        except SourceError as error:
+            if error.code not in ('module_metadata_unavailable', 'module_metadata_changed'):
+                raise
+            metadata_error = error.code
+        if time.monotonic() >= deadline:
+            raise SourceError(metadata_error or 'wrapper_not_ready')
+        time.sleep(.25)
+
+
 def capture(request, cancelled, status, *, lifetime=None, native_reader=None):
     directory, pins = runtime_files()
     direct = native_reader is not None
@@ -88,9 +113,9 @@ def capture(request, cancelled, status, *, lifetime=None, native_reader=None):
     with verified_process(request['pid'], image, synchronize=True) as (api, handle):
         api.WaitForSingleObject.argtypes=[wintypes.HANDLE,wintypes.DWORD]
         api.WaitForSingleObject.restype=wintypes.DWORD
-        if (process_creation_ticks(api, handle) != request['created'] or
-                not loaded_module(api, handle, resources.wrapper_path)[1]):
+        if process_creation_ticks(api, handle) != request['created']:
             raise SourceError('selected_process_changed')
+        _wait_for_wrapper(api, handle, resources.wrapper_path, cancelled)
         target = {'mode':'approved-qq','version':'9.9.37-54395','image':str(image),
                   'created':str(request['created']), 'pid':request['pid'],
                   'sha256':next(digest for path,digest in before if Path(path) == image)}
@@ -100,6 +125,7 @@ def capture(request, cancelled, status, *, lifetime=None, native_reader=None):
         if cancelled():raise SourceError('cancelled')
         env = os.environ.copy()
         env.pop('NODE_OPTIONS', None); env.pop('NODE_PATH', None)
+        status({'phase':'capture_starting'})
         process = subprocess.Popen([str(directory/'node.exe'),'--max-old-space-size=512',
                                     str(Path(__file__).parent/'js/session.mjs')],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -206,8 +232,9 @@ def capture(request, cancelled, status, *, lifetime=None, native_reader=None):
                     failure=failure_record(code=reason,stage='final_check')
                 error=SourceError(failure['failure_code']);error.diagnostic_stage=failure['failure_stage']
                 if result:
-                    safe=failure_record(exit_code=result.get('loader_exit_code'))
+                    safe=failure_record(exit_code=result.get('loader_exit_code'),native_results=result.get('native_results'))
                     error.diagnostic_exit_code=safe.get('loader_exit_code')
+                    error.diagnostic_native_results=safe.get('native_results')
                     if result.get('cause_code') is not None:
                         error.diagnostic_cause_code=failure_record(cause_code=result['cause_code'])['cause_code']
                 raise error
@@ -317,7 +344,7 @@ def main(root_text):
     stage='admission'
     def status(value):
         nonlocal stage
-        stage={'armed':'transport','stopped':'event','stop_unconfirmed':'cleanup',
+        stage={'capture_starting':'transport','armed':'transport','stopped':'event','stop_unconfirmed':'cleanup',
                'awaiting_exit':'exit','authenticating':'snapshot'}.get(value.get('phase'),stage)
         print(json.dumps(value,ensure_ascii=True),flush=True)
     try:

@@ -36,7 +36,7 @@ from ...resources import user_data_root
 from ..connection_models import ConnectionSnapshot, ConnectionState
 from ..errors import ApplicationServiceError
 from ..shutdown_models import ShutdownStatus
-from .qq_process_detection import QQProcessDetectionError, selected_qq_pids
+from .qq_process_detection import QQProcessDetectionError, selected_qq_processes
 from .qq_runtime_workspace import _lease
 
 _ENV = ('HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TEMP','TMP','MPLCONFIGDIR','XDG_CONFIG_HOME','XDG_CACHE_HOME')
@@ -363,15 +363,14 @@ class QQIndependentService:
         external=cancel_event or threading.Event()
         try:
             if self._cancelled(external.is_set): raise QQIndependentError('analysis_cancelled','已取消 QQ 获取。')
-            if wait_for_process:
-                self._wait_for_process(progress,external)
+            candidate=self._wait_for_process(progress,external) if wait_for_process else None
             offline_started=None
             def report(value):
                 nonlocal offline_started
                 if value.get('phase')=='authenticating' and offline_started is None:
                     offline_started=time.perf_counter()
                 progress(value)
-            self._run_capture(report,external)
+            self._run_capture(report,external,candidate)
             if offline_started is not None:
                 _LOGGER.info('[qq independent] stage=qq_offline_read elapsed_ms=%d',int((time.perf_counter()-offline_started)*1000))
             if self._cancelled(external.is_set): raise QQIndependentError('analysis_cancelled','QQ 读取已取消。')
@@ -397,7 +396,12 @@ class QQIndependentService:
                     _LOGGER.warning('[qq independent] stage=%s loader_exit_code=%d',failure['failure_stage'],failure['loader_exit_code'])
                 if 'cause_code' in failure:
                     _LOGGER.warning('[qq independent] stage=%s cause_code=%s',failure['failure_stage'],failure['cause_code'])
-                raise QQIndependentError('qq_capture_'+failure['failure_code'],public_message(failure['failure_code'])) from None
+                if 'native_results' in failure:
+                    _LOGGER.warning('[qq independent] stage=%s native_install=%s native_ready=%s native_target=%s native_finished=%s native_stop=%s native_thread=%s',
+                        failure['failure_stage'],*(failure['native_results'][name] for name in
+                        ('install','ready','target','finished','stop','thread')))
+                raise QQIndependentError('qq_capture_'+failure['failure_code'],
+                    public_message(failure['failure_code'],loader_exit_code=failure.get('loader_exit_code'))) from None
             raise QQIndependentError() from None
         finally:
             with self._lock: self._busy=False
@@ -405,11 +409,12 @@ class QQIndependentService:
     def _process_candidates(self, *, include_children=False):
         """Inspect process metadata only for the explicitly selected image."""
         try:
-            return selected_qq_pids(self._selection.executable, include_children=include_children)
+            return selected_qq_processes(self._selection.executable, include_children=include_children)
         except QQProcessDetectionError as error:
-            _LOGGER.warning('[qq independent] stage=process_detection api_stage=%s code=%d',
-                            error.stage, error.winerror)
-            raise SourceError('process_detection_failed') from None
+            _LOGGER.warning('[qq independent] stage=process_detection api_stage=%s code=%d query_result=%s length_result=%s candidate_session=%s',
+                            error.stage, error.winerror, error.query_result, error.length_result, error.candidate_session)
+            code='process_candidate_access_denied' if error.candidate_access_denied else 'process_detection_failed'
+            raise SourceError(code) from None
 
     def _wait_for_process(self, progress, external):
         # Existing QQ may already be logged in. Require a clean manual exit;
@@ -429,7 +434,7 @@ class QQIndependentService:
         deadline=time.monotonic()+120
         while not self._cancelled(external.is_set):
             rows=self._process_candidates()
-            if len(rows)==1:return
+            if len(rows)==1:return rows[0]
             if len(rows)>1:
                 raise QQIndependentError('qq_process_selection_required','检测到多个 QQ 窗口，请完全退出多余的 QQ 后重新连接。')
             if time.monotonic()>=deadline:
@@ -437,14 +442,17 @@ class QQIndependentService:
             external.wait(.5)
         raise QQIndependentError('analysis_cancelled','已取消 QQ 获取。')
 
-    def _select_process(self):
+    def _select_process(self, candidate):
         """Explicit installed image only; no login-state or arbitrary memory scan."""
         rows=self._process_candidates()
+        if candidate is not None and rows!=[candidate]:
+            raise SourceError('selected_process_changed')
         if len(rows)!=1:
             raise QQIndependentError('qq_process_selection_required','QQ 状态已变化，请重新连接并停留在登录页面。')
-        pid=rows[0]
+        pid,created=rows[0]
         with verified_process(pid,self._selection.executable) as (api,handle):
-            created=process_creation_ticks(api,handle)
+            if process_creation_ticks(api,handle)!=created:
+                raise SourceError('selected_process_changed')
             api.OpenProcess.argtypes=[wintypes.DWORD,wintypes.BOOL,wintypes.DWORD]
             api.OpenProcess.restype=wintypes.HANDLE
             owned=api.OpenProcess(0x101000,False,pid)  # synchronize + query limited
@@ -454,12 +462,11 @@ class QQIndependentService:
             except BaseException:
                 api.CloseHandle(owned); raise
             self._generation_handle=(api,owned)
-        self._generation=(pid,created,self._selection.executable)
+            self._generation=(pid,created,self._selection.executable)
         return pid,created
 
-    def _run_capture(self, progress, external):
+    def _run_capture(self, progress, external, candidate=None):
         from ...runtime.windows_job import launch_owned_process
-        pid,created=self._select_process()
         root=self._root
         api=event_api()
         api.CreateEventW.argtypes=[ctypes.c_void_p,wintypes.BOOL,wintypes.BOOL,wintypes.LPCWSTR]
@@ -468,8 +475,9 @@ class QQIndependentService:
         name='Local\\EchoQQIndependentStop-'+uuid4().hex
         cancel=api.CreateEventW(None,True,False,name)
         if not cancel: raise SourceError('cancel_event_unavailable')
-        process=None; reader=None; keep=False
+        keep=False; launch_attempted=False; admission_refused=False
         try:
+            pid,created=self._select_process(candidate)
             request={'kind':'echo-qq-independent-capture-v1','image':str(self._selection.executable),
                      'pid':pid,'created':created,'cancel_event':name,
                      'account_directory':str(self._selection.account_directory),'root':str(root),
@@ -486,6 +494,8 @@ class QQIndependentService:
             else:
                 env['PYTHONPATH']=str(Path(__file__).resolve().parents[3])
                 command=[sys.executable,'-m','qq_chat_analyzer.providers.qq_independent.worker',str(root)]
+            if self._cancelled(external.is_set):raise SourceError('cancelled')
+            launch_attempted=True
             process=launch_owned_process(command,cwd=root,env=env,stdout=subprocess.PIPE,
                                          stderr=subprocess.DEVNULL,text=True,encoding='utf-8',
                                          creationflags=subprocess.CREATE_NO_WINDOW,external_readers=True)
@@ -507,13 +517,14 @@ class QQIndependentService:
                 finally: messages.put_nowait(None)
             reader=threading.Thread(target=read,daemon=True); process.set_external_readers((reader,)); reader.start()
             self._worker_reader=reader
-            end=time.monotonic()+400; completed=False; stopping=False; failure=None
+            end=time.monotonic()+400; completed=False; stopping=False; failure=None; capture_possible=False
             while True:
                 try:
                     value=messages.get(timeout=.05)
                     if value is None: break
                     if not isinstance(value,dict):raise SourceError('invalid_capture_status')
                     phase=value.get('phase')
+                    if phase!='failed':capture_possible=True
                     if phase=='armed':
                         deadline=datetime.fromisoformat(value['login_before_utc'])
                         remaining=min(value['remaining_login_ms'],int((deadline-datetime.now(timezone.utc)).total_seconds()*1000))
@@ -533,23 +544,29 @@ class QQIndependentService:
                         return
                     elif phase=='completed' and not self._read_originals: completed=value.get('verified') is True
                     elif phase=='failed':failure=failure_record(code=value.get('failure_code'),stage=value.get('failure_stage'),
-                        exit_code=value.get('loader_exit_code'),cause_code=value.get('cause_code'))
-                    elif phase not in ('failed','stop_unconfirmed'): raise SourceError('invalid_capture_status')
+                        exit_code=value.get('loader_exit_code'),cause_code=value.get('cause_code'),native_results=value.get('native_results'))
+                    elif phase not in ('capture_starting','stop_unconfirmed'): raise SourceError('invalid_capture_status')
                 except queue.Empty: pass
                 if (self._cancelled(external.is_set)) and not stopping:
                     stopping=True; api.SetEvent(cancel); end=min(end,time.monotonic()+9)
                 if time.monotonic()>=end: raise SourceError('capture_deadline')
             code=process.wait(timeout=3)
+            admission_refused=code==2 and not capture_possible and failure is not None and failure['failure_stage']=='admission'
             if code or not completed or stopping or failure is not None:
                 failure=failure or failure_record(code='cancelled' if stopping else
                     'worker_exit_nonzero' if code else 'worker_result_missing',stage='final_check')
                 error=SourceError(failure['failure_code']);error.diagnostic_stage=failure['failure_stage']
                 error.diagnostic_exit_code=failure.get('loader_exit_code')
+                error.diagnostic_native_results=failure.get('native_results')
                 error.diagnostic_cause_code=failure.get('cause_code');raise error
         finally:
             if not keep:
                 try:
                     self._release_worker()
+                    # Before launch, or with a terminal admission refusal from
+                    # the released Job, the capture component could not load.
+                    if (not launch_attempted or admission_refused) and not self._close_generation():
+                        raise SourceError('process_handle_close_failed')
                 finally:
                     api.CloseHandle(cancel)
 
@@ -956,6 +973,14 @@ class QQIndependentService:
         except Exception: return ShutdownStatus.FAILED
         return ShutdownStatus.SUCCESS
 
+    def _close_generation(self):
+        if self._generation_handle:
+            api,handle=self._generation_handle
+            if not api.CloseHandle(handle):return False
+        self._generation_handle=None
+        self._generation=None
+        return True
+
     def runtime_release_status(self, *, final=False):
         # A disabled hook remains mapped until normal QQ exit. Never terminate
         # QQ to manufacture release evidence or claim that Stop unloaded it.
@@ -972,7 +997,4 @@ class QQIndependentService:
         api.GetExitCodeProcess.restype=wintypes.BOOL
         if not api.GetExitCodeProcess(handle,ctypes.byref(code)) or code.value==259:
             return ShutdownStatus.UNKNOWN
-        if not api.CloseHandle(handle): return ShutdownStatus.FAILED
-        self._generation_handle=None
-        self._generation=None
-        return ShutdownStatus.SUCCESS
+        return ShutdownStatus.SUCCESS if self._close_generation() else ShutdownStatus.FAILED

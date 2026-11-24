@@ -8,6 +8,10 @@ import {COMMAND, observeCdeResponse} from './qq_login_event_probe.mjs';
 import {PROFILE, KeySourceError} from './qq_key_source.mjs';
 
 const MAGIC = 0x32535145, BUILD = '9.9.37-54395';
+const nativeFailures = [undefined, 'native_install_failed', 'native_ready_failed', 'native_target_failed',
+  'native_finished_failed', 'native_stop_failed', 'native_thread_wait_failed', 'native_thread_exit_failed',
+  'native_pipe_failed', 'native_frame_refused', 'native_forward_failed', 'native_deadline',
+  'native_cancel_failed', 'native_diagnostic_failed'];
 const binaries = ['echo_qq_event_host.exe', 'echo_event_fixture.dll', 'echo_event_54395.dll', 'echo_event_loader.exe'];
 export function verifiedBuild(directory, productionPins) {
   const root = resolve(directory);
@@ -61,6 +65,7 @@ export async function connectOnce({directory, productionPins, target, firstPage,
   let parsed = null;
   let keyScopeFailure;
   let diagnosticFailure;
+  let nativeResults;
   let deferredPayload;
   const authenticate = payload => {
     try {
@@ -105,7 +110,7 @@ export async function connectOnce({directory, productionPins, target, firstPage,
   child.stdout.on('data', chunk => {
     try {
       total += chunk.length;
-      if (total > 8256 || phase === 3) { refuse('transport_limit'); return; }
+      if (total > 8300 || nativeResults) { refuse('transport_limit'); return; }
       const previous = pending;
       pending = Buffer.concat([previous, chunk]); previous.fill(0);
       while (pending.length >= 16) {
@@ -113,7 +118,16 @@ export async function connectOnce({directory, productionPins, target, firstPage,
         if (magic !== MAGIC || pending.readUInt32LE(12) || n > 8192) { refuse('transport_header_refused'); return; }
         if (pending.length < 16+n) break;
         const payload = pending.subarray(16, 16+n);
-        if (kind === 1 && phase === 0 && n === 0) {
+        if (kind === 4 && n === 28 && !nativeResults) {
+          const values = Array.from({length: 7}, (_, i) => payload.readUInt32LE(i*4));
+          if (values.slice(0, 6).some(value => value > 2) || values[6] >= nativeFailures.length) {
+            refuse('transport_header_refused'); return;
+          }
+          nativeResults = Object.fromEntries(['install','ready','target','finished','stop','thread']
+            .map((name, i) => [name, ['unknown','passed','failed'][values[i]]]));
+          diagnosticFailure ??= nativeFailures[values[6]];
+          if (values[6] || values.slice(0, 6).includes(2)) transportFailed = true;
+        } else if (kind === 1 && phase === 0 && n === 0) {
           phase = 1; armedTiming = timing(); onStatus('armed', armedTiming);
         }
         else if (kind === 2 && phase === 1 && n) {
@@ -132,7 +146,11 @@ export async function connectOnce({directory, productionPins, target, firstPage,
           onStatus(stopped ? 'stopped' : 'stop_unconfirmed', stoppedTiming);
         } else { refuse('transport_sequence_refused'); return; }
         const rest = Buffer.from(pending.subarray(16+n)); pending.fill(0); pending = rest;
-        if (phase === 3 && pending.length) { refuse('transport_trailing_data'); return; }
+        if (nativeResults && pending.length) { refuse('transport_trailing_data'); return; }
+        // Finished may be followed only by the loader's fixed terminal summary.
+        if (phase === 3 && pending.length >= 16 && pending.readUInt32LE(4) !== 4) {
+          refuse('transport_trailing_data'); return;
+        }
       }
     } catch { refuse('transport_parse_refused'); }
     finally { chunk.fill(0); }
@@ -167,6 +185,7 @@ export async function connectOnce({directory, productionPins, target, firstPage,
         : pending.length || phase !== 3 ? 'transport_sequence_refused' : aborted ? 'cancelled'
         : !eventSeen ? 'no_target_event' : !authenticated ? 'authentication_refused' : undefined),
       loader_exit_code: Number.isInteger(code)?code:null,
+      ...(nativeResults ? {native_results: nativeResults} : {}),
       authentication_scope: clean && authenticated && !aborted ? 'first_page_only' : 'none'};
   } finally {
     clearTimeout(timer); signal?.removeEventListener('abort', abort); header.fill(0); pending.fill(0); deferredPayload?.fill(0);

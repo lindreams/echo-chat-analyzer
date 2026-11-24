@@ -4,7 +4,7 @@
 
 Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连接聊天来源，选择一段会话，把聊天节奏、表达习惯和常用表情包整理成可以慢慢回看的 **Echo Report**。
 
-**[⬇ 国内下载 Windows 安装包（v0.3.6）](https://cnb.cool/echo_mly/echo_releases/-/releases/download/v0.3.6/Echo-0.3.6-windows-x64-Setup.exe)** · [GitHub 备用直链](https://github.com/lindreams/echo-chat-analyzer/releases/download/v0.3.6/Echo-0.3.6-windows-x64-Setup.exe) · [版本说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.6) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
+**[⬇ 国内下载 Windows 安装包（v0.3.8）](https://cnb.cool/echo_mly/echo_releases/-/releases/download/v0.3.8/Echo-0.3.8-windows-x64-Setup.exe)** · [GitHub 备用直链](https://github.com/lindreams/echo-chat-analyzer/releases/download/v0.3.8/Echo-0.3.8-windows-x64-Setup.exe) · [版本说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.8) · [反馈问题](https://github.com/lindreams/echo-chat-analyzer/issues/new/choose)
 
 **只支持 Windows 64 位电脑，暂不支持手机端。** 需要电脑端 QQ / 微信已经保存了相应的本地聊天记录；无法直接分析只存在手机里的历史记录。
 
@@ -33,7 +33,7 @@ Echo 是一款支持 **QQ / 微信** 的 Windows 本地聊天分析工具。连�
 
 **连接 QQ / 微信 → 选择会话与时间范围 → 生成报告 → 阅读或分享**
 
-1. 点击顶部的 **国内下载** 链接，下载并运行 `Echo-0.3.6-windows-x64-Setup.exe`，按照安装提示操作。
+1. 点击顶部的 **国内下载** 链接，下载并运行 `Echo-0.3.8-windows-x64-Setup.exe`，按照安装提示操作。
 2. 打开 Echo，选择 QQ 或微信，按当前页面的提示完成连接。
 3. 选择聊天会话和时间范围，生成报告；报告可以在本机查看，也可以自行分享。
 
@@ -96,11 +96,11 @@ Echo 是较新的个人开发软件，Windows SmartScreen 可能因应用信誉�
 
 ## 版本、更新与反馈
 
-**当前可下载的正式版为 v0.3.6（2026-11-19）**。该版直接读取 QQ 本机记录，省去整库复制。源码后续调整的验证状态见 [维护状态](docs/HARDENING.md)。
+**当前可下载的正式版为 v0.3.8（2026-11-24）**。本次改善 QQ 连接、失败重试和错误提示。具体验证范围与已知限制见 [维护状态](docs/HARDENING.md)。
 
 个别大群分析仍可能短暂卡顿，过深的 Windows 报告输出路径仍有限制。
 
-[查看 v0.3.6 更新说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.6) · [查看全部版本](https://cnb.cool/echo_mly/echo_releases/-/releases) · [后续开发计划](docs/ROADMAP.md)
+[查看 v0.3.8 更新说明](https://github.com/lindreams/echo-chat-analyzer/releases/tag/v0.3.8) · [查看全部版本](https://cnb.cool/echo_mly/echo_releases/-/releases) · [后续开发计划](docs/ROADMAP.md)
 
 <details>
 <summary>已安装用户如何更新？</summary>

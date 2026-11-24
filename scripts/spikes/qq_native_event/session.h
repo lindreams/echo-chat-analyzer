@@ -6,9 +6,21 @@
 
 // Fixed, single-use IPC. No arbitrary command names, message stream or key API.
 constexpr unsigned SessionMagic = 0x32535145;
-enum FrameType : unsigned { Ready = 1, Target = 2, Finished = 3 };
+enum FrameType : unsigned { Ready = 1, Target = 2, Finished = 3, Diagnostic = 4 };
 struct Frame { unsigned magic, type, length, reserved; };
 struct Finish { unsigned reads_stopped, hook_disabled, inflight, retained; };
+// Closed metadata only. Zero means no evidence, not success. No native error
+// text, addresses, identities, packet bytes or credentials belong in this ABI.
+enum StageResult : unsigned { Unknown = 0, Passed = 1, Failed = 2 };
+enum NativeFailure : unsigned { NativeOk = 0, InstallFailed, ReadyFailed, TargetFailed,
+    FinishedFailed, StopFailed, ThreadWaitFailed, ThreadExitFailed, PipeFailed,
+    FrameRefused, ForwardFailed, NativeDeadline, CancelFailed, DiagnosticFailed };
+struct NativeResults {
+    unsigned install = Unknown, ready = Unknown, target = Unknown,
+        finished = Unknown, stop = Unknown, thread = Unknown, first_failure = NativeOk;
+    void fail(unsigned reason) { if (!first_failure) first_failure = reason; }
+};
+static_assert(sizeof(NativeResults) == 28);
 struct SessionConfig {
     unsigned size, magic, build, timeout_ms, server_pid, target_pid;
     unsigned long long server_created, target_created;

@@ -87,6 +87,7 @@ try {
   report({phase:'result',authenticated:result.authenticated,complete:complete&&result.authenticated,
     observation_stopped:result.observation_stopped,reads_stopped:result.reads_stopped,
     hook_disabled:result.hook_disabled,inflight:result.inflight,state:result.state,loader_exit_code:result.loader_exit_code,
+    ...(result.native_results ? {native_results:result.native_results} : {}),
     ...(request.direct===true && complete && result.authenticated ? {receipts} : {}),
     ...(failure??{failure_code:result.failure_code,failure_stage:result.state==='transport_refused'?'transport':'event'}),
     ...(failure&&result.key_scope_failure?{cause_code:result.key_scope_failure}:{})});

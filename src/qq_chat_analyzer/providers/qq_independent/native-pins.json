@@ -3,8 +3,8 @@
   "minhook_revision": "c3fcafdc10146beb5919319d0683e44e3c30d537",
   "node_sha256": "b3094d0b49f9ad602262a9921551737bb97637c05dd357a06ae98188d7290aa3",
   "binaries": {
-    "echo_event_loader.exe": "3e06683e165a839ec49ba37fb5ec10cb1e6e31a2fc732af944dfe357dc453d5e",
-    "echo_event_54395.dll": "e15f3a29977ae7edab91f001ae7779bc55f4227dc5cf2a9945e8f33f8e7194c4"
+    "echo_event_loader.exe": "8bc40f18cb7d4dac03c8b0ef557d4bfa6610aa13b37d10fa832e59c29bbfbb46",
+    "echo_event_54395.dll": "38072f7949f6427c9059f6265d73f1409f5556a80385e383d5353cc81a5ea657"
   },
   "reader_binaries": {
     "echo_qq_native_reader.dll": "5136b0029bc5465bd5e5f8b526cf89711d8c330019c4c6a7afd1ae9109fd90cd",
